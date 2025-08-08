@@ -458,6 +458,7 @@ class ReviewAndSaveWindow(tk.Toplevel):
         self.update_callback = update_callback
         self.prefilled_filename = filename
         self.regenerate_callback = regenerate_callback
+        self.parent_app = parent.master # Get the main GUIApp instance for theme access
 
         title = f"Review: {self.prefilled_filename}" if self.prefilled_filename else f"Review New {self.content_type.capitalize()}"
         self.title(title)
@@ -470,19 +471,40 @@ class ReviewAndSaveWindow(tk.Toplevel):
 
         button_frame = ttk.Frame(self, padding=10)
         button_frame.pack(fill=tk.X)
-        self.save_button = ttk.Button(button_frame, text="Save", command=self._save)
-        self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        # Container for save button
+        save_frame = ttk.Frame(button_frame)
+        save_frame.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        self.save_button = ttk.Button(save_frame, text="Save", command=self._save)
+        self.save_button.pack(fill=tk.X)
+
+        # Container for regenerate button and spinner
+        regen_frame = ttk.Frame(button_frame)
+        regen_frame.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
+
         if self.regenerate_callback:
-            self.regenerate_button = ttk.Button(button_frame, text="Regenerate", command=self._regenerate)
-            self.regenerate_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
+            self.regenerate_button = ttk.Button(regen_frame, text="Regenerate", command=self._regenerate)
+            self.regenerate_button.pack(fill=tk.X)
+
+            self.loading_animation = LoadingAnimation(regen_frame, size=24)
+            is_dark = self.parent_app.theme_manager.current_theme == "dark"
+            status_bar_dot_color = "lightgrey" if is_dark else "dimgray"
+            status_bar_bg = self.cget('background')
+            self.loading_animation.update_style(bg_color=status_bar_bg, dot_color=status_bar_dot_color, is_dark_theme=is_dark)
+            # Don't pack the animation yet
 
     def update_content(self, new_content: str):
         """Updates the text widget with new content and re-enables buttons."""
+        if hasattr(self, 'loading_animation'):
+            self.loading_animation.stop()
+            self.loading_animation.pack_forget()
+
         self.text_widget.delete("1.0", tk.END)
         self.text_widget.insert("1.0", new_content)
         self.title(f"Review: {self.prefilled_filename}" if self.prefilled_filename else f"Review New {self.content_type.capitalize()}")
         self.save_button.config(state=tk.NORMAL)
         if hasattr(self, 'regenerate_button'):
+            self.regenerate_button.pack(fill=tk.X) # Show button
             self.regenerate_button.config(state=tk.NORMAL)
 
     def _regenerate(self):
@@ -490,7 +512,12 @@ class ReviewAndSaveWindow(tk.Toplevel):
         if self.regenerate_callback:
             # Disable buttons and show loading state
             self.save_button.config(state=tk.DISABLED)
-            self.regenerate_button.config(state=tk.DISABLED)
+            if hasattr(self, 'regenerate_button'):
+                self.regenerate_button.pack_forget() # Hide button
+            if hasattr(self, 'loading_animation'):
+                self.loading_animation.pack(fill=tk.X) # Show spinner
+                self.loading_animation.start()
+
             title = f"Regenerating: {self.prefilled_filename}" if self.prefilled_filename else f"Regenerating New {self.content_type.capitalize()}"
             self.title(title)
             # Pass self to the callback so it can update this window instance
