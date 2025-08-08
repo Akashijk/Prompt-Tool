@@ -923,6 +923,7 @@ class GUIApp(tk.Tk):
 
         # Create widgets
         self._create_widgets()
+        self._update_text_widget_colors() # Set initial theme-based colors
         self._load_templates()
         self._load_models()
         self._populate_wildcard_lists()
@@ -977,8 +978,8 @@ class GUIApp(tk.Tk):
         # --- View Menu ---
         view_menu = tk.Menu(menubar, tearoff=0)
         theme_menu = tk.Menu(view_menu, tearoff=0)
-        theme_menu.add_command(label="Light", command=lambda: self.theme_manager.set_theme("light"))
-        theme_menu.add_command(label="Dark", command=lambda: self.theme_manager.set_theme("dark"))
+        theme_menu.add_command(label="Light", command=lambda: self._set_theme("light"))
+        theme_menu.add_command(label="Dark", command=lambda: self._set_theme("dark"))
         view_menu.add_cascade(label="Theme", menu=theme_menu)
         menubar.add_cascade(label="View", menu=view_menu)
 
@@ -1005,8 +1006,8 @@ class GUIApp(tk.Tk):
         # Template editor (left side of top pane)
         self.template_frame = ttk.LabelFrame(top_h_pane, text="Template Content", padding=5)
         self.template_text = tk.Text(self.template_frame, wrap=tk.WORD, font=("Courier", 11), undo=True)
-        self.template_text.tag_configure("any_wildcard") # For identifying any wildcard tag
-        self.template_text.tag_configure("missing_wildcard", background="#ffcccc")
+        self.template_text.tag_configure("any_wildcard")
+        self.template_text.tag_configure("missing_wildcard")
         TextContextMenu(self.template_text)
         self.template_text.pack(fill=tk.BOTH, expand=True)
         self.template_text.bind("<KeyRelease>", self._schedule_live_update)
@@ -1035,11 +1036,11 @@ class GUIApp(tk.Tk):
         self.prompt_text.config(state=tk.DISABLED)
 
         # Configure tags and bindings for the interactive prompt text
-        self.prompt_text.tag_configure("wildcard", background="#d8e9f3", relief="raised", borderwidth=1)
+        self.prompt_text.tag_configure("wildcard", relief="raised", borderwidth=1)
         self.prompt_text.tag_bind("wildcard", "<Enter>", self._on_wildcard_enter)
         self.prompt_text.tag_bind("wildcard", "<Leave>", self._on_wildcard_leave)
         self.prompt_text.tag_bind("wildcard", "<Button-1>", self._on_wildcard_click)
-        self.prompt_text.tag_configure("wildcard_hover", background="#b8d9e3")
+        self.prompt_text.tag_configure("wildcard_hover")
         v_pane.add(preview_pane, weight=3)
 
     def _create_action_bar(self, parent):
@@ -1063,6 +1064,25 @@ class GUIApp(tk.Tk):
 
         self.copy_prompt_button = ttk.Button(parent, text="Copy Prompt", command=self._copy_generated_prompt, state=tk.DISABLED)
         self.copy_prompt_button.pack(side=tk.LEFT, padx=(10, 0))
+
+    def _set_theme(self, theme_name: str):
+        """Sets the theme and updates UI elements that need manual color changes."""
+        self.theme_manager.set_theme(theme_name)
+        self._update_text_widget_colors()
+
+    def _update_text_widget_colors(self):
+        """Updates colors for text widgets and tags based on the current theme."""
+        is_dark = self.theme_manager.current_theme == "dark"
+
+        # Define colors for light and dark modes
+        wildcard_bg = "#3c4c5c" if is_dark else "#d8e9f3"
+        wildcard_hover_bg = "#4a5e73" if is_dark else "#b8d9e3"
+        missing_wildcard_bg = "#6b2b2b" if is_dark else "#ffcccc"
+
+        # Apply colors to tags
+        self.prompt_text.tag_configure("wildcard", background=wildcard_bg)
+        self.prompt_text.tag_configure("wildcard_hover", background=wildcard_hover_bg)
+        self.template_text.tag_configure("missing_wildcard", background=missing_wildcard_bg)
 
     def _load_templates(self):
         """Loads available templates into the dropdown menu."""
@@ -1185,7 +1205,6 @@ class GUIApp(tk.Tk):
                 tag_name = f"wildcard_{i}"
                 self.prompt_text.tag_add(tag_name, start, end)
                 self.prompt_text.tag_add("wildcard", start, end)
-                self.prompt_text.tag_config(tag_name, background="#d8e9f3")
                 self.segment_map.append((start, end, i))
 
         self.prompt_text.config(state=tk.DISABLED)
