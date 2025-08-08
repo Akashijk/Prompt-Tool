@@ -1,0 +1,17 @@
+/.DS_Store
+templates/*
+history/*
+wildcards/*
+!templates/artistic_masterpiece.txt
+!wildcards/artistic_subject.txt
+!wildcards/pose_actions.txt
+!wildcards/environment.txt
+!wildcards/art_style.txt
+!wildcards/lighting_mood.txt
+!wildcards/color_palette.txt
+!wildcards/composition.txt
+!wildcards/artistic_medium.txt
+!wildcards/quality_boosters.txt
+!wildcards/camera_angle.txt
+!wildcards/artistic_details.txt
+!wildcards/atmosphere.txt

@@ -1,0 +1,7 @@
+Transform this Stable Diffusion prompt into a CINEMATIC version with dramatic lighting, movie-like composition, and camera angles. Focus on cinematography terms and dramatic atmosphere.
+
+**IMPORTANT FORMAT:** Respond with EXACTLY this format:
+ENHANCED_PROMPT: [your enhanced prompt here]
+SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic content]
+
+**Original prompt to transform:**

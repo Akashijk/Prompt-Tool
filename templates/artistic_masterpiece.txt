@@ -1,0 +1,1 @@
+__artistic_subject__ __pose_action__ in a __environment__, __art_style__, __lighting_mood__, __color_palette__, __composition__, __artistic_medium__, __quality_boosters__, __camera_angle__, __artistic_details__, __atmosphere__
