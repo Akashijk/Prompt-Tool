@@ -4,14 +4,14 @@ import os
 import tkinter as tk
 import threading
 import re
+import random
 import sys
 import queue
+from typing import Optional, List, Tuple, Dict, Any
 from tkinter import ttk, messagebox, simpledialog
-from typing import Optional, List, Tuple, Dict
-
 from core.prompt_processor import PromptProcessor
 from core.template_engine import PromptSegment
-from core.config import config, DEFAULT_VARIATION_INSTRUCTIONS, save_settings, load_settings
+from core.config import config, DEFAULT_SFW_VARIATION_INSTRUCTIONS, DEFAULT_NSFW_VARIATION_INSTRUCTIONS, save_settings, load_settings
 from .theme_manager import ThemeManager
 
 class Tooltip:
@@ -81,6 +81,128 @@ class TextContextMenu:
     def copy(self): self.widget.event_generate("<<Copy>>")
     def paste(self): self.widget.event_generate("<<Paste>>")
     def select_all(self): self.widget.tag_add("sel", "1.0", "end"); return "break"
+
+class BrainstormingContextMenu(TextContextMenu):
+    """A context menu for the brainstorming history with a rewrite function."""
+    def __init__(self, widget, rewrite_callback: callable):
+        super().__init__(widget)
+        self.rewrite_callback = rewrite_callback
+        self.menu.add_separator()
+        self.menu.add_command(label="Rewrite Selection with AI...", command=self._rewrite_selection, state=tk.DISABLED)
+
+    def show_menu(self, event):
+        super().show_menu(event)
+        try:
+            self.widget.selection_get()
+            self.menu.entryconfig("Rewrite Selection with AI...", state=tk.NORMAL)
+        except tk.TclError:
+            self.menu.entryconfig("Rewrite Selection with AI...", state=tk.DISABLED)
+
+    def _rewrite_selection(self):
+        try:
+            self.rewrite_callback()
+        except tk.TclError:
+            pass # No selection
+
+class TemplateEditorContextMenu(TextContextMenu):
+    """A specialized context menu for the template editor with a wildcard generator."""
+    def __init__(self, widget, generate_wildcard_callback: callable, brainstorm_callback: callable):
+        super().__init__(widget)
+        self.generate_wildcard_callback = generate_wildcard_callback
+        self.brainstorm_callback = brainstorm_callback
+        self.last_event = None
+        self.menu.add_separator()
+        self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
+        self.menu.add_command(label="Brainstorm with AI...", command=self.brainstorm_callback, state=tk.DISABLED)
+
+    def show_menu(self, event):
+        self.last_event = event
+        super().show_menu(event) # Call parent to set cut/copy/paste
+
+        index = self.widget.index(f"@{event.x},{event.y}")
+        tags = self.widget.tag_names(index)
+
+        if "missing_wildcard" in tags:
+            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL)
+        else:
+            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.DISABLED)
+        
+        if self.widget.get("1.0", "end-1c").strip():
+            self.menu.entryconfig("Brainstorm with AI...", state=tk.NORMAL)
+        else:
+            self.menu.entryconfig("Brainstorm with AI...", state=tk.DISABLED)
+
+    def _generate_wildcard(self):
+        if not self.last_event: return
+        try:
+            index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
+            word_start = self.widget.index(f"{index} wordstart")
+            word_end = self.widget.index(f"{index} wordend")
+            clicked_word = self.widget.get(word_start, word_end)
+            
+            match = re.fullmatch(r'__([a-zA-Z0-9_.-]+)__', clicked_word)
+            if match:
+                wildcard_name = match.group(1)
+                self.generate_wildcard_callback(wildcard_name)
+        except Exception as e:
+            print(f"Error getting wildcard for generation: {e}")
+
+class LoadingAnimation(ttk.Frame):
+    """A smooth, spinning arc loading animation widget."""
+    def __init__(self, parent, size=16):
+        super().__init__(parent, width=size, height=size)
+        self.canvas = tk.Canvas(self, width=size, height=size, highlightthickness=0)
+        self.canvas.pack()
+        
+        self.size = size
+        self.color = "gray"
+        self.is_running = False
+        self.animation_job = None
+        
+        self.angle = 0
+        self.arc_id = None
+        self.speed = 10  # degrees per frame
+        self.extent = 120  # length of the arc in degrees
+
+    def update_style(self, bg_color, dot_color, is_dark_theme=False):
+        """Updates the colors to match the theme."""
+        self.canvas.config(bg=bg_color)
+        self.color = dot_color
+
+    def start(self):
+        if not self.is_running:
+            self.is_running = True
+            self.angle = 0
+            self._animate()
+
+    def stop(self):
+        if self.is_running:
+            self.is_running = False
+            if self.animation_job:
+                self.after_cancel(self.animation_job)
+                self.animation_job = None
+            if self.arc_id:
+                self.canvas.delete(self.arc_id)
+                self.arc_id = None
+
+    def _animate(self):
+        if not self.is_running:
+            return
+
+        if self.arc_id:
+            self.canvas.delete(self.arc_id)
+
+        padding = 2
+        box = (padding, padding, self.size - padding, self.size - padding)
+        
+        self.arc_id = self.canvas.create_arc(
+            box, start=self.angle, extent=self.extent, style=tk.ARC, outline=self.color, width=2
+        )
+
+        self.angle = (self.angle - self.speed) % 360
+        self.animation_job = self.after(30, self._animate)  # ~33 FPS for a smooth spin
+
+
 
 VARIATION_TOOLTIPS = {
     'cinematic': 'Re-writes the prompt with a focus on dramatic lighting, camera angles, and movie-like composition.',
@@ -327,6 +449,84 @@ class HistoryViewerWindow(tk.Toplevel):
         self.parent_app.load_prompt_from_history(original_prompt)
         self.destroy()
 
+class ReviewAndSaveWindow(tk.Toplevel):
+    """A window to review, edit, and save AI-generated content."""
+    def __init__(self, parent, processor: PromptProcessor, content_type: str, generated_content: str, update_callback: callable, filename: Optional[str] = None, regenerate_callback: Optional[callable] = None):
+        super().__init__(parent)
+        self.processor = processor
+        self.content_type = content_type # "wildcard" or "template"
+        self.update_callback = update_callback
+        self.prefilled_filename = filename
+        self.regenerate_callback = regenerate_callback
+
+        title = f"Review: {self.prefilled_filename}" if self.prefilled_filename else f"Review New {self.content_type.capitalize()}"
+        self.title(title)
+        self.geometry("600x700")
+
+        self.text_widget = tk.Text(self, wrap=tk.WORD, font=("Courier", 11), undo=True)
+        self.text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10,0))
+        self.text_widget.insert("1.0", generated_content)
+        TextContextMenu(self.text_widget)
+
+        button_frame = ttk.Frame(self, padding=10)
+        button_frame.pack(fill=tk.X)
+        self.save_button = ttk.Button(button_frame, text="Save", command=self._save)
+        self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        if self.regenerate_callback:
+            self.regenerate_button = ttk.Button(button_frame, text="Regenerate", command=self._regenerate)
+            self.regenerate_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
+
+    def update_content(self, new_content: str):
+        """Updates the text widget with new content and re-enables buttons."""
+        self.text_widget.delete("1.0", tk.END)
+        self.text_widget.insert("1.0", new_content)
+        self.title(f"Review: {self.prefilled_filename}" if self.prefilled_filename else f"Review New {self.content_type.capitalize()}")
+        self.save_button.config(state=tk.NORMAL)
+        if hasattr(self, 'regenerate_button'):
+            self.regenerate_button.config(state=tk.NORMAL)
+
+    def _regenerate(self):
+        """Calls the provided callback to regenerate content and updates UI to a loading state."""
+        if self.regenerate_callback:
+            # Disable buttons and show loading state
+            self.save_button.config(state=tk.DISABLED)
+            self.regenerate_button.config(state=tk.DISABLED)
+            title = f"Regenerating: {self.prefilled_filename}" if self.prefilled_filename else f"Regenerating New {self.content_type.capitalize()}"
+            self.title(title)
+            # Pass self to the callback so it can update this window instance
+            self.regenerate_callback(self)
+
+    def _save(self):
+        filename = simpledialog.askstring(
+            f"Save {self.content_type.capitalize()}",
+            "Enter filename:",
+            parent=self,
+            initialvalue=self.prefilled_filename
+        )
+        if not filename: return
+        if not filename.endswith('.txt'): filename += '.txt'
+
+        content = self.text_widget.get("1.0", "end-1c")
+        try:
+            if self.content_type == "wildcard":
+                is_nsfw_only = False
+                if config.workflow == 'nsfw':
+                    is_nsfw_only = messagebox.askyesno(
+                        "Wildcard Scope",
+                        "Save this as an NSFW-only wildcard?\n\n"
+                        "(Choosing 'No' will save it to the shared folder, making it available in both SFW and NSFW modes.)",
+                        parent=self
+                    )
+                # Save the new wildcard, respecting the user's choice of scope
+                self.processor.save_wildcard_content(filename, content, is_nsfw_only=is_nsfw_only)
+            elif self.content_type == "template":
+                self.processor.save_template_content(filename, content)
+            
+            self.update_callback(self.content_type) # Refresh lists in the main UI
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not save file:\n{e}", parent=self)
+
 class BrainstormingWindow(tk.Toplevel):
     """An interactive window for brainstorming with an AI model."""
     def __init__(self, parent, processor: PromptProcessor, models: List[str], default_model: str, model_change_callback: callable):
@@ -345,9 +545,12 @@ class BrainstormingWindow(tk.Toplevel):
         top_frame.pack(fill=tk.X)
         ttk.Label(top_frame, text="Model:").pack(side=tk.LEFT)
         self.model_var = tk.StringVar(value=default_model)
-        model_menu = ttk.OptionMenu(top_frame, self.model_var, default_model, *models)
+        model_menu = ttk.OptionMenu(top_frame, self.model_var, default_model, *models, style="Toolbutton")
         self.model_var.trace_add("write", self._on_model_var_change)
-        model_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        model_menu.pack(side=tk.LEFT, padx=(0, 10))
+
+        ttk.Button(top_frame, text="Generate Wildcard File...", command=self._generate_wildcard_file).pack(side=tk.LEFT)
+        ttk.Button(top_frame, text="Generate Template File...", command=self._generate_template_file).pack(side=tk.LEFT, padx=5)
 
         main_pane = ttk.PanedWindow(self, orient=tk.VERTICAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -363,15 +566,18 @@ class BrainstormingWindow(tk.Toplevel):
         history_scrollbar.config(command=self.history_text.yview)
         history_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.history_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        TextContextMenu(self.history_text)
+        BrainstormingContextMenu(self.history_text, self._rewrite_selection)
 
         self.history_text.tag_configure("user", foreground="blue", font=("Helvetica", 11, "bold"))
         self.history_text.tag_configure("ai", foreground="#006400")
         self.history_text.tag_configure("error", foreground="red", font=("Helvetica", 11, "bold"))
         self.history_text.tag_configure("thinking", foreground="gray", font=("Helvetica", 11, "italic"))
+        self.history_text.tag_configure("new_wildcard_link", foreground="blue", underline=True)
+        self.history_text.tag_bind("new_wildcard_link", "<Enter>", lambda e: self.history_text.config(cursor="hand2"))
+        self.history_text.tag_bind("new_wildcard_link", "<Leave>", lambda e: self.history_text.config(cursor=""))
 
         # --- Input Area ---
-        input_area_frame = ttk.LabelFrame(main_pane, text="Your Message (Shift+Enter for new line)", padding=5)
+        input_area_frame = ttk.LabelFrame(main_pane, text="Your Message (Enter to send, Shift+Enter for new line)", padding=5)
         main_pane.add(input_area_frame, weight=1)
 
         self.input_text = tk.Text(input_area_frame, height=4, wrap=tk.WORD, font=("Helvetica", 11))
@@ -387,6 +593,14 @@ class BrainstormingWindow(tk.Toplevel):
         # Register initial model usage
         self.active_brainstorm_model = default_model
         self.model_change_callback(None, self.active_brainstorm_model)
+
+    def _handle_wildcard_link_click(self, wildcard_name: str, tag_name: str):
+        """Handles a click on a new wildcard link, disabling it and starting generation."""
+        # Disable the link to prevent multiple clicks
+        self.history_text.tag_config(tag_name, foreground="gray", underline=False)
+        self.history_text.tag_unbind(tag_name, "<Button-1>")
+        
+        self.generate_wildcard_with_topic(wildcard_name)
 
     def _on_send_message_event(self, event):
         # If shift is pressed, allow default newline behavior. Otherwise, send message.
@@ -424,7 +638,24 @@ class BrainstormingWindow(tk.Toplevel):
             self.history_text.config(state=tk.NORMAL)
             self.history_text.delete("end-2l", "end-1c")
             self.history_text.config(state=tk.DISABLED)
-            self._add_message("AI", result['response'], result['tag'])
+
+            if result.get('tag') == 'ai_generated':
+                content_type = result.get('content_type')
+                response = result.get('response', '')
+                metadata = result.get('metadata')
+                if content_type == 'template':
+                    template, new_wildcards = self._parse_template_generation_response(response)
+                    self._handle_generated_template(template, new_wildcards, metadata)
+                elif content_type == 'wildcard':
+                    self._add_message("AI", f"Generated a new wildcard. See the new window to review and save.", "ai")
+                    self._handle_generated_content(response, 'wildcard', metadata)
+                elif content_type == 'rewrite':
+                    if metadata:
+                        self._handle_rewritten_text(response, metadata['start_index'], metadata['end_index'])
+            else:
+                # Handle regular chat or errors
+                self._add_message("AI", result['response'], result['tag'])
+            
             self.send_button.config(state=tk.NORMAL)
         except queue.Empty:
             self.after(100, self._check_chat_queue)
@@ -438,6 +669,243 @@ class BrainstormingWindow(tk.Toplevel):
         self.history_text.insert(tk.END, message)
         self.history_text.see(tk.END)
         self.history_text.config(state=tk.DISABLED)
+
+    def load_content_for_brainstorming(self, content_type: str, filename: str, content: str):
+        """Loads existing content into the chat window for refinement."""
+        message = (
+            f"Loaded {content_type} '{filename}' for brainstorming.\n\n"
+            f"You can now ask me to refine it. For example: 'make this list more diverse', 'rewrite this template to be more cinematic', or 'add more technical terms'.\n\n"
+            f"CONTENT:\n"
+            f"----------------\n"
+            f"{content}"
+        )
+        self._add_message("System", message, "thinking")
+
+    def _generate_wildcard_file(self):
+        """Guides the user to generate a new wildcard file."""
+        topic = simpledialog.askstring("Generate Wildcard", "What is the topic for the new wildcard file?\n(e.g., 'sci-fi helmet designs', 'fantasy potion names')", parent=self)
+        self.generate_wildcard_with_topic(topic)
+
+    def generate_wildcard_with_topic(self, topic: str, existing_window: Optional[ReviewAndSaveWindow] = None):
+        """Starts the generation process for a wildcard with a given topic."""
+        if not topic: return
+        
+        # Add workflow context to the prompt
+        workflow_context = ""
+        if config.workflow == 'nsfw':
+            workflow_context = (
+                "The user is currently in NSFW (Not Safe For Work) mode. "
+                "The generated items should be explicit, adult-oriented, and suitable for generating pornographic imagery. "
+                "Do not censor the content."
+            )
+        else:
+            workflow_context = "The user is currently in SFW (Safe For Work) mode. The items should be general-purpose and not contain any explicit content."
+
+        prompt = (
+            f"You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards.\n\n"
+            f"The user needs a list for a wildcard file named '{topic}'. Your task is to generate a list of 20-30 items that are **strictly and creatively** related to this topic.\n\n"
+            f"**CONTEXT:** {workflow_context}\n\n"
+            f"**CRITICAL INSTRUCTIONS:**\n"
+            f"1.  **Stay on Theme:** Every single item must be a specific example of '{topic}'. Do not stray from the topic.\n"
+            f"2.  **Be Creative and Diverse:** The items should be varied and interesting, not just simple variations of the same idea.\n"
+            f"3.  **Use English:** The entire list must be in English.\n"
+            f"4.  **Formatting:**\n"
+            f"    - Each item must be on a new line.\n"
+            f"    - Use normal spaces for multi-word items (e.g., 'ancient stone temple', NOT 'ancient_stone_temple').\n"
+            f"    - Do NOT add numbers, bullets, or any other formatting.\n"
+            f"    - Do NOT repeat the topic '{topic}' as a prefix for each item.\n\n"
+            f"**EXAMPLE for topic 'fantasy_potions':**\n"
+            f"Elixir of Sun's Vigor\n"
+            f"Draught of Shadowy Concealment\n"
+            f"Philter of Gilded Luck\n\n"
+            f"Now, generate the list for the topic: '{topic}'."
+        )
+        self._add_message("AI", f"Generating wildcard ideas for '{topic}'...", "thinking")
+        # The 'topic' is the base name for the wildcard file.
+        self._run_generation_task(prompt, "wildcard", metadata={'filename': topic, 'topic': topic, 'window': existing_window})
+
+    def _generate_template_file(self):
+        """Guides the user to generate a new template file."""
+        concept = simpledialog.askstring("Generate Template", "What is the high-level concept for the new template?\n(e.g., 'a character portrait in a dark forest', 'a futuristic city street scene')", parent=self)
+        self.generate_template_with_concept(concept)
+
+    def generate_template_with_concept(self, concept: str, existing_window: Optional[ReviewAndSaveWindow] = None):
+        """Starts the generation process for a template with a given concept."""
+        if not concept: return
+
+        wildcard_names = self.processor.get_wildcard_names()
+        # Suggest a smaller, random sample of wildcards to avoid overwhelming the AI
+        sample_size = min(15, len(wildcard_names))
+        wildcard_sample_str = ", ".join(random.sample(wildcard_names, sample_size)) if wildcard_names else "none"
+
+        # Add workflow context to the prompt
+        workflow_context = ""
+        if config.workflow == 'nsfw':
+            workflow_context = (
+                "The user is currently in NSFW (Not Safe For Work) mode. "
+                "The template should be designed for generating explicit, adult-oriented, and pornographic imagery. "
+                "It should be descriptive and graphic where appropriate."
+            )
+        else:
+            workflow_context = "The user is currently in SFW (Safe For Work) mode. The template should be suitable for general-purpose, non-explicit imagery."
+
+        prompt = (
+            f"You are an AI assistant that creates templates for a Stable Diffusion prompt generator. "
+            f"The user wants a template for the concept: '{concept}'.\n\n"
+            f"**CONTEXT:** {workflow_context}\n\n"
+            f"Your task is to write a descriptive prompt template. You can use existing wildcards from the list below, but you are also **strongly encouraged to invent new, relevant wildcard names** to make the template more versatile.\n\n"
+            f"**CRITICAL INSTRUCTIONS:**\n"
+            f"1.  All wildcard names, existing or new, MUST be in the exact format `__wildcard_name__`.\n"
+            f"2.  The final template should be a single paragraph of comma-separated keywords and phrases.\n"
+            f"3.  You MUST return your response in the following format, with nothing before or after:\n"
+            f"TEMPLATE: [The full template text you generated]\n"
+            f"NEW_WILDCARDS: [A comma-separated list of any new wildcard names you invented. If you invented none, write 'none'.]\n\n"
+            f"**EXAMPLE RESPONSE:**\n"
+            f"TEMPLATE: a portrait of a __character_class__, __hair_style__ hair, wearing __fantasy_armor__, holding a __weapon_type__, in a __fantasy_forest__, __lighting_style__\n"
+            f"NEW_WILDCARDS: fantasy_armor, fantasy_forest\n\n"
+            f"Here is a sample of EXISTING wildcards you can use: {wildcard_sample_str}\n\n"
+            f"Now, generate the template for the concept: '{concept}'."
+        )
+        self._add_message("AI", f"Generating a template for '{concept}'...", "thinking")
+        self._run_generation_task(prompt, "template", metadata={'concept': concept, 'window': existing_window})
+
+    def _run_generation_task(self, prompt: str, content_type: str, metadata: Optional[Dict] = None):
+        """Runs a generation task in a background thread."""
+        model = self.model_var.get()
+        self.send_button.config(state=tk.DISABLED)
+
+        def task():
+            try:
+                response = self.processor.chat_with_model(model, prompt)
+                self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
+            except Exception as e:
+                self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error'})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.after(100, self._check_chat_queue)
+
+    def _rewrite_selection(self):
+        """Handles the AI-powered rewriting of selected text in the history."""
+        try:
+            start_index = self.history_text.index("sel.first")
+            end_index = self.history_text.index("sel.last")
+            selected_text = self.history_text.get(start_index, end_index)
+        except tk.TclError:
+            return # No selection
+
+        instructions = simpledialog.askstring(
+            "Rewrite with AI",
+            "How should I rewrite the selected text?\n(e.g., 'make it more poetic', 'add more technical terms')",
+            parent=self
+        )
+        if not instructions: return
+
+        prompt = (
+            f"You are an AI assistant. Your task is to rewrite the following text based on the user's instruction.\n\n"
+            f"INSTRUCTION: {instructions}\n\n"
+            f"ORIGINAL TEXT:\n---\n{selected_text}\n---\n\n"
+            f"Return only the rewritten text, with no extra commentary."
+        )
+        
+        # Replace selected text with a loading message
+        self.history_text.config(state=tk.NORMAL)
+        self.history_text.delete(start_index, end_index)
+        placeholder = f"[Rewriting to '{instructions}'...]"
+        self.history_text.insert(start_index, placeholder, ("thinking",))
+        new_end_index = self.history_text.index(f"{start_index} + {len(placeholder)}c")
+        self.history_text.config(state=tk.DISABLED)
+        
+        metadata = {'start_index': start_index, 'end_index': new_end_index}
+        self._run_generation_task(prompt, "rewrite", metadata=metadata)
+
+    def _parse_template_generation_response(self, response: str) -> Tuple[str, List[str]]:
+        """Parses the AI response for template and new wildcards."""
+        template_content = ""
+        new_wildcards = []
+        
+        # Use re.IGNORECASE to handle variations in casing like 'TEMPLATE:' vs 'Template:'
+        template_match = re.search(r"TEMPLATE:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        if template_match:
+            # Further split by NEW_WILDCARDS to ensure we only get the template part
+            template_content = template_match.group(1).split("NEW_WILDCARDS:")[0].strip()
+
+        wildcards_match = re.search(r"NEW_WILDCARDS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        if wildcards_match:
+            wildcards_str = wildcards_match.group(1).strip()
+            if wildcards_str.lower() != 'none':
+                new_wildcards = [w.strip() for w in wildcards_str.split(',') if w.strip()]
+
+        # If parsing fails (e.g., AI didn't follow format), fall back to treating the whole response as the template
+        if not template_content:
+            template_content = response
+            
+        return template_content, new_wildcards
+
+    def _handle_generated_template(self, template: str, new_wildcards: List[str], metadata: Optional[Dict] = None):
+        """Handles the display of a newly generated template and its new wildcards."""
+        # Get the ground truth of all currently loaded wildcards.
+        existing_wildcards = set(self.processor.get_wildcard_names())
+        
+        # Find all wildcards used in the template to be safe
+        used_wildcards = set(re.findall(r'__([a-zA-Z0-9_.-]+)__', template))
+        
+        # Combine the AI's list with the parsed list, and then find what's genuinely new.
+        all_potential_new = set(new_wildcards) | used_wildcards
+        genuinely_new_wildcards = sorted(list(all_potential_new - existing_wildcards))
+
+        self.history_text.config(state=tk.NORMAL)
+        
+        # Add the main message and the generated template
+        self.history_text.insert(tk.END, "AI:\n", ("ai",))
+        self.history_text.insert(tk.END, "Generated a new template. See below to review and save. ")
+        
+        if genuinely_new_wildcards:
+            self.history_text.insert(tk.END, "Click any new wildcard links to generate content for them.\n\n")
+            self.history_text.insert(tk.END, "New Wildcards to Generate:\n")
+            for i, wc in enumerate(genuinely_new_wildcards):
+                tag_name = f"new_wc_{wc}_{i}" # Unique tag
+                self.history_text.insert(tk.END, wc, ("new_wildcard_link", tag_name))
+                # Use a default argument in lambda to capture the current value of wc
+                self.history_text.tag_bind(tag_name, "<Button-1>", lambda e, w=wc, t=tag_name: self._handle_wildcard_link_click(w, t))
+                if i < len(genuinely_new_wildcards) - 1:
+                    self.history_text.insert(tk.END, ", ")
+            self.history_text.insert(tk.END, "\n\n")
+
+        self.history_text.insert(tk.END, "Template:\n")
+        self.history_text.insert(tk.END, template)
+        
+        self.history_text.see(tk.END)
+        self.history_text.config(state=tk.DISABLED)
+
+        # Open the review window for the template itself
+        self._handle_generated_content(template, 'template', metadata)
+
+    def _handle_rewritten_text(self, rewritten_text: str, start_index: str, end_index: str):
+        """Replaces the selected text with the AI's rewritten version."""
+        self.history_text.config(state=tk.NORMAL)
+        self.history_text.delete(start_index, end_index)
+        self.history_text.insert(start_index, rewritten_text)
+        self.history_text.config(state=tk.DISABLED)
+
+    def _handle_generated_content(self, content: str, content_type: str, metadata: Optional[Dict] = None):
+        """Opens the review window for newly generated content."""
+        existing_window = metadata.get('window') if metadata else None
+
+        if existing_window and existing_window.winfo_exists():
+            existing_window.update_content(content)
+            existing_window.lift()
+        else:
+            filename = metadata.get('filename') if metadata else None
+            regenerate_callback = None
+            if metadata:
+                if content_type == 'wildcard' and 'topic' in metadata:
+                    regenerate_callback = lambda window: self.generate_wildcard_with_topic(metadata['topic'], window)
+                elif content_type == 'template' and 'concept' in metadata:
+                    regenerate_callback = lambda window: self.generate_template_with_concept(metadata['concept'], window)
+
+            main_app_update_callback = self.master._handle_ai_content_update
+            ReviewAndSaveWindow(self, self.processor, content_type, content, main_app_update_callback, filename=filename, regenerate_callback=regenerate_callback)
 
     def _on_model_var_change(self, *args):
         """Handles when the user selects a new model in the dropdown."""
@@ -571,7 +1039,9 @@ class WildcardManagerWindow(tk.Toplevel):
         self.save_button = ttk.Button(button_frame, text="Save Changes", command=self._save_wildcard_file, state=tk.DISABLED)
         self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
         self.archive_button = ttk.Button(button_frame, text="Archive", command=self._archive_selected_wildcard, state=tk.DISABLED)
-        self.archive_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
+        self.archive_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
+        self.brainstorm_button = ttk.Button(button_frame, text="Brainstorm with AI", command=self._brainstorm_with_ai, state=tk.DISABLED)
+        self.brainstorm_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
         h_pane.add(self.editor_frame, weight=3)
 
     def _populate_wildcard_list(self):
@@ -596,6 +1066,7 @@ class WildcardManagerWindow(tk.Toplevel):
             self.editor_text.insert("1.0", sorted_content)
             self.save_button.config(state=tk.NORMAL)
             self.archive_button.config(state=tk.NORMAL)
+            self.brainstorm_button.config(state=tk.NORMAL)
         except Exception as e:
             messagebox.showerror("Error", f"Could not load wildcard file:\n{e}", parent=self)
 
@@ -610,6 +1081,8 @@ class WildcardManagerWindow(tk.Toplevel):
         sorted_content = "\n".join(sorted(lines, key=str.lower))
 
         try:
+            # When saving an existing file, we don't need to specify the scope.
+            # The processor will find its original location and save it there.
             self.processor.save_wildcard_content(self.selected_wildcard_file, sorted_content)
             messagebox.showinfo("Success", f"Successfully saved and sorted {self.selected_wildcard_file}", parent=self)
 
@@ -635,7 +1108,17 @@ class WildcardManagerWindow(tk.Toplevel):
         if not filename: return
         if not filename.endswith('.txt'): filename += '.txt'
         try:
-            self.processor.save_wildcard_content(filename, "")
+            is_nsfw_only = False
+            if config.workflow == 'nsfw':
+                is_nsfw_only = messagebox.askyesno(
+                    "Wildcard Scope",
+                    "Save this as an NSFW-only wildcard?\n\n"
+                    "(Choosing 'No' will save it to the shared folder, making it available in both SFW and NSFW modes.)",
+                    parent=self
+                )
+
+            # Create an empty file by saving empty content, respecting the user's choice
+            self.processor.save_wildcard_content(filename, "", is_nsfw_only=is_nsfw_only)
             self._populate_wildcard_list()
             self.update_callback()
             if filename in self.wildcard_listbox.get(0, tk.END):
@@ -665,6 +1148,12 @@ class WildcardManagerWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Archive Error", f"Could not archive file:\n{e}", parent=self)
 
+    def _brainstorm_with_ai(self):
+        """Sends the current wildcard content to the brainstorming window."""
+        if not self.selected_wildcard_file: return
+        content = self.editor_text.get("1.0", "end-1c")
+        self.master._brainstorm_with_content("wildcard", self.selected_wildcard_file, content)
+
     def select_and_load_file(self, filename: str):
         """Selects a file in the listbox or prepares the editor for a new file."""
         all_files = self.wildcard_listbox.get(0, tk.END)
@@ -683,15 +1172,17 @@ class WildcardManagerWindow(tk.Toplevel):
             self.editor_text.delete("1.0", tk.END)
             self.save_button.config(state=tk.NORMAL)
             self.archive_button.config(state=tk.DISABLED)
+            self.brainstorm_button.config(state=tk.DISABLED)
 
 class EnhancementResultWindow(tk.Toplevel):
     """A pop-up window to display enhancement results."""
-    def __init__(self, parent: 'GUIApp', result_data: dict, processor: PromptProcessor, model: str, selected_variations: List[str], cancel_callback: callable):
+    def __init__(self, parent: 'GUIApp', result_data: dict, processor: PromptProcessor, model: str, selected_variations: List[str], cancel_callback: callable, api_call_finish_callback: callable):
         super().__init__(parent)
         self.title("Enhancement Result")
         self.geometry("700x750")
         self.transient(parent)
         self.grab_set()
+        self.api_call_finish_callback = api_call_finish_callback
         self.cancel_callback = cancel_callback
         self.parent_app = parent
 
@@ -703,6 +1194,7 @@ class EnhancementResultWindow(tk.Toplevel):
         # UI element storage
         self.text_widgets = {}
         self.sd_model_labels = {}
+        self.loading_animations = {}
         self.copy_buttons = {}
         self.regen_buttons = {}
         self.regen_queue = queue.Queue()
@@ -731,7 +1223,9 @@ class EnhancementResultWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
-        self.cancel_callback()
+        # Only trigger the cancellation logic if there are still active API calls.
+        if self.parent_app.active_api_calls > 0:
+            self.cancel_callback()
         self.destroy()
     
     def _create_text_area(self, parent, prompt_key: str, title: str, content: str, height: int, sd_model: Optional[str] = None):
@@ -763,10 +1257,20 @@ class EnhancementResultWindow(tk.Toplevel):
         self.copy_buttons[prompt_key] = copy_button
 
         if prompt_key != 'original':
-            regen_button = ttk.Button(button_container, text="Regen", command=lambda key=prompt_key: self._start_regeneration(key), state=tk.DISABLED)
-            copy_button.config(state=tk.DISABLED)
-            regen_button.pack(fill=tk.X, pady=(5,0))
+            # Create spinner and regen button, but only show the spinner initially
+            loading_animation = LoadingAnimation(button_container)
+            is_dark = self.parent_app.theme_manager.current_theme == "dark"
+            status_bar_dot_color = "lightgrey" if is_dark else "dimgray"
+            status_bar_bg = self.cget('background')
+            loading_animation.update_style(bg_color=status_bar_bg, dot_color=status_bar_dot_color, is_dark_theme=is_dark)
+            loading_animation.pack(fill=tk.X, pady=(5,0))
+            loading_animation.start()
+            self.loading_animations[prompt_key] = loading_animation
+
+            regen_button = ttk.Button(button_container, text="Regen", command=lambda key=prompt_key: self._start_regeneration(key))
+            # Don't pack the regen button yet
             self.regen_buttons[prompt_key] = regen_button
+            copy_button.config(state=tk.DISABLED)
 
         # Add SD model label if provided
         if sd_model:
@@ -803,7 +1307,10 @@ class EnhancementResultWindow(tk.Toplevel):
         # Notify the parent app to update its counters and status
         self.parent_app.register_regeneration_call(prompt_key)
 
-        self.regen_buttons[prompt_key].config(state=tk.DISABLED)
+        # Hide regen button and show spinner
+        self.regen_buttons[prompt_key].pack_forget()
+        self.loading_animations[prompt_key].pack(fill=tk.X, pady=(5,0))
+        self.loading_animations[prompt_key].start()
         
         text_widget = self.text_widgets[prompt_key]
         text_widget.config(state=tk.NORMAL)
@@ -834,7 +1341,11 @@ class EnhancementResultWindow(tk.Toplevel):
         try:
             result = self.regen_queue.get_nowait()
             key = result['key']
-            self.regen_buttons[key].config(state=tk.NORMAL)
+
+            # Hide spinner and show regen button
+            self.loading_animations[key].stop()
+            self.loading_animations[key].pack_forget()
+            self.regen_buttons[key].pack(fill=tk.X, pady=(5,0))
             
             if 'error' in result:
                 messagebox.showerror("Regeneration Error", result['error'], parent=self)
@@ -882,20 +1393,170 @@ class EnhancementResultWindow(tk.Toplevel):
             self.text_widgets[key].delete("1.0", tk.END)
             self.text_widgets[key].insert("1.0", data['prompt'])
             self.text_widgets[key].config(state=tk.DISABLED)
+
             self.sd_model_labels[key].config(text=f"Recommended Model: {data['sd_model']}")
-            self.regen_buttons[key].config(state=tk.NORMAL)
+            # Hide spinner and show regen button
+            self.loading_animations[key].stop()
+            self.loading_animations[key].pack_forget()
+            self.regen_buttons[key].pack(fill=tk.X, pady=(5,0))
             self.copy_buttons[key].config(state=tk.NORMAL)
+
+            # Notify parent that an API call has finished
+            self.api_call_finish_callback()
         except queue.Empty:
             pass # No new results yet
         finally:
             self.after(100, self._check_result_queue)
+
+class ActionBar(ttk.Frame):
+    """The main action bar with Generate, Enhance, and variation selection."""
+    def __init__(self, parent, generate_callback: callable, enhance_callback: callable, copy_callback: callable, **kwargs):
+        super().__init__(parent, **kwargs)
+
+        self.generate_button = ttk.Button(self, text="Generate Next Preview", command=generate_callback, state=tk.DISABLED)
+        self.generate_button.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.select_button = ttk.Button(self, text="Enhance This Prompt", command=enhance_callback, state=tk.DISABLED)
+        self.select_button.pack(side=tk.LEFT)
+
+        self.variations_frame = ttk.LabelFrame(self, text="Variations", padding=(10, 5))
+        self.variations_frame.pack(side=tk.LEFT, padx=(10, 0))
+        
+        self.variation_vars: Dict[str, tk.BooleanVar] = {}
+        self.variation_tooltips: List[Tooltip] = []
+
+        self.copy_prompt_button = ttk.Button(self, text="Copy Prompt", command=copy_callback, state=tk.DISABLED)
+        self.copy_prompt_button.pack(side=tk.LEFT, padx=(10, 0))
+
+    def rebuild_variations(self, variation_keys: List[str]):
+        """Clears and recreates the variation checkboxes."""
+        for widget in self.variations_frame.winfo_children():
+            widget.destroy()
+
+        self.variation_vars.clear()
+        self.variation_tooltips.clear()
+
+        for key in variation_keys:
+            var = tk.BooleanVar(value=True)
+            self.variation_vars[key] = var
+            cb = ttk.Checkbutton(self.variations_frame, text=key.capitalize(), variable=var)
+            cb.pack(side=tk.LEFT, padx=5)
+            tooltip = Tooltip(cb, VARIATION_TOOLTIPS.get(key, "Generate this variation."))
+            cb.bind("<Enter>", tooltip.show)
+            cb.bind("<Leave>", tooltip.hide)
+            self.variation_tooltips.append(tooltip)
+
+    def get_selected_variations(self) -> List[str]:
+        """Returns a list of the names of the selected variations."""
+        return [key for key, var in self.variation_vars.items() if var.get()]
+
+    def set_button_states(self, generate: str, enhance: str, copy: str):
+        self.generate_button.config(state=generate)
+        self.select_button.config(state=enhance)
+        self.copy_prompt_button.config(state=copy)
+
+class TemplateEditor(ttk.Frame):
+    """The template editor text widget and its frame."""
+    def __init__(self, parent, live_update_callback: callable, double_click_callback: callable, generate_wildcard_callback: callable, brainstorm_callback: callable, **kwargs):
+        super().__init__(parent, **kwargs)
+        
+        self.frame = ttk.LabelFrame(self, text="Template Content", padding=5)
+        self.text_widget = tk.Text(self.frame, wrap=tk.WORD, font=("Courier", 11), undo=True)
+        self.text_widget.tag_configure("any_wildcard")
+        self.text_widget.tag_configure("missing_wildcard")
+        TemplateEditorContextMenu(self.text_widget, generate_wildcard_callback, brainstorm_callback)
+        self.text_widget.pack(fill=tk.BOTH, expand=True)
+        self.text_widget.bind("<KeyRelease>", live_update_callback)
+        self.text_widget.bind("<Double-Button-1>", double_click_callback)
+        
+        self.frame.pack(fill=tk.BOTH, expand=True)
+
+    def get_content(self) -> str:
+        return self.text_widget.get("1.0", "end-1c")
+
+    def set_content(self, content: str):
+        self.text_widget.config(state=tk.NORMAL)
+        self.text_widget.delete("1.0", tk.END)
+        self.text_widget.insert("1.0", content)
+
+    def clear(self):
+        self.text_widget.config(state=tk.NORMAL)
+        self.text_widget.delete("1.0", tk.END)
+
+    def set_label(self, text: str):
+        self.frame.config(text=text)
+
+    def highlight_wildcards(self, known_wildcards: List[str]):
+        """Highlights missing wildcards and tags all wildcards in the template editor."""
+        self.text_widget.tag_remove("missing_wildcard", "1.0", tk.END)
+        self.text_widget.tag_remove("any_wildcard", "1.0", tk.END)
+
+        content = self.get_content()
+        if not content:
+            return
+
+        for match in re.finditer(r'__([a-zA-Z0-9_.-]+)__', content):
+            wildcard_name = match.group(1)
+            start_index = f"1.0+{match.start()}c"
+            end_index = f"1.0+{match.end()}c"
+            self.text_widget.tag_add("any_wildcard", start_index, end_index)
+            if wildcard_name not in known_wildcards:
+                self.text_widget.tag_add("missing_wildcard", start_index, end_index)
+
+    def insert_wildcard_tag(self, wildcard_name: str):
+        """Inserts a wildcard tag, overwriting a selection or the tag under the cursor."""
+        tag_to_insert = f"__{wildcard_name}__"
+        cursor_index = self.text_widget.index(tk.INSERT)
+        tags_at_cursor = self.text_widget.tag_names(cursor_index)
+
+        if "any_wildcard" in tags_at_cursor:
+            tag_range = self.text_widget.tag_prevrange("any_wildcard", cursor_index + "+1c")
+            if tag_range:
+                self.text_widget.delete(tag_range[0], tag_range[1])
+                self.text_widget.insert(tag_range[0], tag_to_insert)
+        elif self.text_widget.tag_ranges("sel"):
+            self.text_widget.delete("sel.first", "sel.last")
+            self.text_widget.insert(tk.INSERT, tag_to_insert)
+        else:
+            self.text_widget.insert(tk.INSERT, tag_to_insert)
+
+        self.text_widget.focus_set()
+
+class WildcardInserter(ttk.Frame):
+    """The wildcard inserter listbox and its frame."""
+    def __init__(self, parent, insert_callback: callable, manage_callback: callable, **kwargs):
+        super().__init__(parent, **kwargs)
+        
+        frame = ttk.LabelFrame(self, text="Insert Wildcard", padding=5)
+
+        list_scroll_frame = ttk.Frame(frame)
+        list_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(list_scroll_frame, orient=tk.VERTICAL)
+        self.listbox = tk.Listbox(list_scroll_frame, font=("Helvetica", 10), yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self.listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.listbox.bind("<Double-Button-1>", insert_callback)
+
+        ttk.Button(frame, text="Manage Wildcards...", command=manage_callback).pack(pady=(5, 0), fill=tk.X)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+    def populate(self, wildcard_files: List[str]):
+        self.listbox.delete(0, tk.END)
+        for f in wildcard_files:
+            self.listbox.insert(tk.END, f[:-4]) # Insert without .txt
+
+    def get_selected_wildcard_name(self) -> Optional[str]:
+        selected_indices = self.listbox.curselection()
+        if not selected_indices:
+            return None
+        return self.listbox.get(selected_indices[0])
 
 class GUIApp(tk.Tk):
     """A GUI for the Stable Diffusion Prompt Generator."""
 
     def __init__(self):
         super().__init__()
-        self.title("Prompt Tool GUI")
         self.geometry("900x700")
 
         # Set application icon
@@ -916,6 +1577,7 @@ class GUIApp(tk.Tk):
         self.processor.set_callbacks(status_callback=self._update_status_bar)
         self.enhancement_total_calls = 0
         self.enhancement_calls_made = 0
+        self.active_api_calls = 0
         self.enhancement_cancellation_event: Optional[threading.Event] = None
 
         # State
@@ -930,10 +1592,13 @@ class GUIApp(tk.Tk):
         self.active_enhancement_model: Optional[str] = None
         self.brainstorming_window: Optional[BrainstormingWindow] = None
         self.wildcard_manager_window: Optional[WildcardManagerWindow] = None
+        self.history_viewer_window: Optional[HistoryViewerWindow] = None
+        self.loading_animation: Optional[LoadingAnimation] = None
+        self.template_editor: Optional[TemplateEditor] = None
+        self.wildcard_inserter: Optional[WildcardInserter] = None
         self.file_menu: Optional[tk.Menu] = None
         self.enhancement_model_var = tk.StringVar()
-        self.variation_vars: Dict[str, tk.BooleanVar] = {key: tk.BooleanVar(value=True) for key in DEFAULT_VARIATION_INSTRUCTIONS.keys()}
-        self.variation_tooltips: List[Tooltip] = []
+        self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
 
         # Create widgets
@@ -943,6 +1608,7 @@ class GUIApp(tk.Tk):
         self._load_models()
         self._populate_wildcard_lists()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self._update_window_title() # Set initial title
 
     def _create_widgets(self):
         """Create and layout the main widgets."""
@@ -971,11 +1637,18 @@ class GUIApp(tk.Tk):
         action_frame = ttk.Frame(self, padding=(10, 5, 10, 10))
         action_frame.pack(fill=tk.X)
         self._create_action_bar(action_frame)
+        self.action_bar.pack(fill=tk.X)
 
         # --- Status Bar ---
+        status_frame = ttk.Frame(self, relief=tk.SUNKEN)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.loading_animation = LoadingAnimation(status_frame)
+        self.loading_animation.pack(side=tk.LEFT, padx=5, pady=2)
+
         self.status_var = tk.StringVar()
-        status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=5)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        status_bar = ttk.Label(status_frame, textvariable=self.status_var, anchor=tk.W, padding=(0, 5, 5, 5))
+        status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     def _create_menu_bar(self):
         """Creates the main application menu bar."""
@@ -989,6 +1662,13 @@ class GUIApp(tk.Tk):
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Exit", command=self._on_closing)
         menubar.add_cascade(label="File", menu=self.file_menu)
+
+        # --- Workflow Menu ---
+        workflow_menu = tk.Menu(menubar, tearoff=0)
+        workflow_menu.add_radiobutton(label="SFW (Safe For Work)", variable=self.workflow_var, value="sfw", command=self._switch_workflow)
+        workflow_menu.add_radiobutton(label="NSFW (Not Safe For Work)", variable=self.workflow_var, value="nsfw", command=self._switch_workflow)
+        menubar.add_cascade(label="Workflow", menu=workflow_menu)
+        self.workflow_var.set(config.workflow) # Ensure it's set on startup
 
         # --- View Menu ---
         view_menu = tk.Menu(menubar, tearoff=0)
@@ -1018,31 +1698,23 @@ class GUIApp(tk.Tk):
         top_h_pane = ttk.PanedWindow(v_pane, orient=tk.HORIZONTAL)
         v_pane.add(top_h_pane, weight=2)
 
-        # Template editor (left side of top pane)
-        self.template_frame = ttk.LabelFrame(top_h_pane, text="Template Content", padding=5)
-        self.template_text = tk.Text(self.template_frame, wrap=tk.WORD, font=("Courier", 11), undo=True)
-        self.template_text.tag_configure("any_wildcard")
-        self.template_text.tag_configure("missing_wildcard")
-        TextContextMenu(self.template_text)
-        self.template_text.pack(fill=tk.BOTH, expand=True)
-        self.template_text.bind("<KeyRelease>", self._schedule_live_update)
-        self.template_text.bind("<Double-Button-1>", self._on_template_double_click)
-        top_h_pane.add(self.template_frame, weight=3)
+        # --- Template editor (left side of top pane) ---
+        self.template_editor = TemplateEditor(
+            top_h_pane,
+            live_update_callback=self._schedule_live_update,
+            double_click_callback=self._on_template_double_click,
+            generate_wildcard_callback=self._generate_missing_wildcard,
+            brainstorm_callback=self._brainstorm_with_template
+        )
+        top_h_pane.add(self.template_editor, weight=3)
 
-        # Wildcard inserter (right side of top pane)
-        inserter_frame = ttk.LabelFrame(top_h_pane, text="Insert Wildcard", padding=5)
-
-        list_scroll_frame = ttk.Frame(inserter_frame)
-        list_scroll_frame.pack(fill=tk.BOTH, expand=True)
-        scrollbar = ttk.Scrollbar(list_scroll_frame, orient=tk.VERTICAL)
-        self.wildcard_inserter_list = tk.Listbox(list_scroll_frame, font=("Helvetica", 10), yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.wildcard_inserter_list.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.wildcard_inserter_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.wildcard_inserter_list.bind("<Double-Button-1>", self._insert_wildcard_tag)
-
-        ttk.Button(inserter_frame, text="Manage Wildcards...", command=self._open_wildcard_manager).pack(pady=(5, 0), fill=tk.X)
-        top_h_pane.add(inserter_frame, weight=1)
+        # --- Wildcard inserter (right side of top pane) ---
+        self.wildcard_inserter = WildcardInserter(
+            top_h_pane,
+            insert_callback=self._insert_wildcard_tag,
+            manage_callback=self._open_wildcard_manager
+        )
+        top_h_pane.add(self.wildcard_inserter, weight=1)
 
         # Generated prompt (bottom pane of vertical splitter)
         preview_pane = ttk.LabelFrame(v_pane, text="Generated Prompt (Wildcards are highlighted)", padding=5)
@@ -1060,25 +1732,19 @@ class GUIApp(tk.Tk):
 
     def _create_action_bar(self, parent):
         """Creates the main action buttons at the bottom of the window."""
-        self.generate_button = ttk.Button(parent, text="Generate Next Preview", command=self._generate_preview, state=tk.DISABLED)
-        self.generate_button.pack(side=tk.LEFT, padx=(0, 5))
+        self.action_bar = ActionBar(
+            parent,
+            generate_callback=self._generate_preview,
+            enhance_callback=self._on_select_for_enhancement,
+            copy_callback=self._copy_generated_prompt
+        )
+        self._update_action_bar_variations()
 
-        self.select_button = ttk.Button(parent, text="Enhance This Prompt", command=self._on_select_for_enhancement, state=tk.DISABLED)
-        self.select_button.pack(side=tk.LEFT)
-
-        variations_frame = ttk.LabelFrame(parent, text="Variations", padding=(10, 5))
-        variations_frame.pack(side=tk.LEFT, padx=(10, 0))
-
-        for key, var in self.variation_vars.items():
-            cb = ttk.Checkbutton(variations_frame, text=key.capitalize(), variable=var)
-            cb.pack(side=tk.LEFT, padx=5)
-            tooltip = Tooltip(cb, VARIATION_TOOLTIPS.get(key, "Generate this variation."))
-            cb.bind("<Enter>", tooltip.show)
-            cb.bind("<Leave>", tooltip.hide)
-            self.variation_tooltips.append(tooltip)
-
-        self.copy_prompt_button = ttk.Button(parent, text="Copy Prompt", command=self._copy_generated_prompt, state=tk.DISABLED)
-        self.copy_prompt_button.pack(side=tk.LEFT, padx=(10, 0))
+    def _update_window_title(self):
+        """Updates the main window title to reflect the current workflow."""
+        base_title = "Prompt Tool GUI"
+        workflow_text = config.workflow.upper()
+        self.title(f"{base_title} - [{workflow_text} Mode]")
 
     def _set_theme(self, theme_name: str):
         """Sets the theme and updates UI elements that need manual color changes."""
@@ -1093,26 +1759,44 @@ class GUIApp(tk.Tk):
         wildcard_bg = "#3c4c5c" if is_dark else "#d8e9f3"
         wildcard_hover_bg = "#4a5e73" if is_dark else "#b8d9e3"
         missing_wildcard_bg = "#6b2b2b" if is_dark else "#ffcccc"
+        status_bar_dot_color = "lightgrey" if is_dark else "dimgray"
+        status_bar_bg = self.cget('background')
 
         # Apply colors to tags
         self.prompt_text.tag_configure("wildcard", background=wildcard_bg)
         self.prompt_text.tag_configure("wildcard_hover", background=wildcard_hover_bg)
-        self.template_text.tag_configure("missing_wildcard", background=missing_wildcard_bg)
+        self.template_editor.text_widget.tag_configure("missing_wildcard", background=missing_wildcard_bg)
+
+        if self.loading_animation:
+            self.loading_animation.update_style(bg_color=status_bar_bg, dot_color=status_bar_dot_color, is_dark_theme=is_dark)
 
     def _load_templates(self):
         """Loads available templates into the dropdown menu."""
+        # Always reset the view to a clean state before loading new templates
+        self._clear_template_view()
+
         templates = self.processor.get_available_templates()
-        if not templates:
-            messagebox.showwarning("No Templates", "No template files found in the 'templates' directory.")
-            return
-        
         menu = self.template_dropdown["menu"]
         menu.delete(0, "end")
+
+        if not templates:
+            workflow_dir = config.get_template_dir()
+            messagebox.showwarning("No Templates", f"No template files found for the '{config.workflow.upper()}' workflow.\n\nPlease add .txt files to:\n{workflow_dir}")
+            self.template_var.set("No templates found")
+            self.template_dropdown.config(state=tk.DISABLED)
+            return
+        
+        self.template_dropdown.config(state=tk.NORMAL)
         for template in templates:
             menu.add_command(label=template, command=lambda value=template: self.template_var.set(value))
         
-        # Set the first template. The trace will automatically call _on_template_select.
-        self.template_var.set(templates[0])
+        # Prompt the user to make a selection
+        self.template_var.set("Select a template")
+
+    def _update_action_bar_variations(self):
+        """Updates the variation checkboxes in the action bar based on the current workflow."""
+        variation_keys = list(DEFAULT_SFW_VARIATION_INSTRUCTIONS.keys()) if config.workflow == 'sfw' else list(DEFAULT_NSFW_VARIATION_INSTRUCTIONS.keys())
+        self.action_bar.rebuild_variations(variation_keys)
 
     def _load_models(self):
         """Loads available Ollama models into the dropdown menu."""
@@ -1139,19 +1823,61 @@ class GUIApp(tk.Tk):
             messagebox.showerror("Model Error", f"Could not load Ollama models:\n{e}")
             self.enhancement_model_var.set("Error loading models")
 
+    def _switch_workflow(self):
+        """Handles the logic for switching between SFW and NSFW modes."""
+        new_workflow = self.workflow_var.get()
+        if new_workflow == config.workflow:
+            return
+
+        config.workflow = new_workflow
+        settings = load_settings()
+        settings['workflow'] = new_workflow
+        save_settings(settings)
+
+        # Tell the processor to reload its internal wildcard state
+        self.processor.reload_wildcards()
+
+        # Update UI components that depend on the workflow
+        self._update_action_bar_variations()
+        self._load_templates() # This will now reset the view and prompt for selection
+        self._populate_wildcard_lists()
+        self._update_window_title()
+
+        # Close history viewer if it's open, as its data is now stale
+        if self.history_viewer_window and self.history_viewer_window.winfo_exists():
+            self.history_viewer_window.destroy()
+            self.history_viewer_window = None
+
+        self.status_var.set(f"Switched to {new_workflow.upper()} workflow. Select a template.")
+
+    def _clear_template_view(self):
+        """Resets the UI to a state where no template is loaded."""
+        self.current_template_file = None
+        self.current_template_content = None
+        self.current_structured_prompt = []
+        self.template_editor.clear()
+        self.template_editor.set_label("Template Content")
+        self.prompt_text.config(state=tk.NORMAL)
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.config(state=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED)
+        self.file_menu.entryconfig("Save Template", state=tk.DISABLED)
+        self.file_menu.entryconfig("Archive Template...", state=tk.DISABLED)
     def _populate_wildcard_lists(self):
         """Populates both the inserter and editor wildcard lists."""
         wildcard_files = self.processor.get_wildcard_files()
-        self.wildcard_inserter_list.delete(0, tk.END)
-        for f in wildcard_files:
-            self.wildcard_inserter_list.insert(tk.END, f[:-4]) # Insert without .txt
+        if not wildcard_files:
+            workflow_dir = config.get_wildcard_dir()
+            shared_dir = config.WILDCARD_SHARED_DIR
+            messagebox.showwarning("No Wildcards", f"No wildcard files found for the '{config.workflow.upper()}' workflow.\n\nPlease add .txt files to the workflow-specific folder:\n{workflow_dir}\n\nor the shared folder:\n{shared_dir}")
+        self.wildcard_inserter.populate(wildcard_files)
 
     def _on_template_var_change(self, *args):
         """Callback for when the template_var changes."""
         new_template_name = self.template_var.get()
 
-        # Ignore the initial placeholder text to prevent errors on startup
-        if new_template_name == "Select a template":
+        # Ignore placeholder text to prevent errors
+        if new_template_name in ["Select a template", "No templates found"]:
             return
 
         # Prevent redundant updates if the value is set to the same thing
@@ -1169,17 +1895,15 @@ class GUIApp(tk.Tk):
     def _on_template_select(self, template_name: str):
         """Callback for when a template is selected from the dropdown."""
         self.current_template_file = template_name
-        self.template_frame.config(text="Template Content") # Reset label
+        self.template_editor.set_label("Template Content") # Reset label
 
         # Load template content into both state and the template view
         self.current_template_content = self.processor.load_template_content(template_name)
-        self.template_text.config(state=tk.NORMAL)
-        self.template_text.delete("1.0", tk.END)
-        self.template_text.insert("1.0", self.current_template_content)
+        self.template_editor.set_content(self.current_template_content)
         self._highlight_template_wildcards()
 
         # Update UI state
-        self.generate_button.config(state=tk.NORMAL)
+        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED)
         self.file_menu.entryconfig("Save Template", state=tk.NORMAL)
         self.file_menu.entryconfig("Archive Template...", state=tk.NORMAL)
         self.prompt_text.config(state=tk.NORMAL)
@@ -1187,14 +1911,12 @@ class GUIApp(tk.Tk):
         self.prompt_text.insert(tk.END, f"Template '{template_name}' loaded. Click 'Generate Next Preview' to start.")
         self.prompt_text.config(state=tk.DISABLED)
         self.current_structured_prompt = []
-        self.select_button.config(state=tk.DISABLED)
-        self.copy_prompt_button.config(state=tk.DISABLED)
         self.status_var.set(f"Loaded template: {template_name}")
 
     def _generate_preview(self):
         """Generates a single prompt and displays it in the text box."""
         # Get content directly from the live editor
-        live_content = self.template_text.get("1.0", "end-1c") # Get all text except the final newline
+        live_content = self.template_editor.get_content() # Get all text except the final newline
         if not live_content.strip():
             return
 
@@ -1202,8 +1924,7 @@ class GUIApp(tk.Tk):
         self.current_structured_prompt = self.processor.generate_single_structured_prompt(live_content, existing_segments=None)
         self._display_structured_prompt()
         is_prompt_available = bool(self.current_structured_prompt)
-        self.select_button.config(state=tk.NORMAL if is_prompt_available else tk.DISABLED)
-        self.copy_prompt_button.config(state=tk.NORMAL if is_prompt_available else tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.NORMAL if is_prompt_available else tk.DISABLED, copy=tk.NORMAL if is_prompt_available else tk.DISABLED)
 
     def _display_structured_prompt(self):
         """Renders the structured prompt with highlighting."""
@@ -1305,7 +2026,7 @@ class GUIApp(tk.Tk):
         if not self.current_template_content:
             return
             
-        live_content = self.template_text.get("1.0", "end-1c")
+        live_content = self.template_editor.get_content()
         if not live_content.strip():
             return
             
@@ -1328,7 +2049,7 @@ class GUIApp(tk.Tk):
             self.status_var.set("No template selected to save.")
             return
 
-        content = self.template_text.get("1.0", "end-1c")
+        content = self.template_editor.get_content()
         try:
             self.processor.save_template_content(self.current_template_file, content)
             self.status_var.set(f"Template '{self.current_template_file}' saved successfully.")
@@ -1345,7 +2066,7 @@ class GUIApp(tk.Tk):
             prompt_text = "".join(seg.text for seg in self.current_structured_prompt)
         else:
             # Get the prompt directly from the editor pane
-            prompt_text = self.template_text.get("1.0", "end-1c").strip()
+            prompt_text = self.template_editor.get_content().strip()
 
         if not prompt_text:
             self.status_var.set("Nothing to copy.")
@@ -1368,21 +2089,25 @@ class GUIApp(tk.Tk):
             prompt_text = "".join(seg.text for seg in self.current_structured_prompt)
         else:
             # Get the prompt directly from the editor pane
-            prompt_text = self.template_text.get("1.0", "end-1c").strip()
+            prompt_text = self.template_editor.get_content().strip()
 
         if not prompt_text:
             messagebox.showerror("Error", "No prompt to enhance.")
             return
 
         # Create the results window immediately
-        selected_variations = [key for key, var in self.variation_vars.items() if var.get()]
+        selected_variations = self.action_bar.get_selected_variations()
         initial_data = {'original': prompt_text, 'variations': {}}
 
         # Set up call counters for the new batch
         self.enhancement_calls_made = 0
         self.enhancement_total_calls = 1 + len(selected_variations)
+        self.active_api_calls = self.enhancement_total_calls
+        if self.active_api_calls > 0:
+            self.loading_animation.start()
+
         self.enhancement_cancellation_event = threading.Event()
-        result_window = EnhancementResultWindow(self, initial_data, self.processor, model, selected_variations, self._cancel_enhancement_batch)
+        result_window = EnhancementResultWindow(self, initial_data, self.processor, model, selected_variations, self._cancel_enhancement_batch, self.report_api_call_finished)
 
         # Define a thread-safe callback to update the results window
         def result_callback(key, data):
@@ -1394,7 +2119,7 @@ class GUIApp(tk.Tk):
             result_callback=result_callback
         )
 
-        self.select_button.config(state=tk.DISABLED)
+        self.action_bar.select_button.config(state=tk.DISABLED)
         self.status_var.set(f"Enhancing prompt with {model}...")
 
         # Run enhancement in a separate thread to avoid freezing the GUI
@@ -1411,7 +2136,7 @@ class GUIApp(tk.Tk):
             self.after(0, lambda: messagebox.showerror("Enhancement Error", f"An error occurred during processing:\n{e}"))
         finally:
             # Re-enable the main enhance button when processing is complete
-            self.select_button.config(state=tk.NORMAL)
+            self.action_bar.select_button.config(state=tk.NORMAL)
 
     def _update_status_bar(self, message: str):
         """Thread-safe method to update the status bar."""
@@ -1440,24 +2165,40 @@ class GUIApp(tk.Tk):
 
     def register_regeneration_call(self, prompt_key: str):
         """Increments the total call counter when a regeneration is requested."""
+        self.active_api_calls += 1
+        if self.active_api_calls > 0:
+            self.loading_animation.start()
+
         self.enhancement_total_calls += 1
         message = f"Regenerating '{prompt_key}'... (call {self.enhancement_calls_made}/{self.enhancement_total_calls})"
         self._update_status_bar(message)
 
     def report_regeneration_finished(self, success: bool):
         """Updates counters and status after a regeneration call is finished."""
+        self.report_api_call_finished()
+
         if success:
             self.enhancement_calls_made += 1
             message = f"Regeneration complete. (call {self.enhancement_calls_made}/{self.enhancement_total_calls})"
         else:
             message = f"Regeneration failed. (call {self.enhancement_calls_made}/{self.enhancement_total_calls})"
         self._update_status_bar(message)
+    
+    def report_api_call_finished(self):
+        """Decrements the active API call counter and stops the animation if complete."""
+        if self.active_api_calls > 0:
+            self.active_api_calls -= 1
+        
+        if self.active_api_calls == 0:
+            self.loading_animation.stop()
 
     def _cancel_enhancement_batch(self):
         """Sets the cancellation event for the current enhancement batch."""
         if self.enhancement_cancellation_event and not self.enhancement_cancellation_event.is_set():
             self.enhancement_cancellation_event.set()
             self._update_status_bar("Processing cancelled.")
+            self.active_api_calls = 0
+            self.loading_animation.stop()
 
     def _open_wildcard_manager(self, initial_file: Optional[str] = None):
         """Opens the wildcard management window."""
@@ -1496,41 +2237,22 @@ class GUIApp(tk.Tk):
 
     def _insert_wildcard_tag(self, event):
         """Inserts a wildcard tag, overwriting a selection or the tag under the cursor."""
-        selected_indices = self.wildcard_inserter_list.curselection()
-        if not selected_indices:
+        wildcard_name = self.wildcard_inserter.get_selected_wildcard_name()
+        if not wildcard_name:
             return
 
-        wildcard_name = self.wildcard_inserter_list.get(selected_indices[0])
-        tag_to_insert = f"__{wildcard_name}__"
-
-        # Check if cursor is inside an existing wildcard tag
-        cursor_index = self.template_text.index(tk.INSERT)
-        tags_at_cursor = self.template_text.tag_names(cursor_index)
-
-        if "any_wildcard" in tags_at_cursor:
-            # Find the start and end of the tag at the cursor and replace it
-            tag_range = self.template_text.tag_prevrange("any_wildcard", cursor_index + "+1c")
-            if tag_range:
-                self.template_text.delete(tag_range[0], tag_range[1])
-                self.template_text.insert(tag_range[0], tag_to_insert)
-        elif self.template_text.tag_ranges("sel"): # Fallback to overwriting a manual selection
-            self.template_text.delete("sel.first", "sel.last")
-            self.template_text.insert(tk.INSERT, tag_to_insert)
-        else: # Otherwise, just insert at the cursor
-            self.template_text.insert(tk.INSERT, tag_to_insert)
-
-        self.template_text.focus_set() # Return focus to the editor
+        self.template_editor.insert_wildcard_tag(wildcard_name)
         self._highlight_template_wildcards() # Update tags immediately for the next action
         self._schedule_live_update() # Trigger a live preview update for the bottom pane
 
     def _on_template_double_click(self, event):
         """Handle double-click in template editor to open wildcard file."""
-        index = self.template_text.index(f"@{event.x},{event.y}")
+        index = self.template_editor.text_widget.index(f"@{event.x},{event.y}")
         
         # Find the range of the double-clicked word
-        word_start = self.template_text.index(f"{index} wordstart")
-        word_end = self.template_text.index(f"{index} wordend")
-        clicked_word = self.template_text.get(word_start, word_end)
+        word_start = self.template_editor.text_widget.index(f"{index} wordstart")
+        word_end = self.template_editor.text_widget.index(f"{index} wordend")
+        clicked_word = self.template_editor.text_widget.get(word_start, word_end)
 
         # Check if it's a wildcard tag
         match = re.fullmatch(r'__([a-zA-Z0-9_.-]+)__', clicked_word)
@@ -1540,23 +2262,8 @@ class GUIApp(tk.Tk):
 
     def _highlight_template_wildcards(self):
         """Highlights missing wildcards and tags all wildcards in the template editor."""
-        self.template_text.tag_remove("missing_wildcard", "1.0", tk.END)
-        self.template_text.tag_remove("any_wildcard", "1.0", tk.END)
-
-        content = self.template_text.get("1.0", "end-1c")
-        if not content:
-            return
-
         known_wildcards = self.processor.get_wildcard_names()
-
-        # Use regex to find all __wildcard__ patterns
-        for match in re.finditer(r'__([a-zA-Z0-9_.-]+)__', content):
-            wildcard_name = match.group(1)
-            start_index = f"1.0+{match.start()}c"
-            end_index = f"1.0+{match.end()}c"
-            self.template_text.tag_add("any_wildcard", start_index, end_index)
-            if wildcard_name not in known_wildcards:
-                self.template_text.tag_add("missing_wildcard", start_index, end_index)
+        self.template_editor.highlight_wildcards(known_wildcards)
 
     def _create_new_template_file(self):
         """Prompts user for a new template filename and creates it."""
@@ -1590,7 +2297,7 @@ class GUIApp(tk.Tk):
             self.status_var.set(f"Archived template: {self.current_template_file}")
             
             # Clear the UI and load the next available template
-            self.template_text.delete("1.0", tk.END)
+            self.template_editor.clear()
             self.prompt_text.config(state=tk.NORMAL)
             self.prompt_text.delete("1.0", tk.END)
             self.prompt_text.config(state=tk.DISABLED)
@@ -1633,7 +2340,17 @@ class GUIApp(tk.Tk):
 
     def _open_history_viewer(self):
         """Opens the history viewer window."""
-        HistoryViewerWindow(self, self.processor)
+        if self.history_viewer_window and self.history_viewer_window.winfo_exists():
+            self.history_viewer_window.lift()
+            self.history_viewer_window.focus_force()
+        else:
+            self.history_viewer_window = HistoryViewerWindow(self, self.processor)
+            self.history_viewer_window.protocol("WM_DELETE_WINDOW", self._on_history_viewer_close)
+
+    def _on_history_viewer_close(self):
+        if self.history_viewer_window:
+            self.history_viewer_window.destroy()
+            self.history_viewer_window = None
 
     def load_prompt_from_history(self, prompt_text: str):
         """Loads a prompt from the history viewer into the main UI for re-enhancement."""
@@ -1644,20 +2361,55 @@ class GUIApp(tk.Tk):
         self.current_structured_prompt = []
         self.file_menu.entryconfig("Save Template", state=tk.DISABLED)
         self.file_menu.entryconfig("Archive Template...", state=tk.DISABLED)
-        self.generate_button.config(state=tk.DISABLED) # Can't generate from a non-template
+        self.action_bar.generate_button.config(state=tk.DISABLED) # Can't generate from a non-template
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.config(state=tk.DISABLED)
 
         # Load the historical prompt into the editable text area
-        self.template_frame.config(text="Editable Prompt (from History)")
-        self.template_text.delete("1.0", tk.END)
-        self.template_text.insert("1.0", prompt_text)
+        self.template_editor.set_label("Editable Prompt (from History)")
+        self.template_editor.set_content(prompt_text)
 
         # Enable enhancement actions
-        self.select_button.config(state=tk.NORMAL)
-        self.copy_prompt_button.config(state=tk.NORMAL)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.NORMAL, copy=tk.NORMAL)
         self.status_var.set("Loaded prompt from history. Ready to enhance.")
+
+    def _brainstorm_with_template(self):
+        """Sends the current template content to the brainstorming window."""
+        if not self.template_editor: return
+        content = self.template_editor.get_content()
+        filename = self.current_template_file or "Unsaved Template"
+        self._brainstorm_with_content("template", filename, content)
+
+    def _brainstorm_with_content(self, content_type: str, filename: str, content: str):
+        """Opens the brainstorming window and loads the specified content."""
+        self._open_brainstorming_window()
+        if self.brainstorming_window and self.brainstorming_window.winfo_exists():
+            self.brainstorming_window.lift()
+            self.brainstorming_window.focus_force()
+            self.brainstorming_window.load_content_for_brainstorming(content_type, filename, content)
+
+    def _generate_missing_wildcard(self, wildcard_name: str):
+        """Opens the brainstorming window and triggers generation for a missing wildcard."""
+        # The topic for the wildcard is derived from its name
+        topic = wildcard_name.replace('_', ' ').replace('-', ' ')
+        
+        # Open brainstorming window if not already open
+        self._open_brainstorming_window()
+        
+        if self.brainstorming_window and self.brainstorming_window.winfo_exists():
+            self.brainstorming_window.lift()
+            self.brainstorming_window.focus_force()
+            # Call the new method to start generation
+            self.brainstorming_window.generate_wildcard_with_topic(topic)
+
+    def _handle_ai_content_update(self, content_type: str):
+        """Callback for when AI generates a new file, to refresh UI lists."""
+        if content_type == 'template':
+            self._load_templates()
+        self._populate_wildcard_lists()
+        self._highlight_template_wildcards()
+        self.status_var.set(f"New AI-generated {content_type} saved.")
 
     def _open_system_prompt_editor(self):
         """Opens the system prompt editor window."""

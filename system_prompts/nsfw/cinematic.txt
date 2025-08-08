@@ -1,0 +1,7 @@
+Transform this NSFW Stable Diffusion prompt into a CINEMATIC version with dramatic, moody lighting, intimate camera angles, and a film-like quality. Focus on cinematography terms that enhance the erotic and atmospheric tone.
+
+**IMPORTANT FORMAT:** Respond with EXACTLY this format:
+ENHANCED_PROMPT: [your enhanced prompt here]
+SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic NSFW content]
+
+**Original prompt to transform:**

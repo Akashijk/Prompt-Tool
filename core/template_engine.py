@@ -19,44 +19,37 @@ class TemplateEngine:
         self.wildcards: Dict[str, List[str]] = {}
         self.templates: List[str] = []
         
-    def load_wildcards(self, wildcard_dir: str = None) -> Dict[str, List[str]]:
-        """Load all wildcard files from directory."""
-        if wildcard_dir is None:
-            wildcard_dir = config.WILDCARD_DIR
-            
+    def load_wildcards(self, wildcard_dirs: List[str]) -> Dict[str, List[str]]:
+        """Load all wildcard files from a list of directories, with later directories overriding earlier ones."""
         self.wildcards = {}
         
-        if not os.path.exists(wildcard_dir):
-            return self.wildcards
+        for wildcard_dir in wildcard_dirs:
+            if not os.path.exists(wildcard_dir):
+                continue
             
-        for fname in os.listdir(wildcard_dir):
-            if fname.endswith('.txt'):
-                key = fname[:-4]
-                filepath = os.path.join(wildcard_dir, fname)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        self.wildcards[key] = [line.strip() for line in f if line.strip()]
-                except Exception as e:
-                    print(f"Error loading wildcard file {fname}: {e}")
-                    
+            for fname in os.listdir(wildcard_dir):
+                if fname.endswith('.txt'):
+                    key = fname[:-4]
+                    filepath = os.path.join(wildcard_dir, fname)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            # This will automatically override if key already exists from a previous dir
+                            self.wildcards[key] = [line.strip() for line in f if line.strip()]
+                    except Exception as e:
+                        print(f"Error loading wildcard file {fname}: {e}")
+                        
         return self.wildcards
     
-    def list_templates(self, template_dir: str = None) -> List[str]:
+    def list_templates(self, template_dir: str) -> List[str]:
         """Get a sorted list of available template files."""
-        if template_dir is None:
-            template_dir = config.TEMPLATE_DIR
-            
         if not os.path.exists(template_dir):
             return []
             
         self.templates = sorted([f for f in os.listdir(template_dir) if f.endswith('.txt')], key=str.lower)
         return self.templates
     
-    def load_template(self, template_file: str, template_dir: str = None) -> str:
+    def load_template(self, template_file: str, template_dir: str) -> str:
         """Load template content from file."""
-        if template_dir is None:
-            template_dir = config.TEMPLATE_DIR
-            
         filepath = os.path.join(template_dir, template_file)
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -64,30 +57,32 @@ class TemplateEngine:
         except Exception as e:
             raise Exception(f"Error loading template {template_file}: {e}")
     
-    def list_wildcard_files(self, wildcard_dir: str = None) -> List[str]:
-        """Get a sorted list of available wildcard files."""
-        if wildcard_dir is None:
-            wildcard_dir = config.WILDCARD_DIR
-        if not os.path.exists(wildcard_dir):
-            return []
+    def list_wildcard_files(self, wildcard_dirs: List[str]) -> List[str]:
+        """Get a sorted, unique list of available wildcard files from multiple directories."""
+        all_files = set()
+        for wildcard_dir in wildcard_dirs:
+            if not os.path.exists(wildcard_dir):
+                continue
+            for f in os.listdir(wildcard_dir):
+                if f.endswith('.txt'):
+                    all_files.add(f)
         # Sort case-insensitively for consistent ordering in UI lists
-        return sorted([f for f in os.listdir(wildcard_dir) if f.endswith('.txt')], key=str.lower)
+        return sorted(list(all_files), key=str.lower)
 
-    def load_wildcard_content(self, wildcard_file: str, wildcard_dir: str = None) -> str:
-        """Load raw content of a wildcard file as a single string."""
-        if wildcard_dir is None:
-            wildcard_dir = config.WILDCARD_DIR
-        filepath = os.path.join(wildcard_dir, wildcard_file)
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception as e:
-            raise Exception(f"Error loading wildcard file {wildcard_file}: {e}")
+    def load_wildcard_content(self, wildcard_file: str, wildcard_dirs: List[str]) -> str:
+        """Load raw content of a wildcard file, checking directories in order."""
+        for wildcard_dir in wildcard_dirs:
+            filepath = os.path.join(wildcard_dir, wildcard_file)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        return f.read()
+                except Exception as e:
+                    raise Exception(f"Error loading wildcard file {wildcard_file}: {e}")
+        raise FileNotFoundError(f"Wildcard file '{wildcard_file}' not found in any provided directory.")
 
-    def save_wildcard_content(self, wildcard_file: str, content: str, wildcard_dir: str = None) -> None:
+    def save_wildcard_content(self, wildcard_file: str, content: str, wildcard_dir: str) -> None:
         """Save content to a wildcard file and update the in-memory cache."""
-        if wildcard_dir is None:
-            wildcard_dir = config.WILDCARD_DIR
         filepath = os.path.join(wildcard_dir, wildcard_file)
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -98,11 +93,8 @@ class TemplateEngine:
         except Exception as e:
             raise Exception(f"Error saving wildcard file {wildcard_file}: {e}")
 
-    def save_template(self, template_file: str, content: str, template_dir: str = None) -> None:
+    def save_template(self, template_file: str, content: str, template_dir: str) -> None:
         """Save template content to a file."""
-        if template_dir is None:
-            template_dir = config.TEMPLATE_DIR
-            
         filepath = os.path.join(template_dir, template_file)
         try:
             # Ensure the directory exists
@@ -112,36 +104,39 @@ class TemplateEngine:
         except Exception as e:
             raise Exception(f"Error saving template {template_file}: {e}")
 
-    def archive_template(self, template_file: str, template_dir: str = None) -> None:
+    def archive_template(self, template_file: str, template_dir: str) -> None:
         """Move a template file to an 'archive' subdirectory."""
-        if template_dir is None:
-            template_dir = config.TEMPLATE_DIR
-        
-        source_path = os.path.join(template_dir, template_file)
-        archive_dir = os.path.join(template_dir, 'archive')
-        dest_path = os.path.join(archive_dir, template_file)
-
         try:
+            archive_dir = os.path.join(template_dir, 'archive')
             os.makedirs(archive_dir, exist_ok=True)
+            dest_path = os.path.join(archive_dir, template_file)
+            source_path = os.path.join(template_dir, template_file)
+
             if not os.path.exists(source_path):
                 raise FileNotFoundError(f"Template file not found: {source_path}")
             os.rename(source_path, dest_path)
         except OSError as e:
             raise Exception(f"Error archiving template {template_file}: {e}")
 
-    def archive_wildcard(self, wildcard_file: str, wildcard_dir: str = None) -> None:
-        """Move a wildcard file to an 'archive' subdirectory."""
-        if wildcard_dir is None:
-            wildcard_dir = config.WILDCARD_DIR
+    def archive_wildcard(self, wildcard_file: str, wildcard_dirs: List[str]) -> None:
+        """Move a wildcard file to an 'archive' subdirectory, checking directories in order."""
+        source_path = None
+        source_dir = None
+        for wildcard_dir in wildcard_dirs:
+            path_to_check = os.path.join(wildcard_dir, wildcard_file)
+            if os.path.exists(path_to_check):
+                source_path = path_to_check
+                source_dir = wildcard_dir
+                break
+        
+        if not source_path or not source_dir:
+            raise FileNotFoundError(f"Wildcard file not found in any provided directory: {wildcard_file}")
 
-        source_path = os.path.join(wildcard_dir, wildcard_file)
-        archive_dir = os.path.join(wildcard_dir, 'archive')
+        archive_dir = os.path.join(source_dir, 'archive')
         dest_path = os.path.join(archive_dir, wildcard_file)
 
         try:
             os.makedirs(archive_dir, exist_ok=True)
-            if not os.path.exists(source_path):
-                raise FileNotFoundError(f"Wildcard file not found: {source_path}")
             os.rename(source_path, dest_path)
             # Remove from in-memory cache if it exists
             key = wildcard_file[:-4]

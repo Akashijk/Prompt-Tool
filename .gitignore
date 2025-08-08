@@ -1,8 +1,11 @@
 /.DS_Store
 templates/*
+templates/*/*
 history/*
+history/*/*
 wildcards/*
-!templates/artistic_masterpiece.txt
+wildcards/*/*
+!templates/sfw/artistic_masterpiece.txt
 !wildcards/artistic_subject.txt
 !wildcards/pose_actions.txt
 !wildcards/environment.txt

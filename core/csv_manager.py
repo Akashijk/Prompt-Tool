@@ -8,15 +8,16 @@ from .config import config
 class CSVManager:
     """Handles CSV file operations for prompt history."""
     
-    def __init__(self, filepath: str = None):
-        self.filepath = filepath or config.CSV_HISTORY_FILE
+    def __init__(self):
+        pass # No filepath state needed; it will be determined on-the-fly.
     
     def load_history(self) -> Set[str]:
         """Load existing prompt history from CSV."""
+        filepath = config.get_csv_history_file()
         history = set()
-        if os.path.isfile(self.filepath):
+        if os.path.isfile(filepath):
             try:
-                with open(self.filepath, 'r', encoding='utf-8') as csvfile:
+                with open(filepath, 'r', encoding='utf-8') as csvfile:
                     reader = csv.DictReader(csvfile)
                     for row in reader:
                         if 'original_prompt' in row:
@@ -27,10 +28,11 @@ class CSVManager:
     
     def load_full_history(self) -> List[Dict[str, str]]:
         """Load the entire prompt history as a list of dictionaries."""
+        filepath = config.get_csv_history_file()
         history = []
-        if os.path.isfile(self.filepath):
+        if os.path.isfile(filepath):
             try:
-                with open(self.filepath, 'r', encoding='utf-8') as csvfile:
+                with open(filepath, 'r', encoding='utf-8') as csvfile:
                     reader = csv.DictReader(csvfile)
                     for row in reader:
                         history.append(row)
@@ -40,13 +42,14 @@ class CSVManager:
 
     def delete_history_entry(self, original_prompt_to_delete: str) -> bool:
         """Deletes a specific entry from the history CSV file."""
-        if not os.path.isfile(self.filepath):
+        filepath = config.get_csv_history_file()
+        if not os.path.isfile(filepath):
             return False
 
         rows_to_keep = []
         deleted = False
         try:
-            with open(self.filepath, 'r', newline='', encoding='utf-8') as csvfile:
+            with open(filepath, 'r', newline='', encoding='utf-8') as csvfile:
                 reader = csv.DictReader(csvfile)
                 for row in reader:
                     if row.get('original_prompt') == original_prompt_to_delete:
@@ -55,7 +58,7 @@ class CSVManager:
                         rows_to_keep.append(row)
             
             if deleted:
-                with open(self.filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
                     writer = csv.DictWriter(csvfile, fieldnames=config.CSV_COLUMNS)
                     writer.writeheader()
                     writer.writerows(rows_to_keep)
@@ -72,11 +75,12 @@ class CSVManager:
                    variations: Optional[Dict[str, Dict[str, str]]] = None, 
                    status: str = "enhanced") -> None:
         """Save a single result to CSV."""
-        file_exists = os.path.isfile(self.filepath)
-        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+        filepath = config.get_csv_history_file()
+        file_exists = os.path.isfile(filepath)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         try:
-            with open(self.filepath, 'a', newline='', encoding='utf-8') as csvfile:
+            with open(filepath, 'a', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
                 
                 if not file_exists:

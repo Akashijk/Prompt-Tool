@@ -1,0 +1,7 @@
+Transform this NSFW Stable Diffusion prompt into an ARTISTIC version, emphasizing painterly qualities, erotic art movements (like Shunga or Rococo), or sensual artistic techniques. Focus on styles that complement the adult theme.
+
+**IMPORTANT FORMAT:** Respond with EXACTLY this format:
+ENHANCED_PROMPT: [your enhanced prompt here]
+SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for artistic NSFW content]
+
+**Original prompt to transform:**

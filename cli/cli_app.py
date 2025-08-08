@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Dict, Any
 from core.prompt_processor import PromptProcessor
-from core.config import config, DEFAULT_VARIATION_INSTRUCTIONS
+from core.config import config, DEFAULT_SFW_VARIATION_INSTRUCTIONS, DEFAULT_NSFW_VARIATION_INSTRUCTIONS
 
 class CLIApp:
     """Command-line interface for prompt generation."""
@@ -20,6 +20,9 @@ class CLIApp:
             # Initialize
             print("Initializing...")
             self.processor.initialize()
+
+            # Select workflow
+            self._select_workflow()
             
             # Select model
             self.chosen_model = self._select_model()
@@ -64,6 +67,26 @@ class CLIApp:
                 print("\nCleaning up and unloading model...")
                 self.processor.cleanup_model(self.chosen_model)
             print("\nApplication finished.")
+
+    def _select_workflow(self):
+        """Let user select the operational workflow."""
+        print("\n" + "="*50)
+        print("SELECT WORKFLOW")
+        print("1. SFW (Safe For Work)")
+        print("2. NSFW (Not Safe For Work)")
+        
+        while True:
+            choice = input("\nChoose a workflow (default 1): ").strip()
+            if choice == '' or choice == '1':
+                config.workflow = 'sfw'
+                print("SFW workflow selected.")
+                break
+            elif choice == '2':
+                config.workflow = 'nsfw'
+                print("NSFW workflow selected.")
+                break
+            else:
+                print("Invalid choice. Please enter 1 or 2.")
     
     def _select_model(self) -> Optional[str]:
         """Let user select an Ollama model."""
@@ -235,7 +258,8 @@ class CLIApp:
             
         self.processor.set_callbacks(status_callback=cli_status_callback)
         
-        selected_variations = list(DEFAULT_VARIATION_INSTRUCTIONS.keys()) if create_variations else None
+        variation_instructions = DEFAULT_SFW_VARIATION_INSTRUCTIONS if config.workflow == 'sfw' else DEFAULT_NSFW_VARIATION_INSTRUCTIONS
+        selected_variations = list(variation_instructions.keys()) if create_variations else None
         
         results = self.processor.process_enhancement_batch(
             prompts,
@@ -273,7 +297,7 @@ class CLIApp:
             
         print("\n💾 Saving results to history file...")
         self.processor.save_results(results)
-        print(f"Saved {len(results)} results to {config.CSV_HISTORY_FILE}\n")
+        print(f"Saved {len(results)} results to {config.get_csv_history_file()}\n")
 
     def _get_queue_choice(self) -> str:
         """Get user choice for queuing."""
