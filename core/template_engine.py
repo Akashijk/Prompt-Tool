@@ -70,7 +70,8 @@ class TemplateEngine:
             wildcard_dir = config.WILDCARD_DIR
         if not os.path.exists(wildcard_dir):
             return []
-        return sorted([f for f in os.listdir(wildcard_dir) if f.endswith('.txt')])
+        # Sort case-insensitively for consistent ordering in UI lists
+        return sorted([f for f in os.listdir(wildcard_dir) if f.endswith('.txt')], key=str.lower)
 
     def load_wildcard_content(self, wildcard_file: str, wildcard_dir: str = None) -> str:
         """Load raw content of a wildcard file as a single string."""
@@ -149,8 +150,9 @@ class TemplateEngine:
             raise Exception(f"Error archiving wildcard {wildcard_file}: {e}")
 
     def get_wildcard_options(self, wildcard_name: str) -> List[str]:
-        """Get all options for a given wildcard."""
-        return self.wildcards.get(wildcard_name, [])
+        """Get all sorted options for a given wildcard."""
+        options = self.wildcards.get(wildcard_name, [])
+        return sorted(options, key=str.lower)
 
     def generate_prompt(self, template: str, wildcards: Dict[str, List[str]] = None) -> str:
         """Generate a prompt by substituting wildcards in template."""

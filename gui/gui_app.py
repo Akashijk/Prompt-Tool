@@ -587,10 +587,13 @@ class WildcardManagerWindow(tk.Toplevel):
         self.selected_wildcard_file = self.wildcard_listbox.get(selected_indices[0])
         self.editor_frame.config(text=f"Editing: {self.selected_wildcard_file}")
         try:
+            # Load and sort the content before displaying
             content = self.processor.load_wildcard_content(self.selected_wildcard_file)
+            lines = [line for line in content.split('\n') if line.strip()]
+            sorted_content = "\n".join(sorted(lines, key=str.lower))
             self.editor_text.config(state=tk.NORMAL)
             self.editor_text.delete("1.0", tk.END)
-            self.editor_text.insert("1.0", content)
+            self.editor_text.insert("1.0", sorted_content)
             self.save_button.config(state=tk.NORMAL)
             self.archive_button.config(state=tk.NORMAL)
         except Exception as e:
@@ -602,9 +605,17 @@ class WildcardManagerWindow(tk.Toplevel):
         is_new_file = self.selected_wildcard_file not in self.wildcard_listbox.get(0, tk.END)
         content = self.editor_text.get("1.0", "end-1c")
 
+        # Sort the content before saving to maintain consistency
+        lines = [line.strip() for line in content.split('\n') if line.strip()]
+        sorted_content = "\n".join(sorted(lines, key=str.lower))
+
         try:
-            self.processor.save_wildcard_content(self.selected_wildcard_file, content)
-            messagebox.showinfo("Success", f"Successfully saved {self.selected_wildcard_file}", parent=self)
+            self.processor.save_wildcard_content(self.selected_wildcard_file, sorted_content)
+            messagebox.showinfo("Success", f"Successfully saved and sorted {self.selected_wildcard_file}", parent=self)
+
+            # After saving, reload the sorted content into the editor to reflect the change
+            self.editor_text.delete("1.0", tk.END)
+            self.editor_text.insert("1.0", sorted_content)
 
             if is_new_file:
                 self._populate_wildcard_list()
@@ -692,6 +703,7 @@ class EnhancementResultWindow(tk.Toplevel):
         # UI element storage
         self.text_widgets = {}
         self.sd_model_labels = {}
+        self.copy_buttons = {}
         self.regen_buttons = {}
         self.regen_queue = queue.Queue()
         self.result_queue = queue.Queue()
@@ -748,9 +760,11 @@ class EnhancementResultWindow(tk.Toplevel):
         
         copy_button = ttk.Button(button_container, text="Copy", command=lambda key=prompt_key: self._copy_current_prompt(key))
         copy_button.pack(fill=tk.X)
+        self.copy_buttons[prompt_key] = copy_button
 
         if prompt_key != 'original':
             regen_button = ttk.Button(button_container, text="Regen", command=lambda key=prompt_key: self._start_regeneration(key), state=tk.DISABLED)
+            copy_button.config(state=tk.DISABLED)
             regen_button.pack(fill=tk.X, pady=(5,0))
             self.regen_buttons[prompt_key] = regen_button
 
@@ -870,6 +884,7 @@ class EnhancementResultWindow(tk.Toplevel):
             self.text_widgets[key].config(state=tk.DISABLED)
             self.sd_model_labels[key].config(text=f"Recommended Model: {data['sd_model']}")
             self.regen_buttons[key].config(state=tk.NORMAL)
+            self.copy_buttons[key].config(state=tk.NORMAL)
         except queue.Empty:
             pass # No new results yet
         finally:
