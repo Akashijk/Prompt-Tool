@@ -394,7 +394,7 @@ class GUIApp(tk.Tk):
             shared_dir = config.WILDCARD_DIR
             message = (
                 f"No wildcard files found for the '{config.workflow.upper()}' workflow.\n\n"
-                f"Please add .txt files to the shared folder:\n{shared_dir}"
+                f"Please add .json or .txt files to the shared folder:\n{shared_dir}"
             )
             if config.workflow == 'nsfw':
                 message += f"\n\nor the NSFW-specific folder:\n{config.WILDCARD_NSFW_DIR}"
@@ -753,7 +753,7 @@ class GUIApp(tk.Tk):
         if not modified_file or not self.current_structured_prompt:
             return
 
-        modified_wildcard_name = modified_file[:-4]  # remove .txt
+        modified_wildcard_name = modified_file[:-5]  # remove .json
 
         # Check if the modified wildcard is used in the current prompt
         needs_update = any(
@@ -787,7 +787,7 @@ class GUIApp(tk.Tk):
         match = re.fullmatch(r'__([a-zA-Z0-9_.-]+)__', clicked_word)
         if match:
             wildcard_name = match.group(1)
-            self._open_wildcard_manager(initial_file=f"{wildcard_name}.txt")
+            self._open_wildcard_manager(initial_file=f"{wildcard_name}.json")
 
     def _highlight_template_wildcards(self):
         """Highlights missing wildcards and tags all wildcards in the template editor."""

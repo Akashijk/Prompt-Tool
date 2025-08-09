@@ -1,5 +1,7 @@
 """A pop-up window to manage wildcard files."""
 
+import os
+import json
 import tkinter as tk
 from tkinter import ttk
 from typing import Optional, Callable, TYPE_CHECKING
@@ -7,6 +9,7 @@ from typing import Optional, Callable, TYPE_CHECKING
 from core.prompt_processor import PromptProcessor
 from core.config import config
 from . import custom_dialogs
+from .wildcard_editor_widget import WildcardEditor
 from .common import TextContextMenu
 
 if TYPE_CHECKING:
@@ -17,7 +20,7 @@ class WildcardManagerWindow(tk.Toplevel):
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor, update_callback: Callable, initial_file: Optional[str] = None):
         super().__init__(parent)
         self.title("Wildcard Manager")
-        self.geometry("700x500")
+        self.geometry("800x600")
         
         self.processor = processor
         self.update_callback = update_callback
@@ -48,20 +51,34 @@ class WildcardManagerWindow(tk.Toplevel):
         ttk.Button(list_frame, text="New Wildcard File", command=self._create_new_wildcard_file).pack(pady=(5, 0), fill=tk.X)
         h_pane.add(list_frame, weight=1)
 
-        self.editor_frame = ttk.LabelFrame(h_pane, text="No file selected", padding=5)
-        self.editor_text = tk.Text(self.editor_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, state=tk.DISABLED)
-        TextContextMenu(self.editor_text)
-        self.editor_text.pack(fill=tk.BOTH, expand=True)
-        
-        button_frame = ttk.Frame(self.editor_frame)
+        self.editor_container = ttk.LabelFrame(h_pane, text="No file selected", padding=5)
+        h_pane.add(self.editor_container, weight=3)
+
+        self.editor_notebook = ttk.Notebook(self.editor_container)
+        self.editor_notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Structured Editor Tab
+        self.structured_editor_frame = ttk.Frame(self.editor_notebook)
+        self.structured_editor = WildcardEditor(self.structured_editor_frame)
+        self.structured_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.editor_notebook.add(self.structured_editor_frame, text="Structured Editor")
+
+        # Raw Text Editor Tab
+        self.raw_text_frame = ttk.Frame(self.editor_notebook)
+        self.raw_text_editor = tk.Text(self.raw_text_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True)
+        TextContextMenu(self.raw_text_editor)
+        self.raw_text_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.editor_notebook.add(self.raw_text_frame, text="Raw Text Editor")
+
+        # Buttons below the notebook
+        button_frame = ttk.Frame(self.editor_container)
         button_frame.pack(fill=tk.X, pady=5)
-        self.save_button = ttk.Button(button_frame, text="Save Changes", command=self._save_wildcard_file, state=tk.DISABLED)
+        self.save_button = ttk.Button(button_frame, text="Save Changes", command=self._save_wildcard_file, style="Accent.TButton", state=tk.DISABLED)
         self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
         self.archive_button = ttk.Button(button_frame, text="Archive", command=self._archive_selected_wildcard, state=tk.DISABLED)
         self.archive_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
         self.brainstorm_button = ttk.Button(button_frame, text="Brainstorm with AI", command=self._brainstorm_with_ai, state=tk.DISABLED)
         self.brainstorm_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
-        h_pane.add(self.editor_frame, weight=3)
 
     def _populate_wildcard_list(self):
         """Populates the list of wildcard files."""
@@ -73,60 +90,101 @@ class WildcardManagerWindow(tk.Toplevel):
     def _on_wildcard_file_select(self, event=None):
         selected_indices = self.wildcard_listbox.curselection()
         if not selected_indices: return
+        
         self.selected_wildcard_file = self.wildcard_listbox.get(selected_indices[0])
-        self.editor_frame.config(text=f"Editing: {self.selected_wildcard_file}")
+        self.editor_container.config(text=f"Editing: {self.selected_wildcard_file}")
+        
         try:
-            # Load and sort the content before displaying
-            content = self.processor.load_wildcard_content(self.selected_wildcard_file)
-            lines = [line for line in content.split('\n') if line.strip()]
-            sorted_content = "\n".join(sorted(lines, key=str.lower))
-            self.editor_text.config(state=tk.NORMAL)
-            self.editor_text.delete("1.0", tk.END)
-            self.editor_text.insert("1.0", sorted_content)
+            # Get the basename to look up in the in-memory dictionary
+            basename, _ = os.path.splitext(self.selected_wildcard_file)
+            
+            # Get the in-memory JSON representation (which handles .txt conversion)
+            wildcard_data = self.processor.template_engine.wildcards.get(basename)
+            
+            if wildcard_data is None:
+                # This happens if the file was listed but failed to load (e.g., invalid JSON).
+                # Show an error and display the raw content for fixing.
+                error_message = (
+                    f"Could not load '{self.selected_wildcard_file}' from memory. "
+                    "This usually means the file contains invalid JSON or has read permission issues.\n\n"
+                    "The raw file content is shown below for you to fix. "
+                    "Please correct the syntax and save."
+                )
+                custom_dialogs.show_warning(self, "File Load Warning", error_message)
+
+                # Load the raw content into the raw editor so the user can fix it
+                raw_content = self.processor.load_wildcard_content(self.selected_wildcard_file)
+                self.raw_text_editor.delete("1.0", tk.END)
+                self.raw_text_editor.insert("1.0", raw_content)
+                self.structured_editor.set_data({}) # Clear structured editor
+                self.editor_notebook.select(self.raw_text_frame) # Switch to raw editor
+                
+                self.save_button.config(state=tk.NORMAL)
+                self.archive_button.config(state=tk.NORMAL)
+                self.brainstorm_button.config(state=tk.DISABLED) # Can't brainstorm with broken content
+                return
+                
+            # If load is successful, populate both editors
+            self.structured_editor.set_data(wildcard_data)
+            
+            pretty_content = json.dumps(wildcard_data, indent=2)
+            self.raw_text_editor.delete("1.0", tk.END)
+            self.raw_text_editor.insert("1.0", pretty_content)
+            self.editor_notebook.select(self.structured_editor_frame) # Switch to structured editor
+            
             self.save_button.config(state=tk.NORMAL)
             self.archive_button.config(state=tk.NORMAL)
             self.brainstorm_button.config(state=tk.NORMAL)
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Could not load wildcard file:\n{e}")
+            self.save_button.config(state=tk.DISABLED)
+            self.archive_button.config(state=tk.DISABLED)
+            self.brainstorm_button.config(state=tk.DISABLED)
 
     def _save_wildcard_file(self):
         if not self.selected_wildcard_file: return
 
-        is_new_file = self.selected_wildcard_file not in self.wildcard_listbox.get(0, tk.END)
-        content = self.editor_text.get("1.0", "end-1c")
-
-        # Sort the content before saving to maintain consistency
-        lines = [line.strip() for line in content.split('\n') if line.strip()]
-        sorted_content = "\n".join(sorted(lines, key=str.lower))
-
+        content = ""
         try:
-            # When saving an existing file, we don't need to specify the scope.
-            # The processor will find its original location and save it there.
-            self.processor.save_wildcard_content(self.selected_wildcard_file, sorted_content)
-            custom_dialogs.show_info(self, "Success", f"Successfully saved and sorted {self.selected_wildcard_file}")
+            # Get content from the currently active tab
+            active_tab_index = self.editor_notebook.index(self.editor_notebook.select())
+            if active_tab_index == 0: # Structured Editor
+                data = self.structured_editor.get_data()
+                content = json.dumps(data, indent=2)
+            else: # Raw Text Editor
+                content = self.raw_text_editor.get("1.0", "end-1c")
+            
+            # Validate that it's proper JSON before saving
+            json.loads(content)
 
-            # After saving, reload the sorted content into the editor to reflect the change
-            self.editor_text.delete("1.0", tk.END)
-            self.editor_text.insert("1.0", sorted_content)
+            # The processor will handle saving and migration (.txt -> .json)
+            self.processor.save_wildcard_content(self.selected_wildcard_file, content)
 
-            if is_new_file:
+            # The filename might have changed from .txt to .json
+            basename, _ = os.path.splitext(self.selected_wildcard_file)
+            new_filename = f"{basename}.json"
+            custom_dialogs.show_info(self, "Success", f"Successfully saved {new_filename}")
+
+            # If the file was new, or if its name changed (migration), refresh the list
+            if new_filename != self.selected_wildcard_file:
+                self.selected_wildcard_file = new_filename # Update the tracked filename
                 self._populate_wildcard_list()
-                # Reselect the newly created file
-                if self.selected_wildcard_file in self.wildcard_listbox.get(0, tk.END):
-                    idx = self.wildcard_listbox.get(0, tk.END).index(self.selected_wildcard_file)
-                    self.wildcard_listbox.selection_clear(0, tk.END)
-                    self.wildcard_listbox.selection_set(idx)
-                    self.wildcard_listbox.see(idx)
+                self.select_and_load_file(self.selected_wildcard_file)
+            else:
+                # If the name didn't change, just reload the content to ensure it's up-to-date
+                self._on_wildcard_file_select()
 
             self.update_callback(modified_file=self.selected_wildcard_file)
         except Exception as e:
-            custom_dialogs.show_error(self, "Error", f"Could not save wildcard file:\n{e}")
+            custom_dialogs.show_error(self, "Error", f"Could not save wildcard file. Please ensure it is valid JSON.\n\n{e}")
 
     def _create_new_wildcard_file(self):
         filename = custom_dialogs.ask_string(self, "New Wildcard File", "Enter new wildcard filename:")
         if not filename: return
-        if not filename.endswith('.txt'): filename += '.txt'
+        if not filename.endswith('.json'): filename += '.json'
         try:
+            # Create a default JSON structure for the new file
+            default_content = '{\n  "description": "A new wildcard file.",\n  "choices": [\n    "item 1",\n    "item 2"\n  ]\n}'
             is_nsfw_only = False
             if config.workflow == 'nsfw':
                 is_nsfw_only = custom_dialogs.ask_yes_no(
@@ -137,15 +195,10 @@ class WildcardManagerWindow(tk.Toplevel):
                 )
 
             # Create an empty file by saving empty content, respecting the user's choice
-            self.processor.save_wildcard_content(filename, "", is_nsfw_only=is_nsfw_only)
+            self.processor.save_wildcard_content(filename, default_content, is_nsfw_only=is_nsfw_only)
             self._populate_wildcard_list()
             self.update_callback()
-            if filename in self.wildcard_listbox.get(0, tk.END):
-                idx = self.wildcard_listbox.get(0, tk.END).index(filename)
-                self.wildcard_listbox.selection_clear(0, tk.END)
-                self.wildcard_listbox.selection_set(idx)
-                self.wildcard_listbox.see(idx)
-                self._on_wildcard_file_select(None)
+            self.select_and_load_file(filename)
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Could not create wildcard file:\n{e}")
 
@@ -158,13 +211,12 @@ class WildcardManagerWindow(tk.Toplevel):
 
         try:
             self.processor.archive_wildcard(self.selected_wildcard_file)
-            self.editor_text.config(state=tk.NORMAL)
-            self.editor_text.delete("1.0", tk.END)
-            self.editor_text.config(state=tk.DISABLED)
+            self.structured_editor.set_data({})
+            self.raw_text_editor.delete("1.0", tk.END)
             self.save_button.config(state=tk.DISABLED)
             self.archive_button.config(state=tk.DISABLED)
             self.brainstorm_button.config(state=tk.DISABLED)
-            self.editor_frame.config(text="No file selected")
+            self.editor_container.config(text="No file selected")
             self._populate_wildcard_list()
             self.update_callback()
         except Exception as e:
@@ -173,7 +225,15 @@ class WildcardManagerWindow(tk.Toplevel):
     def _brainstorm_with_ai(self):
         """Sends the current wildcard content to the brainstorming window."""
         if not self.selected_wildcard_file: return
-        content = self.editor_text.get("1.0", "end-1c")
+        
+        content = ""
+        active_tab_index = self.editor_notebook.index(self.editor_notebook.select())
+        if active_tab_index == 0: # Structured Editor
+            data = self.structured_editor.get_data()
+            content = json.dumps(data, indent=2)
+        else: # Raw Text Editor
+            content = self.raw_text_editor.get("1.0", "end-1c")
+            
         self.parent_app._brainstorm_with_content("wildcard", self.selected_wildcard_file, content)
 
     def select_and_load_file(self, filename: str):
@@ -189,9 +249,9 @@ class WildcardManagerWindow(tk.Toplevel):
         else: # Prepare for a new file
             self.wildcard_listbox.selection_clear(0, tk.END)
             self.selected_wildcard_file = filename
-            self.editor_frame.config(text=f"New File: {self.selected_wildcard_file}")
-            self.editor_text.config(state=tk.NORMAL)
-            self.editor_text.delete("1.0", tk.END)
+            self.editor_container.config(text=f"New File: {self.selected_wildcard_file}")
+            self.structured_editor.set_data({})
+            self.raw_text_editor.delete("1.0", tk.END)
             self.save_button.config(state=tk.NORMAL)
             self.archive_button.config(state=tk.DISABLED)
             self.brainstorm_button.config(state=tk.DISABLED)

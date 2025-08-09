@@ -1,5 +1,6 @@
 """The wildcard inserter listbox and its frame."""
 
+import os
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable, List, Optional
@@ -27,7 +28,8 @@ class WildcardInserter(ttk.Frame):
     def populate(self, wildcard_files: List[str]):
         self.listbox.delete(0, tk.END)
         for f in wildcard_files:
-            self.listbox.insert(tk.END, f[:-4]) # Insert without .txt
+            basename, _ = os.path.splitext(f)
+            self.listbox.insert(tk.END, basename)
 
     def get_selected_wildcard_name(self) -> Optional[str]:
         selected_indices = self.listbox.curselection()

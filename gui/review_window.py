@@ -120,7 +120,10 @@ class ReviewAndSaveWindow(tk.Toplevel):
             initialvalue=self.prefilled_filename
         )
         if not filename: return
-        if not filename.endswith('.txt'): filename += '.txt'
+        if self.content_type == 'wildcard' and not filename.endswith('.json'):
+            filename += '.json'
+        elif self.content_type == 'template' and not filename.endswith('.txt'):
+            filename += '.txt'
 
         content = self.text_widget.get("1.0", "end-1c")
         try:

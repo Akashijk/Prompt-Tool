@@ -1,0 +1,10 @@
+{
+  "description": "A list of fantasy races for characters.",
+  "choices": [
+    "human",
+    "elf",
+    "dwarf",
+    "orc",
+    "goblin"
+  ]
+}

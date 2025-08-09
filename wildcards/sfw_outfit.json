@@ -1,0 +1,18 @@
+{
+  "description": "SFW outfits, with some options dependent on the character's race.",
+  "choices": [
+    "tattered clothing",
+    "simple tunic",
+    "leather armor",
+    {
+      "value": "silken robes",
+      "weight": 5,
+      "requires": { "fantasy_race": "elf" }
+    },
+    {
+      "value": "heavy plate mail",
+      "weight": 5,
+      "requires": { "fantasy_race": "dwarf" }
+    }
+  ]
+}

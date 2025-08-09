@@ -144,24 +144,39 @@ class PromptProcessor:
         If the file exists, it's saved in its current location (NSFW takes precedence).
         If it's a new file, it's saved to the NSFW or shared directory based on the flag.
         """
-        save_dir = config.WILDCARD_DIR  # Default to shared/root
+        basename, old_ext = os.path.splitext(wildcard_file)
+        new_filename = f"{basename}.json"
 
-        # For existing files, determine the correct save location to overwrite.
-        # The search order respects the NSFW override.
+        # Determine save directory.
+        save_dir = config.WILDCARD_DIR  # Default to shared/root.
         search_order = self._get_wildcard_search_order()
         found_dir = None
         for directory in search_order:
-            if os.path.exists(os.path.join(directory, wildcard_file)):
+            # Check for either .json or .txt to find where the family of files lives.
+            if os.path.exists(os.path.join(directory, new_filename)) or os.path.exists(os.path.join(directory, wildcard_file)):
                 found_dir = directory
                 break
         
         if found_dir:
             save_dir = found_dir
-        elif is_nsfw_only:
-            # It's a new file and flagged as NSFW-only.
+        elif is_nsfw_only: # It's a new file and flagged as NSFW-only.
             save_dir = config.WILDCARD_NSFW_DIR
             
-        self.template_engine.save_wildcard_content(wildcard_file, content, save_dir)
+        # Save the new .json file.
+        self.template_engine.save_wildcard_content(new_filename, content, save_dir)
+
+        # If we migrated from .txt, delete the old file.
+        if old_ext == '.txt':
+            old_file_path = None
+            for directory in search_order:
+                path_to_check = os.path.join(directory, wildcard_file)
+                if os.path.exists(path_to_check):
+                    try:
+                        os.remove(path_to_check)
+                        print(f"INFO: Migrated and removed old wildcard file: {path_to_check}")
+                    except OSError as e:
+                        print(f"WARNING: Could not remove old .txt wildcard file during migration: {e}")
+                    break
     
     def load_template_content(self, template_file: str) -> str:
         """Load template content."""

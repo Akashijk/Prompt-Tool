@@ -58,18 +58,18 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     The application uses the following directory structure within the project root. You can create these folders and start adding your own `.txt` files.
     ```
     /
-    ├── templates/
+    ├── templates/  (.txt files)
     │   ├── sfw/
     │   └── nsfw/
-    ├── wildcards/
+    ├── wildcards/  (.json files)
     │   ├── nsfw/ (for nsfw-only wildcards)
     │   └── ... (shared wildcards go in the root)
-    └── system_prompts/
+    └── system_prompts/ (.txt files)
         ├── sfw/
         └── nsfw/
     ```
     *   **`templates/`**: Contains your prompt templates, organized by workflow.
-    *   **`wildcards/`**: The root folder is for wildcards shared between both workflows. The `nsfw` subfolder is for NSFW-specific wildcards.
+    *   **`wildcards/`**: Contains your wildcard files in `.json` format. This powerful format supports simple lists, weighted randomization (`"weight": 5`), context-aware choices (`"requires": {"key": "value"}`), and descriptive tags (`"tags": ["tag1"]`). The root folder is for shared wildcards, and the `nsfw` subfolder is for NSFW-specific ones.
     *   **`system_prompts/`**: The application will automatically create default system prompts here. You can edit them via the UI (`Tools -> System Prompt Editor`).
 
 ## Usage
