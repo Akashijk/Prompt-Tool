@@ -11,6 +11,8 @@ history/**
 wildcards/**
 
 # Include exceptions for initial setup
+!templates/
+!templates/sfw/
 !templates/sfw/artistic_masterpiece.txt
 !wildcards/artistic_subject.txt
 !wildcards/pose_actions.txt
