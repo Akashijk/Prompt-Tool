@@ -23,4 +23,4 @@ wildcards/**
 !wildcards/quality_boosters.txt
 !wildcards/camera_angle.txt
 !wildcards/artistic_details.txt
-!wildcards/atmosphere.txt
+!wildcards/atmosphere.txt	
