@@ -1,17 +1,16 @@
-/.DS_Store
+# Ignore all macOS metadata files
+.DS_Store
+
+# Ignore all Python cache and compiled files
 __pycache__/
 *.pyc
-templates/*
-templates/*/*
-history/*
-history/*/*
-wildcards/*
-wildcards/*/*
-core/__pycache__/*
-core/__pycache__/
 
+# Ignore everything in templates, history, and wildcards folders (any depth)
+templates/**
+history/**
+wildcards/**
 
-#Include for initial setup
+# Include exceptions for initial setup
 !templates/sfw/artistic_masterpiece.txt
 !wildcards/artistic_subject.txt
 !wildcards/pose_actions.txt
