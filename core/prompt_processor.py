@@ -114,9 +114,9 @@ class PromptProcessor:
         """Get recommended models with reasons."""
         return self.ollama_client.get_model_recommendations(models)
     
-    def delete_history_entry(self, original_prompt: str) -> bool:
+    def delete_history_entry(self, row_to_delete: Dict[str, str]) -> bool:
         """Pass-through to delete a history entry."""
-        return self.csv_manager.delete_history_entry(original_prompt)
+        return self.csv_manager.delete_history_entry(row_to_delete)
     
     def get_full_history(self) -> List[Dict[str, str]]:
         """Pass-through to get the full history data."""
