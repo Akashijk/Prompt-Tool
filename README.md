@@ -29,7 +29,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 
 1.  **Clone the repository:**
     ```bash
-    git clone <repository-url>
+    git clone https://github.com/Akashijk/Prompt-Tool
     cd Prompt_Toolv3
     ```
 
