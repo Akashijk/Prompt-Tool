@@ -1,11 +1,12 @@
 """A pop-up window to display enhancement results."""
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 import threading
 import queue
 from typing import List, Optional, Dict, Callable, TYPE_CHECKING
 
+from . import custom_dialogs
 from core.prompt_processor import PromptProcessor
 from .common import LoadingAnimation, TextContextMenu
 
@@ -78,7 +79,7 @@ class EnhancementResultWindow(tk.Toplevel):
         scroll_text_frame = ttk.Frame(text_frame)
         scroll_text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(scroll_text_frame, orient=tk.VERTICAL)
-        text_widget = tk.Text(scroll_text_frame, wrap=tk.WORD, height=height, font=("Helvetica", 11), yscrollcommand=scrollbar.set)
+        text_widget = tk.Text(scroll_text_frame, wrap=tk.WORD, height=height, font=self.parent_app.default_font, yscrollcommand=scrollbar.set)
         scrollbar.config(command=text_widget.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -113,14 +114,14 @@ class EnhancementResultWindow(tk.Toplevel):
 
         # Add SD model label if provided
         if sd_model:
-            model_label = ttk.Label(frame, text=f"Recommended Model: {sd_model}", font=("Helvetica", 9, "italic"), foreground="gray")
+            model_label = ttk.Label(frame, text=f"Recommended Model: {sd_model}", font=self.parent_app.small_font, foreground="gray")
             model_label.pack(anchor='w', padx=5, pady=(2, 0))
             self.sd_model_labels[prompt_key] = model_label
 
     def _save(self):
         """Save the result to the CSV history."""
         self.processor.save_results([self.result_data])
-        messagebox.showinfo("Saved", "Result saved to history.", parent=self)
+        custom_dialogs.show_info(self, "Saved", "Result saved to history.")
         self.destroy()
 
     def _copy_to_clipboard(self, content: str):
@@ -193,7 +194,7 @@ class EnhancementResultWindow(tk.Toplevel):
             self.regen_buttons[key].pack(fill=tk.X, pady=(5,0))
             
             if 'error' in result:
-                messagebox.showerror("Regeneration Error", result['error'], parent=self)
+                custom_dialogs.show_error(self, "Regeneration Error", result['error'])
                 # Notify parent that the call failed
                 self.parent_app.report_regeneration_finished(success=False)
                 return

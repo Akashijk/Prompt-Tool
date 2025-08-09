@@ -1,10 +1,17 @@
 /.DS_Store
+__pycache__/
+*.pyc
 templates/*
 templates/*/*
 history/*
 history/*/*
 wildcards/*
 wildcards/*/*
+core/__pycache__/*
+core/__pycache__/
+
+
+#Include for initial setup
 !templates/sfw/artistic_masterpiece.txt
 !wildcards/artistic_subject.txt
 !wildcards/pose_actions.txt

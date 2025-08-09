@@ -1,32 +1,39 @@
 """An interactive window for brainstorming with an AI model."""
 
+import tkinter.font as tkfont
 import tkinter as tk
-from tkinter import ttk, simpledialog
+from tkinter import ttk
 import queue
 import threading
 import re
 import random
-from typing import Optional, List, Dict, Callable, Tuple
+from typing import Optional, List, Dict, Callable, Tuple, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
 from core.config import config
+from . import custom_dialogs
 from .review_window import ReviewAndSaveWindow
 from .common import BrainstormingContextMenu, TextContextMenu
+
+if TYPE_CHECKING:
+    from .gui_app import GUIApp
 
 
 class BrainstormingWindow(tk.Toplevel):
     """An interactive window for brainstorming with an AI model."""
-    def __init__(self, parent, processor: PromptProcessor, models: List[str], default_model: str, model_change_callback: Callable, update_callback: Callable):
+    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, models: List[str], default_model: str, model_change_callback: Callable, update_callback: Callable):
         super().__init__(parent)
         self.title("AI Brainstorming Session")
         self.geometry("800x600")
 
+        self.parent_app = parent
         self.processor = processor
         self.update_callback = update_callback
         self.models = models
         self.chat_queue = queue.Queue()
         self.model_change_callback = model_change_callback
         self.active_brainstorm_model: Optional[str] = None
+        self.conversation_history: List[Dict[str, str]] = []
 
         # --- Widgets ---
         top_frame = ttk.Frame(self, padding=10)
@@ -50,16 +57,16 @@ class BrainstormingWindow(tk.Toplevel):
         history_scroll_frame = ttk.Frame(history_frame)
         history_scroll_frame.pack(fill=tk.BOTH, expand=True)
         history_scrollbar = ttk.Scrollbar(history_scroll_frame, orient=tk.VERTICAL)
-        self.history_text = tk.Text(history_scroll_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Helvetica", 11), yscrollcommand=history_scrollbar.set)
+        self.history_text = tk.Text(history_scroll_frame, wrap=tk.WORD, state=tk.DISABLED, font=self.parent_app.default_font, yscrollcommand=history_scrollbar.set)
         history_scrollbar.config(command=self.history_text.yview)
         history_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.history_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         BrainstormingContextMenu(self.history_text, self._rewrite_selection)
 
-        self.history_text.tag_configure("user", foreground="blue", font=("Helvetica", 11, "bold"))
+        self.history_text.tag_configure("user", foreground="blue", font=tkfont.Font(family="Helvetica", size=config.font_size, weight="bold"))
         self.history_text.tag_configure("ai", foreground="#006400")
-        self.history_text.tag_configure("error", foreground="red", font=("Helvetica", 11, "bold"))
-        self.history_text.tag_configure("thinking", foreground="gray", font=("Helvetica", 11, "italic"))
+        self.history_text.tag_configure("error", foreground="red", font=tkfont.Font(family="Helvetica", size=config.font_size, weight="bold"))
+        self.history_text.tag_configure("thinking", foreground="gray", font=tkfont.Font(family="Helvetica", size=config.font_size, slant="italic"))
         self.history_text.tag_configure("new_wildcard_link", foreground="#FFB000", underline=True)
         self.history_text.tag_bind("new_wildcard_link", "<Enter>", lambda e: self.history_text.config(cursor="hand2"))
         self.history_text.tag_bind("new_wildcard_link", "<Leave>", lambda e: self.history_text.config(cursor=""))
@@ -68,7 +75,7 @@ class BrainstormingWindow(tk.Toplevel):
         input_area_frame = ttk.LabelFrame(main_pane, text="Your Message (Enter to send, Shift+Enter for new line)", padding=5)
         main_pane.add(input_area_frame, weight=1)
 
-        self.input_text = tk.Text(input_area_frame, height=4, wrap=tk.WORD, font=("Helvetica", 11))
+        self.input_text = tk.Text(input_area_frame, height=4, wrap=tk.WORD, font=self.parent_app.default_font)
         self.input_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.input_text.bind("<Return>", self._on_send_message_event)
         TextContextMenu(self.input_text)
@@ -104,18 +111,30 @@ class BrainstormingWindow(tk.Toplevel):
 
         model = self.model_var.get()
 
+        # Add to conversation history BEFORE making the call
+        self.conversation_history.append({'role': 'user', 'content': user_prompt})
+
         self._add_message("User", user_prompt, "user")
         self.input_text.delete("1.0", tk.END)
         self.send_button.config(state=tk.DISABLED)
         self._add_message("AI", "Thinking...", "thinking")
 
-        thread = threading.Thread(target=self._get_ai_response, args=(model, user_prompt), daemon=True)
+        thread = threading.Thread(target=self._get_ai_response, args=(model,), daemon=True)
         thread.start()
         self.after(100, self._check_chat_queue)
 
-    def _get_ai_response(self, model, prompt):
+    def _get_ai_response(self, model: str):
         try:
-            response = self.processor.chat_with_model(model, prompt)
+            response = self.processor.chat_with_model(model, self.conversation_history)
+            self.chat_queue.put({'response': response, 'tag': 'ai'})
+        except Exception as e:
+            self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error'})
+
+    def _get_initial_ai_response(self, model: str):
+        """Gets the first AI response after a system prompt is loaded."""
+        try:
+            # The history already contains the system prompt.
+            response = self.processor.chat_with_model(model, self.conversation_history)
             self.chat_queue.put({'response': response, 'tag': 'ai'})
         except Exception as e:
             self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error'})
@@ -123,11 +142,17 @@ class BrainstormingWindow(tk.Toplevel):
     def _check_chat_queue(self):
         try:
             result = self.chat_queue.get_nowait()
-            self.history_text.config(state=tk.NORMAL)
-            self.history_text.delete("end-2l", "end-1c")
-            self.history_text.config(state=tk.DISABLED)
+            
+            # The 'rewrite' action manages its own placeholder text and does not append a "Thinking..." message.
+            # All other actions do, so we remove it before processing the result for those cases.
+            is_rewrite_action = result.get('tag') == 'ai_generated' and result.get('content_type') == 'rewrite'
 
-            if result.get('tag') == 'ai_generated':
+            if not is_rewrite_action:
+                self.history_text.config(state=tk.NORMAL)
+                self.history_text.delete("end-2l", "end-1c") # Remove the "Thinking..." line
+                self.history_text.config(state=tk.DISABLED)
+
+            if is_rewrite_action or result.get('tag') == 'ai_generated':
                 content_type = result.get('content_type')
                 response = result.get('response', '')
                 metadata = result.get('metadata')
@@ -142,7 +167,12 @@ class BrainstormingWindow(tk.Toplevel):
                         self._handle_rewritten_text(response, metadata['start_index'], metadata['end_index'])
             else:
                 # Handle regular chat or errors
-                self._add_message("AI", result['response'], result['tag'])
+                response_text = result['response']
+                tag = result['tag']
+                # Add AI response to history if it's not an error
+                if tag == 'ai':
+                    self.conversation_history.append({'role': 'assistant', 'content': response_text})
+                self._add_message("AI", response_text, tag)
             
             self.send_button.config(state=tk.NORMAL)
         except queue.Empty:
@@ -160,24 +190,52 @@ class BrainstormingWindow(tk.Toplevel):
 
     def load_content_for_brainstorming(self, content_type: str, filename: str, content: str):
         """Loads existing content into the chat window for refinement."""
-        message = (
-            f"Loaded {content_type} '{filename}' for brainstorming.\n\n"
-            f"You can now ask me to refine it. For example: 'make this list more diverse', 'rewrite this template to be more cinematic', or 'add more technical terms'.\n\n"
-            f"CONTENT:\n"
+        # Clear previous session
+        self.history_text.config(state=tk.NORMAL)
+        self.history_text.delete("1.0", tk.END)
+        self.history_text.config(state=tk.DISABLED)
+        self.conversation_history.clear()
+
+        system_prompt = (
+            f"You are an AI assistant helping a user brainstorm content for a Stable Diffusion prompt generator. "
+            f"The user has loaded the following {content_type} named '{filename}'. Your task is to act as an expert collaborator. "
+            f"Analyze the content and start the conversation by asking a helpful, targeted question about how the user wants to improve or expand upon it. "
+            f"Be proactive and suggest a potential first step.\n\n"
+            f"LOADED CONTENT:\n"
             f"----------------\n"
-            f"{content}"
+            f"{content}\n"
+            f"----------------"
         )
-        self._add_message("System", message, "thinking")
+        self.conversation_history.append({'role': 'system', 'content': system_prompt})
+
+        # Display a simplified message to the user
+        user_facing_message = f"Loaded {content_type} '{filename}' for brainstorming. The AI is reviewing it and will start the conversation."
+        self._add_message("System", user_facing_message, "thinking")
+        
+        # Start the AI's response
+        model = self.model_var.get()
+        self.send_button.config(state=tk.DISABLED)
+        self._add_message("AI", "Thinking...", "thinking")
+        
+        thread = threading.Thread(target=self._get_initial_ai_response, args=(model,), daemon=True)
+        thread.start()
+        self.after(100, self._check_chat_queue)
 
     def _generate_wildcard_file(self):
         """Guides the user to generate a new wildcard file."""
-        topic = simpledialog.askstring("Generate Wildcard", "What is the topic for the new wildcard file?\n(e.g., 'sci-fi helmet designs', 'fantasy potion names')", parent=self)
+        topic = custom_dialogs.ask_string(self, "Generate Wildcard", "What is the topic for the new wildcard file?\n(e.g., 'sci-fi helmet designs', 'fantasy potion names')")
         self.generate_wildcard_with_topic(topic)
 
     def generate_wildcard_with_topic(self, topic: str, existing_window: Optional[ReviewAndSaveWindow] = None):
         """Starts the generation process for a wildcard with a given topic."""
-        if not topic: return
-        
+        if not topic:
+            return
+
+        # Create or get the results window first with a loading state.
+        metadata = {'filename': topic, 'topic': topic, 'window': existing_window}
+        results_window = self._handle_generated_content("", "wildcard", metadata)
+        metadata['window'] = results_window
+
         # Add workflow context to the prompt
         workflow_context = ""
         if config.workflow == 'nsfw':
@@ -210,17 +268,22 @@ class BrainstormingWindow(tk.Toplevel):
             f"Now, generate the list for the topic: '{topic}'."
         )
         self._add_message("AI", f"Generating wildcard ideas for '{topic}'...", "thinking")
-        # The 'topic' is the base name for the wildcard file.
-        self._run_generation_task(prompt, "wildcard", metadata={'filename': topic, 'topic': topic, 'window': existing_window})
+        self._run_generation_task(prompt, "wildcard", metadata=metadata)
 
     def _generate_template_file(self):
         """Guides the user to generate a new template file."""
-        concept = simpledialog.askstring("Generate Template", "What is the high-level concept for the new template?\n(e.g., 'a character portrait in a dark forest', 'a futuristic city street scene')", parent=self)
+        concept = custom_dialogs.ask_string(self, "Generate Template", "What is the high-level concept for the new template?\n(e.g., 'a character portrait in a dark forest', 'a futuristic city street scene')")
         self.generate_template_with_concept(concept)
 
     def generate_template_with_concept(self, concept: str, existing_window: Optional[ReviewAndSaveWindow] = None):
         """Starts the generation process for a template with a given concept."""
-        if not concept: return
+        if not concept:
+            return
+
+        # Create or get the results window first with a loading state.
+        metadata = {'concept': concept, 'window': existing_window}
+        results_window = self._handle_generated_content("", "template", metadata)
+        metadata['window'] = results_window
 
         wildcard_names = self.processor.get_wildcard_names()
         # Suggest a smaller, random sample of wildcards to avoid overwhelming the AI
@@ -256,7 +319,7 @@ class BrainstormingWindow(tk.Toplevel):
             f"Now, generate the template for the concept: '{concept}'."
         )
         self._add_message("AI", f"Generating a template for '{concept}'...", "thinking")
-        self._run_generation_task(prompt, "template", metadata={'concept': concept, 'window': existing_window})
+        self._run_generation_task(prompt, "template", metadata=metadata)
 
     def _run_generation_task(self, prompt: str, content_type: str, metadata: Optional[Dict] = None):
         """Runs a generation task in a background thread."""
@@ -265,7 +328,8 @@ class BrainstormingWindow(tk.Toplevel):
 
         def task():
             try:
-                response = self.processor.chat_with_model(model, prompt)
+                # Use the new one-shot generation method
+                response = self.processor.generate_for_brainstorming(model, prompt)
                 self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
             except Exception as e:
                 self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error'})
@@ -283,10 +347,10 @@ class BrainstormingWindow(tk.Toplevel):
         except tk.TclError:
             return # No selection
 
-        instructions = simpledialog.askstring(
+        instructions = custom_dialogs.ask_string(
+            self,
             "Rewrite with AI",
-            "How should I rewrite the selected text?\n(e.g., 'make it more poetic', 'add more technical terms')",
-            parent=self
+            "How should I rewrite the selected text?\n(e.g., 'make it more poetic', 'add more technical terms')"
         )
         if not instructions: return
 
@@ -377,23 +441,31 @@ class BrainstormingWindow(tk.Toplevel):
         self.history_text.insert(start_index, rewritten_text)
         self.history_text.config(state=tk.DISABLED)
 
-    def _handle_generated_content(self, content: str, content_type: str, metadata: Optional[Dict] = None):
-        """Opens the review window for newly generated content."""
+    def _handle_generated_content(self, content: str, content_type: str, metadata: Optional[Dict] = None) -> ReviewAndSaveWindow:
+        """
+        Opens or updates the review window for newly generated content.
+        If content is empty, it creates the window in a loading state.
+        Returns the window instance.
+        """
         existing_window = metadata.get('window') if metadata else None
 
         if existing_window and existing_window.winfo_exists():
-            existing_window.update_content(content)
+            if content:  # Only update if we have new content to show
+                existing_window.update_content(content)
             existing_window.lift()
+            return existing_window
         else:
             filename = metadata.get('filename') if metadata else None
             regenerate_callback = None
             if metadata:
                 if content_type == 'wildcard' and 'topic' in metadata:
-                    regenerate_callback = lambda window: self.generate_wildcard_with_topic(metadata['topic'], window)
+                    regenerate_callback = lambda win: self.generate_wildcard_with_topic(metadata['topic'], win)
                 elif content_type == 'template' and 'concept' in metadata:
-                    regenerate_callback = lambda window: self.generate_template_with_concept(metadata['concept'], window)
+                    regenerate_callback = lambda win: self.generate_template_with_concept(metadata['concept'], win)
 
-            ReviewAndSaveWindow(self, self.processor, content_type, content, self.update_callback, filename=filename, regenerate_callback=regenerate_callback)
+            # If content is empty, is_loading will be True.
+            window = ReviewAndSaveWindow(self, self.processor, content_type, content or "", self.update_callback, filename=filename, regenerate_callback=regenerate_callback, is_loading=not bool(content))
+            return window
 
     def _on_model_var_change(self, *args):
         """Handles when the user selects a new model in the dropdown."""

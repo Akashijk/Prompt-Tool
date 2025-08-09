@@ -96,19 +96,28 @@ class OllamaClient:
             enhanced = enhanced.replace('\n', ' ').replace('  ', ' ')
             return enhanced, sd_model
                 
-        except Exception as e:
-            print(f"Exception during prompt enhancement: {e}")
-            return "", "Stable Diffusion XL (SDXL) - error fallback"
-    
-    def chat(self, model: str, prompt: str) -> str:
-        """Generic chat with a model for brainstorming."""
-        # For brainstorming, we pass the prompt directly. The user can provide instructions.
-        try:
-            raw_response = self._generate(model, prompt, config.DEFAULT_TIMEOUT)
-            return raw_response.strip()
         except Exception:
             # Re-raise to be caught by the GUI and displayed to the user.
             raise
+
+    def chat(self, model: str, messages: List[Dict[str, str]]) -> str:
+        """Generic chat with a model for brainstorming, using a message history."""
+        api_url = f"{self.base_url}/api/chat"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        try:
+            res = requests.post(api_url, json=payload, timeout=config.DEFAULT_TIMEOUT)
+            res.raise_for_status()
+            return res.json().get('message', {}).get('content', '')
+        except requests.Timeout:
+            raise Exception(f"Request to Ollama timed out after {config.DEFAULT_TIMEOUT} seconds.")
+        except requests.RequestException as e:
+            if hasattr(e, 'response') and e.response and e.response.status_code == 404:
+                raise Exception(f"Model '{model}' not found. It may not be pulled or is misspelled.")
+            raise Exception(f"Error communicating with Ollama API: {e}")
 
     def create_single_variation(self, enhanced_prompt: str, model: str, variation_type: str) -> Dict[str, str]:
         """Create a single variation of a given type."""

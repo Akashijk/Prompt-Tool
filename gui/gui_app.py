@@ -2,13 +2,14 @@
 
 import os
 import tkinter as tk
+import tkinter.font as tkfont
 import threading
 import re
 import random
 import sys
 import queue
 from typing import Optional, List, Tuple, Dict, Any
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk
 from core.prompt_processor import PromptProcessor
 from core.template_engine import PromptSegment
 from core.config import config, DEFAULT_SFW_VARIATION_INSTRUCTIONS, DEFAULT_NSFW_VARIATION_INSTRUCTIONS, save_settings, load_settings
@@ -22,6 +23,7 @@ from .system_prompt_editor import SystemPromptEditorWindow
 from .wildcard_manager import WildcardManagerWindow
 from .template_editor import TemplateEditor
 from .wildcard_inserter import WildcardInserter
+from . import custom_dialogs
 from .theme_manager import ThemeManager
 
          
@@ -33,16 +35,18 @@ class GUIApp(tk.Tk):
         self.geometry("900x700")
 
         # Set application icon
+        # FONT MANAGEMENT
+        self._initialize_fonts()
+
+        # Initialize and apply the theme first
+        self.theme_manager = ThemeManager()
+        self.theme_manager.apply_theme(self)
         try:
             icon_path = os.path.join(config.PROJECT_ROOT, 'assets', 'icon.png')
             if os.path.exists(icon_path):
                 self.iconphoto(True, tk.PhotoImage(file=icon_path))
         except Exception as e:
             print(f"Warning: Could not load application icon: {e}")
-
-        # Initialize and apply the theme first
-        self.theme_manager = ThemeManager()
-        self.theme_manager.apply_theme(self)
 
         # Core logic
         self.processor = PromptProcessor()
@@ -57,8 +61,7 @@ class GUIApp(tk.Tk):
         self.current_template_content: Optional[str] = None
         self.current_template_file: Optional[str] = None
         self.current_structured_prompt: List[PromptSegment] = []
-        self.segment_map: List[Tuple[str, str, int]] = [] # start, end, segment_index
-        self.preview_font = ("Helvetica", 13)
+        self.segment_map: List[Tuple[str, str, int]] = []  # start, end, segment_index
         self.tooltip: Optional[Tooltip] = None
         self.debounce_timer: Optional[str] = None
         self.active_models: Dict[str, int] = {}
@@ -71,6 +74,7 @@ class GUIApp(tk.Tk):
         self.wildcard_inserter: Optional[WildcardInserter] = None
         self.file_menu: Optional[tk.Menu] = None
         self.enhancement_model_var = tk.StringVar()
+        self.font_size_var = tk.IntVar(value=config.font_size)
         self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
 
@@ -82,6 +86,25 @@ class GUIApp(tk.Tk):
         self._populate_wildcard_lists()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         self._update_window_title() # Set initial title
+
+    def _initialize_fonts(self):
+        """Initializes named fonts for the application."""
+        self.default_font = tkfont.Font(family="Helvetica", size=config.font_size)
+        self.fixed_font = tkfont.Font(family="Courier", size=config.font_size)
+        self.large_font = tkfont.Font(family="Helvetica", size=config.font_size + 2)
+        self.small_font = tkfont.Font(family="Helvetica", size=config.font_size - 1)
+
+        # Update default ttk styles
+        style = ttk.Style()
+        style.configure(".", font=self.default_font)
+        style.configure("TLabel", font=self.default_font)
+        style.configure("TButton", font=self.default_font)
+        style.configure("TCheckbutton", font=self.default_font)
+        style.configure("TRadiobutton", font=self.default_font)
+        style.configure("TEntry", font=self.default_font)
+        style.configure("TCombobox", font=self.default_font)
+        style.configure("TLabelFrame.Label", font=self.default_font)
+        style.configure("TNotebook.Tab", font=self.default_font)
 
     def _create_widgets(self):
         """Create and layout the main widgets."""
@@ -149,6 +172,12 @@ class GUIApp(tk.Tk):
         theme_menu.add_command(label="Light", command=lambda: self._set_theme("light"))
         theme_menu.add_command(label="Dark", command=lambda: self._set_theme("dark"))
         view_menu.add_cascade(label="Theme", menu=theme_menu)
+
+        font_menu = tk.Menu(view_menu, tearoff=0)
+        for size in [10, 11, 12, 14, 16]:
+            font_menu.add_radiobutton(label=f"{size} pt", variable=self.font_size_var, value=size, command=self._set_font_size)
+        view_menu.add_cascade(label="Font Size", menu=font_menu)
+
         menubar.add_cascade(label="View", menu=view_menu)
 
         # --- Tools Menu ---
@@ -174,6 +203,7 @@ class GUIApp(tk.Tk):
         # --- Template editor (left side of top pane) ---
         self.template_editor = TemplateEditor(
             top_h_pane,
+            self,
             live_update_callback=self._schedule_live_update,
             double_click_callback=self._on_template_double_click,
             generate_wildcard_callback=self._generate_missing_wildcard,
@@ -184,6 +214,7 @@ class GUIApp(tk.Tk):
         # --- Wildcard inserter (right side of top pane) ---
         self.wildcard_inserter = WildcardInserter(
             top_h_pane,
+            self,
             insert_callback=self._insert_wildcard_tag,
             manage_callback=self._open_wildcard_manager
         )
@@ -191,7 +222,7 @@ class GUIApp(tk.Tk):
 
         # Generated prompt (bottom pane of vertical splitter)
         preview_pane = ttk.LabelFrame(v_pane, text="Generated Prompt (Wildcards are highlighted)", padding=5)
-        self.prompt_text = tk.Text(preview_pane, wrap=tk.WORD, height=10, font=self.preview_font)
+        self.prompt_text = tk.Text(preview_pane, wrap=tk.WORD, height=10, font=self.large_font)
         self.prompt_text.pack(fill=tk.BOTH, expand=True)
         TextContextMenu(self.prompt_text)
         self.prompt_text.config(state=tk.DISABLED)
@@ -217,8 +248,27 @@ class GUIApp(tk.Tk):
     def _update_window_title(self):
         """Updates the main window title to reflect the current workflow."""
         base_title = "Prompt Tool GUI"
-        workflow_text = config.workflow.upper()
-        self.title(f"{base_title} - [{workflow_text} Mode]")
+        if config.workflow == 'nsfw':
+            self.title(f"{base_title} - [NSFW Mode]")
+        else:
+            self.title(base_title)
+
+    def _set_font_size(self):
+        """Updates all named fonts to the new size and saves the setting."""
+        new_size = self.font_size_var.get()
+        
+        self.default_font.config(size=new_size)
+        self.fixed_font.config(size=new_size)
+        self.large_font.config(size=new_size + 2)
+        self.small_font.config(size=new_size - 1)
+        
+        # Save the setting
+        config.font_size = new_size
+        settings = load_settings()
+        settings['font_size'] = new_size
+        save_settings(settings)
+        
+        self.status_var.set(f"Font size set to {new_size}pt.")
 
     def _set_theme(self, theme_name: str):
         """Sets the theme and updates UI elements that need manual color changes."""
@@ -255,7 +305,7 @@ class GUIApp(tk.Tk):
 
         if not templates:
             workflow_dir = config.get_template_dir()
-            messagebox.showwarning("No Templates", f"No template files found for the '{config.workflow.upper()}' workflow.\n\nPlease add .txt files to:\n{workflow_dir}")
+            custom_dialogs.show_warning(self, "No Templates", f"No template files found for the '{config.workflow.upper()}' workflow.\n\nPlease add .txt files to:\n{workflow_dir}")
             self.template_var.set("No templates found")
             self.template_dropdown.config(state=tk.DISABLED)
             return
@@ -294,7 +344,7 @@ class GUIApp(tk.Tk):
             self._handle_model_change(None, self.active_enhancement_model)
 
         except Exception as e:
-            messagebox.showerror("Model Error", f"Could not load Ollama models:\n{e}")
+            custom_dialogs.show_error(self, "Model Error", f"Could not load Ollama models:\n{e}")
             self.enhancement_model_var.set("Error loading models")
 
     def _switch_workflow(self):
@@ -348,7 +398,7 @@ class GUIApp(tk.Tk):
             )
             if config.workflow == 'nsfw':
                 message += f"\n\nor the NSFW-specific folder:\n{config.WILDCARD_NSFW_DIR}"
-            messagebox.showwarning("No Wildcards", message)
+            custom_dialogs.show_warning(self, "No Wildcards", message)
         self.wildcard_inserter.populate(wildcard_files)
 
     def _on_template_var_change(self, *args):
@@ -534,7 +584,7 @@ class GUIApp(tk.Tk):
             self.status_var.set(f"Template '{self.current_template_file}' saved successfully.")
             self.current_template_content = content # Update internal state
         except Exception as e:
-            messagebox.showerror("Save Error", f"Could not save template:\n{e}")
+            custom_dialogs.show_error(self, "Save Error", f"Could not save template:\n{e}")
             self.status_var.set(f"Error saving template: {self.current_template_file}")
 
     def _copy_generated_prompt(self):
@@ -559,7 +609,7 @@ class GUIApp(tk.Tk):
         """Handles the 'Enhance This Prompt' button click."""
         model = self.enhancement_model_var.get()
         if not model or "model" in model.lower():
-            messagebox.showerror("Error", "Please select a valid Ollama model first.")
+            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
             return
 
         # Determine if we are enhancing from a template-generated prompt or a manually edited one
@@ -571,7 +621,7 @@ class GUIApp(tk.Tk):
             prompt_text = self.template_editor.get_content().strip()
 
         if not prompt_text:
-            messagebox.showerror("Error", "No prompt to enhance.")
+            custom_dialogs.show_error(self, "Error", "No prompt to enhance.")
             return
 
         # Create the results window immediately
@@ -612,7 +662,7 @@ class GUIApp(tk.Tk):
             # The processor will use callbacks to update the UI.
             self.processor.process_enhancement_batch([prompt], model, selected_variations, cancellation_event)
         except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Enhancement Error", f"An error occurred during processing:\n{e}"))
+            self.after(0, lambda: custom_dialogs.show_error(self, "Enhancement Error", f"An error occurred during processing:\n{e}"))
         finally:
             # Re-enable the main enhance button when processing is complete
             self.action_bar.select_button.config(state=tk.NORMAL)
@@ -746,7 +796,7 @@ class GUIApp(tk.Tk):
 
     def _create_new_template_file(self):
         """Prompts user for a new template filename and creates it."""
-        filename = simpledialog.askstring("New Template", "Enter new template filename:", parent=self)
+        filename = custom_dialogs.ask_string(self, "New Template", "Enter new template filename:")
         if not filename:
             return
         
@@ -760,15 +810,15 @@ class GUIApp(tk.Tk):
             self.template_var.set(filename) # This will trigger the update via trace
             self.status_var.set(f"Created and loaded new template: {filename}")
         except Exception as e:
-            messagebox.showerror("Error", f"Could not create template file:\n{e}")
+            custom_dialogs.show_error(self, "Error", f"Could not create template file:\n{e}")
 
     def _archive_current_template(self):
         """Moves the current template file to an archive folder."""
         if not self.current_template_file:
-            messagebox.showwarning("No Template", "No template is currently selected to archive.", parent=self)
+            custom_dialogs.show_warning(self, "No Template", "No template is currently selected to archive.")
             return
 
-        if not messagebox.askyesno("Confirm Archive", f"Are you sure you want to archive '{self.current_template_file}'?\n\nThis will move the file to a subfolder named 'archive'.", parent=self):
+        if not custom_dialogs.ask_yes_no(self, "Confirm Archive", f"Are you sure you want to archive '{self.current_template_file}'?\n\nThis will move the file to a subfolder named 'archive'."):
             return
 
         try:
@@ -786,7 +836,7 @@ class GUIApp(tk.Tk):
             self._load_templates()
 
         except Exception as e:
-            messagebox.showerror("Archive Error", f"Could not archive file:\n{e}", parent=self)
+            custom_dialogs.show_error(self, "Archive Error", f"Could not archive file:\n{e}")
 
     def _open_brainstorming_window(self):
         """Opens the brainstorming window."""
@@ -797,7 +847,7 @@ class GUIApp(tk.Tk):
             try:
                 models = self.processor.get_available_models()
                 if not models:
-                    messagebox.showerror("Error", "No Ollama models available for brainstorming.")
+                    custom_dialogs.show_error(self, "Error", "No Ollama models available for brainstorming.")
                     return
                 default_model = self.enhancement_model_var.get()
                 if default_model not in models:
@@ -806,7 +856,7 @@ class GUIApp(tk.Tk):
                 self.brainstorming_window = BrainstormingWindow(self, self.processor, models, default_model, self._handle_model_change, self._handle_ai_content_update)
                 self.brainstorming_window.protocol("WM_DELETE_WINDOW", self._on_brainstorming_window_close)
             except Exception as e:
-                messagebox.showerror("Error", f"Could not open brainstorming window:\n{e}")
+                custom_dialogs.show_error(self, "Error", f"Could not open brainstorming window:\n{e}")
 
     def _on_brainstorming_window_close(self):
         if self.brainstorming_window:
@@ -897,11 +947,11 @@ class GUIApp(tk.Tk):
     def _change_ollama_server(self):
         """Opens a dialog to change the Ollama server URL."""
         current_url = config.OLLAMA_BASE_URL
-        new_url = simpledialog.askstring(
+        new_url = custom_dialogs.ask_string(
+            self,
             "Ollama Server",
             "Enter the base URL for your Ollama server (e.g., http://192.168.1.100:11434):",
-            initialvalue=current_url,
-            parent=self
+            initialvalue=current_url
         )
 
         if new_url and new_url.strip() and new_url.strip() != current_url:
@@ -923,10 +973,10 @@ class GUIApp(tk.Tk):
                 # Re-initialize the processor's client with the new URL
                 self.processor.ollama_client = OllamaClient(base_url=new_url)
                 self._load_models() # Reload models in the GUI
-                messagebox.showinfo("Success", f"Successfully connected to Ollama server at:\n{new_url}", parent=self)
+                custom_dialogs.show_info(self, "Success", f"Successfully connected to Ollama server at:\n{new_url}")
                 self.status_var.set(f"Ollama server set to {new_url}")
             except Exception as e:
-                messagebox.showerror("Connection Failed", f"Could not connect to Ollama server at:\n{new_url}\n\nError: {e}", parent=self)
+                custom_dialogs.show_error(self, "Connection Failed", f"Could not connect to Ollama server at:\n{new_url}\n\nError: {e}")
 
     def _handle_model_change(self, old_model: Optional[str], new_model: Optional[str]):
         """Manages the usage count of models and unloads them when no longer active."""

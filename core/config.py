@@ -46,6 +46,7 @@ class Config:
     
     # Default settings
     DEFAULT_NUM_PROMPTS: int = 5
+    DEFAULT_FONT_SIZE: int = 11
     DEFAULT_TIMEOUT: int = 45
     VARIATION_TIMEOUT: int = 30
     
@@ -54,6 +55,9 @@ class Config:
     
     # Workflow setting
     workflow: str = _user_settings.get("workflow", "sfw")
+
+    # UI settings
+    font_size: int = _user_settings.get("font_size", DEFAULT_FONT_SIZE)
 
     def get_template_dir(self) -> str:
         """Returns the path to the template directory for the current workflow."""

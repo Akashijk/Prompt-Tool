@@ -1,7 +1,0 @@
-Transform this Stable Diffusion prompt into a PHOTOREALISTIC version with technical photography details, realistic lighting, and high-quality descriptors. Focus on camera settings and professional photography.
-
-**IMPORTANT FORMAT:** Respond with EXACTLY this format:
-ENHANCED_PROMPT: [your enhanced prompt here]
-SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic content]
-
-**Original prompt to transform:**

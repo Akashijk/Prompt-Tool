@@ -1,11 +1,12 @@
 """A pop-up window to manage wildcard files."""
 
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk
 from typing import Optional, Callable, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
 from core.config import config
+from . import custom_dialogs
 from .common import TextContextMenu
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ class WildcardManagerWindow(tk.Toplevel):
         list_scroll_frame = ttk.Frame(list_frame)
         list_scroll_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_scroll_frame, orient=tk.VERTICAL)
-        self.wildcard_listbox = tk.Listbox(list_scroll_frame, font=("Helvetica", 10), yscrollcommand=scrollbar.set)
+        self.wildcard_listbox = tk.Listbox(list_scroll_frame, font=self.parent_app.default_font, yscrollcommand=scrollbar.set)
         scrollbar.config(command=self.wildcard_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.wildcard_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -48,7 +49,7 @@ class WildcardManagerWindow(tk.Toplevel):
         h_pane.add(list_frame, weight=1)
 
         self.editor_frame = ttk.LabelFrame(h_pane, text="No file selected", padding=5)
-        self.editor_text = tk.Text(self.editor_frame, wrap=tk.WORD, font=("Courier", 11), undo=True, state=tk.DISABLED)
+        self.editor_text = tk.Text(self.editor_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, state=tk.DISABLED)
         TextContextMenu(self.editor_text)
         self.editor_text.pack(fill=tk.BOTH, expand=True)
         
@@ -86,7 +87,7 @@ class WildcardManagerWindow(tk.Toplevel):
             self.archive_button.config(state=tk.NORMAL)
             self.brainstorm_button.config(state=tk.NORMAL)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not load wildcard file:\n{e}", parent=self)
+            custom_dialogs.show_error(self, "Error", f"Could not load wildcard file:\n{e}")
 
     def _save_wildcard_file(self):
         if not self.selected_wildcard_file: return
@@ -102,7 +103,7 @@ class WildcardManagerWindow(tk.Toplevel):
             # When saving an existing file, we don't need to specify the scope.
             # The processor will find its original location and save it there.
             self.processor.save_wildcard_content(self.selected_wildcard_file, sorted_content)
-            messagebox.showinfo("Success", f"Successfully saved and sorted {self.selected_wildcard_file}", parent=self)
+            custom_dialogs.show_info(self, "Success", f"Successfully saved and sorted {self.selected_wildcard_file}")
 
             # After saving, reload the sorted content into the editor to reflect the change
             self.editor_text.delete("1.0", tk.END)
@@ -119,20 +120,20 @@ class WildcardManagerWindow(tk.Toplevel):
 
             self.update_callback(modified_file=self.selected_wildcard_file)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not save wildcard file:\n{e}", parent=self)
+            custom_dialogs.show_error(self, "Error", f"Could not save wildcard file:\n{e}")
 
     def _create_new_wildcard_file(self):
-        filename = simpledialog.askstring("New Wildcard File", "Enter new wildcard filename:", parent=self)
+        filename = custom_dialogs.ask_string(self, "New Wildcard File", "Enter new wildcard filename:")
         if not filename: return
         if not filename.endswith('.txt'): filename += '.txt'
         try:
             is_nsfw_only = False
             if config.workflow == 'nsfw':
-                is_nsfw_only = messagebox.askyesno(
+                is_nsfw_only = custom_dialogs.ask_yes_no(
+                    self,
                     "Wildcard Scope",
                     "Save this as an NSFW-only wildcard?\n\n"
-                    "(Choosing 'No' will save it to the shared folder, making it available in both SFW and NSFW modes.)",
-                    parent=self
+                    "(Choosing 'No' will save it to the shared folder, making it available in both SFW and NSFW modes.)"
                 )
 
             # Create an empty file by saving empty content, respecting the user's choice
@@ -146,13 +147,13 @@ class WildcardManagerWindow(tk.Toplevel):
                 self.wildcard_listbox.see(idx)
                 self._on_wildcard_file_select(None)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not create wildcard file:\n{e}", parent=self)
+            custom_dialogs.show_error(self, "Error", f"Could not create wildcard file:\n{e}")
 
     def _archive_selected_wildcard(self):
         """Moves the selected wildcard file to an archive folder."""
         if not self.selected_wildcard_file: return
 
-        if not messagebox.askyesno("Confirm Archive", f"Are you sure you want to archive '{self.selected_wildcard_file}'?\n\nThis will move the file to a subfolder named 'archive'.", parent=self):
+        if not custom_dialogs.ask_yes_no(self, "Confirm Archive", f"Are you sure you want to archive '{self.selected_wildcard_file}'?\n\nThis will move the file to a subfolder named 'archive'."):
             return
 
         try:
@@ -167,7 +168,7 @@ class WildcardManagerWindow(tk.Toplevel):
             self._populate_wildcard_list()
             self.update_callback()
         except Exception as e:
-            messagebox.showerror("Archive Error", f"Could not archive file:\n{e}", parent=self)
+            custom_dialogs.show_error(self, "Archive Error", f"Could not archive file:\n{e}")
 
     def _brainstorm_with_ai(self):
         """Sends the current wildcard content to the brainstorming window."""

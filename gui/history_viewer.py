@@ -94,7 +94,7 @@ class HistoryViewerWindow(tk.Toplevel):
         details_frame = ttk.LabelFrame(main_pane, text="Selected Prompt Details", padding=5)
         main_pane.add(details_frame, weight=2)
 
-        self.details_text = tk.Text(details_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Helvetica", 11))
+        self.details_text = tk.Text(details_frame, wrap=tk.WORD, state=tk.DISABLED, font=self.parent_app.default_font)
         details_scrollbar = ttk.Scrollbar(details_frame, orient="vertical", command=self.details_text.yview)
         self.details_text.configure(yscrollcommand=details_scrollbar.set)
         details_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)

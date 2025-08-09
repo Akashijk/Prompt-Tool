@@ -6,15 +6,16 @@ from typing import Callable, List, Optional
 
 class WildcardInserter(ttk.Frame):
     """The wildcard inserter listbox and its frame."""
-    def __init__(self, parent, insert_callback: Callable, manage_callback: Callable, **kwargs):
+    def __init__(self, parent, app_instance, insert_callback: Callable, manage_callback: Callable, **kwargs):
         super().__init__(parent, **kwargs)
+        self.app_instance = app_instance
         
         frame = ttk.LabelFrame(self, text="Insert Wildcard", padding=5)
 
         list_scroll_frame = ttk.Frame(frame)
         list_scroll_frame.pack(fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_scroll_frame, orient=tk.VERTICAL)
-        self.listbox = tk.Listbox(list_scroll_frame, font=("Helvetica", 10), yscrollcommand=scrollbar.set)
+        self.listbox = tk.Listbox(list_scroll_frame, font=self.app_instance.default_font, yscrollcommand=scrollbar.set)
         scrollbar.config(command=self.listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)

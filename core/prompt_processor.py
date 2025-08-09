@@ -224,9 +224,19 @@ class PromptProcessor:
                 return DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION
             return DEFAULT_NSFW_VARIATION_INSTRUCTIONS.get(key, '')
 
-    def chat_with_model(self, model: str, prompt: str) -> str:
+    def chat_with_model(self, model: str, messages: List[Dict[str, str]]) -> str:
         """Handles a chat interaction with the specified Ollama model."""
-        return self.ollama_client.chat(model, prompt)
+        return self.ollama_client.chat(model, messages)
+
+    def generate_for_brainstorming(self, model: str, prompt: str) -> str:
+        """Handles a one-shot generation task for brainstorming wildcards/templates."""
+        # This uses the /api/generate endpoint for single, non-conversational tasks.
+        try:
+            # We can reuse the internal _generate method from the client.
+            return self.ollama_client._generate(model, prompt, config.DEFAULT_TIMEOUT).strip()
+        except Exception:
+            # Re-raise to be caught by the GUI
+            raise
 
     def generate_raw_prompts(self, 
                            template_content: str, 
