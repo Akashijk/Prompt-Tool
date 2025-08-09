@@ -1,11 +1,15 @@
 """Main prompt processing and coordination logic."""
 
+import json
 import os
+import random
 import threading
 from typing import List, Dict, Any, Optional, Callable, Tuple
 from .template_engine import TemplateEngine, PromptSegment
 from .csv_manager import CSVManager
-from .config import config
+from .config import config, DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATION_INSTRUCTIONS, \
+                    DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATION_INSTRUCTIONS
+from .ollama_client import OllamaClient
 
 class PromptProcessor:
     """Coordinates prompt generation and enhancement workflow."""
@@ -13,8 +17,6 @@ class PromptProcessor:
     def __init__(self):
         self.template_engine = TemplateEngine()
         # Lazily import OllamaClient to avoid issues if it's not needed (e.g., in GUI)
-        # or to prevent circular dependencies in the future.
-        from .ollama_client import OllamaClient
         self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL) 
         self.csv_manager = CSVManager()
         
@@ -60,9 +62,6 @@ class PromptProcessor:
         os.makedirs(os.path.join(config.HISTORY_DIR, 'nsfw'), exist_ok=True)
 
         # Create system prompt directories and default files
-        from .config import DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATION_INSTRUCTIONS, \
-                            DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATION_INSTRUCTIONS
-
         workflows: List[Tuple[str, str, Dict[str, str]]] = [
             ('sfw', DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATION_INSTRUCTIONS),
             ('nsfw', DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATION_INSTRUCTIONS)
@@ -226,8 +225,6 @@ class PromptProcessor:
 
     def get_default_system_prompt(self, filename: str) -> str:
         """Gets the default content for a given system prompt."""
-        from .config import DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATION_INSTRUCTIONS, \
-                            DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATION_INSTRUCTIONS
 
         key = filename.replace('.txt', '')
         if config.workflow == 'sfw':
@@ -247,8 +244,8 @@ class PromptProcessor:
         """Handles a one-shot generation task for brainstorming wildcards/templates."""
         # This uses the /api/generate endpoint for single, non-conversational tasks.
         try:
-            # We can reuse the internal _generate method from the client.
-            return self.ollama_client._generate(model, prompt, config.DEFAULT_TIMEOUT).strip()
+            # Use a longer timeout for these complex, creative tasks.
+            return self.ollama_client._generate(model, prompt, config.BRAINSTORM_TIMEOUT).strip()
         except Exception:
             # Re-raise to be caught by the GUI
             raise
@@ -262,61 +259,6 @@ class PromptProcessor:
             prompt = self.template_engine.generate_prompt(template_content)
             prompts.append(prompt)
         return prompts
-    
-    def process_enhancement_batch(self, 
-                                prompts: List[str], 
-                                model: str,
-                                selected_variations: Optional[List[str]] = None,
-                                cancellation_event: Optional[threading.Event] = None) -> List[Dict[str, Any]]:
-        """Process a batch of prompts for enhancement."""
-        results = []
-        total_prompts = len(prompts)
-        
-        for i, prompt in enumerate(prompts):
-            if cancellation_event and cancellation_event.is_set():
-                self._update_status("batch_cancelled")
-                break
-            
-            # Enhance the prompt
-            enhancement_instruction = self.load_system_prompt_content('enhancement.txt')
-            self._update_status('enhancement_start', prompt_num=i+1, total_prompts=total_prompts)
-            enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
-            
-            result = {
-                'original': prompt,
-                'enhanced': enhanced,
-                'enhanced_sd_model': enhanced_sd_model,
-                'variations': {},
-                'status': 'enhanced'
-            }
-            
-            # Send back the main enhancement result immediately
-            if self.result_callback:
-                self.result_callback('enhanced', {'prompt': enhanced, 'sd_model': enhanced_sd_model})
-            
-            # Create variations if requested
-            if selected_variations:
-                for var_type in selected_variations:
-                    if cancellation_event and cancellation_event.is_set():
-                        break # break inner loop
-
-                    variation_instruction = self.load_system_prompt_content(f'{var_type}.txt')
-                    self._update_status('variation_start', var_type=var_type, prompt_num=i+1, total_prompts=total_prompts)
-                    variation_result = self.ollama_client.create_single_variation(variation_instruction + enhanced, model, var_type)
-                    # Send back variation result immediately
-                    if self.result_callback:
-                        self.result_callback(var_type, variation_result)
-                    result['variations'][var_type] = variation_result
-            
-            if cancellation_event and cancellation_event.is_set():
-                break # break outer loop
-
-            results.append(result)
-        
-        if not (cancellation_event and cancellation_event.is_set()):
-            self._update_status("batch_complete")
-        
-        return results
     
     def save_results(self, results: List[Dict[str, Any]]) -> None:
         """Save results to CSV."""

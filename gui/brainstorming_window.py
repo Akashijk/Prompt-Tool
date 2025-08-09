@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 import queue
 import threading
+import json
 import re
 import random
 from typing import Optional, List, Dict, Callable, Tuple, TYPE_CHECKING
@@ -34,6 +35,9 @@ class BrainstormingWindow(tk.Toplevel):
         self.model_change_callback = model_change_callback
         self.active_brainstorm_model: Optional[str] = None
         self.conversation_history: List[Dict[str, str]] = []
+        self.after_id: Optional[str] = None
+        self.suggestion_queue = queue.Queue()
+        self.suggestion_after_id: Optional[str] = None
 
         # --- Widgets ---
         top_frame = ttk.Frame(self, padding=10)
@@ -80,8 +84,13 @@ class BrainstormingWindow(tk.Toplevel):
         self.input_text.bind("<Return>", self._on_send_message_event)
         TextContextMenu(self.input_text)
         
-        self.send_button = ttk.Button(input_area_frame, text="Send", command=self._send_message)
-        self.send_button.pack(side=tk.LEFT, padx=(10, 0), fill=tk.Y)
+        button_container = ttk.Frame(input_area_frame)
+        button_container.pack(side=tk.LEFT, padx=(10, 0), fill=tk.Y)
+
+        self.send_button = ttk.Button(button_container, text="Send", command=self._send_message)
+        self.send_button.pack(fill=tk.X)
+        self.suggest_button = ttk.Button(button_container, text="Suggest Reply", command=self._suggest_reply)
+        self.suggest_button.pack(fill=tk.X, pady=(5,0))
         
         self._add_message("AI", "Hello! How can I help you brainstorm today? You can ask me to improve a list of wildcards, create a new template, or anything else you can think of.", "ai")
 
@@ -89,6 +98,15 @@ class BrainstormingWindow(tk.Toplevel):
         self.active_brainstorm_model = default_model
         self.model_change_callback(None, self.active_brainstorm_model)
 
+    def close(self):
+        """Safely close the window, cancelling any pending after() jobs."""
+        if self.after_id:
+            self.after_cancel(self.after_id)
+            self.after_id = None
+        if self.suggestion_after_id:
+            self.after_cancel(self.suggestion_after_id)
+            self.suggestion_after_id = None
+        self.destroy()
     def _handle_wildcard_link_click(self, wildcard_name: str, tag_name: str):
         """Handles a click on a new wildcard link, disabling it and starting generation."""
         # Disable the link to prevent multiple clicks
@@ -118,10 +136,11 @@ class BrainstormingWindow(tk.Toplevel):
         self.input_text.delete("1.0", tk.END)
         self.send_button.config(state=tk.DISABLED)
         self._add_message("AI", "Thinking...", "thinking")
+        self.suggest_button.config(state=tk.DISABLED)
 
         thread = threading.Thread(target=self._get_ai_response, args=(model,), daemon=True)
         thread.start()
-        self.after(100, self._check_chat_queue)
+        self.after_id = self.after(100, self._check_chat_queue)
 
     def _get_ai_response(self, model: str):
         try:
@@ -152,7 +171,19 @@ class BrainstormingWindow(tk.Toplevel):
                 self.history_text.delete("end-2l", "end-1c") # Remove the "Thinking..." line
                 self.history_text.config(state=tk.DISABLED)
 
-            if is_rewrite_action or result.get('tag') == 'ai_generated':
+            # Handle errors first, especially for generation tasks
+            if result.get('tag') == 'error':
+                metadata = result.get('metadata')
+                # If the error came from a task that opened a window, close it.
+                if metadata and metadata.get('window'):
+                    window = metadata.get('window')
+                    if window and window.winfo_exists():
+                        window.destroy()
+                
+                # Display the error in the chat window
+                self._add_message("System", f"Error during generation: {result.get('response')}", "error")
+
+            elif is_rewrite_action or result.get('tag') == 'ai_generated':
                 content_type = result.get('content_type')
                 response = result.get('response', '')
                 metadata = result.get('metadata')
@@ -160,8 +191,10 @@ class BrainstormingWindow(tk.Toplevel):
                     template, new_wildcards = self._parse_template_generation_response(response)
                     self._handle_generated_template(template, new_wildcards, metadata)
                 elif content_type == 'wildcard':
+                    topic = metadata.get('topic', 'new_wildcard')
+                    parsed_json_string = self._parse_json_from_ai_response(response, topic)
                     self._add_message("AI", f"Generated a new wildcard. See the new window to review and save.", "ai")
-                    self._handle_generated_content(response, 'wildcard', metadata)
+                    self._handle_generated_content(parsed_json_string, 'wildcard', metadata)
                 elif content_type == 'rewrite':
                     if metadata:
                         self._handle_rewritten_text(response, metadata['start_index'], metadata['end_index'])
@@ -174,9 +207,43 @@ class BrainstormingWindow(tk.Toplevel):
                     self.conversation_history.append({'role': 'assistant', 'content': response_text})
                 self._add_message("AI", response_text, tag)
             
+            self.suggest_button.config(state=tk.NORMAL)
             self.send_button.config(state=tk.NORMAL)
         except queue.Empty:
-            self.after(100, self._check_chat_queue)
+            self.after_id = self.after(100, self._check_chat_queue)
+
+    def _suggest_reply(self):
+        """Starts the AI suggestion process for a chat reply."""
+        self.suggest_button.config(state=tk.DISABLED, text="Suggesting...")
+        
+        def task():
+            try:
+                model = self.model_var.get()
+                if not model or "model" in model.lower():
+                    raise Exception("Please select a valid Ollama model.")
+                
+                suggestion = self.processor.suggest_chat_reply(self.conversation_history, model)
+                self.suggestion_queue.put({'success': True, 'suggestion': suggestion})
+            except Exception as e:
+                self.suggestion_queue.put({'success': False, 'error': str(e)})
+        
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
+
+    def _check_suggestion_queue(self):
+        """Checks for AI reply suggestions and updates the input box."""
+        try:
+            result = self.suggestion_queue.get_nowait()
+            self.suggest_button.config(state=tk.NORMAL, text="Suggest Reply")
+            
+            if result['success']:
+                self.input_text.delete("1.0", tk.END)
+                self.input_text.insert("1.0", result.get('suggestion', ''))
+            else:
+                custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating a suggestion:\n{result['error']}")
+        except queue.Empty:
+            self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
 
     def _add_message(self, sender, message, tag):
         self.history_text.config(state=tk.NORMAL)
@@ -219,7 +286,7 @@ class BrainstormingWindow(tk.Toplevel):
         
         thread = threading.Thread(target=self._get_initial_ai_response, args=(model,), daemon=True)
         thread.start()
-        self.after(100, self._check_chat_queue)
+        self.after_id = self.after(100, self._check_chat_queue)
 
     def _generate_wildcard_file(self):
         """Guides the user to generate a new wildcard file."""
@@ -241,31 +308,40 @@ class BrainstormingWindow(tk.Toplevel):
         if config.workflow == 'nsfw':
             workflow_context = (
                 "The user is currently in NSFW (Not Safe For Work) mode. "
-                "The generated items should be explicit, adult-oriented, and suitable for generating pornographic imagery if it appears to require it. "
-                "Do not censor the content, but if you are asked to generate content for furniture or backdrops you don't need to necessarily make it explicit."
-                "Use your best judgement, but default to NSFW themes if you aren't sure."
+                "Generated items may include explicit, adult-oriented, and pornographic elements if the subject naturally calls for it. "
+                "Only include sexual or explicit details when they are relevant to the subject or enhance its realism—avoid forcing explicit terms into unrelated or inanimate objects unless it makes natural sense in an erotic context. "
+                "If the request involves neutral topics like furniture, backdrops, landscapes, or clothing styles, describe them normally unless there is a clear erotic reason to make them explicit. "
+                "Use realistic and coherent descriptions rather than absurd combinations, and prioritize plausible adult themes over randomness."
             )
         else:
             workflow_context = "The user is currently in SFW (Safe For Work) mode. The items should be general-purpose and not contain any explicit content."
 
+        wildcard_names = self.processor.get_wildcard_names()
+        sample_size = min(5, len(wildcard_names))
+        wildcard_sample_str = ", ".join(random.sample(wildcard_names, sample_size)) if wildcard_names else "none"
+
         prompt = (
-            f"You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards.\n\n"
-            f"The user needs a list for a wildcard file named '{topic}'. Your task is to generate a list of 20-30 items that are **strictly and creatively** related to this topic.\n\n"
+            f"You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.\n\n"
             f"**CONTEXT:** {workflow_context}\n\n"
             f"**CRITICAL INSTRUCTIONS:**\n"
-            f"1.  **Stay on Theme:** Every single item must be a specific example of '{topic}'. Do not stray from the topic.\n"
-            f"2.  **Be Creative and Diverse:** The items should be varied and interesting, not just simple variations of the same idea.\n"
-            f"3.  **Use English:** The entire list must be in English.\n"
-            f"4.  **Formatting:**\n"
-            f"    - Each item must be on a new line.\n"
-            f"    - Use normal spaces for multi-word items (e.g., 'ancient stone temple', NOT 'ancient_stone_temple').\n"
-            f"    - Do NOT add numbers, bullets, or any other formatting.\n"
-            f"    - Do NOT repeat the topic '{topic}' as a prefix for each item.\n\n"
-            f"**EXAMPLE for topic 'fantasy_potions':**\n"
-            f"Elixir of Sun's Vigor\n"
-            f"Draught of Shadowy Concealment\n"
-            f"Philter of Gilded Luck\n\n"
-            f"Now, generate the list for the topic: '{topic}'."
+            f"1.  **JSON Format:** You MUST return a single JSON object with a `description` and a `choices` array.\n"
+            f"2.  **Complex Choices:** The `choices` array should contain a mix of simple strings and complex objects. For objects, you can include `weight`, `tags`, `requires`, and `includes` keys.\n"
+            f"3.  **Weights & Tags:** Use the `weight` key (integer) to make choices more/less common. Use `tags` (array of strings) for categorization.\n"
+            f"4.  **Requirements:** Use the `requires` key (e.g., `{{\"wildcard_name\": \"value\"}}`) to make a choice dependent on another wildcard's value.\n"
+            f"5.  **Includes:** Use the `includes` key (array of strings) to dynamically add other wildcards to the prompt when this choice is selected.\n"
+            f"6.  **Stay on Theme:** Every item must be a specific example of '{topic}'.\n"
+            f"7.  **No Extra Text:** Do not add any commentary outside of the JSON object.\n\n"
+            f"**Existing Wildcards sample for 'requires' and 'includes' clauses:** {wildcard_sample_str}\n\n"
+            f"**EXAMPLE for topic 'fantasy_character_class':**\n"
+            f"{{\n"
+            f'  "description": "A list of fantasy character classes.",\n'
+            f'  "choices": [\n'
+            f'    "peasant",\n'
+            f'    {{"value": "elven archer", "weight": 3, "tags": ["ranged", "elf"], "requires": {{"fantasy_race": "elf"}}, "includes": ["elven_bow", "leather_armor"]}},\n'
+            f'    {{"value": "dwarven warrior", "weight": 3, "tags": ["melee", "dwarf"], "requires": {{"fantasy_race": "dwarf"}}, "includes": ["dwarven_axe", "plate_armor"]}}\n'
+            f'  ]\n'
+            f"}}\n\n"
+            f"Now, generate the JSON for the topic: '{topic}'."
         )
         self._add_message("AI", f"Generating wildcard ideas for '{topic}'...", "thinking")
         self._run_generation_task(prompt, "wildcard", metadata=metadata)
@@ -332,11 +408,12 @@ class BrainstormingWindow(tk.Toplevel):
                 response = self.processor.generate_for_brainstorming(model, prompt)
                 self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
             except Exception as e:
-                self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error'})
+                # Pass metadata along with the error so we can handle the UI correctly
+                self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error', 'metadata': metadata})
 
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
-        self.after(100, self._check_chat_queue)
+        self.after_id = self.after(100, self._check_chat_queue)
 
     def _rewrite_selection(self):
         """Handles the AI-powered rewriting of selected text in the history."""
@@ -372,6 +449,31 @@ class BrainstormingWindow(tk.Toplevel):
         metadata = {'start_index': start_index, 'end_index': new_end_index}
         self._run_generation_task(prompt, "rewrite", metadata=metadata)
 
+    def _parse_json_from_ai_response(self, response: str, topic: str) -> str:
+        """Extracts a JSON object from an AI's response, with fallback."""
+        try:
+            # Look for a JSON block within markdown code fences
+            match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
+            if match:
+                json_str = match.group(1)
+                # Validate and prettify
+                return json.dumps(json.loads(json_str), indent=2)
+
+            # Look for the first '{' and last '}'
+            start = response.find('{')
+            end = response.rfind('}')
+            if start != -1 and end != -1 and start < end:
+                json_str = response[start:end+1]
+                # Validate and prettify
+                return json.dumps(json.loads(json_str), indent=2)
+        except (json.JSONDecodeError, Exception):
+            pass # Fall through to fallback
+
+        # Fallback: treat the response as a list of lines
+        lines = [line.strip() for line in response.split('\n') if line.strip() and line.strip() != '```']
+        fallback_data = {"description": f"AI-generated list for the topic: {topic}", "choices": lines}
+        return json.dumps(fallback_data, indent=2)
+
     def _parse_template_generation_response(self, response: str) -> Tuple[str, List[str]]:
         """Parses the AI response for template and new wildcards."""
         template_content = ""
@@ -381,7 +483,8 @@ class BrainstormingWindow(tk.Toplevel):
         template_match = re.search(r"TEMPLATE:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
         if template_match:
             # Further split by NEW_WILDCARDS to ensure we only get the template part
-            template_content = template_match.group(1).split("NEW_WILDCARDS:")[0].strip()
+            # Use re.split for case-insensitivity to match the search
+            template_content = re.split(r"NEW_WILDCARDS:", template_match.group(1), flags=re.IGNORECASE)[0].strip()
 
         wildcards_match = re.search(r"NEW_WILDCARDS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
         if wildcards_match:

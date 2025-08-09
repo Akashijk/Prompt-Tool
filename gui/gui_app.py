@@ -1,5 +1,6 @@
 """GUI for the Stable Diffusion Prompt Generator."""
 
+import json
 import os
 import tkinter as tk
 import tkinter.font as tkfont
@@ -77,6 +78,8 @@ class GUIApp(tk.Tk):
         self.font_size_var = tk.IntVar(value=config.font_size)
         self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
+        self.enhancement_suggestion_queue = queue.Queue()
+        self.enhancement_suggestion_after_id: Optional[str] = None
 
         # Create widgets
         self._create_widgets()
@@ -207,7 +210,8 @@ class GUIApp(tk.Tk):
             live_update_callback=self._schedule_live_update,
             double_click_callback=self._on_template_double_click,
             generate_wildcard_callback=self._generate_missing_wildcard,
-            brainstorm_callback=self._brainstorm_with_template
+            brainstorm_callback=self._brainstorm_with_template,
+            create_wildcard_callback=self._create_wildcard_from_selection
         )
         top_h_pane.add(self.template_editor, weight=3)
 
@@ -241,7 +245,8 @@ class GUIApp(tk.Tk):
             parent,
             generate_callback=self._generate_preview,
             enhance_callback=self._on_select_for_enhancement,
-            copy_callback=self._copy_generated_prompt
+            copy_callback=self._copy_generated_prompt,
+            suggest_callback=self._suggest_enhancement
         )
         self._update_action_bar_variations()
 
@@ -384,7 +389,7 @@ class GUIApp(tk.Tk):
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.config(state=tk.DISABLED)
-        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, suggest=tk.DISABLED)
         self.file_menu.entryconfig("Save Template", state=tk.DISABLED)
         self.file_menu.entryconfig("Archive Template...", state=tk.DISABLED)
     def _populate_wildcard_lists(self):
@@ -432,7 +437,7 @@ class GUIApp(tk.Tk):
         self._highlight_template_wildcards()
 
         # Update UI state
-        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, suggest=tk.NORMAL)
         self.file_menu.entryconfig("Save Template", state=tk.NORMAL)
         self.file_menu.entryconfig("Archive Template...", state=tk.NORMAL)
         self.prompt_text.config(state=tk.NORMAL)
@@ -453,7 +458,7 @@ class GUIApp(tk.Tk):
         self.current_structured_prompt = self.processor.generate_single_structured_prompt(live_content, existing_segments=None)
         self._display_structured_prompt()
         is_prompt_available = bool(self.current_structured_prompt)
-        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.NORMAL if is_prompt_available else tk.DISABLED, copy=tk.NORMAL if is_prompt_available else tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.NORMAL if is_prompt_available else tk.DISABLED, copy=tk.NORMAL if is_prompt_available else tk.DISABLED, suggest=tk.NORMAL)
 
     def _display_structured_prompt(self):
         """Renders the structured prompt with highlighting."""
@@ -488,7 +493,7 @@ class GUIApp(tk.Tk):
                 for seg_start, seg_end, seg_index in self.segment_map:
                     if self.prompt_text.compare(start, "==", seg_start):
                         wildcard_name = self.current_structured_prompt[seg_index].wildcard_name
-                        self.tooltip = Tooltip(self.prompt_text, f"Source: {wildcard_name}.txt")
+                        self.tooltip = Tooltip(self.prompt_text, f"Source: {wildcard_name}.json")
                         self.tooltip.show(event)
                         self.prompt_text.tag_add("wildcard_hover", start, end)
                         break
@@ -547,6 +552,9 @@ class GUIApp(tk.Tk):
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
         
+        has_text = bool(self.template_editor.get_content().strip())
+        self.action_bar.suggest_button.config(state=tk.NORMAL if has_text else tk.DISABLED)
+
         self.debounce_timer = self.after(500, self._perform_live_update)
 
     def _perform_live_update(self, force_reroll: Optional[List[str]] = None):
@@ -729,20 +737,21 @@ class GUIApp(tk.Tk):
             self.active_api_calls = 0
             self.loading_animation.stop()
 
-    def _open_wildcard_manager(self, initial_file: Optional[str] = None):
+    def _open_wildcard_manager(self, initial_file: Optional[str] = None, initial_content: Optional[str] = None):
         """Opens the wildcard management window."""
         if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
             self.wildcard_manager_window.lift()
             self.wildcard_manager_window.focus_force()
             if initial_file:
+                # The manager doesn't currently support loading new content into an existing window.
                 self.wildcard_manager_window.select_and_load_file(initial_file)
         else:
-            self.wildcard_manager_window = WildcardManagerWindow(self, self.processor, self._handle_wildcard_update, initial_file=initial_file)
+            self.wildcard_manager_window = WildcardManagerWindow(self, self.processor, self._handle_wildcard_update, initial_file=initial_file, initial_content=initial_content)
             self.wildcard_manager_window.protocol("WM_DELETE_WINDOW", self._on_wildcard_manager_close)
 
     def _on_wildcard_manager_close(self):
         if self.wildcard_manager_window:
-            self.wildcard_manager_window.destroy()
+            self.wildcard_manager_window.close()
             self.wildcard_manager_window = None
 
     def _handle_wildcard_update(self, modified_file: Optional[str] = None):
@@ -864,7 +873,7 @@ class GUIApp(tk.Tk):
             active_model = self.brainstorming_window.active_brainstorm_model
             self._handle_model_change(active_model, None)
             
-            self.brainstorming_window.destroy()
+            self.brainstorming_window.close()
             self.brainstorming_window = None
 
     def _open_history_viewer(self):
@@ -932,6 +941,75 @@ class GUIApp(tk.Tk):
             # Call the new method to start generation
             self.brainstorming_window.generate_wildcard_with_topic(topic)
 
+    def _suggest_enhancement(self):
+        """Asks the AI to suggest an enhancement for the current prompt text."""
+        model = self.enhancement_model_var.get()
+        if not model or "model" in model.lower():
+            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
+            return
+
+        # Get the current text from the editor
+        prompt_text = self.template_editor.get_content().strip()
+        if not prompt_text:
+            custom_dialogs.show_error(self, "Error", "There is no prompt text to get suggestions for.")
+            return
+
+        self.action_bar.suggest_button.config(state=tk.DISABLED, text="Suggesting...")
+        self.status_var.set(f"Getting enhancement suggestion from {model}...")
+
+        def task():
+            try:
+                suggestion = self.processor.suggest_enhancement(prompt_text, model)
+                self.enhancement_suggestion_queue.put({'success': True, 'suggestion': suggestion})
+            except Exception as e:
+                self.enhancement_suggestion_queue.put({'success': False, 'error': str(e)})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
+
+    def _check_enhancement_suggestion_queue(self):
+        """Checks for AI enhancement suggestions and updates the editor."""
+        try:
+            result = self.enhancement_suggestion_queue.get_nowait()
+            self.action_bar.suggest_button.config(state=tk.NORMAL, text="Suggest (AI)")
+            
+            if result['success']:
+                suggestion = result.get('suggestion', '')
+                self.template_editor.set_content(suggestion)
+                self.status_var.set("AI suggestion applied to the template editor.")
+                # Trigger a live update to see the new prompt preview
+                self._schedule_live_update()
+            else:
+                custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating a suggestion:\n{result['error']}")
+                self.status_var.set("Suggestion failed.")
+        except queue.Empty:
+            self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
+
+    def _create_wildcard_from_selection(self, selected_text: str):
+        """Creates a new wildcard file from the selected text in the template editor."""
+        # Suggest a filename based on the selection
+        suggested_name = re.sub(r'\s+', '_', selected_text.strip()).lower()
+        suggested_name = re.sub(r'[^a-z0-9_]', '', suggested_name)
+        suggested_name = suggested_name[:50] # Truncate long names
+
+        wildcard_name = custom_dialogs.ask_string(
+            self,
+            "Create New Wildcard",
+            "Enter a name for the new wildcard (without .json):",
+            initialvalue=suggested_name
+        )
+
+        if not wildcard_name:
+            return
+
+        # Create the initial JSON content
+        initial_data = {"description": f"Wildcard created from template selection: '{selected_text}'", "choices": [selected_text]}
+        initial_content_str = json.dumps(initial_data, indent=2)
+
+        self.template_editor.insert_wildcard_tag(wildcard_name)
+        self._open_wildcard_manager(initial_file=f"{wildcard_name}.json", initial_content=initial_content_str)
+
     def _handle_ai_content_update(self, content_type: str):
         """Callback for when AI generates a new file, to refresh UI lists."""
         if content_type == 'template':
@@ -985,6 +1063,8 @@ class GUIApp(tk.Tk):
                 self.active_models[old_model] -= 1
                 if self.active_models[old_model] <= 0:
                     print(f"Model '{old_model}' is no longer active. Unloading in background...")
+                    # We don't need to join this thread; it can clean up on its own.
+                    # This prevents the UI from hanging if the unload takes time.
                     thread = threading.Thread(target=self.processor.cleanup_model, args=(old_model,), daemon=True)
                     thread.start()
                     del self.active_models[old_model]
@@ -999,4 +1079,6 @@ class GUIApp(tk.Tk):
             for model in list(self.active_models.keys()):
                 self.processor.cleanup_model(model)
             print("Cleanup complete.")
+        if self.enhancement_suggestion_after_id:
+            self.after_cancel(self.enhancement_suggestion_after_id)
         self.destroy()

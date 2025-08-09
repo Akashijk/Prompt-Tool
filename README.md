@@ -30,7 +30,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/Akashijk/Prompt-Tool
-    cd Prompt_Toolv3
+    cd Prompt-Tool
     ```
 
 2.  **Install Ollama:**
@@ -69,7 +69,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
         └── nsfw/
     ```
     *   **`templates/`**: Contains your prompt templates, organized by workflow.
-    *   **`wildcards/`**: Contains your wildcard files in `.json` format. This powerful format supports simple lists, weighted randomization (`"weight": 5`), context-aware choices (`"requires": {"key": "value"}`), and descriptive tags (`"tags": ["tag1"]`). The root folder is for shared wildcards, and the `nsfw` subfolder is for NSFW-specific ones.
+    *   **`wildcards/`**: Contains your wildcard files in `.json` format. This powerful format supports simple lists, weighted randomization (`"weight": 5`), context-aware choices (`"requires": {"key": "value"}`), dynamic wildcard inclusion (`"includes": ["wildcard_name"]`), and descriptive tags (`"tags": ["tag1"]`) for future filtering and organization. The root folder is for shared wildcards, and the `nsfw` subfolder is for NSFW-specific ones.
     *   **`system_prompts/`**: The application will automatically create default system prompts here. You can edit them via the UI (`Tools -> System Prompt Editor`).
 
 ## Usage

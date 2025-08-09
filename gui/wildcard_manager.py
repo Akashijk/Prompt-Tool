@@ -1,23 +1,25 @@
 """A pop-up window to manage wildcard files."""
 
-import os
 import json
+import os
+import queue
 import tkinter as tk
 from tkinter import ttk
-from typing import Optional, Callable, TYPE_CHECKING
-
+import threading
+from typing import Optional, Callable, List, Dict, Any, TYPE_CHECKING
 from core.prompt_processor import PromptProcessor
 from core.config import config
 from . import custom_dialogs
 from .wildcard_editor_widget import WildcardEditor
 from .common import TextContextMenu
 
+
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
 class WildcardManagerWindow(tk.Toplevel):
     """A pop-up window to manage wildcard files."""
-    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, update_callback: Callable, initial_file: Optional[str] = None):
+    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, update_callback: Callable, initial_file: Optional[str] = None, initial_content: Optional[str] = None):
         super().__init__(parent)
         self.title("Wildcard Manager")
         self.geometry("800x600")
@@ -25,7 +27,11 @@ class WildcardManagerWindow(tk.Toplevel):
         self.processor = processor
         self.update_callback = update_callback
         self.selected_wildcard_file: Optional[str] = None
+        self.all_wildcard_files: List[str] = []
         self.parent_app = parent
+        self.initial_content = initial_content
+        self.suggestion_queue = queue.Queue()
+        self.suggestion_after_id: Optional[str] = None
 
         self._create_widgets()
         self._populate_wildcard_list()
@@ -33,11 +39,24 @@ class WildcardManagerWindow(tk.Toplevel):
         if initial_file:
             self.select_and_load_file(initial_file)
 
+    def close(self):
+        """Safely close the window, cancelling any pending after() jobs."""
+        if self.suggestion_after_id:
+            self.after_cancel(self.suggestion_after_id)
+        self.destroy()
+
     def _create_widgets(self):
         h_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         h_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         list_frame = ttk.LabelFrame(h_pane, text="Wildcard Files", padding=5)
+
+        # --- Search Bar ---
+        search_frame = ttk.Frame(list_frame)
+        search_frame.pack(fill=tk.X, pady=(0, 5))
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", self._filter_wildcard_list)
+        ttk.Entry(search_frame, textvariable=self.search_var, font=self.parent_app.small_font).pack(fill=tk.X)
 
         list_scroll_frame = ttk.Frame(list_frame)
         list_scroll_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -59,7 +78,7 @@ class WildcardManagerWindow(tk.Toplevel):
 
         # Structured Editor Tab
         self.structured_editor_frame = ttk.Frame(self.editor_notebook)
-        self.structured_editor = WildcardEditor(self.structured_editor_frame)
+        self.structured_editor = WildcardEditor(self.structured_editor_frame, self, self.processor)
         self.structured_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.editor_notebook.add(self.structured_editor_frame, text="Structured Editor")
 
@@ -83,10 +102,20 @@ class WildcardManagerWindow(tk.Toplevel):
     def _populate_wildcard_list(self):
         """Populates the list of wildcard files."""
         self.wildcard_listbox.delete(0, tk.END)
-        wildcard_files = self.processor.get_wildcard_files()
-        for f in wildcard_files:
+        self.all_wildcard_files = self.processor.get_wildcard_files()
+        for f in self.all_wildcard_files:
             self.wildcard_listbox.insert(tk.END, f)
+        # Clear search to ensure the full list is displayed initially
+        self.search_var.set("")
 
+    def _filter_wildcard_list(self, *args):
+        """Filters the wildcard listbox based on the search term."""
+        search_term = self.search_var.get().lower()
+        self.wildcard_listbox.delete(0, tk.END)
+        
+        filtered_list = [f for f in self.all_wildcard_files if search_term in f.lower()]
+        for f in filtered_list:
+            self.wildcard_listbox.insert(tk.END, f)
     def _on_wildcard_file_select(self, event=None):
         selected_indices = self.wildcard_listbox.curselection()
         if not selected_indices: return
@@ -117,6 +146,7 @@ class WildcardManagerWindow(tk.Toplevel):
                 self.raw_text_editor.delete("1.0", tk.END)
                 self.raw_text_editor.insert("1.0", raw_content)
                 self.structured_editor.set_data({}) # Clear structured editor
+                self.structured_editor.suggest_button.config(state=tk.DISABLED)
                 self.editor_notebook.select(self.raw_text_frame) # Switch to raw editor
                 
                 self.save_button.config(state=tk.NORMAL)
@@ -132,12 +162,14 @@ class WildcardManagerWindow(tk.Toplevel):
             self.raw_text_editor.insert("1.0", pretty_content)
             self.editor_notebook.select(self.structured_editor_frame) # Switch to structured editor
             
+            self.structured_editor.suggest_button.config(state=tk.NORMAL)
             self.save_button.config(state=tk.NORMAL)
             self.archive_button.config(state=tk.NORMAL)
             self.brainstorm_button.config(state=tk.NORMAL)
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Could not load wildcard file:\n{e}")
             self.save_button.config(state=tk.DISABLED)
+            self.structured_editor.suggest_button.config(state=tk.DISABLED)
             self.archive_button.config(state=tk.DISABLED)
             self.brainstorm_button.config(state=tk.DISABLED)
 
@@ -198,7 +230,7 @@ class WildcardManagerWindow(tk.Toplevel):
             self.processor.save_wildcard_content(filename, default_content, is_nsfw_only=is_nsfw_only)
             self._populate_wildcard_list()
             self.update_callback()
-            self.select_and_load_file(filename)
+            self.select_and_load_file(filename, initial_content=default_content)
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Could not create wildcard file:\n{e}")
 
@@ -211,16 +243,23 @@ class WildcardManagerWindow(tk.Toplevel):
 
         try:
             self.processor.archive_wildcard(self.selected_wildcard_file)
-            self.structured_editor.set_data({})
-            self.raw_text_editor.delete("1.0", tk.END)
-            self.save_button.config(state=tk.DISABLED)
-            self.archive_button.config(state=tk.DISABLED)
-            self.brainstorm_button.config(state=tk.DISABLED)
-            self.editor_container.config(text="No file selected")
+            self._clear_editor_view()
             self._populate_wildcard_list()
             self.update_callback()
         except Exception as e:
             custom_dialogs.show_error(self, "Archive Error", f"Could not archive file:\n{e}")
+
+    def _clear_editor_view(self):
+        """Resets the editor pane to its default 'no file selected' state."""
+        self.selected_wildcard_file = None
+        self.wildcard_listbox.selection_clear(0, tk.END)
+        self.structured_editor.set_data({})
+        self.raw_text_editor.delete("1.0", tk.END)
+        self.save_button.config(state=tk.DISABLED)
+        self.archive_button.config(state=tk.DISABLED)
+        self.brainstorm_button.config(state=tk.DISABLED)
+        self.structured_editor.suggest_button.config(state=tk.DISABLED)
+        self.editor_container.config(text="No file selected")
 
     def _brainstorm_with_ai(self):
         """Sends the current wildcard content to the brainstorming window."""
@@ -236,7 +275,7 @@ class WildcardManagerWindow(tk.Toplevel):
             
         self.parent_app._brainstorm_with_content("wildcard", self.selected_wildcard_file, content)
 
-    def select_and_load_file(self, filename: str):
+    def select_and_load_file(self, filename: str, initial_content: Optional[str] = None):
         """Selects a file in the listbox or prepares the editor for a new file."""
         all_files = self.wildcard_listbox.get(0, tk.END)
         if filename in all_files:
@@ -247,11 +286,55 @@ class WildcardManagerWindow(tk.Toplevel):
             self.wildcard_listbox.see(idx)
             self._on_wildcard_file_select()
         else: # Prepare for a new file
-            self.wildcard_listbox.selection_clear(0, tk.END)
+            self._clear_editor_view()
             self.selected_wildcard_file = filename
             self.editor_container.config(text=f"New File: {self.selected_wildcard_file}")
-            self.structured_editor.set_data({})
-            self.raw_text_editor.delete("1.0", tk.END)
+            
+            # Use the passed initial content, or the one from init, or nothing.
+            content_to_load = initial_content or self.initial_content
+            if content_to_load:
+                try:
+                    parsed_data = json.loads(content_to_load)
+                    self.structured_editor.set_data(parsed_data)
+                    self.raw_text_editor.insert("1.0", json.dumps(parsed_data, indent=2))
+                except json.JSONDecodeError:
+                    self.raw_text_editor.insert("1.0", content_to_load)
+                    self.editor_notebook.select(self.raw_text_frame)
+            else:
+                self.structured_editor.set_data({})
+                self.raw_text_editor.delete("1.0", tk.END)
+
             self.save_button.config(state=tk.NORMAL)
-            self.archive_button.config(state=tk.DISABLED)
-            self.brainstorm_button.config(state=tk.DISABLED)
+
+    def suggest_choices_with_ai(self, current_data: Dict[str, Any]):
+        """Starts the AI suggestion process in a background thread."""
+        self.structured_editor.suggest_button.config(state=tk.DISABLED, text="Suggesting...")
+        
+        def task():
+            try:
+                model = self.parent_app.enhancement_model_var.get()
+                if not model or "model" in model.lower():
+                    raise Exception("Please select a valid Ollama model in the main window.")
+                
+                new_choices = self.processor.suggest_wildcard_choices(current_data, model)
+                self.suggestion_queue.put({'success': True, 'choices': new_choices})
+            except Exception as e:
+                self.suggestion_queue.put({'success': False, 'error': str(e)})
+        
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
+
+    def _check_suggestion_queue(self):
+        """Checks for AI suggestions and updates the UI."""
+        try:
+            result = self.suggestion_queue.get_nowait()
+            self.structured_editor.suggest_button.config(state=tk.NORMAL, text="Suggest Choices (AI)")
+            
+            if result['success']:
+                self.structured_editor.add_suggested_choices(result.get('choices', []))
+                custom_dialogs.show_info(self, "Suggestions Added", f"{len(result.get('choices', []))} new choices have been added to the editor.")
+            else:
+                custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating suggestions:\n{result['error']}")
+        except queue.Empty:
+            self.suggestion_after_id = self.after(100, self._check_suggestion_queue)

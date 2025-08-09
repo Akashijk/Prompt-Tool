@@ -38,6 +38,8 @@ class EnhancementResultWindow(tk.Toplevel):
         self.regen_buttons: Dict[str, ttk.Button] = {}
         self.regen_queue: queue.Queue = queue.Queue()
         self.result_queue: queue.Queue = queue.Queue()
+        self.result_queue_after_id: Optional[str] = None
+        self.regen_queue_after_id: Optional[str] = None
 
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -58,10 +60,18 @@ class EnhancementResultWindow(tk.Toplevel):
         ttk.Button(button_frame, text="Save to History", command=self._save).pack(side=tk.LEFT)
         ttk.Button(button_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
 
-        self.after(100, self._check_result_queue)
+        self.result_queue_after_id = self.after(100, self._check_result_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
+        # Cancel pending after jobs to prevent memory leaks
+        if self.result_queue_after_id:
+            self.after_cancel(self.result_queue_after_id)
+            self.result_queue_after_id = None
+        if self.regen_queue_after_id:
+            self.after_cancel(self.regen_queue_after_id)
+            self.regen_queue_after_id = None
+
         # Only trigger the cancellation logic if there are still active API calls.
         if self.parent_app.active_api_calls > 0:
             self.cancel_callback()
@@ -160,7 +170,7 @@ class EnhancementResultWindow(tk.Toplevel):
 
         thread = threading.Thread(target=self._regenerate_thread, args=(prompt_key,), daemon=True)
         thread.start()
-        self.after(100, self._check_regen_queue)
+        self.regen_queue_after_id = self.after(100, self._check_regen_queue)
 
     def _regenerate_thread(self, prompt_key: str):
         """The background task that calls the AI model for regeneration."""
@@ -174,9 +184,8 @@ class EnhancementResultWindow(tk.Toplevel):
             else: # It's a variation
                 # BUG FIX: Load the system prompt for the specific variation
                 instruction = self.processor.load_system_prompt_content(f'{prompt_key}.txt')
-                base_enhanced = self.result_data['enhanced']
-                full_prompt = instruction + base_enhanced
-                variation_result = self.processor.ollama_client.create_single_variation(full_prompt, self.model, prompt_key)
+                base_prompt = self.result_data['enhanced']
+                variation_result = self.processor.ollama_client.create_single_variation(instruction, base_prompt, self.model, prompt_key)
                 result = {'key': prompt_key, 'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
             self.regen_queue.put(result)
         except Exception as e:
@@ -221,7 +230,7 @@ class EnhancementResultWindow(tk.Toplevel):
             self.parent_app.report_regeneration_finished(success=True)
             
         except queue.Empty:
-            self.after(100, self._check_regen_queue)
+            self.regen_queue_after_id = self.after(100, self._check_regen_queue)
 
     def _check_result_queue(self):
         """Checks for incoming results from the main processing thread and updates the UI."""
@@ -252,4 +261,4 @@ class EnhancementResultWindow(tk.Toplevel):
         except queue.Empty:
             pass # No new results yet
         finally:
-            self.after(100, self._check_result_queue)
+            self.result_queue_after_id = self.after(100, self._check_result_queue)

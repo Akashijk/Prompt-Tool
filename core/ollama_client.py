@@ -1,7 +1,9 @@
 """Ollama API client for model interactions."""
 
+import json
+import re
 import requests
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from .config import config
 
 class OllamaClient:
@@ -119,16 +121,37 @@ class OllamaClient:
                 raise Exception(f"Model '{model}' not found. It may not be pulled or is misspelled.")
             raise Exception(f"Error communicating with Ollama API: {e}")
 
-    def create_single_variation(self, enhanced_prompt: str, model: str, variation_type: str) -> Dict[str, str]:
+    def parse_json_array_from_response(self, response: str) -> List[Any]:
+        """Extracts a JSON array from an AI's response, with fallback."""
+        try:
+            # Look for a JSON block within markdown code fences
+            match = re.search(r'```json\s*(\[.*?\])\s*```', response, re.DOTALL)
+            if match:
+                json_str = match.group(1)
+                return json.loads(json_str)
+
+            # Look for the first '[' and last ']'
+            start = response.find('[')
+            end = response.rfind(']')
+            if start != -1 and end != -1 and start < end:
+                json_str = response[start:end+1]
+                return json.loads(json_str)
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"Warning: Could not parse JSON array, falling back. Error: {e}")
+
+        return []
+
+    def create_single_variation(self, instruction: str, base_prompt: str, model: str, variation_type: str) -> Dict[str, str]:
         """Create a single variation of a given type."""
         try:
-            # The full instruction prompt is now passed in directly
-            raw_response = self._generate(model, enhanced_prompt, config.VARIATION_TIMEOUT)
+            full_instruction_prompt = instruction + base_prompt
+            raw_response = self._generate(model, full_instruction_prompt, config.VARIATION_TIMEOUT)
             var_prompt, var_sd_model = self.parse_enhanced_response(raw_response)
             return {'prompt': var_prompt.replace('\n', ' ').replace('  ', ' '), 'sd_model': var_sd_model}
         except Exception as e:
             print(f"Exception during variation creation for '{variation_type}': {e}")
-            return {'prompt': enhanced_prompt, 'sd_model': f"Stable Diffusion XL (SDXL) - {variation_type} fallback"}
+            # Fallback to the original enhanced prompt if variation fails
+            return {'prompt': base_prompt, 'sd_model': f"Stable Diffusion XL (SDXL) - {variation_type} fallback"}
 
     def unload_model(self, model: str) -> None:
         """Unload a model from memory to free VRAM using the keep_alive=0 method."""

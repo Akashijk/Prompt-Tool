@@ -48,6 +48,7 @@ class Config:
     DEFAULT_NUM_PROMPTS: int = 5
     DEFAULT_FONT_SIZE: int = 11
     DEFAULT_TIMEOUT: int = 45
+    BRAINSTORM_TIMEOUT: int = 90
     VARIATION_TIMEOUT: int = 30
     
     # Ollama settings

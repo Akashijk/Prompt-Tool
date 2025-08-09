@@ -98,13 +98,15 @@ class BrainstormingContextMenu(TextContextMenu):
 
 class TemplateEditorContextMenu(TextContextMenu):
     """A specialized context menu for the template editor with a wildcard generator."""
-    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable):
+    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable, create_wildcard_callback: Callable):
         super().__init__(widget)
         self.generate_wildcard_callback = generate_wildcard_callback
         self.brainstorm_callback = brainstorm_callback
+        self.create_wildcard_callback = create_wildcard_callback
         self.last_event = None
         self.menu.add_separator()
         self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
+        self.menu.add_command(label="Create Wildcard from Selection...", command=self._create_wildcard, state=tk.DISABLED)
         self.menu.add_command(label="Brainstorm with AI...", command=self.brainstorm_callback, state=tk.DISABLED)
 
     def show_menu(self, event):
@@ -118,6 +120,12 @@ class TemplateEditorContextMenu(TextContextMenu):
             self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL)
         else:
             self.menu.entryconfig("Generate Missing Wildcard...", state=tk.DISABLED)
+        
+        try:
+            self.widget.selection_get()
+            self.menu.entryconfig("Create Wildcard from Selection...", state=tk.NORMAL)
+        except tk.TclError:
+            self.menu.entryconfig("Create Wildcard from Selection...", state=tk.DISABLED)
         
         if self.widget.get("1.0", "end-1c").strip():
             self.menu.entryconfig("Brainstorm with AI...", state=tk.NORMAL)
@@ -138,6 +146,14 @@ class TemplateEditorContextMenu(TextContextMenu):
                 self.generate_wildcard_callback(wildcard_name)
         except Exception as e:
             print(f"Error getting wildcard for generation: {e}")
+
+    def _create_wildcard(self):
+        try:
+            selected_text = self.widget.selection_get()
+            if selected_text:
+                self.create_wildcard_callback(selected_text)
+        except tk.TclError:
+            pass # No selection
 
 class LoadingAnimation(ttk.Frame):
     """A smooth, spinning arc loading animation widget."""

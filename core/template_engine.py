@@ -5,7 +5,7 @@ import json
 import re
 import random
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from .config import config
 
 @dataclass
@@ -175,34 +175,62 @@ class TemplateEngine:
         str_choices = [c['value'] if isinstance(c, dict) else c for c in choices]
         return sorted(str_choices, key=str.lower)
 
-    def generate_prompt(self, template: str, wildcards: Dict[str, Dict] = None) -> str:
-        """Generate a prompt by substituting wildcards in template."""
+    def generate_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None) -> str:
+        """
+        Generate a prompt by substituting wildcards in template, respecting context.
+        This non-structured version is suitable for CLI or backend use.
+        """
         if wildcards is None:
             wildcards = self.wildcards
-            
-        prompt = template
+
+        output_prompt = ""
+        remaining_template = template
         resolved_context: Dict[str, str] = {}
 
-        # Find all unique wildcards in the template
-        wildcard_keys = re.findall(r'__([a-zA-Z0-9_.-]+)__', prompt)
-        
-        # Create a dictionary to hold the resolved values
-        resolved_wildcards = {}
-        for key in wildcard_keys:
-            if key not in resolved_wildcards: # Resolve each unique key only once
-                choice = self._get_wildcard_choice(key, resolved_context)
-                if choice:
-                    resolved_wildcards[key] = choice
-                    resolved_context[key] = choice # Add to context for next choices
-        
-        for key, value in resolved_wildcards.items():
-            prompt = prompt.replace(f"__{key}__", value)
-                
-        return prompt.strip()
+        # This iterative approach ensures that wildcards are resolved in order,
+        # allowing context from earlier wildcards to influence later ones.
+        while '__' in remaining_template:
+            start_pos = remaining_template.find('__')
+            end_pos = remaining_template.find('__', start_pos + 2)
 
-    def _get_wildcard_choice(self, key: str, context: Dict[str, str]) -> Optional[str]:
+            if end_pos == -1:
+                break # No closing __, treat rest as static
+
+            # Add the static text before the wildcard
+            output_prompt += remaining_template[:start_pos]
+
+            key = remaining_template[start_pos+2:end_pos]
+
+            # If a wildcard is used multiple times, reuse its resolved value.
+            if key in resolved_context:
+                choice = resolved_context[key]
+                output_prompt += choice
+                remaining_template = remaining_template[end_pos+2:]
+            else:
+                choice_obj = self._get_wildcard_choice_object(key, resolved_context)
+                if choice_obj:
+                    choice = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
+                    output_prompt += choice
+                    resolved_context[key] = choice
+
+                    if isinstance(choice_obj, dict) and 'includes' in choice_obj:
+                        include_text = " " + " ".join([f"__{inc}__" for inc in choice_obj['includes']])
+                        remaining_template = include_text + remaining_template[end_pos+2:]
+                    else:
+                        remaining_template = remaining_template[end_pos+2:]
+                else:
+                    # If no choice is found, keep the placeholder
+                    output_prompt += f"__{key}__"
+                    remaining_template = remaining_template[end_pos+2:]
+
+        # Add any remaining static text
+        output_prompt += remaining_template
+        
+        return output_prompt.strip()
+
+    def _get_wildcard_choice_object(self, key: str, context: Dict[str, str]) -> Optional[Any]:
         """
-        Gets a choice from a wildcard, respecting weights and context rules.
+        Gets a choice object (string or dict) from a wildcard, respecting weights and context rules.
         """
         wildcard_data = self.wildcards.get(key)
         if not wildcard_data or 'choices' not in wildcard_data:
@@ -219,13 +247,22 @@ class TemplateEngine:
                 valid_choices.append(choice)
 
         if not valid_choices:
-            return f"__NO_VALID_CHOICE_FOR_{key}__"
+            return None
 
         # 2. Perform weighted random selection
         weights = [c.get('weight', 1) if isinstance(c, dict) else 1 for c in valid_choices]
         chosen_item = random.choices(valid_choices, weights=weights, k=1)[0]
 
-        # 3. Return the string value
+        return chosen_item
+
+    def _get_wildcard_choice(self, key: str, context: Dict[str, str]) -> Optional[str]:
+        """
+        Gets a choice value (string) from a wildcard, respecting weights and context rules.
+        """
+        chosen_item = self._get_wildcard_choice_object(key, context)
+        if chosen_item is None:
+            return f"__NO_VALID_CHOICE_FOR_{key}__"
+        
         return chosen_item['value'] if isinstance(chosen_item, dict) else chosen_item
 
     def generate_structured_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None) -> List[PromptSegment]:
@@ -258,17 +295,27 @@ class TemplateEngine:
                 segments.append(PromptSegment(text=remaining_template[:start_pos]))
 
             key = remaining_template[start_pos+2:end_pos]
-            choice = None
             if key in existing_choices_map:
-                choice = existing_choices_map[key]
+                choice_text = existing_choices_map[key]
+                segments.append(PromptSegment(text=choice_text, wildcard_name=key))
+                resolved_context[key] = choice_text
+                remaining_template = remaining_template[end_pos+2:]
             else:
-                choice = self._get_wildcard_choice(key, resolved_context)
-            
-            if choice is not None:
-                segments.append(PromptSegment(text=choice, wildcard_name=key))
-                resolved_context[key] = choice # Add to context for subsequent choices
+                choice_obj = self._get_wildcard_choice_object(key, resolved_context)
+                if choice_obj:
+                    choice_text = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
+                    segments.append(PromptSegment(text=choice_text, wildcard_name=key))
+                    resolved_context[key] = choice_text
 
-            remaining_template = remaining_template[end_pos+2:]
+                    if isinstance(choice_obj, dict) and 'includes' in choice_obj:
+                        include_text = " " + " ".join([f"__{inc}__" for inc in choice_obj['includes']])
+                        remaining_template = include_text + remaining_template[end_pos+2:]
+                    else:
+                        remaining_template = remaining_template[end_pos+2:]
+                else:
+                    # If no choice is found, keep the placeholder
+                    segments.append(PromptSegment(text=f"__{key}__"))
+                    remaining_template = remaining_template[end_pos+2:]
 
         if remaining_template:
             segments.append(PromptSegment(text=remaining_template))

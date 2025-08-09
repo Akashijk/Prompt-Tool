@@ -2,7 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Optional
 from .common import Tooltip
 
 VARIATION_TOOLTIPS = {
@@ -13,7 +13,7 @@ VARIATION_TOOLTIPS = {
 
 class ActionBar(ttk.Frame):
     """The main action bar with Generate, Enhance, and variation selection."""
-    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, **kwargs):
+    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, suggest_callback: Callable, **kwargs):
         super().__init__(parent, **kwargs)
 
         self.generate_button = ttk.Button(self, text="Generate Next Preview", command=generate_callback, state=tk.DISABLED)
@@ -21,6 +21,12 @@ class ActionBar(ttk.Frame):
 
         self.select_button = ttk.Button(self, text="Enhance This Prompt", command=enhance_callback, state=tk.DISABLED)
         self.select_button.pack(side=tk.LEFT)
+
+        self.suggest_button = ttk.Button(self, text="Suggest (AI)", command=suggest_callback, state=tk.DISABLED)
+        self.suggest_button.pack(side=tk.LEFT, padx=(5,0))
+        suggest_tooltip = Tooltip(self.suggest_button, "Ask the AI to suggest an improved version of the current prompt in the editor.")
+        self.suggest_button.bind("<Enter>", suggest_tooltip.show)
+        self.suggest_button.bind("<Leave>", suggest_tooltip.hide)
 
         self.variations_frame = ttk.LabelFrame(self, text="Variations", padding=(10, 5))
         self.variations_frame.pack(side=tk.LEFT, padx=(10, 0))
@@ -53,7 +59,9 @@ class ActionBar(ttk.Frame):
         """Returns a list of the names of the selected variations."""
         return [key for key, var in self.variation_vars.items() if var.get()]
 
-    def set_button_states(self, generate: str, enhance: str, copy: str):
+    def set_button_states(self, generate: str, enhance: str, copy: str, suggest: Optional[str] = None):
         self.generate_button.config(state=generate)
         self.select_button.config(state=enhance)
         self.copy_prompt_button.config(state=copy)
+        if suggest is not None:
+            self.suggest_button.config(state=suggest)
