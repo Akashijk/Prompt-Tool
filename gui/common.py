@@ -8,7 +8,7 @@ from typing import Callable
 
 class Tooltip:
     """A simple tooltip for tkinter widgets."""
-    def __init__(self, widget, text):
+    def __init__(self, widget, text=""):
         self.widget = widget
         self.text = text
         self.tooltip_window = None
@@ -95,6 +95,51 @@ class BrainstormingContextMenu(TextContextMenu):
             self.rewrite_callback()
         except tk.TclError:
             pass # No selection
+
+class PromptPreviewContextMenu(TextContextMenu):
+    """A context menu for the prompt preview with a wildcard generator."""
+    def __init__(self, widget, generate_wildcard_callback: Callable):
+        super().__init__(widget)
+        self.generate_wildcard_callback = generate_wildcard_callback
+        self.last_event = None
+        self.menu.add_separator()
+        self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
+
+    def show_menu(self, event):
+        self.last_event = event
+        # We need to temporarily enable the widget to check tags if it's disabled
+        original_state = self.widget.cget("state")
+        if original_state == tk.DISABLED:
+            self.widget.config(state=tk.NORMAL)
+
+        super().show_menu(event) # Call parent to set cut/copy/paste
+
+        index = self.widget.index(f"@{event.x},{event.y}")
+        tags = self.widget.tag_names(index)
+
+        if "missing_wildcard" in tags:
+            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL)
+        else:
+            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.DISABLED)
+        
+        if original_state == tk.DISABLED:
+            self.widget.config(state=original_state)
+
+    def _generate_wildcard(self):
+        if not self.last_event: return
+        
+        try:
+            index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
+            word_start = self.widget.index(f"{index} wordstart")
+            word_end = self.widget.index(f"{index} wordend")
+            clicked_word = self.widget.get(word_start, word_end)
+            
+            match = re.fullmatch(r'__([a-zA-Z0-9_.-]+)__', clicked_word)
+            if match:
+                wildcard_name = match.group(1)
+                self.generate_wildcard_callback(wildcard_name)
+        except Exception as e:
+            print(f"Error getting wildcard for generation: {e}")
 
 class TemplateEditorContextMenu(TextContextMenu):
     """A specialized context menu for the template editor with a wildcard generator."""
@@ -209,3 +254,48 @@ class LoadingAnimation(ttk.Frame):
 
         self.angle = (self.angle - self.speed) % 360
         self.animation_job = self.after(30, self._animate)  # ~33 FPS for a smooth spin
+
+class SmartWindowMixin:
+    """Mixin class to add smart window sizing behavior."""
+    def smart_geometry(self, min_width=600, min_height=400, padding=50):
+        """
+        Calculates and sets appropriate window geometry based on content.
+        
+        Args:
+            min_width: Minimum window width
+            min_height: Minimum window height
+            padding: Extra space to add around the content
+        """
+        # Update all idle tasks to ensure widgets are rendered
+        self.update_idletasks()
+        
+        # Get required size for all widgets
+        required_width = self.winfo_reqwidth()
+        required_height = self.winfo_reqheight()
+        
+        # Add padding and ensure minimums
+        width = max(required_width + padding, min_width)
+        height = max(required_height + padding, min_height)
+        
+        # Get screen dimensions
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        
+        # Center the window
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        
+        # Set geometry
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        
+        # Set minimum size
+        self.minsize(min_width, min_height)
+
+        # Bind to Configure event to handle window resizing
+        self.bind("<Configure>", self._on_window_configure)
+        
+    def _on_window_configure(self, event):
+        """Handle window resize events to maintain proper layout."""
+        if event.widget == self:
+            # Update widget layouts if needed
+            self.update_idletasks()

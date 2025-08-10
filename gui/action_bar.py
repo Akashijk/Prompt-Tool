@@ -13,7 +13,7 @@ VARIATION_TOOLTIPS = {
 
 class ActionBar(ttk.Frame):
     """The main action bar with Generate, Enhance, and variation selection."""
-    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, suggest_callback: Callable, **kwargs):
+    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, suggest_callback: Callable, save_as_template_callback: Callable, **kwargs):
         super().__init__(parent, **kwargs)
 
         self.generate_button = ttk.Button(self, text="Generate Next Preview", command=generate_callback, state=tk.DISABLED)
@@ -37,6 +37,9 @@ class ActionBar(ttk.Frame):
         self.copy_prompt_button = ttk.Button(self, text="Copy Prompt", command=copy_callback, state=tk.DISABLED)
         self.copy_prompt_button.pack(side=tk.LEFT, padx=(10, 0))
 
+        self.save_as_template_button = ttk.Button(self, text="Save as Template", command=save_as_template_callback, state=tk.DISABLED)
+        self.save_as_template_button.pack(side=tk.LEFT, padx=(5, 0))
+
     def rebuild_variations(self, variation_keys: List[str]):
         """Clears and recreates the variation checkboxes."""
         for widget in self.variations_frame.winfo_children():
@@ -59,9 +62,11 @@ class ActionBar(ttk.Frame):
         """Returns a list of the names of the selected variations."""
         return [key for key, var in self.variation_vars.items() if var.get()]
 
-    def set_button_states(self, generate: str, enhance: str, copy: str, suggest: Optional[str] = None):
+    def set_button_states(self, generate: str, enhance: str, copy: str, suggest: Optional[str] = None, save_as_template: Optional[str] = None):
         self.generate_button.config(state=generate)
         self.select_button.config(state=enhance)
         self.copy_prompt_button.config(state=copy)
         if suggest is not None:
             self.suggest_button.config(state=suggest)
+        if save_as_template is not None:
+            self.save_as_template_button.config(state=save_as_template)

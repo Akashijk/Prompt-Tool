@@ -14,18 +14,17 @@ from core.prompt_processor import PromptProcessor
 from core.config import config
 from . import custom_dialogs
 from .review_window import ReviewAndSaveWindow
-from .common import BrainstormingContextMenu, TextContextMenu
+from .common import BrainstormingContextMenu, TextContextMenu, SmartWindowMixin
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
 
-class BrainstormingWindow(tk.Toplevel):
+class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
     """An interactive window for brainstorming with an AI model."""
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor, models: List[str], default_model: str, model_change_callback: Callable, update_callback: Callable):
         super().__init__(parent)
         self.title("AI Brainstorming Session")
-        self.geometry("800x600")
 
         self.parent_app = parent
         self.processor = processor
@@ -97,6 +96,8 @@ class BrainstormingWindow(tk.Toplevel):
         # Register initial model usage
         self.active_brainstorm_model = default_model
         self.model_change_callback(None, self.active_brainstorm_model)
+
+        self.smart_geometry(min_width=800, min_height=600)
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
@@ -193,8 +194,7 @@ class BrainstormingWindow(tk.Toplevel):
                 elif content_type == 'wildcard':
                     topic = metadata.get('topic', 'new_wildcard')
                     parsed_json_string = self._parse_json_from_ai_response(response, topic)
-                    self._add_message("AI", f"Generated a new wildcard. See the new window to review and save.", "ai")
-                    self._handle_generated_content(parsed_json_string, 'wildcard', metadata)
+                    self._handle_generated_wildcard(parsed_json_string, metadata)
                 elif content_type == 'rewrite':
                     if metadata:
                         self._handle_rewritten_text(response, metadata['start_index'], metadata['end_index'])
@@ -293,13 +293,17 @@ class BrainstormingWindow(tk.Toplevel):
         topic = custom_dialogs.ask_string(self, "Generate Wildcard", "What is the topic for the new wildcard file?\n(e.g., 'sci-fi helmet designs', 'fantasy potion names')")
         self.generate_wildcard_with_topic(topic)
 
-    def generate_wildcard_with_topic(self, topic: str, existing_window: Optional[ReviewAndSaveWindow] = None):
+    def generate_wildcard_with_topic(self, topic: str, filename: Optional[str] = None, existing_window: Optional[ReviewAndSaveWindow] = None):
         """Starts the generation process for a wildcard with a given topic."""
         if not topic:
             return
 
+        # If no filename is provided, derive it from the topic for the 'Generate Wildcard' button.
+        # If a filename IS provided (from a missing wildcard link), use that directly.
+        final_filename = filename if filename is not None else topic
+
         # Create or get the results window first with a loading state.
-        metadata = {'filename': topic, 'topic': topic, 'window': existing_window}
+        metadata = {'filename': final_filename, 'topic': topic, 'window': existing_window}
         results_window = self._handle_generated_content("", "wildcard", metadata)
         metadata['window'] = results_window
 
@@ -316,21 +320,28 @@ class BrainstormingWindow(tk.Toplevel):
         else:
             workflow_context = "The user is currently in SFW (Safe For Work) mode. The items should be general-purpose and not contain any explicit content."
 
-        wildcard_names = self.processor.get_wildcard_names()
-        sample_size = min(5, len(wildcard_names))
-        wildcard_sample_str = ", ".join(random.sample(wildcard_names, sample_size)) if wildcard_names else "none"
+        # Sanitize the topic to create a likely wildcard name for the 'no self-reference' rule.
+        wildcard_name_from_topic = re.sub(r'\s+', '_', topic.strip()).lower()
+        wildcard_name_from_topic = re.sub(r'[^a-z0-9_]', '', wildcard_name_from_topic)
+
+        # Get a sample of other wildcards, making sure not to include the one we are generating.
+        all_wildcard_names = self.processor.get_wildcard_names()
+        other_wildcard_names = [wc for wc in all_wildcard_names if wc != wildcard_name_from_topic]
+        sample_size = min(5, len(other_wildcard_names))
+        wildcard_sample_str = ", ".join(random.sample(other_wildcard_names, sample_size)) if other_wildcard_names else "none"
 
         prompt = (
             f"You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.\n\n"
             f"**CONTEXT:** {workflow_context}\n\n"
             f"**CRITICAL INSTRUCTIONS:**\n"
-            f"1.  **JSON Format:** You MUST return a single JSON object with a `description` and a `choices` array.\n"
-            f"2.  **Complex Choices:** The `choices` array should contain a mix of simple strings and complex objects. For objects, you can include `weight`, `tags`, `requires`, and `includes` keys.\n"
-            f"3.  **Weights & Tags:** Use the `weight` key (integer) to make choices more/less common. Use `tags` (array of strings) for categorization.\n"
-            f"4.  **Requirements:** Use the `requires` key (e.g., `{{\"wildcard_name\": \"value\"}}`) to make a choice dependent on another wildcard's value.\n"
-            f"5.  **Includes:** Use the `includes` key (array of strings) to dynamically add other wildcards to the prompt when this choice is selected.\n"
-            f"6.  **Stay on Theme:** Every item must be a specific example of '{topic}'.\n"
-            f"7.  **No Extra Text:** Do not add any commentary outside of the JSON object.\n\n"
+            f"1.  **Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.\n"
+            f"2.  **JSON Format:** You MUST return a single JSON object with a `description` and a `choices` array.\n"
+            f"3.  **Complex Choices:** The `choices` array should contain a mix of simple strings and complex objects. For objects, you can include `weight`, `tags`, `requires`, and `includes` keys.\n"
+            f"4.  **Requirements & Includes:** Use `requires` (e.g., `{{\"wildcard_name\": \"value\"}}`) for dependencies and `includes` (e.g., `[\"another_wildcard\"]`) to add more wildcards.\n"
+            f"5.  **No Self-Reference:** The `requires` key MUST NOT refer to the wildcard being generated (`{wildcard_name_from_topic}`). This is a critical rule.\n"
+            f"6.  **Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.\n"
+            f"7.  **Unique Values:** Ensure all `value` fields within your generated `choices` array are unique. Do not repeat items.\n"
+            f"8.  **No Extra Text:** Do not add any commentary outside of the JSON object.\n\n"
             f"**Existing Wildcards sample for 'requires' and 'includes' clauses:** {wildcard_sample_str}\n\n"
             f"**EXAMPLE for topic 'fantasy_character_class':**\n"
             f"{{\n"
@@ -450,28 +461,63 @@ class BrainstormingWindow(tk.Toplevel):
         self._run_generation_task(prompt, "rewrite", metadata=metadata)
 
     def _parse_json_from_ai_response(self, response: str, topic: str) -> str:
-        """Extracts a JSON object from an AI's response, with fallback."""
-        try:
-            # Look for a JSON block within markdown code fences
-            match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
-            if match:
-                json_str = match.group(1)
-                # Validate and prettify
-                return json.dumps(json.loads(json_str), indent=2)
-
-            # Look for the first '{' and last '}'
+        """Extracts a JSON object from an AI's response, with fallback and cleanup."""
+        json_str = None
+        # First, try to find a markdown-fenced JSON block (most reliable)
+        match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            # Fallback: find the content between the first '{' and last '}'
             start = response.find('{')
             end = response.rfind('}')
             if start != -1 and end != -1 and start < end:
                 json_str = response[start:end+1]
-                # Validate and prettify
-                return json.dumps(json.loads(json_str), indent=2)
-        except (json.JSONDecodeError, Exception):
-            pass # Fall through to fallback
 
-        # Fallback: treat the response as a list of lines
-        lines = [line.strip() for line in response.split('\n') if line.strip() and line.strip() != '```']
-        fallback_data = {"description": f"AI-generated list for the topic: {topic}", "choices": lines}
+        parsed_data = None
+        if json_str:
+            try:
+                parsed_data = json.loads(json_str)
+            except (json.JSONDecodeError, Exception):
+                pass # Fall through to text-based fallback
+
+        if parsed_data and 'choices' in parsed_data:
+            # Post-process to replace underscores with spaces in values
+            cleaned_choices = []
+            for choice in parsed_data.get('choices', []):
+                if isinstance(choice, str):
+                    cleaned_choices.append(choice.replace('_', ' '))
+                elif isinstance(choice, dict) and 'value' in choice and isinstance(choice.get('value'), str):
+                    choice['value'] = choice['value'].replace('_', ' ')
+                    cleaned_choices.append(choice)
+                else:
+                    cleaned_choices.append(choice) # Keep malformed items as-is
+            parsed_data['choices'] = cleaned_choices
+            return json.dumps(parsed_data, indent=2)
+
+        # Fallback: If JSON parsing fails, try to parse the response as a plain list.
+        # This is more robust than just splitting by lines.
+        
+        # Regex to find lines that look like list items (markdown or numbered)
+        # It captures the content after the list marker.
+        list_item_pattern = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.*)", re.MULTILINE)
+        
+        choices = list_item_pattern.findall(response)
+        
+        # If we found list items, clean them up.
+        if choices:
+            # Further cleanup: remove trailing punctuation that might be part of the list format
+            # and replace underscores with spaces.
+            cleaned_choices = [re.sub(r'[.,]$', '', choice).strip().replace('_', ' ') for choice in choices]
+            # Filter out any empty strings that might result from cleanup
+            lines = [c for c in cleaned_choices if c]
+        else:
+            # If no list items were found, use a less-reliable line-splitting method as a last resort,
+            # filtering out common conversational filler.
+            ignore_phrases = ["here are", "here's a list", "sure, here", "i've generated", "```", "json"]
+            lines = [line.strip().replace('_', ' ') for line in response.split('\n') if line.strip() and not any(phrase in line.lower() for phrase in ignore_phrases)]
+
+        fallback_data = {"description": f"AI-generated list for the topic: {topic} (fallback mode)", "choices": lines}
         return json.dumps(fallback_data, indent=2)
 
     def _parse_template_generation_response(self, response: str) -> Tuple[str, List[str]]:
@@ -497,6 +543,44 @@ class BrainstormingWindow(tk.Toplevel):
             template_content = response
             
         return template_content, new_wildcards
+
+    def _handle_generated_wildcard(self, parsed_json_string: str, metadata: Optional[Dict] = None):
+        """Handles the display of a newly generated wildcard and its new 'includes'."""
+        try:
+            wildcard_data = json.loads(parsed_json_string)
+            included_wildcards = set()
+            for choice in wildcard_data.get('choices', []):
+                if isinstance(choice, dict) and 'includes' in choice:
+                    for included_wc in choice['includes']:
+                        included_wildcards.add(included_wc)
+            
+            existing_wildcards = set(self.processor.get_wildcard_names())
+            genuinely_new_wildcards = sorted(list(included_wildcards - existing_wildcards))
+            
+            # Build the message
+            message = "Generated a new wildcard. See the new window to review and save."
+            if genuinely_new_wildcards:
+                message += "\n\nThis wildcard includes other wildcards that don't exist yet. Click any link to generate them:"
+                self._add_message("AI", message, "ai")
+                
+                # Add the links
+                self.history_text.config(state=tk.NORMAL)
+                self.history_text.insert(tk.END, "\n")
+                for i, wc in enumerate(genuinely_new_wildcards):
+                    tag_name = f"new_wc_{wc}_{i}" # Unique tag
+                    self.history_text.insert(tk.END, wc, ("new_wildcard_link", tag_name))
+                    self.history_text.tag_bind(tag_name, "<Button-1>", lambda e, w=wc, t=tag_name: self._handle_wildcard_link_click(w, t))
+                    if i < len(genuinely_new_wildcards) - 1:
+                        self.history_text.insert(tk.END, ", ")
+                self.history_text.config(state=tk.DISABLED)
+            else:
+                self._add_message("AI", message, "ai")
+
+        except json.JSONDecodeError:
+            # If JSON is invalid, just show the basic message
+            self._add_message("AI", f"Generated a new wildcard. See the new window to review and save.", "ai")
+
+        self._handle_generated_content(parsed_json_string, 'wildcard', metadata)
 
     def _handle_generated_template(self, template: str, new_wildcards: List[str], metadata: Optional[Dict] = None):
         """Handles the display of a newly generated template and its new wildcards."""
@@ -562,7 +646,8 @@ class BrainstormingWindow(tk.Toplevel):
             regenerate_callback = None
             if metadata:
                 if content_type == 'wildcard' and 'topic' in metadata:
-                    regenerate_callback = lambda win: self.generate_wildcard_with_topic(metadata['topic'], win)
+                    original_filename = metadata.get('filename')
+                    regenerate_callback = lambda win: self.generate_wildcard_with_topic(metadata['topic'], filename=original_filename, existing_window=win)
                 elif content_type == 'template' and 'concept' in metadata:
                     regenerate_callback = lambda win: self.generate_template_with_concept(metadata['concept'], win)
 

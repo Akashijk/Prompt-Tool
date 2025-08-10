@@ -6,17 +6,16 @@ import sys
 from typing import List, Dict, Optional, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
-from .common import TextContextMenu
+from .common import TextContextMenu, SmartWindowMixin
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
-class HistoryViewerWindow(tk.Toplevel):
+class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
     """A window to view and search the prompt generation history."""
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor):
         super().__init__(parent)
         self.title("Prompt History Viewer")
-        self.geometry("1200x800")
 
         self.processor = processor
         self.parent_app = parent
@@ -26,6 +25,8 @@ class HistoryViewerWindow(tk.Toplevel):
 
         self._create_widgets()
         self.load_and_display_history()
+
+        self.smart_geometry(min_width=1000, min_height=700)
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)

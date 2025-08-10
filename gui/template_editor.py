@@ -66,8 +66,25 @@ class TemplateEditor(ttk.Frame):
         """Inserts a wildcard tag, overwriting a selection or the tag under the cursor."""
         tag_to_insert = f"__{wildcard_name}__"
         try:
+            # Priority 1: Overwrite active selection
             if self.text_widget.tag_ranges("sel"):
                 self.text_widget.delete("sel.first", "sel.last")
+                self.text_widget.insert(tk.INSERT, tag_to_insert)
+                self.text_widget.focus_set()
+                return
+
+            # Priority 2: Overwrite wildcard tag under cursor if no selection
+            cursor_index = self.text_widget.index(tk.INSERT)
+            ranges = self.text_widget.tag_ranges("any_wildcard")
+            for i in range(0, len(ranges), 2):
+                start, end = ranges[i], ranges[i+1]
+                if self.text_widget.compare(cursor_index, ">=", start) and self.text_widget.compare(cursor_index, "<=", end):
+                    self.text_widget.delete(start, end)
+                    self.text_widget.insert(start, tag_to_insert)
+                    self.text_widget.focus_set()
+                    return # Exit after replacing
+            
+            # Fallback: Insert at cursor
             self.text_widget.insert(tk.INSERT, tag_to_insert)
         except tk.TclError:
             # Fallback for edge cases, e.g., if selection is gone

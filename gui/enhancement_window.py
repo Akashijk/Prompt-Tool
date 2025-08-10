@@ -8,17 +8,16 @@ from typing import List, Optional, Dict, Callable, TYPE_CHECKING
 
 from . import custom_dialogs
 from core.prompt_processor import PromptProcessor
-from .common import LoadingAnimation, TextContextMenu
+from .common import LoadingAnimation, TextContextMenu, SmartWindowMixin
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
-class EnhancementResultWindow(tk.Toplevel):
+class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
     """A pop-up window to display enhancement results."""
     def __init__(self, parent: 'GUIApp', result_data: dict, processor: PromptProcessor, model: str, selected_variations: List[str], cancel_callback: Callable, api_call_finish_callback: Callable):
         super().__init__(parent)
         self.title("Enhancement Result")
-        self.geometry("700x750")
         self.transient(parent)
         self.grab_set()
         self.api_call_finish_callback = api_call_finish_callback
@@ -36,6 +35,7 @@ class EnhancementResultWindow(tk.Toplevel):
         self.loading_animations: Dict[str, LoadingAnimation] = {}
         self.copy_buttons: Dict[str, ttk.Button] = {}
         self.regen_buttons: Dict[str, ttk.Button] = {}
+        self.save_button: Optional[ttk.Button] = None
         self.regen_queue: queue.Queue = queue.Queue()
         self.result_queue: queue.Queue = queue.Queue()
         self.result_queue_after_id: Optional[str] = None
@@ -57,11 +57,15 @@ class EnhancementResultWindow(tk.Toplevel):
         # --- Action Buttons ---
         button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
         button_frame.pack(fill=tk.X)
-        ttk.Button(button_frame, text="Save to History", command=self._save).pack(side=tk.LEFT)
+        self.save_button = ttk.Button(button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
+        self.save_button.pack(side=tk.LEFT)
         ttk.Button(button_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
 
         self.result_queue_after_id = self.after(100, self._check_result_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Call smart geometry after creating widgets
+        self.smart_geometry(min_width=700, min_height=750)
 
     def _on_close(self):
         # Cancel pending after jobs to prevent memory leaks
@@ -241,6 +245,8 @@ class EnhancementResultWindow(tk.Toplevel):
             if key == 'enhanced':
                 self.result_data['enhanced'] = data['prompt']
                 self.result_data['enhanced_sd_model'] = data['sd_model']
+                if self.save_button:
+                    self.save_button.config(state=tk.NORMAL)
             else:
                 self.result_data['variations'][key] = data
 

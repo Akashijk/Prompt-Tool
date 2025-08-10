@@ -11,18 +11,17 @@ from core.prompt_processor import PromptProcessor
 from core.config import config
 from . import custom_dialogs
 from .wildcard_editor_widget import WildcardEditor
-from .common import TextContextMenu
+from .common import TextContextMenu, SmartWindowMixin
 
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
-class WildcardManagerWindow(tk.Toplevel):
+class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     """A pop-up window to manage wildcard files."""
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor, update_callback: Callable, initial_file: Optional[str] = None, initial_content: Optional[str] = None):
         super().__init__(parent)
         self.title("Wildcard Manager")
-        self.geometry("800x600")
         
         self.processor = processor
         self.update_callback = update_callback
@@ -38,6 +37,8 @@ class WildcardManagerWindow(tk.Toplevel):
 
         if initial_file:
             self.select_and_load_file(initial_file)
+
+        self.smart_geometry(min_width=800, min_height=600)
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
@@ -78,7 +79,7 @@ class WildcardManagerWindow(tk.Toplevel):
 
         # Structured Editor Tab
         self.structured_editor_frame = ttk.Frame(self.editor_notebook)
-        self.structured_editor = WildcardEditor(self.structured_editor_frame, self, self.processor)
+        self.structured_editor = WildcardEditor(self.structured_editor_frame, self.processor, suggestion_callback=self.suggest_choices_with_ai)
         self.structured_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.editor_notebook.add(self.structured_editor_frame, text="Structured Editor")
 
@@ -124,54 +125,70 @@ class WildcardManagerWindow(tk.Toplevel):
         self.editor_container.config(text=f"Editing: {self.selected_wildcard_file}")
         
         try:
-            # Get the basename to look up in the in-memory dictionary
-            basename, _ = os.path.splitext(self.selected_wildcard_file)
+            # Always load the raw content from disk to get the latest version
+            raw_content = self.processor.load_wildcard_content(self.selected_wildcard_file)
             
-            # Get the in-memory JSON representation (which handles .txt conversion)
-            wildcard_data = self.processor.template_engine.wildcards.get(basename)
-            
-            if wildcard_data is None:
-                # This happens if the file was listed but failed to load (e.g., invalid JSON).
-                # Show an error and display the raw content for fixing.
-                error_message = (
-                    f"Could not load '{self.selected_wildcard_file}' from memory. "
-                    "This usually means the file contains invalid JSON or has read permission issues.\n\n"
-                    "The raw file content is shown below for you to fix. "
-                    "Please correct the syntax and save."
-                )
-                custom_dialogs.show_warning(self, "File Load Warning", error_message)
+            # Handle .txt files by converting them to the JSON structure in memory
+            if self.selected_wildcard_file.endswith('.txt'):
+                lines = [line.strip() for line in raw_content.splitlines() if line.strip()]
+                wildcard_data = {
+                    "description": f"Legacy wildcard from {self.selected_wildcard_file}. Saving will convert to .json.",
+                    "choices": lines
+                }
+                self._display_valid_wildcard(wildcard_data)
+            else: # Handle .json files
+                # Try to parse it as JSON
+                try:
+                    wildcard_data = json.loads(raw_content)
+                    self._display_valid_wildcard(wildcard_data)
+                except json.JSONDecodeError:
+                    # If parsing fails, it's an invalid file. Show the raw editor.
+                    self._display_invalid_wildcard(raw_content)
 
-                # Load the raw content into the raw editor so the user can fix it
-                raw_content = self.processor.load_wildcard_content(self.selected_wildcard_file)
-                self.raw_text_editor.delete("1.0", tk.END)
-                self.raw_text_editor.insert("1.0", raw_content)
-                self.structured_editor.set_data({}) # Clear structured editor
-                self.structured_editor.suggest_button.config(state=tk.DISABLED)
-                self.editor_notebook.select(self.raw_text_frame) # Switch to raw editor
-                
-                self.save_button.config(state=tk.NORMAL)
-                self.archive_button.config(state=tk.NORMAL)
-                self.brainstorm_button.config(state=tk.DISABLED) # Can't brainstorm with broken content
-                return
-                
-            # If load is successful, populate both editors
-            self.structured_editor.set_data(wildcard_data)
-            
-            pretty_content = json.dumps(wildcard_data, indent=2)
-            self.raw_text_editor.delete("1.0", tk.END)
-            self.raw_text_editor.insert("1.0", pretty_content)
-            self.editor_notebook.select(self.structured_editor_frame) # Switch to structured editor
-            
-            self.structured_editor.suggest_button.config(state=tk.NORMAL)
-            self.save_button.config(state=tk.NORMAL)
-            self.archive_button.config(state=tk.NORMAL)
-            self.brainstorm_button.config(state=tk.NORMAL)
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Could not load wildcard file:\n{e}")
             self.save_button.config(state=tk.DISABLED)
             self.structured_editor.suggest_button.config(state=tk.DISABLED)
             self.archive_button.config(state=tk.DISABLED)
             self.brainstorm_button.config(state=tk.DISABLED)
+
+    def _display_valid_wildcard(self, wildcard_data: Dict[str, Any]):
+        """Updates the editor UI for a successfully loaded wildcard."""
+        self.structured_editor.set_data(wildcard_data)
+        
+        pretty_content = json.dumps(wildcard_data, indent=2)
+        self.raw_text_editor.delete("1.0", tk.END)
+        self.raw_text_editor.insert("1.0", pretty_content)
+        self.editor_notebook.select(self.structured_editor_frame)
+        
+        self.structured_editor.suggest_button.config(state=tk.NORMAL)
+        self.save_button.config(state=tk.NORMAL)
+        self.archive_button.config(state=tk.NORMAL)
+        self.brainstorm_button.config(state=tk.NORMAL)
+
+    def _display_invalid_wildcard(self, raw_content: str):
+        """
+        Updates the editor UI for a file that failed to load from memory,
+        likely due to a JSON parsing error.
+        """
+        error_message = (
+            f"Could not load '{self.selected_wildcard_file}' from memory. "
+            "This usually means the file contains invalid JSON or has read permission issues.\n\n"
+            "The raw file content is shown below for you to fix. "
+            "Please correct the syntax and save."
+        )
+        custom_dialogs.show_warning(self, "File Load Warning", error_message)
+
+        # Load the raw content into the raw editor so the user can fix it
+        self.raw_text_editor.delete("1.0", tk.END)
+        self.raw_text_editor.insert("1.0", raw_content)
+        self.structured_editor.set_data({}) # Clear structured editor
+        self.structured_editor.suggest_button.config(state=tk.DISABLED)
+        self.editor_notebook.select(self.raw_text_frame) # Switch to raw editor
+        
+        self.save_button.config(state=tk.NORMAL)
+        self.archive_button.config(state=tk.NORMAL)
+        self.brainstorm_button.config(state=tk.DISABLED)
 
     def _save_wildcard_file(self):
         if not self.selected_wildcard_file: return
@@ -309,6 +326,7 @@ class WildcardManagerWindow(tk.Toplevel):
     def suggest_choices_with_ai(self, current_data: Dict[str, Any]):
         """Starts the AI suggestion process in a background thread."""
         self.structured_editor.suggest_button.config(state=tk.DISABLED, text="Suggesting...")
+        current_wildcard_file = self.selected_wildcard_file
         
         def task():
             try:
@@ -316,7 +334,7 @@ class WildcardManagerWindow(tk.Toplevel):
                 if not model or "model" in model.lower():
                     raise Exception("Please select a valid Ollama model in the main window.")
                 
-                new_choices = self.processor.suggest_wildcard_choices(current_data, model)
+                new_choices = self.processor.suggest_wildcard_choices(current_data, model, current_wildcard_file)
                 self.suggestion_queue.put({'success': True, 'choices': new_choices})
             except Exception as e:
                 self.suggestion_queue.put({'success': False, 'error': str(e)})
@@ -338,3 +356,21 @@ class WildcardManagerWindow(tk.Toplevel):
                 custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating suggestions:\n{result['error']}")
         except queue.Empty:
             self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
+
+    def generate_missing_wildcard(self, wildcard_name: str):
+        """Generate a new wildcard that was referenced in includes but doesn't exist."""
+        if not wildcard_name:
+            return
+            
+        # Create a new window for this wildcard
+        metadata = {'filename': f"{wildcard_name}.json"}
+        self._handle_generated_content("", "wildcard", metadata)
+        
+        # Generate content using AI
+        prompt = (
+            f"Generate a wildcard file for '{wildcard_name}'. "
+            f"Consider the context and purpose of this wildcard. "
+            f"Include a clear description and relevant choices."
+        )
+        
+        self._run_generation_task(prompt, "wildcard", metadata)

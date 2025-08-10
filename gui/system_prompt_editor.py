@@ -6,14 +6,13 @@ from typing import Optional
 
 from . import custom_dialogs
 from core.prompt_processor import PromptProcessor
-from .common import TextContextMenu
+from .common import TextContextMenu, SmartWindowMixin
 
-class SystemPromptEditorWindow(tk.Toplevel):
+class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
     """A window for editing system-level prompts (enhancement, variations)."""
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor):
         super().__init__(parent)
         self.title("System Prompt Editor")
-        self.geometry("900x700")
         self.parent_app = parent
 
         self.processor = processor
@@ -21,6 +20,8 @@ class SystemPromptEditorWindow(tk.Toplevel):
 
         self._create_widgets()
         self._populate_file_list()
+
+        self.smart_geometry(min_width=800, min_height=600)
 
     def _create_widgets(self):
         main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)

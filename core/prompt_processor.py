@@ -10,6 +10,7 @@ from .csv_manager import CSVManager
 from .config import config, DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATION_INSTRUCTIONS, \
                     DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATION_INSTRUCTIONS
 from .ollama_client import OllamaClient
+from datetime import datetime
 
 class PromptProcessor:
     """Coordinates prompt generation and enhancement workflow."""
@@ -19,6 +20,7 @@ class PromptProcessor:
         # Lazily import OllamaClient to avoid issues if it's not needed (e.g., in GUI)
         self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL) 
         self.csv_manager = CSVManager()
+        self.rng = random.Random()
         
         # Callback functions for UI updates (optional)
         self.status_callback: Optional[Callable] = None
@@ -260,6 +262,147 @@ class PromptProcessor:
             prompts.append(prompt)
         return prompts
     
+    def process_enhancement_batch(self, 
+                                prompts: List[str], 
+                                model: str,
+                                selected_variations: Optional[List[str]] = None,
+                                cancellation_event: Optional[threading.Event] = None) -> List[Dict[str, Any]]:
+        """Process a batch of prompts for enhancement."""
+        results = []
+        total_prompts = len(prompts)
+        
+        for i, prompt in enumerate(prompts):
+            if cancellation_event and cancellation_event.is_set():
+                self._update_status("batch_cancelled")
+                break
+            
+            # Enhance the prompt
+            enhancement_instruction = self.load_system_prompt_content('enhancement.txt')
+            self._update_status('enhancement_start', prompt_num=i+1, total_prompts=total_prompts)
+            enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
+            
+            result = {
+                'original': prompt,
+                'enhanced': enhanced,
+                'enhanced_sd_model': enhanced_sd_model,
+                'variations': {},
+                'status': 'enhanced'
+            }
+            
+            # Send back the main enhancement result immediately
+            if self.result_callback:
+                self.result_callback('enhanced', {'prompt': enhanced, 'sd_model': enhanced_sd_model})
+            
+            # Create variations if requested
+            if selected_variations:
+                for var_type in selected_variations:
+                    if cancellation_event and cancellation_event.is_set():
+                        break # break inner loop
+
+                    variation_instruction = self.load_system_prompt_content(f'{var_type}.txt')
+                    self._update_status('variation_start', var_type=var_type, prompt_num=i+1, total_prompts=total_prompts)
+                    variation_result = self.ollama_client.create_single_variation(variation_instruction, enhanced, model, var_type)
+                    # Send back variation result immediately
+                    if self.result_callback:
+                        self.result_callback(var_type, variation_result)
+                    result['variations'][var_type] = variation_result
+            
+            if cancellation_event and cancellation_event.is_set():
+                break # break outer loop
+
+            results.append(result)
+        
+        if not (cancellation_event and cancellation_event.is_set()):
+            self._update_status("batch_complete")
+        
+        return results
+
+    def suggest_template_additions(self, prompt: str, model: str) -> str:
+        """Uses AI to suggest additions to an existing prompt template."""
+        # Get a sample of existing wildcards to give the AI context.
+        wildcard_names = self.get_wildcard_names()
+        sample_size = min(15, len(wildcard_names))
+        wildcard_sample_str = ", ".join(random.sample(wildcard_names, sample_size)) if wildcard_names else "none"
+
+        instruction = (
+            f"You are a prompt engineering expert for Stable Diffusion. Your task is to analyze the following prompt template and suggest 3-5 creative and context-aware additions. These can be descriptive phrases or new `__wildcard__` tags.\n\n"
+            f"**EXISTING TEMPLATE:**\n---\n{prompt}\n---\n\n"
+            f"**CRITICAL INSTRUCTIONS:**\n"
+            f"1.  **Analyze Intent:** Deeply analyze the user's template to understand its core subject, style, and intent.\n"
+            f"2.  **Be Creative & Complementary:** Suggest genuinely new and complementary details. Think about lighting, atmosphere, composition, artistic style, camera angles, or specific subject details. Don't just add generic quality tags.\n"
+            f"3.  **Use Existing Wildcards:** When relevant, use wildcards from the 'Existing Wildcards' list below. This is preferred over inventing a new one if a good match exists.\n"
+            f"4.  **Invent New Wildcards:** If no existing wildcard fits your creative suggestion, invent a new, logically named `__wildcard__`.\n"
+            f"5.  **Format:** Return ONLY a comma-separated list of your suggested additions. Do not repeat any part of the original template. Do not include any extra commentary, explanations, or labels like 'SUGGESTIONS:'.\n\n"
+            f"**EXISTING WILDCARDS (SAMPLE):** {wildcard_sample_str}\n\n"
+            f"**EXAMPLE:**\n"
+            f"If the existing template is 'a portrait of a __character_class__, wearing __fantasy_armor__', and 'lighting_style' and 'fantasy_forest' are existing wildcards, a good response would be: '__lighting_style__, in a __fantasy_forest__, intricate details, masterpiece, from behind'\n\n"
+            f"Now, provide the suggested additions for the user's template."
+        )
+        
+        # Use the one-shot generation method for this simple task.
+        return self.generate_for_brainstorming(model, instruction)
+
+    def suggest_wildcard_choices(self, wildcard_data: Dict[str, Any], model: str, current_wildcard_filename: Optional[str] = None) -> List[Any]:
+        """Uses AI to suggest new choices for an existing wildcard file."""
+        description = wildcard_data.get('description', 'No description.')
+        # Get a sample of existing choices to give the AI context
+        existing_choices = wildcard_data.get('choices', [])
+        sample_size = min(10, len(existing_choices))
+        sample_choices = self.rng.sample(existing_choices, sample_size) if existing_choices else []
+        
+        current_wildcard_name = None
+        if current_wildcard_filename:
+            current_wildcard_name, _ = os.path.splitext(current_wildcard_filename)
+
+        topic = current_wildcard_name.replace('_', ' ') if current_wildcard_name else "the given theme"
+
+        # Get a sample of other wildcards for 'requires' and 'includes'
+        other_wildcards = self.get_wildcard_names()
+        # Filter out the current wildcard from the list of possibilities for 'requires'
+        if current_wildcard_name:
+            other_wildcards = [wc for wc in other_wildcards if wc != current_wildcard_name]
+
+        other_sample_size = min(5, len(other_wildcards))
+        other_wildcard_sample = ", ".join(self.rng.sample(other_wildcards, other_sample_size)) if other_wildcards else "none"
+
+        # Build instructions dynamically
+        instructions = [
+            f"**Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.",
+            "**JSON Format:** You MUST return a JSON array of the new choices. Do NOT return a full object with 'description', just the array of choices.",
+            "**Complex Choices:** The new choices should be a mix of simple strings and complex objects with `weight`, `tags`, `requires`, and `includes` keys where appropriate.",
+            "**Contextual Suggestions:** Use the 'Existing Wildcards' list below to create relevant `requires` and `includes` clauses. The `requires` key must be an object (e.g., `{{\"key\": \"value\"}}`), and `includes` must be an array of strings.",
+            "**Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.",
+        ]
+        if current_wildcard_name:
+            instructions.append(f"**No Self-Reference:** The `requires` key MUST NOT refer to the wildcard being edited (`{current_wildcard_name}`). This is a critical rule.")
+        
+        instructions.extend([
+            "**Avoid Duplicates:** The list above is only a small sample of existing choices. Do not suggest items that are already in the sample. Prioritize suggesting choices that are genuinely new and different from the existing theme.",
+            "**No Extra Text:** Return ONLY the JSON array of new choices."
+        ])
+
+        # Format instructions with numbers
+        formatted_instructions = "\n".join([f"{i+1}.  {inst}" for i, inst in enumerate(instructions)])
+
+        prompt = (
+            f"You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing wildcard file on the topic of '{topic}' and suggest 5-10 new, creative, and relevant choices that expand upon it.\n\n"
+            f"**EXISTING WILDCARD DESCRIPTION:** {description}\n\n"
+            f"**SAMPLE OF EXISTING CHOICES:**\n{json.dumps(sample_choices, indent=2)}\n\n"
+            f"**CRITICAL INSTRUCTIONS:**\n{formatted_instructions}\n\n"
+            f"**Existing Wildcards sample for context:** {other_wildcard_sample}\n\n"
+            f"**EXAMPLE RESPONSE for a 'fantasy_race' wildcard:**\n"
+            f'[\n'
+            f'  "gnome",\n'
+            f'  {{"value": "tiefling", "weight": 2, "tags": ["fiendish"], "requires": {{"body_type": "curvy"}} }},\n'
+            f'  {{"value": "aasimar", "weight": 2, "tags": ["celestial"], "includes": ["halo"]}}\n'
+            f']\n\n'
+            f"Now, generate the JSON array of new choices."
+        )
+            
+        response = self.generate_for_brainstorming(model, prompt)
+        
+        return self.ollama_client.parse_json_array_from_response(response)
+
     def save_results(self, results: List[Dict[str, Any]]) -> None:
         """Save results to CSV."""
         self.csv_manager.save_batch_results(results)
@@ -271,3 +414,16 @@ class PromptProcessor:
     def cleanup_model(self, model: str) -> None:
         """Unload model to free resources."""
         self.ollama_client.unload_model(model)
+
+    def save_to_history(self, prompt: str, template: str, wildcards: Dict[str, Any]):
+        """Save the generated prompt and its metadata to history."""
+        timestamp = datetime.now().isoformat()
+        history_entry = {
+            "timestamp": timestamp,
+            "prompt": prompt,
+            "template": template,
+            "wildcards": wildcards,
+            "seed": self.template_engine.current_seed,
+            "seed_locked": self.template_engine.seed_locked
+        }
+        # ...existing saving code...

@@ -2,6 +2,7 @@
 
 import csv
 import os
+import tempfile
 from typing import Set, Optional, Dict, Any, List
 from .config import config
 
@@ -83,33 +84,46 @@ class CSVManager:
         return history
 
     def delete_history_entry(self, row_to_delete: Dict[str, str]) -> bool:
-        """Deletes a specific entry from the history CSV file by matching the full row."""
+        """Deletes a specific entry from the history CSV file by matching the full row.
+        
+        This method is memory-efficient and suitable for large files, as it avoids
+        loading the entire file into memory.
+        """
         filepath = config.get_csv_history_file()
         if not os.path.isfile(filepath):
             return False
 
-        rows_to_keep = []
         deleted = False
+        temp_filepath = ""
         try:
-            with open(filepath, 'r', newline='', encoding='utf-8') as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    # Match the entire row. If we've already deleted one, keep the rest.
-                    if not deleted and row == row_to_delete:
-                        deleted = True
-                    else:
-                        rows_to_keep.append(row)
+            # Create a temporary file to write the new content to
+            with tempfile.NamedTemporaryFile(mode='w', newline='', encoding='utf-8', delete=False, dir=os.path.dirname(filepath)) as temp_file:
+                temp_filepath = temp_file.name
+                with open(filepath, 'r', newline='', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    # If the file is empty or has no header, there's nothing to delete.
+                    if not reader.fieldnames:
+                        return False
+                    
+                    writer = csv.DictWriter(temp_file, fieldnames=reader.fieldnames)
+                    writer.writeheader()
+
+                    for row in reader:
+                        if not deleted and row == row_to_delete:
+                            deleted = True  # Found the row to delete, skip writing it
+                        else:
+                            writer.writerow(row)
             
             if deleted:
-                with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-                    # Use extrasaction='ignore' to handle cases where rows might not have all fields
-                    writer = csv.DictWriter(csvfile, fieldnames=config.CSV_COLUMNS, extrasaction='ignore')
-                    writer.writeheader()
-                    writer.writerows(rows_to_keep)
-            
+                os.replace(temp_filepath, filepath)
+            else:
+                os.remove(temp_filepath) # No changes were made, so remove the temp file
             return deleted
         except Exception as e:
             print(f"Error deleting history entry: {e}")
+            # Clean up the temp file on error
+            if temp_filepath and os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
             return False
 
     def save_result(self, 

@@ -50,42 +50,42 @@ class OllamaClient:
     
     def parse_enhanced_response(self, response: str) -> Tuple[str, str]:
         """Parse the enhanced response to extract prompt and SD model recommendation."""
-        lines = response.strip().split('\n')
-        enhanced_prompt = ""
-        sd_model = ""
-        
-        for line in lines:
-            if line.startswith('ENHANCED_PROMPT:'):
-                enhanced_prompt = line.replace('ENHANCED_PROMPT:', '').strip()
-            elif line.startswith('SD_MODEL:'):
-                sd_model = line.replace('SD_MODEL:', '').strip()
-        
-        # Fallback if format isn't followed exactly
-        if not enhanced_prompt:
-            enhanced_prompt = response.strip()
-        if not sd_model:
-            sd_model = "Stable Diffusion XL (SDXL) - general purpose"
-        
+        enhanced_prompt_match = re.search(r"ENHANCED_PROMPT:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        sd_model_match = re.search(r"SD_MODEL:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+
+        enhanced_prompt = enhanced_prompt_match.group(1).strip() if enhanced_prompt_match else response.strip()
+        sd_model = sd_model_match.group(1).strip() if sd_model_match else "Stable Diffusion XL (SDXL) - general purpose"
+
+        # If the prompt still contains the model line, strip it out.
+        if sd_model_match:
+            enhanced_prompt = re.split(r"SD_MODEL:", enhanced_prompt, flags=re.IGNORECASE)[0].strip()
+
         return enhanced_prompt, sd_model
     
+    def _post_request(self, endpoint: str, payload: Dict[str, Any], timeout: int) -> Dict[str, Any]:
+        """Centralized method for making POST requests to the Ollama API."""
+        api_url = f"{self.base_url}{endpoint}"
+        model_name = payload.get("model", "N/A")
+        try:
+            res = requests.post(api_url, json=payload, timeout=timeout)
+            res.raise_for_status()
+            return res.json()
+        except requests.Timeout:
+            raise Exception(f"Request to Ollama timed out after {timeout} seconds.")
+        except requests.RequestException as e:
+            if hasattr(e, 'response') and e.response and e.response.status_code == 404:
+                raise Exception(f"Model '{model_name}' not found. It may not be pulled or is misspelled.")
+            raise Exception(f"Error communicating with Ollama API: {e}")
+
     def _generate(self, model: str, full_prompt: str, timeout: Optional[int]) -> str:
         """Generic generation method to call the Ollama API."""
-        api_url = f"{self.base_url}/api/generate"
         payload = {
             "model": model,
             "prompt": full_prompt,
             "stream": False,
         }
-        try:
-            res = requests.post(api_url, json=payload, timeout=timeout)
-            res.raise_for_status()
-            return res.json().get('response', '')
-        except requests.Timeout:
-            raise Exception(f"Request to Ollama timed out after {timeout} seconds.")
-        except requests.RequestException as e:
-            if hasattr(e, 'response') and e.response and e.response.status_code == 404:
-                raise Exception(f"Model '{model}' not found. It may not be pulled or is misspelled.")
-            raise Exception(f"Error communicating with Ollama API: {e}")
+        response_data = self._post_request("/api/generate", payload, timeout)
+        return response_data.get('response', '')
 
     def enhance_prompt(self, full_instruction_prompt: str, model: str) -> Tuple[str, str]:
         """Enhance a single prompt using the specified model."""
@@ -104,42 +104,63 @@ class OllamaClient:
 
     def chat(self, model: str, messages: List[Dict[str, str]]) -> str:
         """Generic chat with a model for brainstorming, using a message history."""
-        api_url = f"{self.base_url}/api/chat"
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
         }
-        try:
-            res = requests.post(api_url, json=payload, timeout=config.DEFAULT_TIMEOUT)
-            res.raise_for_status()
-            return res.json().get('message', {}).get('content', '')
-        except requests.Timeout:
-            raise Exception(f"Request to Ollama timed out after {config.DEFAULT_TIMEOUT} seconds.")
-        except requests.RequestException as e:
-            if hasattr(e, 'response') and e.response and e.response.status_code == 404:
-                raise Exception(f"Model '{model}' not found. It may not be pulled or is misspelled.")
-            raise Exception(f"Error communicating with Ollama API: {e}")
+        response_data = self._post_request("/api/chat", payload, config.DEFAULT_TIMEOUT)
+        return response_data.get('message', {}).get('content', '')
 
     def parse_json_array_from_response(self, response: str) -> List[Any]:
-        """Extracts a JSON array from an AI's response, with fallback."""
-        try:
-            # Look for a JSON block within markdown code fences
-            match = re.search(r'```json\s*(\[.*?\])\s*```', response, re.DOTALL)
-            if match:
-                json_str = match.group(1)
-                return json.loads(json_str)
-
-            # Look for the first '[' and last ']'
+        """Extracts a JSON array from an AI's response, with fallback and cleanup."""
+        json_str = None
+        
+        # First, try to find a markdown-fenced JSON block (most reliable)
+        match = re.search(r'```json\s*(\[.*?\])\s*```', response, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            # Fallback: find the content between the first '[' and last ']'
             start = response.find('[')
             end = response.rfind(']')
             if start != -1 and end != -1 and start < end:
                 json_str = response[start:end+1]
-                return json.loads(json_str)
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Warning: Could not parse JSON array, falling back. Error: {e}")
 
-        return []
+        if json_str:
+            try:
+                parsed_array = json.loads(json_str)
+                # Post-process to replace underscores with spaces in values
+                cleaned_choices = []
+                for choice in parsed_array:
+                    if isinstance(choice, str):
+                        cleaned_choices.append(choice.replace('_', ' '))
+                    elif isinstance(choice, dict) and 'value' in choice and isinstance(choice.get('value'), str):
+                        choice['value'] = choice['value'].replace('_', ' ')
+                        cleaned_choices.append(choice)
+                    else:
+                        cleaned_choices.append(choice) # Keep malformed items as-is
+                return cleaned_choices
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"Warning: Could not parse JSON array, falling back to text parsing. Error: {e}")
+                # Fall through to text-based parsing below
+
+        # Fallback: If no JSON string was found or it failed to parse, treat the response as a plain list.
+        print("INFO: Falling back to plain text list parsing for AI response.")
+        
+        # Regex to find lines that look like list items (markdown or numbered)
+        list_item_pattern = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.*)", re.MULTILINE)
+        choices = list_item_pattern.findall(response)
+        
+        if choices:
+            # Further cleanup: remove trailing punctuation and replace underscores.
+            cleaned_choices = [re.sub(r'[.,]$', '', choice).strip().replace('_', ' ') for choice in choices]
+            return [c for c in cleaned_choices if c] # Filter out empty strings
+
+        # Last resort: split by lines and filter out conversational filler.
+        ignore_phrases = ["here are", "here's a list", "sure, here", "i've generated", "```", "json", "[", "]"]
+        lines = [line.strip().replace('_', ' ') for line in response.split('\n') if line.strip() and not any(phrase in line.lower() for phrase in ignore_phrases)]
+        return [l for l in lines if len(l) > 1]
 
     def create_single_variation(self, instruction: str, base_prompt: str, model: str, variation_type: str) -> Dict[str, str]:
         """Create a single variation of a given type."""
@@ -155,15 +176,14 @@ class OllamaClient:
 
     def unload_model(self, model: str) -> None:
         """Unload a model from memory to free VRAM using the keep_alive=0 method."""
-        api_url = f"{self.base_url}/api/generate"
         payload = {
             "model": model,
             "prompt": "", # An empty prompt is required
             "keep_alive": 0
         }
         try:
-            res = requests.post(api_url, json=payload, timeout=10)
-            res.raise_for_status()
+            self._post_request("/api/generate", payload, 10)
             print(f"INFO: Successfully unloaded model '{model}'.")
-        except requests.RequestException as e:
+        except Exception as e:
+            # Catch exceptions here since this is a non-critical cleanup task
             print(f"WARNING: Could not unload model '{model}'. Error: {e}")

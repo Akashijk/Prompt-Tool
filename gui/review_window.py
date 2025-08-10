@@ -1,5 +1,6 @@
 """A window to review, edit, and save AI-generated content."""
 
+import json
 import tkinter as tk
 from tkinter import ttk
 from typing import Optional, Callable, TYPE_CHECKING
@@ -7,12 +8,13 @@ from typing import Optional, Callable, TYPE_CHECKING
 from core.prompt_processor import PromptProcessor
 from core.config import config
 from . import custom_dialogs
-from .common import TextContextMenu, LoadingAnimation
+from .wildcard_editor_widget import WildcardEditor
+from .common import TextContextMenu, LoadingAnimation, SmartWindowMixin
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
-class ReviewAndSaveWindow(tk.Toplevel):
+class ReviewAndSaveWindow(tk.Toplevel, SmartWindowMixin):
     """A window to review, edit, and save AI-generated content."""
     def __init__(self, parent, processor: PromptProcessor, content_type: str, generated_content: str, update_callback: Callable, filename: Optional[str] = None, regenerate_callback: Optional[Callable] = None, is_loading: bool = False):
         super().__init__(parent)
@@ -32,12 +34,30 @@ class ReviewAndSaveWindow(tk.Toplevel):
 
         title = f"Review: {self.prefilled_filename}" if self.prefilled_filename else f"Review New {self.content_type.capitalize()}"
         self.title(title)
-        self.geometry("600x700")
+        
+        if self.content_type == 'wildcard':
+            self.editor_notebook = ttk.Notebook(self)
+            self.editor_notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10,0))
 
-        self.text_widget = tk.Text(self, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True)
-        self.text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10,0))
-        TextContextMenu(self.text_widget)
+            self.structured_editor_frame = ttk.Frame(self.editor_notebook)
+            # No suggestion callback is passed, so the button will be disabled.
+            self.structured_editor = WildcardEditor(self.structured_editor_frame, self.processor)
+            self.structured_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            self.editor_notebook.add(self.structured_editor_frame, text="Structured Editor")
 
+            self.raw_text_frame = ttk.Frame(self.editor_notebook)
+            self.raw_text_editor = tk.Text(self.raw_text_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True)
+            TextContextMenu(self.raw_text_editor)
+            self.raw_text_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            self.editor_notebook.add(self.raw_text_frame, text="Raw Text Editor")
+            
+            # For compatibility with existing methods that use self.text_widget
+            self.text_widget = self.raw_text_editor
+        else: # 'template'
+            self.text_widget = tk.Text(self, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True)
+            self.text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10,0))
+            TextContextMenu(self.text_widget)
+            
         button_frame = ttk.Frame(self, padding=10)
         button_frame.pack(fill=tk.X)
 
@@ -66,7 +86,9 @@ class ReviewAndSaveWindow(tk.Toplevel):
         if is_loading:
             self._set_ui_loading(True)
         else:
-            self.text_widget.insert("1.0", generated_content)
+            self.update_content(generated_content)
+
+        self.smart_geometry(min_width=600, min_height=600)
 
     def _set_ui_loading(self, is_loading: bool, verb: str = "Generating"):
         """Centralized method to toggle the UI between loading and interactive states."""
@@ -77,8 +99,12 @@ class ReviewAndSaveWindow(tk.Toplevel):
             if hasattr(self, 'loading_animation'):
                 self.loading_animation.pack(fill=tk.X)
                 self.loading_animation.start()
-
-            self.text_widget.config(state=tk.NORMAL)
+            
+            if self.content_type == 'wildcard':
+                self.structured_editor.set_data({})
+                self.raw_text_editor.delete("1.0", tk.END)
+            
+            self.text_widget.config(state=tk.NORMAL) # Use the alias
             self.text_widget.delete("1.0", tk.END)
             self.text_widget.insert("1.0", f"{verb} new {self.content_type}...")
             self.text_widget.config(state=tk.DISABLED)
@@ -89,7 +115,7 @@ class ReviewAndSaveWindow(tk.Toplevel):
             if hasattr(self, 'loading_animation'):
                 self.loading_animation.stop()
                 self.loading_animation.pack_forget()
-
+            
             self.text_widget.config(state=tk.NORMAL)
             self.save_button.config(state=tk.NORMAL)
             if hasattr(self, 'regenerate_button'):
@@ -102,8 +128,21 @@ class ReviewAndSaveWindow(tk.Toplevel):
     def update_content(self, new_content: str):
         """Updates the text widget with new content and re-enables buttons."""
         self._set_ui_loading(False)
-        self.text_widget.delete("1.0", tk.END) # Clear the "Generating..." placeholder
-        self.text_widget.insert("1.0", new_content)
+        if self.content_type == 'wildcard':
+            self.raw_text_editor.delete("1.0", tk.END)
+            try:
+                parsed_data = json.loads(new_content)
+                self.structured_editor.set_data(parsed_data)
+                self.raw_text_editor.insert("1.0", json.dumps(parsed_data, indent=2))
+                self.editor_notebook.select(self.structured_editor_frame)
+            except (json.JSONDecodeError, TypeError):
+                # If content is not valid JSON, show it in the raw editor
+                self.structured_editor.set_data({})
+                self.raw_text_editor.insert("1.0", new_content)
+                self.editor_notebook.select(self.raw_text_frame)
+        else: # template
+            self.text_widget.delete("1.0", tk.END)
+            self.text_widget.insert("1.0", new_content)
 
     def _regenerate(self):
         """Calls the provided callback to regenerate content and updates UI to a loading state."""
@@ -125,9 +164,20 @@ class ReviewAndSaveWindow(tk.Toplevel):
         elif self.content_type == 'template' and not filename.endswith('.txt'):
             filename += '.txt'
 
-        content = self.text_widget.get("1.0", "end-1c")
+        content = ""
+        if self.content_type == 'wildcard':
+            active_tab_index = self.editor_notebook.index(self.editor_notebook.select())
+            if active_tab_index == 0: # Structured Editor
+                data = self.structured_editor.get_data()
+                content = json.dumps(data, indent=2)
+            else: # Raw Text Editor
+                content = self.raw_text_editor.get("1.0", "end-1c")
+        else: # template
+            content = self.text_widget.get("1.0", "end-1c")
+
         try:
             if self.content_type == "wildcard":
+                json.loads(content) # Validate JSON before saving
                 is_nsfw_only = False
                 if config.workflow == 'nsfw':
                     is_nsfw_only = custom_dialogs.ask_yes_no(
