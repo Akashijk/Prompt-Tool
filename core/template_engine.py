@@ -21,7 +21,6 @@ class TemplateEngine:
     def __init__(self):
         self.wildcards: Dict[str, Dict] = {} # Will now store the full parsed JSON object
         self.current_seed: Optional[int] = None
-        self.seed_locked: bool = False
         self.rng = random.Random()
 
     def load_wildcards(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
@@ -176,14 +175,32 @@ class TemplateEngine:
         str_choices = [c['value'] if isinstance(c, dict) else c for c in choices]
         return sorted(str_choices, key=str.lower)
 
-    def generate_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None) -> str:
+    def find_choice_object_by_value(self, wildcard_name: str, value: str) -> Optional[Any]:
+        """Finds a choice object (string or dict) by its value within a wildcard."""
+        wildcard_data = self.wildcards.get(wildcard_name)
+        if not wildcard_data or 'choices' not in wildcard_data:
+            return None
+
+        for choice in wildcard_data['choices']:
+            if isinstance(choice, str) and choice == value:
+                return choice
+            elif isinstance(choice, dict) and choice.get('value') == value:
+                return choice
+        return None
+
+    def generate_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, seed: Optional[int] = None) -> str:
         """
         Generate a prompt by substituting wildcards in template, respecting context.
         This non-structured version is suitable for CLI or backend use.
         """
         if wildcards is None:
             wildcards = self.wildcards
-
+        
+        if seed is None:
+            seed = random.randint(0, 2**32 - 1)
+        self.current_seed = seed
+        self.rng.seed(self.current_seed)
+        
         output_prompt = ""
         remaining_template = template
         resolved_context: Dict[str, Any] = {} # Can now hold strings or lists of tags
@@ -204,30 +221,32 @@ class TemplateEngine:
 
             # If a wildcard is used multiple times, reuse its resolved value.
             if key in resolved_context:
-                # The context for a key might be a dict {'value': '...', 'tags': []}
-                choice_val = resolved_context[key]['value'] if isinstance(resolved_context[key], dict) else resolved_context[key]
+                choice_val = resolved_context[key]['value']
                 output_prompt += choice_val
                 remaining_template = remaining_template[end_pos+2:]
             else:
+                wildcard_data = self.wildcards.get(key)
                 choice_obj = self._get_wildcard_choice_object(key, resolved_context)
                 if choice_obj:
                     choice = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
                     tags = choice_obj.get('tags') if isinstance(choice_obj, dict) else []
                     output_prompt += choice
-                    # Store the value and tags for context matching
                     resolved_context[key] = {'value': choice, 'tags': tags}
 
-                    if isinstance(choice_obj, dict) and 'includes' in choice_obj:
-                        include_text = " " + " ".join([f"__{inc}__" for inc in choice_obj['includes']])
+                    # Combine global and choice-specific includes
+                    global_includes = wildcard_data.get('includes', []) if wildcard_data else []
+                    choice_includes = choice_obj.get('includes', []) if isinstance(choice_obj, dict) else []
+                    all_includes = global_includes + choice_includes
+
+                    if all_includes:
+                        include_text = " " + " ".join([f"__{inc}__" for inc in all_includes])
                         remaining_template = include_text + remaining_template[end_pos+2:]
                     else:
                         remaining_template = remaining_template[end_pos+2:]
                 else:
-                    # If no choice is found, keep the placeholder
                     output_prompt += f"__{key}__"
                     remaining_template = remaining_template[end_pos+2:]
 
-        # Add any remaining static text
         output_prompt += remaining_template
         
         return output_prompt.strip()
@@ -299,15 +318,20 @@ class TemplateEngine:
                 return False
         return True
 
-    def generate_structured_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None) -> List[PromptSegment]:
+    def generate_structured_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None, seed: Optional[int] = None) -> List[PromptSegment]:
         """Generate a prompt as a list of segments for rich interaction."""
         if wildcards is None:
             wildcards = self.wildcards
 
-        # If this is a full new generation (not a live update) and the seed is not locked,
-        # generate a new random seed to ensure the "Generate" button always produces a new result.
-        if not existing_segments and not self.seed_locked:
-            self.set_seed()
+        # --- Seed Management ---
+        # The GUI now controls the seed logic. The engine just uses what it's given.
+        if seed is None:
+            # If no seed is provided, generate a random one. This ensures that even
+            # if the GUI fails to provide one, we don't reuse the last seed unintentionally.
+            seed = random.randint(0, 2**32 - 1)
+            
+        self.current_seed = seed
+        self.rng.seed(self.current_seed)
 
         # Build a map of existing choices to maintain them across edits
         existing_choices_map = {}
@@ -336,26 +360,44 @@ class TemplateEngine:
             key = remaining_template[start_pos+2:end_pos]
             if key in existing_choices_map:
                 choice_text = existing_choices_map[key]
-                # We don't know the tags of a pre-existing choice, so context is limited here.
-                segments.append(PromptSegment(text=choice_text, wildcard_name=key))
-                resolved_context[key] = {'value': choice_text, 'tags': []}
-                remaining_template = remaining_template[end_pos+2:]
-            else:
-                choice_obj = self._get_wildcard_choice_object(key, resolved_context)
+                choice_obj = self.find_choice_object_by_value(key, choice_text)
+                wildcard_data = self.wildcards.get(key)
+
                 if choice_obj:
-                    choice_text = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
-                    includes_list = choice_obj.get('includes') if isinstance(choice_obj, dict) else None
+                    global_includes = wildcard_data.get('includes', []) if wildcard_data else []
+                    choice_includes = choice_obj.get('includes', []) if isinstance(choice_obj, dict) else []
+                    all_includes = global_includes + choice_includes
                     tags = choice_obj.get('tags') if isinstance(choice_obj, dict) else []
-                    segments.append(PromptSegment(text=choice_text, wildcard_name=key, includes=includes_list))
+                    segments.append(PromptSegment(text=choice_text, wildcard_name=key, includes=all_includes if all_includes else None))
                     resolved_context[key] = {'value': choice_text, 'tags': tags}
 
-                    if isinstance(choice_obj, dict) and 'includes' in choice_obj:
-                        include_text = " " + " ".join([f"__{inc}__" for inc in choice_obj['includes']])
+                    if all_includes:
+                        include_text = " " + " ".join([f"__{inc}__" for inc in all_includes])
                         remaining_template = include_text + remaining_template[end_pos+2:]
                     else:
                         remaining_template = remaining_template[end_pos+2:]
                 else:
-                    # If no choice is found, keep the placeholder
+                    segments.append(PromptSegment(text=choice_text, wildcard_name=key))
+                    resolved_context[key] = {'value': choice_text, 'tags': []}
+                    remaining_template = remaining_template[end_pos+2:]
+            else:
+                wildcard_data = self.wildcards.get(key)
+                choice_obj = self._get_wildcard_choice_object(key, resolved_context)
+                if choice_obj:
+                    choice_text = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
+                    global_includes = wildcard_data.get('includes', []) if wildcard_data else []
+                    choice_includes = choice_obj.get('includes', []) if isinstance(choice_obj, dict) else []
+                    all_includes = global_includes + choice_includes
+                    tags = choice_obj.get('tags') if isinstance(choice_obj, dict) else []
+                    segments.append(PromptSegment(text=choice_text, wildcard_name=key, includes=all_includes if all_includes else None))
+                    resolved_context[key] = {'value': choice_text, 'tags': tags}
+
+                    if all_includes:
+                        include_text = " " + " ".join([f"__{inc}__" for inc in all_includes])
+                        remaining_template = include_text + remaining_template[end_pos+2:]
+                    else:
+                        remaining_template = remaining_template[end_pos+2:]
+                else:
                     segments.append(PromptSegment(text=f"__{key}__", wildcard_name=key))
                     remaining_template = remaining_template[end_pos+2:]
 
@@ -363,35 +405,3 @@ class TemplateEngine:
             segments.append(PromptSegment(text=remaining_template))
 
         return segments
-
-    def set_seed(self, seed: Optional[int] = None, lock: bool = False) -> int:
-        """Set and/or lock the random seed.
-        
-        Args:
-            seed: Specific seed to use. If None, generates random seed.
-            lock: Whether to lock this seed for future generations.
-        
-        Returns:
-            The seed being used.
-        """
-        if seed is not None:
-            self.current_seed = seed
-        elif not self.seed_locked:
-            self.current_seed = self.rng.randint(0, 2**32 - 1)
-            
-        self.seed_locked = lock
-        self.rng.seed(self.current_seed)
-        return self.current_seed
-    
-    def unlock_seed(self):
-        """Unlock the seed to allow new random seeds."""
-        self.seed_locked = False
-        
-    def process_template(self, template: str, wildcards: Dict[str, List[str]]) -> Tuple[str, int]:
-        """Process template and return result with seed used."""
-        if not self.seed_locked:
-            self.set_seed()
-            
-        # ...existing processing code...
-        
-        return result, self.current_seed

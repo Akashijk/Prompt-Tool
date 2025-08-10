@@ -3,6 +3,7 @@
 import json
 import os
 import queue
+from collections import Counter
 import tkinter as tk
 from tkinter import ttk
 import threading
@@ -95,10 +96,12 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         button_frame.pack(fill=tk.X, pady=5)
         self.save_button = ttk.Button(button_frame, text="Save Changes", command=self._save_wildcard_file, style="Accent.TButton", state=tk.DISABLED)
         self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        self.archive_button = ttk.Button(button_frame, text="Archive", command=self._archive_selected_wildcard, state=tk.DISABLED)
-        self.archive_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
+        self.find_duplicates_button = ttk.Button(button_frame, text="Find Duplicates", command=self._find_duplicates, state=tk.DISABLED)
+        self.find_duplicates_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
         self.brainstorm_button = ttk.Button(button_frame, text="Brainstorm with AI", command=self._brainstorm_with_ai, state=tk.DISABLED)
         self.brainstorm_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
+        self.archive_button = ttk.Button(button_frame, text="Archive", command=self._archive_selected_wildcard, state=tk.DISABLED)
+        self.archive_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
 
     def _populate_wildcard_list(self):
         """Populates the list of wildcard files."""
@@ -120,6 +123,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     def _on_wildcard_file_select(self, event=None):
         selected_indices = self.wildcard_listbox.curselection()
         if not selected_indices: return
+        self.structured_editor.clear_highlights()
         
         self.selected_wildcard_file = self.wildcard_listbox.get(selected_indices[0])
         self.editor_container.config(text=f"Editing: {self.selected_wildcard_file}")
@@ -154,6 +158,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
     def _display_valid_wildcard(self, wildcard_data: Dict[str, Any]):
         """Updates the editor UI for a successfully loaded wildcard."""
+        self.structured_editor.clear_highlights()
         self.structured_editor.set_data(wildcard_data)
         
         pretty_content = json.dumps(wildcard_data, indent=2)
@@ -165,6 +170,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.save_button.config(state=tk.NORMAL)
         self.archive_button.config(state=tk.NORMAL)
         self.brainstorm_button.config(state=tk.NORMAL)
+        self.find_duplicates_button.config(state=tk.NORMAL)
 
     def _display_invalid_wildcard(self, raw_content: str):
         """
@@ -180,6 +186,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         custom_dialogs.show_warning(self, "File Load Warning", error_message)
 
         # Load the raw content into the raw editor so the user can fix it
+        self.structured_editor.clear_highlights()
         self.raw_text_editor.delete("1.0", tk.END)
         self.raw_text_editor.insert("1.0", raw_content)
         self.structured_editor.set_data({}) # Clear structured editor
@@ -189,6 +196,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.save_button.config(state=tk.NORMAL)
         self.archive_button.config(state=tk.NORMAL)
         self.brainstorm_button.config(state=tk.DISABLED)
+        self.find_duplicates_button.config(state=tk.DISABLED)
 
     def _save_wildcard_file(self):
         if not self.selected_wildcard_file: return
@@ -269,12 +277,14 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     def _clear_editor_view(self):
         """Resets the editor pane to its default 'no file selected' state."""
         self.selected_wildcard_file = None
+        self.structured_editor.clear_highlights()
         self.wildcard_listbox.selection_clear(0, tk.END)
         self.structured_editor.set_data({})
         self.raw_text_editor.delete("1.0", tk.END)
         self.save_button.config(state=tk.DISABLED)
         self.archive_button.config(state=tk.DISABLED)
         self.brainstorm_button.config(state=tk.DISABLED)
+        self.find_duplicates_button.config(state=tk.DISABLED)
         self.structured_editor.suggest_button.config(state=tk.DISABLED)
         self.editor_container.config(text="No file selected")
 
@@ -357,20 +367,71 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         except queue.Empty:
             self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
 
-    def generate_missing_wildcard(self, wildcard_name: str):
-        """Generate a new wildcard that was referenced in includes but doesn't exist."""
-        if not wildcard_name:
+    def _find_duplicates(self):
+        """Finds, highlights, and reports duplicate 'value' entries in the current wildcard file."""
+        if not self.selected_wildcard_file:
             return
+
+        # Always clear previous highlights first
+        self.structured_editor.clear_highlights()
+
+        # Get all item IDs and their values directly from the tree
+        all_iids = self.structured_editor.tree.get_children()
+        if not all_iids:
+            custom_dialogs.show_info(self, "Find Duplicates", "No choices found in the file to check.")
+            return
+
+        # Map values to a list of their iids
+        value_to_iids = {}
+        for iid in all_iids:
+            # The 'value' is the first element in the 'values' tuple
+            value = self.structured_editor.tree.item(iid, 'values')[0]
+            if value not in value_to_iids:
+                value_to_iids[value] = []
+            value_to_iids[value].append(iid)
+
+        # Find duplicates and collect all iids to be highlighted
+        duplicates = {}
+        iids_to_highlight = []
+        for value, iids in value_to_iids.items():
+            if len(iids) > 1:
+                duplicates[value] = len(iids)
+                iids_to_highlight.extend(iids)
+
+        if not duplicates:
+            custom_dialogs.show_info(self, "Find Duplicates", "No duplicate choices found in this file.")
+        else:
+            # Highlight the rows first
+            self.structured_editor.highlight_duplicates(iids_to_highlight)
+
+            message = "The following duplicate choices were found and have been highlighted:\n\n"
+            for value, count in sorted(duplicates.items()):
+                display_value = (value[:75] + '...') if len(value) > 75 else value
+                message += f'\n- "{display_value}" (found {count} times)'
             
-        # Create a new window for this wildcard
-        metadata = {'filename': f"{wildcard_name}.json"}
-        self._handle_generated_content("", "wildcard", metadata)
-        
-        # Generate content using AI
-        prompt = (
-            f"Generate a wildcard file for '{wildcard_name}'. "
-            f"Consider the context and purpose of this wildcard. "
-            f"Include a clear description and relevant choices."
-        )
-        
-        self._run_generation_task(prompt, "wildcard", metadata)
+            message += "\n\nWould you like to automatically remove these duplicates? (The first occurrence of each will be kept)"
+
+            if custom_dialogs.ask_yes_no(self, "Remove Duplicates?", message):
+                # Get the full data structure to modify it
+                data = self.structured_editor.get_data()
+                original_choices = data.get('choices', [])
+                
+                cleaned_choices = []
+                seen_values = set()
+                
+                for choice in original_choices:
+                    value = choice.get('value') if isinstance(choice, dict) else choice
+                    if value not in seen_values:
+                        cleaned_choices.append(choice)
+                        seen_values.add(value)
+                
+                num_removed = len(original_choices) - len(cleaned_choices)
+                data['choices'] = cleaned_choices
+                
+                # Clear highlights and reload the editor with the cleaned data
+                self.structured_editor.set_data(data)
+                
+                # Enable the save button to persist the change.
+                self.save_button.config(state=tk.NORMAL)
+
+                custom_dialogs.show_info(self, "Duplicates Removed", f"Removed {num_removed} duplicate choice(s).\n\nPlease save the file to apply the changes.")

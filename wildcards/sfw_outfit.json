@@ -7,12 +7,88 @@
     {
       "value": "silken robes",
       "weight": 5,
-      "requires": { "fantasy_race": "elf" }
+      "requires": {
+        "fantasy_race": "elf"
+      }
     },
     {
       "value": "heavy plate mail",
       "weight": 5,
-      "requires": { "fantasy_race": "dwarf" }
+      "requires": {
+        "fantasy_race": "dwarf"
+      }
+    },
+    {
+      "value": "winter cloak",
+      "weight": 3,
+      "requires": {
+        "weather_condition": "cold"
+      }
+    },
+    {
+      "value": "chainmail dress",
+      "weight": 4,
+      "requires": {
+        "fantasy_race": "half-elf"
+      }
+    },
+    {
+      "value": "mystic robe",
+      "weight": 5,
+      "requires": {
+        "artistic_medium": "watercolor"
+      }
+    },
+    {
+      "value": "samurai armor",
+      "weight": 3,
+      "includes": [
+        "katanas"
+      ]
+    },
+    {
+      "value": "amazons garb",
+      "weight": 4,
+      "requires": {
+        "body_type": "athletic"
+      }
+    },
+    {
+      "value": "viking outfit",
+      "weight": 3,
+      "includes": [
+        "chainmail"
+      ]
+    },
+    {
+      "value": "monk's robe",
+      "weight": 5,
+      "requires": {
+        "body_type": "lean"
+      }
+    },
+    {
+      "value": "pirate shirt",
+      "weight": 4,
+      "includes": [
+        "sash",
+        "wooden dagger"
+      ]
+    },
+    {
+      "value": "medieval peasant dress",
+      "weight": 3,
+      "requires": {
+        "weather_condition": "warm"
+      }
+    },
+    {
+      "value": "wizard's robe",
+      "weight": 5,
+      "tags": [
+        "magic"
+      ]
     }
-  ]
+  ],
+  "includes": []
 }

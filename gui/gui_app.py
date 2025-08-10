@@ -343,32 +343,16 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         Tooltip(dice_btn, "Generate random seed")
         
         # Add a switch for locking instead of checkbox
-        self.lock_var = tk.BooleanVar()
-        lock_switch = ttk.Checkbutton(seed_frame, text="Lock", 
-                                     variable=self.lock_var,
+        self.random_seed_var = tk.BooleanVar(value=True) # Start with random ON
+        lock_switch = ttk.Checkbutton(seed_frame, text="Random", 
+                                     variable=self.random_seed_var,
                                      style='Switch.TCheckbutton')
         lock_switch.pack(side=tk.LEFT, padx=5)
-        Tooltip(lock_switch, "Lock seed for consistent results")
+        Tooltip(lock_switch, "Use a new random seed for each generation. Turn off to use the specific seed in the box.")
 
     def _randomize_seed(self):
-        """Generate and apply a new random seed."""
-        if not self.lock_var.get():  # Only if not locked
-            self.seed_var.set(str(random.randint(0, 2**32 - 1)))
-            self._apply_seed()
-
-    def _apply_seed(self):
-        """Apply the current seed value."""
-        try:
-            seed_val = int(self.seed_var.get())
-            used_seed = self.processor.template_engine.set_seed(
-                seed_val, 
-                self.lock_var.get()
-            )
-            self.seed_var.set(str(used_seed))
-            self._perform_live_update()
-        except ValueError:
-            # If invalid, generate a new random seed
-            self._randomize_seed()
+        """Generate and set a new random seed in the entry box."""
+        self.seed_var.set(str(random.randint(0, 2**32 - 1)))
 
     def _update_window_title(self):
         """Updates the main window title to reflect the current workflow."""
@@ -575,8 +559,23 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if not live_content.strip():
             return
 
+        seed = None
+        # If random is on, generate a new seed and update the UI
+        if self.random_seed_var.get():
+            seed = random.randint(0, 2**32 - 1)
+            self.seed_var.set(str(seed))
+        else:
+            # Otherwise, use the seed from the box
+            try:
+                seed = int(self.seed_var.get())
+            except (ValueError, TypeError):
+                seed = random.randint(0, 2**32 - 1)
+                self.seed_var.set(str(seed))
+
         # Generate with fresh random wildcards, so pass existing_segments=None
-        self.current_structured_prompt = self.processor.generate_single_structured_prompt(live_content, existing_segments=None)
+        self.current_structured_prompt = self.processor.generate_single_structured_prompt(
+            live_content, existing_segments=None, seed=seed
+        )
         self._update_prompt_preview()
 
     def _update_prompt_preview(self):
@@ -591,11 +590,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             suggest=tk.NORMAL,
             save_as_template=tk.NORMAL if is_prompt_available else tk.DISABLED
         )
-        
-        # Update seed display from the template engine's current state
-        current_seed = self.processor.template_engine.current_seed
-        if current_seed is not None:
-            self.seed_var.set(str(current_seed))
 
     def _display_structured_prompt(self):
         """Renders the structured prompt with highlighting."""
@@ -683,7 +677,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Swap the text of a wildcard segment and redisplay the prompt."""
         if 0 <= segment_index < len(self.current_structured_prompt):
             self.current_structured_prompt[segment_index].text = new_value
-            self._update_prompt_preview()
+            # Trigger a full live update. The template engine will now re-evaluate
+            # the swapped choice and correctly process any 'includes' it has.
+            self._perform_live_update()
 
     def _schedule_live_update(self, event=None):
         """Schedules a live update of the prompt preview after a short delay."""
@@ -705,11 +701,20 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if not live_content.strip():
             return
             
+        # For live updates (typing, swapping), ALWAYS use the seed currently in the box
+        # to provide a stable editing experience.
+        try:
+            seed = int(self.seed_var.get())
+        except (ValueError, TypeError):
+            seed = random.randint(0, 2**32 - 1)
+            self.seed_var.set(str(seed))
+
         # Regenerate the prompt, reusing the existing wildcard choices
         self.current_structured_prompt = self.processor.generate_single_structured_prompt(
             live_content,
             existing_segments=self.current_structured_prompt,
-            force_reroll=force_reroll
+            force_reroll=force_reroll,
+            seed=seed
         )
         self._update_prompt_preview()
         self._highlight_template_wildcards()

@@ -12,6 +12,7 @@ from typing import Optional, List, Dict, Callable, Tuple, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
 from core.config import config
+from core.ollama_client import sanitize_wildcard_choices
 from . import custom_dialogs
 from .review_window import ReviewAndSaveWindow
 from .common import BrainstormingContextMenu, TextContextMenu, SmartWindowMixin
@@ -482,17 +483,8 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                 pass # Fall through to text-based fallback
 
         if parsed_data and 'choices' in parsed_data:
-            # Post-process to replace underscores with spaces in values
-            cleaned_choices = []
-            for choice in parsed_data.get('choices', []):
-                if isinstance(choice, str):
-                    cleaned_choices.append(choice.replace('_', ' '))
-                elif isinstance(choice, dict) and 'value' in choice and isinstance(choice.get('value'), str):
-                    choice['value'] = choice['value'].replace('_', ' ')
-                    cleaned_choices.append(choice)
-                else:
-                    cleaned_choices.append(choice) # Keep malformed items as-is
-            parsed_data['choices'] = cleaned_choices
+            # Sanitize the choices list using the shared utility function
+            parsed_data['choices'] = sanitize_wildcard_choices(parsed_data.get('choices', []))
             return json.dumps(parsed_data, indent=2)
 
         # Fallback: If JSON parsing fails, try to parse the response as a plain list.

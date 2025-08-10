@@ -194,15 +194,23 @@ class PromptProcessor:
     def archive_wildcard(self, wildcard_file: str) -> None:
         """Archives a wildcard file."""
         self.template_engine.archive_wildcard(wildcard_file, self._get_wildcard_search_order())
-
-    def generate_single_structured_prompt(self, template_content: str, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None) -> List[PromptSegment]:
+    def generate_single_structured_prompt(self, template_content: str, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None, seed: Optional[int] = None) -> List[PromptSegment]:
         """Generates a single structured prompt for GUI use, optionally reusing existing wildcard choices."""
-        return self.template_engine.generate_structured_prompt(template_content, existing_segments=existing_segments, force_reroll=force_reroll)
+        return self.template_engine.generate_structured_prompt(
+            template_content, 
+            existing_segments=existing_segments, 
+            force_reroll=force_reroll,
+            seed=seed
+        )
 
     def get_wildcard_options(self, wildcard_name: str) -> List[str]:
         """Pass-through to get wildcard options."""
         return self.template_engine.get_wildcard_options(wildcard_name)
     
+    def find_wildcard_choice_object(self, wildcard_name: str, value: str) -> Optional[Any]:
+        """Pass-through to find a choice object by its value."""
+        return self.template_engine.find_choice_object_by_value(wildcard_name, value)
+
     def get_system_prompt_files(self) -> List[str]:
         """Get a list of available system prompt files."""
         return sorted([f for f in os.listdir(config.get_system_prompt_dir()) if f.endswith('.txt')])

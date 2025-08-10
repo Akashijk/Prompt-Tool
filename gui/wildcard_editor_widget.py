@@ -295,12 +295,18 @@ class WildcardEditor(ttk.Frame):
         
         # Define colors for included items
         self.included_tag = "included"
+        self.duplicate_tag = "duplicate"
         self._create_widgets()
         
         # Configure the included tag style
         self.tree.tag_configure(
             self.included_tag, 
             background='#e6f3ff'  # Light blue background
+        )
+        # Configure the duplicate tag style
+        self.tree.tag_configure(
+            self.duplicate_tag,
+            background='#ffcccc' # Light red background
         )
 
     def _create_widgets(self):
@@ -394,6 +400,8 @@ class WildcardEditor(ttk.Frame):
 
     def set_data(self, data: Dict[str, Any]):
         """Set the editor data and highlight included choices."""
+        self.clear_highlights() # Always clear highlights when loading new data
+
         self.description_entry.delete(0, tk.END)
         self.description_entry.insert(0, data.get('description', ''))
         
@@ -556,3 +564,20 @@ class WildcardEditor(ttk.Frame):
     def _refresh_ui_from_includes_change(self):
         """Refreshes the editor data to update highlighting after an include change."""
         self.set_data(self.get_data())
+
+    def clear_highlights(self):
+        """Removes all custom highlighting tags from the tree."""
+        for item_id in self.tree.get_children():
+            # Get current tags and remove the duplicate tag if present
+            current_tags = list(self.tree.item(item_id, 'tags'))
+            if self.duplicate_tag in current_tags:
+                current_tags.remove(self.duplicate_tag)
+                self.tree.item(item_id, tags=tuple(current_tags))
+
+    def highlight_duplicates(self, iids_to_highlight: List[str]):
+        """Applies the duplicate highlight tag to a list of item IDs."""
+        for item_id in iids_to_highlight:
+            current_tags = list(self.tree.item(item_id, 'tags'))
+            if self.duplicate_tag not in current_tags:
+                current_tags.append(self.duplicate_tag)
+                self.tree.item(item_id, tags=tuple(current_tags))
