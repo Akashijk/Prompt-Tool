@@ -27,6 +27,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         self.processor = processor
         self.model = model
         self.result_data = result_data
+        self.is_favorite = tk.BooleanVar(value=False)
         self.selected_variations = selected_variations
 
         # UI element storage
@@ -58,7 +59,9 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
         button_frame.pack(fill=tk.X)
         self.save_button = ttk.Button(button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
-        self.save_button.pack(side=tk.LEFT)
+        self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        self.favorite_button = ttk.Checkbutton(button_frame, text="Favorite ⭐", variable=self.is_favorite, style='Switch.TCheckbutton')
+        self.favorite_button.pack(side=tk.LEFT, padx=10)
         ttk.Button(button_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
 
         self.result_queue_after_id = self.after(100, self._check_result_queue)
@@ -134,6 +137,8 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
 
     def _save(self):
         """Save the result to the CSV history."""
+        # Add favorite status to the data before saving
+        self.result_data['favorite'] = self.is_favorite.get()
         self.processor.save_results([self.result_data])
         custom_dialogs.show_info(self, "Saved", "Result saved to history.")
         self.destroy()
@@ -180,16 +185,16 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         """The background task that calls the AI model for regeneration."""
         try:
             if prompt_key == 'enhanced':
-                # BUG FIX: Load the system prompt for enhancement
-                instruction = self.processor.load_system_prompt_content('enhancement.txt')
-                full_prompt = instruction + self.result_data['original']
-                new_prompt, new_sd_model = self.processor.ollama_client.enhance_prompt(full_prompt, self.model)
+                new_prompt, new_sd_model = self.processor.regenerate_enhancement(
+                    self.result_data['original'], self.model
+                )
                 result = {'key': prompt_key, 'prompt': new_prompt, 'sd_model': new_sd_model}
             else: # It's a variation
-                # BUG FIX: Load the system prompt for the specific variation
-                instruction = self.processor.load_system_prompt_content(f'{prompt_key}.txt')
                 base_prompt = self.result_data['enhanced']
-                variation_result = self.processor.ollama_client.create_single_variation(instruction, base_prompt, self.model, prompt_key)
+                base_sd_model = self.result_data['enhanced_sd_model']
+                variation_result = self.processor.regenerate_variation(
+                    base_prompt, base_sd_model, self.model, prompt_key
+                )
                 result = {'key': prompt_key, 'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
             self.regen_queue.put(result)
         except Exception as e:

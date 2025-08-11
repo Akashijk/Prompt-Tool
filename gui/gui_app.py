@@ -25,6 +25,7 @@ from .wildcard_manager import WildcardManagerWindow
 from .template_editor import TemplateEditor
 from .wildcard_inserter import WildcardInserter
 from . import custom_dialogs
+from .model_usage_manager import ModelUsageManager
 from .theme_manager import ThemeManager
 
          
@@ -53,6 +54,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.processor = PromptProcessor()
         self.processor.initialize()
         self.processor.set_callbacks(status_callback=self._update_status_bar)
+        self.model_usage_manager = ModelUsageManager(self.processor)
         self.enhancement_total_calls = 0
         self.enhancement_calls_made = 0
         self.active_api_calls = 0
@@ -65,8 +67,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.segment_map: List[Tuple[str, str, int]] = []  # start, end, segment_index
         self.wildcard_tooltip: Optional[Tooltip] = None
         self.debounce_timer: Optional[str] = None
-        self.active_models: Dict[str, int] = {}
-        self.active_enhancement_model: Optional[str] = None
+        self.main_window_model: Optional[str] = None
         self.brainstorming_window: Optional[BrainstormingWindow] = None
         self.wildcard_manager_window: Optional[WildcardManagerWindow] = None
         self.history_viewer_window: Optional[HistoryViewerWindow] = None
@@ -81,10 +82,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.enhancement_queue = queue.Queue()
         self.enhancement_suggestion_queue = queue.Queue()
         self.enhancement_suggestion_after_id: Optional[str] = None
-        self.missing_wildcard_widgets: List[ttk.Label] = []
-        self.missing_wildcard_separators: List[ttk.Label] = []
         self.missing_wildcards_container: Optional[ttk.Frame] = None
-        self.missing_wildcards_desc_label: Optional[ttk.Label] = None
 
         # Create widgets
         self._create_widgets()
@@ -217,34 +215,18 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _generate_new_template(self):
         """Opens a dialog to generate a new template with AI."""
-        concept = custom_dialogs.ask_string(
-            self,
-            "Generate Template",
-            "What kind of template would you like to generate?\n\nDescribe the concept:"
-        )
+        concept = custom_dialogs.ask_string(self, "Generate Template", "What kind of template would you like to generate?\n\nDescribe the concept:")
         if not concept:
             return
-            
-        # Show the review window immediately with loading state
-        metadata = {'concept': concept}
-        window = ReviewAndSaveWindow(
-            self, 
-            self.processor,
-            "template",
-            "Generating template...",
-            self._handle_new_template,
-            is_loading=True
-        )
-        
-        # Prepare the prompt
-        prompt = (
-            f"Generate a template for {concept}. "
-            f"Consider the purpose and structure needed. "
-            f"Include appropriate wildcards and formatting."
-        )
-        
-        # Run the generation in the background
-        self._run_generation_task(prompt, "template", metadata)
+
+        # Open brainstorming window if not already open
+        self._open_brainstorming_window()
+
+        if self.brainstorming_window and self.brainstorming_window.winfo_exists():
+            self.brainstorming_window.lift()
+            self.brainstorming_window.focus_force()
+            # Call the method to start generation
+            self.brainstorming_window.generate_template_with_concept(concept)
 
     def _create_main_view(self, parent):
         """Creates the widgets for the main prompt generation view."""
@@ -303,11 +285,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Create a persistent container for the labels to flow nicely
         self.missing_wildcards_container = ttk.Frame(self.missing_wildcards_frame)
         self.missing_wildcards_container.pack(fill=tk.X)
-        
-        # Add a static descriptive label that will be managed by the update method
-        self.missing_wildcards_desc_label = ttk.Label(self.missing_wildcards_container, 
-                 text="Missing wildcards: ", 
-                 font=self.small_font)
 
         v_pane.add(bottom_pane_container, weight=3)
 
@@ -318,7 +295,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             generate_callback=self._generate_preview,
             enhance_callback=self._on_select_for_enhancement,
             copy_callback=self._copy_generated_prompt,
-            suggest_callback=self._save_preview_as_template,
+            suggest_callback=self._suggest_template_additions,
             save_as_template_callback=self._save_preview_as_template
         )
         self._update_action_bar_variations()
@@ -383,6 +360,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Sets the theme and updates UI elements that need manual color changes."""
         self.theme_manager.set_theme(theme_name)
         self._update_text_widget_colors()
+
+        # Notify open tool windows of the theme change
+        if self.brainstorming_window and self.brainstorming_window.winfo_exists():
+            self.brainstorming_window.update_theme()
+        if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
+            self.wildcard_manager_window.update_theme()
 
     def _update_text_widget_colors(self):
         """Updates colors for text widgets and tags based on the current theme."""
@@ -450,8 +433,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.enhancement_model_var.set(default_model)
             
             # Register initial model usage
-            self.active_enhancement_model = default_model
-            self._handle_model_change(None, self.active_enhancement_model)
+            self.main_window_model = default_model
+            self.model_usage_manager.register_usage(self.main_window_model)
 
         except Exception as e:
             custom_dialogs.show_error(self, "Model Error", f"Could not load Ollama models:\n{e}")
@@ -526,10 +509,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
     def _on_enhancement_model_change(self, *args):
         """Handles when the user selects a new model for enhancement."""
         new_model = self.enhancement_model_var.get()
-        old_model = self.active_enhancement_model
+        old_model = self.main_window_model
         if new_model and "model" not in new_model.lower() and new_model != old_model:
-            self._handle_model_change(old_model, new_model)
-            self.active_enhancement_model = new_model
+            self.model_usage_manager.unregister_usage(old_model)
+            self.model_usage_manager.register_usage(new_model)
+            self.main_window_model = new_model
 
     def _on_template_select(self, template_name: str):
         """Callback for when a template is selected from the dropdown."""
@@ -738,50 +722,32 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         known_wildcards = set(self.processor.get_wildcard_names())
         missing_wildcards = sorted(list(all_includes - known_wildcards))
 
+        # Clear any previously displayed widgets
+        for widget in self.missing_wildcards_container.winfo_children():
+            widget.destroy()
+
         if not missing_wildcards:
             self.missing_wildcards_frame.pack_forget()
             return
 
-        # Show the frame and the description label
+        # Show the frame and create new widgets
         self.missing_wildcards_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(5,0))
-        self.missing_wildcards_desc_label.pack(side=tk.LEFT)
-
+        ttk.Label(self.missing_wildcards_container, 
+                 text="Missing wildcards: ", 
+                 font=self.small_font).pack(side=tk.LEFT)
+        
         for i, wc_name in enumerate(missing_wildcards):
-            # Get or create link widget
-            if i < len(self.missing_wildcard_widgets):
-                link = self.missing_wildcard_widgets[i]
-            else:
-                link = ttk.Label(self.missing_wildcards_container, 
-                               foreground="orange",
-                               cursor="hand2",
-                               font=self.small_font)
-                self.missing_wildcard_widgets.append(link)
-            
-            link.config(text=wc_name)
-            # Unbind old commands to prevent memory leaks from lambda closures
-            link.unbind("<Button-1>")
-            link.unbind("<Button-3>")
-            # Bind new commands
+            link = ttk.Label(self.missing_wildcards_container, 
+                           text=wc_name,
+                           foreground="orange",
+                           cursor="hand2",
+                           font=self.small_font)
+            link.pack(side=tk.LEFT, padx=2)
             link.bind("<Button-1>", lambda e, name=wc_name: self._handle_missing_wildcard_click(name))
             link.bind("<Button-3>", lambda e, name=wc_name: self._show_missing_wildcard_menu(e, name))
-            link.pack(side=tk.LEFT, padx=2)
 
-            # Get or create separator widget
-            for i, wc_name in enumerate(missing_wildcards):
-                if i < len(missing_wildcards) - 1:
-                    if i < len(self.missing_wildcard_separators):
-                        separator = self.missing_wildcard_separators[i]
-                    else:
-                        separator = ttk.Label(self.missing_wildcards_container, text=",", font=self.small_font)
-                        self.missing_wildcard_separators.append(separator)
-                    separator.pack(side=tk.LEFT)
-
-        # Hide any unused widgets from the pool
-        for i in range(len(missing_wildcards), len(self.missing_wildcard_widgets)):
-            self.missing_wildcard_widgets[i].pack_forget()
-        
-        for i in range(len(missing_wildcards) - 1, len(self.missing_wildcard_separators)):
-            self.missing_wildcard_separators[i].pack_forget()
+            if i < len(missing_wildcards) - 1:
+                ttk.Label(self.missing_wildcards_container, text=",", font=self.small_font).pack(side=tk.LEFT)
 
     def _save_template(self):
         """Save the currently edited template content to its file."""
@@ -823,13 +789,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _copy_generated_prompt(self):
         """Copies the current generated prompt text to the clipboard."""
-        prompt_text = ""
-        if self.current_template_file:
-            # Reconstruct the full prompt string from segments
-            prompt_text = "".join(seg.text for seg in self.current_structured_prompt)
-        else:
-            # Get the prompt directly from the editor pane
-            prompt_text = self.template_editor.get_content().strip()
+        prompt_text = self._get_current_prompt_string()
 
         if not prompt_text:
             self.status_var.set("Nothing to copy.")
@@ -839,20 +799,28 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.clipboard_append(prompt_text)
         self.status_var.set("Prompt copied to clipboard.")
 
+    def _get_current_prompt_string(self) -> str:
+        """
+        Constructs the full prompt string from the current state (preview or editor)
+        and runs it through the cleanup process.
+        """
+        if self.current_structured_prompt:
+            # Reconstruct the full prompt string from segments
+            raw_prompt = "".join(seg.text for seg in self.current_structured_prompt)
+        else:
+            # Get the prompt directly from the editor pane if no preview has been generated
+            raw_prompt = self.template_editor.get_content().strip()
+        
+        return self.processor.cleanup_prompt_string(raw_prompt)
+
     def _on_select_for_enhancement(self):
         """Handles the 'Enhance This Prompt' button click."""
         model = self.enhancement_model_var.get()
         if not model or "model" in model.lower():
             custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
             return
-
-        # Determine if we are enhancing from a template-generated prompt or a manually edited one
-        if self.current_template_file:
-            # Reconstruct the full prompt string from segments
-            prompt_text = "".join(seg.text for seg in self.current_structured_prompt)
-        else:
-            # Get the prompt directly from the editor pane
-            prompt_text = self.template_editor.get_content().strip()
+        
+        prompt_text = self._get_current_prompt_string()
 
         if not prompt_text:
             custom_dialogs.show_error(self, "Error", "No prompt to enhance.")
@@ -1088,17 +1056,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 if default_model not in models:
                     default_model = models[0]
                 
-                self.brainstorming_window = BrainstormingWindow(self, self.processor, models, default_model, self._handle_model_change, self._handle_ai_content_update)
+                self.brainstorming_window = BrainstormingWindow(self, self.processor, models, default_model, self.model_usage_manager, self._handle_ai_content_update)
                 self.brainstorming_window.protocol("WM_DELETE_WINDOW", self._on_brainstorming_window_close)
             except Exception as e:
                 custom_dialogs.show_error(self, "Error", f"Could not open brainstorming window:\n{e}")
 
     def _on_brainstorming_window_close(self):
         if self.brainstorming_window:
-            # Decrement the usage count of the model active in the brainstorming window
-            active_model = self.brainstorming_window.active_brainstorm_model
-            self._handle_model_change(active_model, None)
-            
             self.brainstorming_window.close()
             self.brainstorming_window = None
 
@@ -1292,27 +1256,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             except Exception as e:
                 custom_dialogs.show_error(self, "Connection Failed", f"Could not connect to Ollama server at:\n{new_url}\n\nError: {e}")
 
-    def _handle_model_change(self, old_model: Optional[str], new_model: Optional[str]):
-        """Manages the usage count of models and unloads them when no longer active."""
-        if old_model:
-            if old_model in self.active_models:
-                self.active_models[old_model] -= 1
-                if self.active_models[old_model] <= 0:
-                    print(f"Model '{old_model}' is no longer active. Unloading in background...")
-                    # We don't need to join this thread; it can clean up on its own.
-                    # This prevents the UI from hanging if the unload takes time.
-                    thread = threading.Thread(target=self.processor.cleanup_model, args=(old_model,), daemon=True)
-                    thread.start()
-                    del self.active_models[old_model]
-
-        if new_model and "model" not in new_model.lower():
-            self.active_models[new_model] = self.active_models.get(new_model, 0) + 1
-
     def _on_closing(self):
         """Handles the main window closing event to clean up resources."""
-        if self.active_models:
-            print(f"Unloading all active models: {', '.join(self.active_models.keys())}...")
-            for model in list(self.active_models.keys()):
+        active_models_on_exit = self.model_usage_manager.get_active_models()
+        if active_models_on_exit:
+            print(f"Unloading all active models: {', '.join(active_models_on_exit)}...")
+            for model in active_models_on_exit:
                 self.processor.cleanup_model(model)
             print("Cleanup complete.")
         if self.debounce_timer:
@@ -1366,46 +1315,3 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         }
         initial_content = json.dumps(initial_data, indent=2)
         self._open_wildcard_manager(f"{wildcard_name}.json", initial_content)
-
-    def _run_generation_task(self, prompt: str, content_type: str, metadata: Optional[Dict] = None):
-        """Runs a generation task in a background thread."""
-        model = self.model_var.get()
-
-        def task():
-            try:
-                response = self.processor.chat_with_model(model, prompt)
-                if content_type == "template":
-                    template, new_wildcards = self._parse_template_generation_response(response)
-                    self._handle_generated_template(template, new_wildcards, metadata)
-                elif content_type == "wildcard":
-                    self._handle_generated_wildcard(response, metadata)
-            except Exception as e:
-                messagebox.showerror("Generation Error", str(e))
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-
-    def _handle_generated_wildcard(self, content: str, metadata: Optional[Dict] = None):
-        """Handles a newly generated wildcard."""
-        if not metadata or 'window' not in metadata:
-            window = ReviewAndSaveWindow(
-                self,
-                self.processor,
-                "wildcard",
-                content,
-                self._handle_new_wildcard
-            )
-        else:
-            metadata['window'].update_content(content)
-
-    def _handle_new_template(self, content: str):
-        """Handles saving a new template."""
-        filename = custom_dialogs.ask_save_filename(
-            self,
-            "Save Template As",
-            config.template_dir,
-            [("Template files", "*.txt")]
-        )
-        if filename:
-            self.processor.save_template(filename, content)
-            self._load_templates()  # Refresh template list

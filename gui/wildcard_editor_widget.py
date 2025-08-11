@@ -5,22 +5,21 @@ user-friendly alternative to raw text editing.
 
 import tkinter as tk
 import json
+import sys
 from tkinter import ttk
 from typing import Dict, List, Any, Optional, Tuple, Callable, TYPE_CHECKING
+
+from .custom_dialogs import _CustomDialog
 
 if TYPE_CHECKING:
     from .wildcard_manager import WildcardManagerWindow
     from core.prompt_processor import PromptProcessor
 
-class _AddRequirementDialog(tk.Toplevel):
+class _AddRequirementDialog(_CustomDialog):
     """A dialog to help build a 'requires' clause."""
     def __init__(self, parent, processor: 'PromptProcessor'):
-        super().__init__(parent)
-        self.title("Add Requirement")
-        self.transient(parent)
-        self.grab_set()
+        super().__init__(parent, "Add Requirement")
         self.processor = processor
-        self.result: Optional[Dict[str, Any]] = None
 
         # --- Main Frames ---
         main_frame = ttk.Frame(self, padding=10)
@@ -65,11 +64,12 @@ class _AddRequirementDialog(tk.Toplevel):
         button_frame.pack(fill=tk.X, pady=(10,0))
         ok_button = ttk.Button(button_frame, text="OK", command=self._on_ok, style="Accent.TButton")
         ok_button.pack(side=tk.RIGHT, padx=(5,0))
-        cancel_button = ttk.Button(button_frame, text="Cancel", command=self.destroy)
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
         cancel_button.pack(side=tk.RIGHT)
 
         self.bind("<Return>", self._on_ok)
         self._update_ui() # Set initial visibility
+        self._center_window()
         self.wait_window(self)
 
     def _update_ui(self):
@@ -116,14 +116,10 @@ class _AddRequirementDialog(tk.Toplevel):
 
         self.destroy()
 
-class _EditChoiceDialog(tk.Toplevel):
+class _EditChoiceDialog(_CustomDialog):
     """A dialog for editing a single choice from a wildcard file."""
     def __init__(self, parent, title: str, initial_values: Tuple[str, str, str, str, str], processor: 'PromptProcessor'):
-        super().__init__(parent)
-        self.title(title)
-        self.transient(parent)
-        self.grab_set()
-        self.result: Optional[Tuple[str, str, str, str, str]] = None
+        super().__init__(parent, title)
 
         self.value_var = tk.StringVar(value=initial_values[0])
         self.weight_var = tk.StringVar(value=initial_values[1])
@@ -161,10 +157,11 @@ class _EditChoiceDialog(tk.Toplevel):
         
         ok_button = ttk.Button(button_frame, text="OK", command=self._on_ok, style="Accent.TButton")
         ok_button.pack(side=tk.RIGHT, padx=(5,0))
-        cancel_button = ttk.Button(button_frame, text="Cancel", command=self.destroy)
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
         cancel_button.pack(side=tk.RIGHT)
 
         self.bind("<Return>", self._on_ok)
+        self._center_window()
         self.wait_window(self)
 
     def _on_ok(self, event=None):
@@ -196,15 +193,10 @@ class _EditChoiceDialog(tk.Toplevel):
                 new_req_str = json.dumps(dialog.result, separators=(',', ':'))
                 self.requires_var.set(new_req_str)
 
-class WildcardSelectorDialog(tk.Toplevel):
+class WildcardSelectorDialog(_CustomDialog):
     """A dialog for selecting wildcards to include."""
     def __init__(self, parent, processor: 'PromptProcessor'):
-        super().__init__(parent)
-        self.title("Select Wildcards to Include")
-        self.transient(parent)
-        self.grab_set()
-        
-        self.result: Optional[List[str]] = None
+        super().__init__(parent, "Select Wildcards to Include")
         
         # Create main frame
         main_frame = ttk.Frame(self, padding=10)
@@ -243,13 +235,13 @@ class WildcardSelectorDialog(tk.Toplevel):
         ttk.Button(button_frame, text="OK", 
                   command=self._on_ok, 
                   style="Accent.TButton").pack(side=tk.RIGHT, padx=(5, 0))
-        ttk.Button(button_frame, text="Cancel", 
-                  command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Cancel",
+                  command=self._on_cancel).pack(side=tk.RIGHT)
         
         # Center the dialog
         self.geometry("300x400")
-        self.center_on_parent(parent)
-        
+        self._center_window()
+
         # Make dialog modal
         self.wait_window(self)
     
@@ -268,22 +260,6 @@ class WildcardSelectorDialog(tk.Toplevel):
         if selection:
             self.result = [self.listbox.get(i) for i in selection]
         self.destroy()
-    
-    def center_on_parent(self, parent):
-        """Center the dialog on its parent window."""
-        self.update_idletasks()
-        parent_x = parent.winfo_rootx()
-        parent_y = parent.winfo_rooty()
-        parent_width = parent.winfo_width()
-        parent_height = parent.winfo_height()
-        
-        width = self.winfo_width()
-        height = self.winfo_height()
-        
-        x = parent_x + (parent_width - width) // 2
-        y = parent_y + (parent_height - height) // 2
-        
-        self.geometry(f"+{x}+{y}")
 
 class WildcardEditor(ttk.Frame):
     """A structured editor for wildcard files."""
@@ -291,23 +267,16 @@ class WildcardEditor(ttk.Frame):
         super().__init__(parent, **kwargs)
         self.processor = processor
         self.suggestion_callback = suggestion_callback
-        self.drag_data = {"item": None}
+        self.iid_to_choice_map: Dict[str, Any] = {}
+        # The parent is a frame inside the WildcardManagerWindow.
+        # self.winfo_toplevel() will give us the WildcardManagerWindow instance, which has parent_app.
+        self.parent_app = self.winfo_toplevel().parent_app
         
         # Define colors for included items
         self.included_tag = "included"
         self.duplicate_tag = "duplicate"
         self._create_widgets()
-        
-        # Configure the included tag style
-        self.tree.tag_configure(
-            self.included_tag, 
-            background='#e6f3ff'  # Light blue background
-        )
-        # Configure the duplicate tag style
-        self.tree.tag_configure(
-            self.duplicate_tag,
-            background='#ffcccc' # Light red background
-        )
+        self.update_theme() # Set initial theme-based colors
 
     def _create_widgets(self):
         # --- Description ---
@@ -336,7 +305,7 @@ class WildcardEditor(ttk.Frame):
         tree_container.pack(fill=tk.BOTH, expand=True)
 
         columns = ('value', 'weight', 'tags', 'requires', 'includes')
-        self.tree = ttk.Treeview(tree_container, columns=columns, show='headings')
+        self.tree = ttk.Treeview(tree_container, columns=columns, show='headings', selectmode=tk.EXTENDED)
         self.tree.heading('value', text='Value')
         self.tree.heading('weight', text='Weight')
         self.tree.heading('tags', text='Tags')
@@ -352,9 +321,11 @@ class WildcardEditor(ttk.Frame):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Double-1>", self._on_edit_item)
-        self.tree.bind("<B1-Motion>", self._on_drag_motion)
-        self.tree.bind("<ButtonPress-1>", self._on_drag_start)
-        self.tree.bind("<ButtonRelease-1>", self._on_drag_release)
+
+        # Add context menu
+        self._create_context_menu()
+        right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
+        self.tree.bind(right_click_event, self._show_context_menu)
 
         # --- Includes Listbox ---
         includes_frame = ttk.LabelFrame(main_pane, text="Global Includes", padding=5)
@@ -408,6 +379,7 @@ class WildcardEditor(ttk.Frame):
         # Clear existing items
         for item in self.tree.get_children():
             self.tree.delete(item)
+        self.iid_to_choice_map.clear()
         
         # Get all choices from includes
         included_choices = self._get_included_choices(data.get('includes', []))
@@ -416,6 +388,7 @@ class WildcardEditor(ttk.Frame):
         for choice in data.get('choices', []):
             if isinstance(choice, str):
                 item_id = self.tree.insert('', tk.END, values=(choice, '', '', '', ''))
+                self.iid_to_choice_map[item_id] = choice
                 if choice in included_choices:
                     self.tree.item(item_id, tags=(self.included_tag,))
             elif isinstance(choice, dict):
@@ -428,6 +401,7 @@ class WildcardEditor(ttk.Frame):
                 
                 item_id = self.tree.insert('', tk.END, 
                     values=(value, weight, tags, requires, includes))
+                self.iid_to_choice_map[item_id] = choice
                 
                 if value in included_choices:
                     self.tree.item(item_id, tags=(self.included_tag,))
@@ -481,37 +455,27 @@ class WildcardEditor(ttk.Frame):
         return choice_obj
 
     def _add_item(self):
-        self.tree.insert('', tk.END, values=('new value', '1', '', '', ''))
+        new_choice_str = 'new value'
+        new_choice_obj = {'value': new_choice_str, 'weight': 1}
+        item_id = self.tree.insert('', tk.END, values=(new_choice_str, '1', '', '', ''))
+        self.iid_to_choice_map[item_id] = new_choice_obj
 
     def _delete_item(self):
         for selected_item in self.tree.selection():
+            if selected_item in self.iid_to_choice_map:
+                del self.iid_to_choice_map[selected_item]
             self.tree.delete(selected_item)
 
     def _on_edit_item(self, event):
         selection = self.tree.selection()
-        if not selection: return
+        if len(selection) != 1: return
         
         item_id = selection[0]
         dialog = _EditChoiceDialog(self, "Edit Choice", self.tree.item(item_id, 'values'), self.processor)
         if dialog.result:
             self.tree.item(item_id, values=dialog.result)
-
-    def _on_drag_start(self, event):
-        """Records the item being dragged."""
-        item = self.tree.identify_row(event.y)
-        if item:
-            self.drag_data["item"] = item
-
-    def _on_drag_motion(self, event):
-        """Moves the dragged item as the mouse moves."""
-        if not self.drag_data["item"]:
-            return
-        # Move item in the treeview to the position under the cursor
-        self.tree.move(self.drag_data["item"], "", self.tree.index(self.tree.identify_row(event.y)))
-
-    def _on_drag_release(self, event):
-        """Finalizes the drag operation."""
-        self.drag_data["item"] = None
+            updated_choice = self._get_choice_from_tree_item(item_id)
+            self.iid_to_choice_map[item_id] = updated_choice
 
     def _on_suggest_choices(self):
         """Callback to ask the manager window to trigger AI suggestions."""
@@ -530,7 +494,8 @@ class WildcardEditor(ttk.Frame):
         for choice in new_choices:
             if isinstance(choice, str):
                 if choice not in existing_values:
-                    self.tree.insert('', tk.END, values=(choice, '', '', '', ''))
+                    item_id = self.tree.insert('', tk.END, values=(choice, '', '', '', ''))
+                    self.iid_to_choice_map[item_id] = choice
             elif isinstance(choice, dict) and 'value' in choice:
                 if choice['value'] not in existing_values:
                     value = choice.get('value', '')
@@ -542,7 +507,8 @@ class WildcardEditor(ttk.Frame):
                     requires = json.dumps(requires_dict, separators=(',', ':')) if requires_dict else ""
 
                     includes = ", ".join(choice.get('includes', []))
-                    self.tree.insert('', tk.END, values=(value, weight, tags, requires, includes))
+                    item_id = self.tree.insert('', tk.END, values=(value, weight, tags, requires, includes))
+                    self.iid_to_choice_map[item_id] = choice
 
     def _show_include_selector(self):
         """Shows a dialog to select wildcards to include."""
@@ -581,3 +547,114 @@ class WildcardEditor(ttk.Frame):
             if self.duplicate_tag not in current_tags:
                 current_tags.append(self.duplicate_tag)
                 self.tree.item(item_id, tags=tuple(current_tags))
+
+    def update_theme(self):
+        """Updates the tag colors in the treeview to match the current theme."""
+        is_dark = self.parent_app.theme_manager.current_theme == "dark"
+
+        included_bg = "#2c3e50" if is_dark else "#e6f3ff" # Dark muted blue / Light blue
+        duplicate_bg = "#5e3333" if is_dark else "#ffcccc" # Dark muted red / Light red
+
+        self.tree.tag_configure(
+            self.included_tag, 
+            background=included_bg
+        )
+        self.tree.tag_configure(
+            self.duplicate_tag,
+            background=duplicate_bg
+        )
+
+    def _create_context_menu(self):
+        """Creates the right-click context menu for the choices treeview."""
+        self.context_menu = tk.Menu(self.tree, tearoff=0)
+        self.context_menu.add_command(label="Edit...", command=self._on_edit_item)
+        self.context_menu.add_command(label="Merge into New Item (2)", command=self._merge_selected_items)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Add New Choice", command=self._add_item)
+        self.context_menu.add_command(label="Delete Selected", command=self._delete_item)
+
+    def _show_context_menu(self, event):
+        """Shows the context menu and configures its state based on the selection."""
+        # First, handle the selection logic to prevent macOS from clearing it.
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            # If the right-clicked item is not already part of the selection,
+            # then clear the old selection and select only the new item.
+            if iid not in self.tree.selection():
+                self.tree.selection_set(iid)
+
+        selection = self.tree.selection()
+        
+        self.context_menu.entryconfig("Edit...", state=tk.NORMAL if len(selection) == 1 else tk.DISABLED)
+        self.context_menu.entryconfig("Merge into New Item (2)", state=tk.NORMAL if len(selection) == 2 else tk.DISABLED)
+        self.context_menu.entryconfig("Delete Selected", state=tk.NORMAL if selection else tk.DISABLED)
+
+        self.context_menu.tk_popup(event.x_root, event.y_root)
+        return "break"
+
+    def _merge_selected_items(self):
+        """Merges two selected items into a NEW item, leaving the originals."""
+        selection = self.tree.selection()
+        if len(selection) != 2:
+            return
+
+        item1_id, item2_id = selection
+        
+        # Get data for both items
+        choice1 = self._get_choice_from_tree_item(item1_id)
+        choice2 = self._get_choice_from_tree_item(item2_id)
+
+        # Ensure they are dicts for merging complex properties
+        if isinstance(choice1, str): choice1 = {'value': choice1}
+        if isinstance(choice2, str): choice2 = {'value': choice2}
+
+        # --- Merge Logic ---
+        # Use the value and weight of the first selected item as the base
+        merged_value = choice1.get('value', '')
+        merged_weight = choice1.get('weight', '')
+
+        # Combine tags and includes into unique, sorted lists
+        merged_tags = sorted(list(set(choice1.get('tags', [])) | set(choice2.get('tags', []))))
+        merged_includes = sorted(list(set(choice1.get('includes', [])) | set(choice2.get('includes', []))))
+
+        # Intelligently merge 'requires' dictionaries.
+        # This will combine lists for the same key instead of overwriting.
+        merged_reqs = choice1.get('requires', {}).copy()
+        reqs2 = choice2.get('requires', {})
+        for key, value2 in reqs2.items():
+            if key in merged_reqs and isinstance(merged_reqs.get(key), list) and isinstance(value2, list):
+                # Both values are lists, so combine them into a unique set
+                merged_reqs[key] = sorted(list(set(merged_reqs[key]) | set(value2)))
+            else:
+                # Otherwise, the second value overwrites the first (standard dict update behavior)
+                merged_reqs[key] = value2
+
+        # --- Create new choice object and values tuple for the treeview ---
+        new_values = (
+            merged_value,
+            str(merged_weight) if merged_weight else '',
+            ", ".join(merged_tags),
+            json.dumps(merged_reqs, separators=(',', ':')) if merged_reqs else "",
+            ", ".join(merged_includes)
+        )
+
+        # Get index of the last selected item to insert the new one after it
+        last_index = max(self.tree.index(item1_id), self.tree.index(item2_id))
+
+        # Insert new merged item after the selection
+        new_item_id = self.tree.insert('', last_index + 1, values=new_values)
+        
+        # Construct the object to store in the map, cleaning up empty keys
+        new_choice_obj = {
+            'value': merged_value,
+            'weight': merged_weight,
+            'tags': merged_tags,
+            'requires': merged_reqs,
+            'includes': merged_includes
+        }
+        if not new_choice_obj.get('weight'): del new_choice_obj['weight']
+        if not new_choice_obj.get('tags'): del new_choice_obj['tags']
+        if not new_choice_obj.get('requires'): del new_choice_obj['requires']
+        if not new_choice_obj.get('includes'): del new_choice_obj['includes']
+
+        self.iid_to_choice_map[new_item_id] = new_choice_obj

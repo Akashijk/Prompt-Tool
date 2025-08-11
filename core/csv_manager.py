@@ -2,117 +2,101 @@
 
 import csv
 import os
+import json
 import tempfile
+import uuid
 from typing import Set, Optional, Dict, Any, List
 from .config import config
 
-class CSVManager:
-    """Handles CSV file operations for prompt history."""
+class HistoryManager:
+    """Handles history file operations using the JSONL format."""
     
     def __init__(self):
         pass # No filepath state needed; it will be determined on-the-fly.
     
-    def load_history(self) -> Set[str]:
-        """Load existing prompt history from CSV."""
-        filepath = config.get_csv_history_file()
-        history = set()
-        if os.path.isfile(filepath):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as csvfile:
-                    reader = csv.DictReader(csvfile)
-                    for row in reader:
-                        if 'original_prompt' in row:
-                            history.add(row['original_prompt'])
-            except Exception as e:
-                print(f"Error loading history: {e}")
-        return history
-    
-    def _migrate_history_file(self, filepath: str, data: List[Dict[str, str]]):
-        """Overwrites a history file with a header and proper formatting."""
-        print(f"INFO: Migrating old history file to new format: {filepath}")
+    def _migrate_from_csv(self, csv_path: str, jsonl_path: str):
+        """Migrates data from the old CSV format to the new JSONL format."""
+        print(f"INFO: Migrating history from {csv_path} to {jsonl_path}...")
+        history = []
         try:
-            with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-                # Use extrasaction='ignore' to be safe with potentially malformed old rows
-                writer = csv.DictWriter(csvfile, fieldnames=config.CSV_COLUMNS, extrasaction='ignore')
-                writer.writeheader()
-                writer.writerows(data)
+            with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    variations = {}
+                    for var_type in ['cinematic', 'artistic', 'photorealistic']:
+                        if row.get(f'{var_type}_variation'):
+                            variations[var_type] = {
+                                'prompt': row.get(f'{var_type}_variation'),
+                                'sd_model': row.get(f'{var_type}_sd_model')
+                            }
+                    
+                    new_entry = {
+                        'id': str(uuid.uuid4()),
+                        'original_prompt': row.get('original_prompt'),
+                        'status': row.get('status'),
+                        'enhanced_prompt': row.get('enhanced_prompt'),
+                        'enhanced_sd_model': row.get('enhanced_sd_model'),
+                        'favorite': row.get('favorite') == '1',
+                        'variations': variations
+                    }
+                    history.append(new_entry)
+            
+            with open(jsonl_path, 'w', encoding='utf-8') as jsonl_file:
+                for entry in history:
+                    jsonl_file.write(json.dumps(entry) + '\n')
+            
+            # Archive the old CSV file
+            archive_dir = os.path.join(os.path.dirname(csv_path), 'archive')
+            os.makedirs(archive_dir, exist_ok=True)
+            os.rename(csv_path, os.path.join(archive_dir, os.path.basename(csv_path)))
+            print("INFO: Migration successful. Old CSV history has been archived.")
+            return history
         except Exception as e:
-            print(f"ERROR: Failed to migrate history file {filepath}. Error: {e}")
+            print(f"ERROR: Failed to migrate history file. Error: {e}")
+            return []
 
     def load_full_history(self) -> List[Dict[str, str]]:
-        """Load the entire prompt history, migrating old formats if necessary."""
-        filepath = config.get_csv_history_file()
+        """Load the entire prompt history from the JSONL file, migrating from CSV if needed."""
+        jsonl_path = config.get_history_file()
+        
+        # Check for and run migration if the new file doesn't exist but the old one does
+        csv_path = os.path.join(os.path.dirname(jsonl_path), 'generated_prompts.csv')
+        if not os.path.exists(jsonl_path) and os.path.exists(csv_path):
+            return self._migrate_from_csv(csv_path, jsonl_path)
+
         history = []
-        # Return early if file doesn't exist or is empty
-        if not os.path.isfile(filepath) or os.path.getsize(filepath) == 0:
+        if not os.path.isfile(jsonl_path):
             return history
-
-        is_old_format = False
         try:
-            with open(filepath, 'r', newline='', encoding='utf-8') as csvfile:
-                # Check for header using the sniffer, which is fine for this detection task
-                try:
-                    has_header = csv.Sniffer().has_header(csvfile.read(2048))
-                    if not has_header:
-                        is_old_format = True
-                except csv.Error:
-                    # Sniffer fails on single-line files or other edge cases, assume old format
-                    is_old_format = True
-                
-                csvfile.seek(0) # Rewind after sniffing
-
-                # Load data based on the detected format
-                if not is_old_format:
-                    reader = csv.DictReader(csvfile)
-                    for row in reader:
-                        history.append(row)
-                else:
-                    # Load old format (headerless)
-                    reader = csv.reader(csvfile)
-                    for row_list in reader:
-                        if not any(row_list): continue # Skip completely empty lines
-                        # Create a dict, being careful about rows with fewer columns than expected
-                        row_dict = {k: v for k, v in zip(config.CSV_COLUMNS, row_list)}
-                        history.append(row_dict)
-            
-            # If we detected and loaded an old format, migrate the file on disk
-            if is_old_format and history:
-                self._migrate_history_file(filepath, history)
-
+            with open(jsonl_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        history.append(json.loads(line))
         except Exception as e:
             print(f"Error loading full history: {e}")
         return history
 
     def delete_history_entry(self, row_to_delete: Dict[str, str]) -> bool:
-        """Deletes a specific entry from the history CSV file by matching the full row.
-        
-        This method is memory-efficient and suitable for large files, as it avoids
-        loading the entire file into memory.
-        """
-        filepath = config.get_csv_history_file()
+        """Deletes a specific entry from the history file by matching its unique ID."""
+        filepath = config.get_history_file()
         if not os.path.isfile(filepath):
             return False
+
+        entry_id_to_delete = row_to_delete.get('id')
+        if not entry_id_to_delete: return False
 
         deleted = False
         temp_filepath = ""
         try:
-            # Create a temporary file to write the new content to
             with tempfile.NamedTemporaryFile(mode='w', newline='', encoding='utf-8', delete=False, dir=os.path.dirname(filepath)) as temp_file:
                 temp_filepath = temp_file.name
-                with open(filepath, 'r', newline='', encoding='utf-8') as csvfile:
-                    reader = csv.DictReader(csvfile)
-                    # If the file is empty or has no header, there's nothing to delete.
-                    if not reader.fieldnames:
-                        return False
-                    
-                    writer = csv.DictWriter(temp_file, fieldnames=reader.fieldnames)
-                    writer.writeheader()
-
-                    for row in reader:
-                        if not deleted and row == row_to_delete:
-                            deleted = True  # Found the row to delete, skip writing it
+                with open(filepath, 'r', encoding='utf-8') as f_in:
+                    for line in f_in:
+                        entry = json.loads(line)
+                        if not deleted and entry.get('id') == entry_id_to_delete:
+                            deleted = True
                         else:
-                            writer.writerow(row)
+                            temp_file.write(line)
             
             if deleted:
                 os.replace(temp_filepath, filepath)
@@ -121,7 +105,40 @@ class CSVManager:
             return deleted
         except Exception as e:
             print(f"Error deleting history entry: {e}")
-            # Clean up the temp file on error
+            if temp_filepath and os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            return False
+
+    def update_history_entry(self, original_row: Dict[str, str], updated_row: Dict[str, str]) -> bool:
+        """Updates a specific entry in the history file by matching its unique ID."""
+        filepath = config.get_history_file()
+        if not os.path.isfile(filepath):
+            return False
+
+        entry_id_to_update = original_row.get('id')
+        if not entry_id_to_update: return False
+
+        updated = False
+        temp_filepath = ""
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', newline='', encoding='utf-8', delete=False, dir=os.path.dirname(filepath)) as temp_file:
+                temp_filepath = temp_file.name
+                with open(filepath, 'r', encoding='utf-8') as f_in:
+                    for line in f_in:
+                        entry = json.loads(line)
+                        if not updated and entry.get('id') == entry_id_to_update:
+                            temp_file.write(json.dumps(updated_row) + '\n')
+                            updated = True
+                        else:
+                            temp_file.write(line)
+            
+            if updated:
+                os.replace(temp_filepath, filepath)
+            else:
+                os.remove(temp_filepath)
+            return updated
+        except Exception as e:
+            print(f"Error updating history entry: {e}")
             if temp_filepath and os.path.exists(temp_filepath):
                 os.remove(temp_filepath)
             return False
@@ -131,44 +148,36 @@ class CSVManager:
                    enhanced: str, 
                    enhanced_sd_model: str, 
                    variations: Optional[Dict[str, Dict[str, str]]] = None, 
-                   status: str = "enhanced") -> None:
-        """Save a single result to CSV."""
-        filepath = config.get_csv_history_file()
-        # Check if file exists AND is not empty. An empty file needs a header.
-        file_has_content = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
+                   status: str = "enhanced",
+                   favorite: bool = False) -> None:
+        """Save a single result to the JSONL history file."""
+        filepath = config.get_history_file()
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
         row_data = {
+            'id': str(uuid.uuid4()),
             'original_prompt': original,
             'status': status,
             'enhanced_prompt': enhanced,
             'enhanced_sd_model': enhanced_sd_model,
+            'favorite': favorite,
+            'variations': variations or {}
         }
 
-        if variations:
-            for var_type, var_data in variations.items():
-                # Ensure the keys match the CSV_COLUMNS in config
-                row_data[f'{var_type}_variation'] = var_data.get('prompt', '')
-                row_data[f'{var_type}_sd_model'] = var_data.get('sd_model', '')
-
         try:
-            with open(filepath, 'a', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=config.CSV_COLUMNS)
-                
-                if not file_has_content:
-                    writer.writeheader()
-                
-                writer.writerow(row_data)
+            with open(filepath, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(row_data) + '\n')
         except Exception as e:
             print(f"Error saving to CSV: {e}")
     
     def save_batch_results(self, results: List[Dict[str, Any]]) -> None:
-        """Save multiple results to CSV."""
+        """Save multiple results to the history file."""
         for result in results:
             self.save_result(
                 result['original'],
                 result['enhanced'],
                 result['enhanced_sd_model'],
                 result.get('variations'),
-                result.get('status', 'enhanced')
+                result.get('status', 'enhanced'),
+                result.get('favorite', False)
             )

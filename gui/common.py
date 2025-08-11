@@ -23,8 +23,21 @@ class Tooltip:
         self.tooltip_window.wm_overrideredirect(True)
         self.tooltip_window.wm_geometry(f"+{x}+{y}")
 
+        # Determine colors based on the current theme by checking the top-level window
+        is_dark = False
+        try:
+            # The top-level window should be the GUIApp instance which has the theme manager
+            if hasattr(self.widget.winfo_toplevel(), 'theme_manager'):
+                is_dark = self.widget.winfo_toplevel().theme_manager.current_theme == "dark"
+        except tk.TclError:
+            # This can happen if the widget is being destroyed.
+            pass
+
+        bg_color = "#2b2b2b" if is_dark else "#ffffe0"
+        fg_color = "#ffffff" if is_dark else "#000000"
+
         label = tk.Label(self.tooltip_window, text=self.text, justify='left',
-                         background="#ffffe0", relief='solid', borderwidth=1,
+                         background=bg_color, foreground=fg_color, relief='solid', borderwidth=1,
                          font=("Helvetica", "10", "normal"))
         label.pack(ipadx=1)
 
@@ -266,6 +279,9 @@ class SmartWindowMixin:
             min_height: Minimum window height
             padding: Extra space to add around the content
         """
+        # Hide the window to prevent flickering during positioning
+        self.withdraw()
+
         # Update all idle tasks to ensure widgets are rendered
         self.update_idletasks()
         
@@ -293,6 +309,9 @@ class SmartWindowMixin:
 
         # Bind to Configure event to handle window resizing
         self.bind("<Configure>", self._on_window_configure)
+
+        # Make the window visible now that it's positioned
+        self.deiconify()
         
     def _on_window_configure(self, event):
         """Handle window resize events to maintain proper layout."""

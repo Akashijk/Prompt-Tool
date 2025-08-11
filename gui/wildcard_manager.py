@@ -7,6 +7,7 @@ from collections import Counter
 import tkinter as tk
 from tkinter import ttk
 import threading
+import sys
 from typing import Optional, Callable, List, Dict, Any, TYPE_CHECKING
 from core.prompt_processor import PromptProcessor
 from core.config import config
@@ -29,6 +30,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.selected_wildcard_file: Optional[str] = None
         self.all_wildcard_files: List[str] = []
         self.parent_app = parent
+        self.wildcard_list_var = tk.StringVar()
         self.initial_content = initial_content
         self.suggestion_queue = queue.Queue()
         self.suggestion_after_id: Optional[str] = None
@@ -47,6 +49,10 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.after_cancel(self.suggestion_after_id)
         self.destroy()
 
+    def update_theme(self):
+        """Updates the theme for its child widgets."""
+        self.structured_editor.update_theme()
+
     def _create_widgets(self):
         h_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         h_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -63,13 +69,19 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         list_scroll_frame = ttk.Frame(list_frame)
         list_scroll_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_scroll_frame, orient=tk.VERTICAL)
-        self.wildcard_listbox = tk.Listbox(list_scroll_frame, font=self.parent_app.default_font, yscrollcommand=scrollbar.set)
+        self.wildcard_listbox = tk.Listbox(list_scroll_frame, font=self.parent_app.default_font, yscrollcommand=scrollbar.set, listvariable=self.wildcard_list_var, selectmode=tk.EXTENDED)
         scrollbar.config(command=self.wildcard_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.wildcard_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
-        ttk.Button(list_frame, text="New Wildcard File", command=self._create_new_wildcard_file).pack(pady=(5, 0), fill=tk.X)
+        # Add context menu for the file list
+        self._create_file_list_context_menu()
+        right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
+        self.wildcard_listbox.bind(right_click_event, self._show_file_list_context_menu)
+
+        ttk.Button(list_frame, text="New Wildcard File", command=self._create_new_wildcard_file).pack(pady=(5, 0), fill=tk.X, side=tk.TOP)
+        ttk.Button(list_frame, text="Find Unused Files", command=self._find_unused_wildcards).pack(pady=(5, 0), fill=tk.X, side=tk.TOP)
         h_pane.add(list_frame, weight=1)
 
         self.editor_container = ttk.LabelFrame(h_pane, text="No file selected", padding=5)
@@ -98,6 +110,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
         self.find_duplicates_button = ttk.Button(button_frame, text="Find Duplicates", command=self._find_duplicates, state=tk.DISABLED)
         self.find_duplicates_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
+        self.sort_button = ttk.Button(button_frame, text="Sort Choices", command=self._sort_choices, state=tk.DISABLED)
+        self.sort_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
         self.brainstorm_button = ttk.Button(button_frame, text="Brainstorm with AI", command=self._brainstorm_with_ai, state=tk.DISABLED)
         self.brainstorm_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5,0))
         self.archive_button = ttk.Button(button_frame, text="Archive", command=self._archive_selected_wildcard, state=tk.DISABLED)
@@ -105,21 +119,18 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
     def _populate_wildcard_list(self):
         """Populates the list of wildcard files."""
-        self.wildcard_listbox.delete(0, tk.END)
         self.all_wildcard_files = self.processor.get_wildcard_files()
-        for f in self.all_wildcard_files:
-            self.wildcard_listbox.insert(tk.END, f)
+        self.wildcard_list_var.set(self.all_wildcard_files)
         # Clear search to ensure the full list is displayed initially
         self.search_var.set("")
 
     def _filter_wildcard_list(self, *args):
         """Filters the wildcard listbox based on the search term."""
         search_term = self.search_var.get().lower()
-        self.wildcard_listbox.delete(0, tk.END)
         
         filtered_list = [f for f in self.all_wildcard_files if search_term in f.lower()]
-        for f in filtered_list:
-            self.wildcard_listbox.insert(tk.END, f)
+        self.wildcard_list_var.set(filtered_list)
+
     def _on_wildcard_file_select(self, event=None):
         selected_indices = self.wildcard_listbox.curselection()
         if not selected_indices: return
@@ -171,6 +182,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.archive_button.config(state=tk.NORMAL)
         self.brainstorm_button.config(state=tk.NORMAL)
         self.find_duplicates_button.config(state=tk.NORMAL)
+        self.sort_button.config(state=tk.NORMAL)
 
     def _display_invalid_wildcard(self, raw_content: str):
         """
@@ -197,6 +209,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.archive_button.config(state=tk.NORMAL)
         self.brainstorm_button.config(state=tk.DISABLED)
         self.find_duplicates_button.config(state=tk.DISABLED)
+        self.sort_button.config(state=tk.DISABLED)
 
     def _save_wildcard_file(self):
         if not self.selected_wildcard_file: return
@@ -285,6 +298,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.archive_button.config(state=tk.DISABLED)
         self.brainstorm_button.config(state=tk.DISABLED)
         self.find_duplicates_button.config(state=tk.DISABLED)
+        self.sort_button.config(state=tk.DISABLED)
         self.structured_editor.suggest_button.config(state=tk.DISABLED)
         self.editor_container.config(text="No file selected")
 
@@ -375,20 +389,21 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         # Always clear previous highlights first
         self.structured_editor.clear_highlights()
 
-        # Get all item IDs and their values directly from the tree
-        all_iids = self.structured_editor.tree.get_children()
-        if not all_iids:
+        # Use the fast in-memory map from the editor for performance
+        iid_map = self.structured_editor.iid_to_choice_map
+        if not iid_map:
             custom_dialogs.show_info(self, "Find Duplicates", "No choices found in the file to check.")
             return
 
         # Map values to a list of their iids
         value_to_iids = {}
-        for iid in all_iids:
-            # The 'value' is the first element in the 'values' tuple
-            value = self.structured_editor.tree.item(iid, 'values')[0]
-            if value not in value_to_iids:
-                value_to_iids[value] = []
-            value_to_iids[value].append(iid)
+        for iid, choice in iid_map.items():
+            # Get the 'value' from the choice object (which can be a string or dict)
+            value = choice if isinstance(choice, str) else choice.get('value')
+            if value is not None:
+                if value not in value_to_iids:
+                    value_to_iids[value] = []
+                value_to_iids[value].append(iid)
 
         # Find duplicates and collect all iids to be highlighted
         duplicates = {}
@@ -435,3 +450,147 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
                 self.save_button.config(state=tk.NORMAL)
 
                 custom_dialogs.show_info(self, "Duplicates Removed", f"Removed {num_removed} duplicate choice(s).\n\nPlease save the file to apply the changes.")
+
+    def _sort_choices(self):
+        """Sorts the choices in the structured editor alphabetically by value."""
+        if not self.selected_wildcard_file:
+            return
+
+        data = self.structured_editor.get_data()
+        choices = data.get('choices', [])
+
+        if not choices:
+            custom_dialogs.show_info(self, "Sort Choices", "No choices to sort.")
+            return
+
+        # Define a key function for case-insensitive sorting
+        def sort_key(choice):
+            value = choice.get('value') if isinstance(choice, dict) else choice
+            return value.lower() if isinstance(value, str) else ""
+
+        # Sort the choices list
+        choices.sort(key=sort_key)
+        
+        data['choices'] = choices
+        self.structured_editor.set_data(data)
+        
+        self.save_button.config(state=tk.NORMAL)
+        custom_dialogs.show_info(self, "Sort Complete", "Choices have been sorted alphabetically.\n\nPlease save the file to apply the changes.")
+
+    def _find_unused_wildcards(self):
+        """Scans all files to find wildcards that are never included or used in templates."""
+        try:
+            used_wildcards = self.processor.get_all_used_wildcards()
+            all_wildcard_files = self.processor.get_all_wildcard_files_mode_agnostic()
+
+            # Convert filenames (e.g., 'my_wildcard.json') to basenames ('my_wildcard')
+            all_wildcard_basenames = {os.path.splitext(f)[0] for f in all_wildcard_files}
+
+            unused_wildcards = sorted(list(all_wildcard_basenames - used_wildcards))
+
+            if not unused_wildcards:
+                custom_dialogs.show_info(self, "Find Unused Wildcards", "No unused wildcard files found. All wildcards are referenced in at least one template or another wildcard's 'includes' clause.")
+            else:
+                message = "The following wildcard files appear to be unused:\n\n"
+                message += "\n".join([f"- {wc}" for wc in unused_wildcards])
+                message += "\n\nNote: This check may not detect wildcards used in complex, indirect ways. Please review before deleting."
+                custom_dialogs.show_info(self, "Unused Wildcards Found", message)
+        except Exception as e:
+            custom_dialogs.show_error(self, "Error", f"An error occurred while checking for unused wildcards:\n{e}")
+
+    def _create_file_list_context_menu(self):
+        """Creates the right-click context menu for the wildcard file list."""
+        self.file_list_context_menu = tk.Menu(self.wildcard_listbox, tearoff=0)
+        self.file_list_context_menu.add_command(label="Merge Selected Files...", command=self._merge_wildcard_files)
+        self.file_list_context_menu.add_command(label="Brainstorm with AI", command=self._brainstorm_with_ai)
+        self.file_list_context_menu.add_separator()
+        self.file_list_context_menu.add_command(label="Archive", command=self._archive_selected_wildcard)
+
+    def _show_file_list_context_menu(self, event):
+        """Shows the context menu for the file list."""
+        # First, handle the selection logic to prevent macOS from clearing it.
+        index = self.wildcard_listbox.nearest(event.y)
+        if index != -1:
+            # If the right-clicked item is not already part of the selection,
+            # then clear the old selection and select only the clicked item.
+            if not self.wildcard_listbox.selection_includes(index):
+                self.wildcard_listbox.selection_clear(0, tk.END)
+                self.wildcard_listbox.selection_set(index)
+                self.wildcard_listbox.activate(index)
+
+        # Now, configure the menu based on the (now correct) selection.
+        selection_count = len(self.wildcard_listbox.curselection())
+
+        if selection_count == 1:
+            self._on_wildcard_file_select()
+        elif selection_count > 1:
+            self._clear_editor_view()
+        
+        self.file_list_context_menu.entryconfig("Merge Selected Files...", state=tk.NORMAL if selection_count == 2 else tk.DISABLED)
+        self.file_list_context_menu.entryconfig("Brainstorm with AI", state=tk.NORMAL if selection_count == 1 else tk.DISABLED)
+        self.file_list_context_menu.entryconfig("Archive", state=tk.NORMAL if selection_count > 0 else tk.DISABLED)
+
+        self.file_list_context_menu.tk_popup(event.x_root, event.y_root)
+        # Stop the event from propagating to the default handler, preserving multi-selection
+        return "break"
+
+    def _merge_wildcard_files(self):
+        """Merges two selected wildcard files into a new file."""
+        selection_indices = self.wildcard_listbox.curselection()
+        if len(selection_indices) != 2:
+            return
+
+        file1 = self.wildcard_listbox.get(selection_indices[0])
+        file2 = self.wildcard_listbox.get(selection_indices[1])
+
+        basename1, _ = os.path.splitext(file1)
+        basename2, _ = os.path.splitext(file2)
+
+        # Get the parsed data from the processor's cache
+        data1 = self.processor.template_engine.wildcards.get(basename1, {})
+        data2 = self.processor.template_engine.wildcards.get(basename2, {})
+
+        # --- Merge Logic ---
+        desc1 = data1.get('description', f'Content from {file1}')
+        desc2 = data2.get('description', f'Content from {file2}')
+        merged_desc = f"Merged from '{basename1}' and '{basename2}'.\n\n--- {basename1} ---\n{desc1}\n\n--- {basename2} ---\n{desc2}"
+
+        choices1 = data1.get('choices', [])
+        choices2 = data2.get('choices', [])
+        seen_values = set()
+        merged_choices = []
+        for choice in choices1 + choices2:
+            value = choice if isinstance(choice, str) else choice.get('value')
+            if value not in seen_values:
+                merged_choices.append(choice)
+                seen_values.add(value)
+
+        includes1 = data1.get('includes', [])
+        includes2 = data2.get('includes', [])
+        merged_includes = sorted(list(set(includes1) | set(includes2)))
+
+        merged_data = {"description": merged_desc, "choices": merged_choices, "includes": merged_includes}
+
+        new_filename_base = custom_dialogs.ask_string(self, "New Merged Wildcard", "Enter a name for the new merged wildcard file:", initialvalue=f"{basename1}_{basename2}")
+        if not new_filename_base: return
+
+        new_filename = f"{new_filename_base}.json"
+        new_content = json.dumps(merged_data, indent=2)
+
+        try:
+            is_nsfw_only = False
+            if config.workflow == 'nsfw':
+                is_nsfw_only = custom_dialogs.ask_yes_no(self, "Wildcard Scope", "Save this merged file as NSFW-only?")
+            
+            self.processor.save_wildcard_content(new_filename, new_content, is_nsfw_only)
+            custom_dialogs.show_info(self, "Success", f"Successfully merged files into '{new_filename}'.")
+
+            if custom_dialogs.ask_yes_no(self, "Archive Originals?", f"Would you like to archive the original files?\n- {file1}\n- {file2}"):
+                self.processor.archive_wildcard(file1)
+                self.processor.archive_wildcard(file2)
+
+            self._populate_wildcard_list()
+            self.update_callback()
+            self.select_and_load_file(new_filename)
+        except Exception as e:
+            custom_dialogs.show_error(self, "Error", f"Could not save merged wildcard file:\n{e}")

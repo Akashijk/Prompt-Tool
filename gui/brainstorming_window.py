@@ -19,11 +19,12 @@ from .common import BrainstormingContextMenu, TextContextMenu, SmartWindowMixin
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
+    from .model_usage_manager import ModelUsageManager
 
 
 class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
     """An interactive window for brainstorming with an AI model."""
-    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, models: List[str], default_model: str, model_change_callback: Callable, update_callback: Callable):
+    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, models: List[str], default_model: str, model_usage_manager: 'ModelUsageManager', update_callback: Callable):
         super().__init__(parent)
         self.title("AI Brainstorming Session")
 
@@ -32,7 +33,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         self.update_callback = update_callback
         self.models = models
         self.chat_queue = queue.Queue()
-        self.model_change_callback = model_change_callback
+        self.model_usage_manager = model_usage_manager
         self.active_brainstorm_model: Optional[str] = None
         self.conversation_history: List[Dict[str, str]] = []
         self.after_id: Optional[str] = None
@@ -96,9 +97,30 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
 
         # Register initial model usage
         self.active_brainstorm_model = default_model
-        self.model_change_callback(None, self.active_brainstorm_model)
+        self.model_usage_manager.register_usage(self.active_brainstorm_model)
 
         self.smart_geometry(min_width=800, min_height=600)
+
+    def _configure_tags(self):
+        """Configures the text tags for the conversation history."""
+        is_dark = self.parent_app.theme_manager.current_theme == "dark"
+
+        user_fg = "#87CEFA" if is_dark else "blue" # Light blue / Blue
+        ai_fg = "#90EE90" if is_dark else "#006400" # Light green / Dark green
+        error_fg = "#F08080" if is_dark else "red" # Light coral / Red
+        thinking_fg = "#A9A9A9" if is_dark else "gray" # Dark gray / Gray
+        link_fg = "#FFD700" if is_dark else "#FFB000" # Gold / Darker Gold
+
+        bold_font = tkfont.Font(family="Helvetica", size=config.font_size, weight="bold")
+        italic_font = tkfont.Font(family="Helvetica", size=config.font_size, slant="italic")
+
+        self.history_text.tag_configure("user", foreground=user_fg, font=bold_font)
+        self.history_text.tag_configure("ai", foreground=ai_fg)
+        self.history_text.tag_configure("error", foreground=error_fg, font=bold_font)
+        self.history_text.tag_configure("thinking", foreground=thinking_fg, font=italic_font)
+        self.history_text.tag_configure("new_wildcard_link", foreground=link_fg, underline=True)
+        self.history_text.tag_bind("new_wildcard_link", "<Enter>", lambda e: self.history_text.config(cursor="hand2"))
+        self.history_text.tag_bind("new_wildcard_link", "<Leave>", lambda e: self.history_text.config(cursor=""))
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
@@ -108,7 +130,15 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         if self.suggestion_after_id:
             self.after_cancel(self.suggestion_after_id)
             self.suggestion_after_id = None
+        
+        # Unregister the model used by this window before destroying it
+        self.model_usage_manager.unregister_usage(self.active_brainstorm_model)
+        
         self.destroy()
+
+    def update_theme(self):
+        """Updates the tag colors to match the current theme."""
+        self._configure_tags()
     def _handle_wildcard_link_click(self, wildcard_name: str, tag_name: str):
         """Handles a click on a new wildcard link, disabling it and starting generation."""
         # Disable the link to prevent multiple clicks
@@ -190,12 +220,10 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                 response = result.get('response', '')
                 metadata = result.get('metadata')
                 if content_type == 'template':
-                    template, new_wildcards = self._parse_template_generation_response(response)
+                    template, new_wildcards = response # The response is now a tuple
                     self._handle_generated_template(template, new_wildcards, metadata)
-                elif content_type == 'wildcard':
-                    topic = metadata.get('topic', 'new_wildcard')
-                    parsed_json_string = self._parse_json_from_ai_response(response, topic)
-                    self._handle_generated_wildcard(parsed_json_string, metadata)
+                elif content_type == 'wildcard': # The response is now pre-parsed JSON
+                    self._handle_generated_wildcard(response, metadata)
                 elif content_type == 'rewrite':
                     if metadata:
                         self._handle_rewritten_text(response, metadata['start_index'], metadata['end_index'])
@@ -417,8 +445,15 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         def task():
             try:
                 # Use the new one-shot generation method
-                response = self.processor.generate_for_brainstorming(model, prompt)
-                self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
+                if content_type == 'wildcard':
+                    response = self.processor.generate_wildcard_for_brainstorming(model, prompt, metadata.get('topic', ''))
+                    self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
+                elif content_type == 'template':
+                    template, new_wildcards = self.processor.generate_template_for_brainstorming(model, prompt)
+                    self.chat_queue.put({'response': (template, new_wildcards), 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
+                else: # rewrite
+                    response = self.processor.generate_for_brainstorming(model, prompt)
+                    self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
             except Exception as e:
                 # Pass metadata along with the error so we can handle the UI correctly
                 self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error', 'metadata': metadata})
@@ -457,84 +492,8 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         self.history_text.insert(start_index, placeholder, ("thinking",))
         new_end_index = self.history_text.index(f"{start_index} + {len(placeholder)}c")
         self.history_text.config(state=tk.DISABLED)
-        
         metadata = {'start_index': start_index, 'end_index': new_end_index}
         self._run_generation_task(prompt, "rewrite", metadata=metadata)
-
-    def _parse_json_from_ai_response(self, response: str, topic: str) -> str:
-        """Extracts a JSON object from an AI's response, with fallback and cleanup."""
-        json_str = None
-        # First, try to find a markdown-fenced JSON block (most reliable)
-        match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
-        if match:
-            json_str = match.group(1)
-        else:
-            # Fallback: find the content between the first '{' and last '}'
-            start = response.find('{')
-            end = response.rfind('}')
-            if start != -1 and end != -1 and start < end:
-                json_str = response[start:end+1]
-
-        parsed_data = None
-        if json_str:
-            try:
-                parsed_data = json.loads(json_str)
-            except (json.JSONDecodeError, Exception):
-                pass # Fall through to text-based fallback
-
-        if parsed_data and 'choices' in parsed_data:
-            # Sanitize the choices list using the shared utility function
-            parsed_data['choices'] = sanitize_wildcard_choices(parsed_data.get('choices', []))
-            return json.dumps(parsed_data, indent=2)
-
-        # Fallback: If JSON parsing fails, try to parse the response as a plain list.
-        # This is more robust than just splitting by lines.
-        
-        # Regex to find lines that look like list items (markdown or numbered)
-        # It captures the content after the list marker.
-        list_item_pattern = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.*)", re.MULTILINE)
-        
-        choices = list_item_pattern.findall(response)
-        
-        # If we found list items, clean them up.
-        if choices:
-            # Further cleanup: remove trailing punctuation that might be part of the list format
-            # and replace underscores with spaces.
-            cleaned_choices = [re.sub(r'[.,]$', '', choice).strip().replace('_', ' ') for choice in choices]
-            # Filter out any empty strings that might result from cleanup
-            lines = [c for c in cleaned_choices if c]
-        else:
-            # If no list items were found, use a less-reliable line-splitting method as a last resort,
-            # filtering out common conversational filler.
-            ignore_phrases = ["here are", "here's a list", "sure, here", "i've generated", "```", "json"]
-            lines = [line.strip().replace('_', ' ') for line in response.split('\n') if line.strip() and not any(phrase in line.lower() for phrase in ignore_phrases)]
-
-        fallback_data = {"description": f"AI-generated list for the topic: {topic} (fallback mode)", "choices": lines}
-        return json.dumps(fallback_data, indent=2)
-
-    def _parse_template_generation_response(self, response: str) -> Tuple[str, List[str]]:
-        """Parses the AI response for template and new wildcards."""
-        template_content = ""
-        new_wildcards = []
-        
-        # Use re.IGNORECASE to handle variations in casing like 'TEMPLATE:' vs 'Template:'
-        template_match = re.search(r"TEMPLATE:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
-        if template_match:
-            # Further split by NEW_WILDCARDS to ensure we only get the template part
-            # Use re.split for case-insensitivity to match the search
-            template_content = re.split(r"NEW_WILDCARDS:", template_match.group(1), flags=re.IGNORECASE)[0].strip()
-
-        wildcards_match = re.search(r"NEW_WILDCARDS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
-        if wildcards_match:
-            wildcards_str = wildcards_match.group(1).strip()
-            if wildcards_str.lower() != 'none':
-                new_wildcards = [w.strip() for w in wildcards_str.split(',') if w.strip()]
-
-        # If parsing fails (e.g., AI didn't follow format), fall back to treating the whole response as the template
-        if not template_content:
-            template_content = response
-            
-        return template_content, new_wildcards
 
     def _handle_generated_wildcard(self, parsed_json_string: str, metadata: Optional[Dict] = None):
         """Handles the display of a newly generated wildcard and its new 'includes'."""
@@ -652,5 +611,6 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         new_model = self.model_var.get()
         old_model = self.active_brainstorm_model
         if new_model and new_model != old_model:
-            self.model_change_callback(old_model, new_model)
+            self.model_usage_manager.unregister_usage(old_model)
+            self.model_usage_manager.register_usage(new_model)
             self.active_brainstorm_model = new_model

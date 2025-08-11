@@ -105,16 +105,10 @@ class CLIApp:
         default_model = None
         default_index = None
         
-        # Find default
-        for idx, model, _ in recommendations:
-            if 'qwen' in model.lower() and '7b' in model.lower():
-                default_model = model
-                default_index = idx
-                break
-        
-        if not default_model and recommendations:
+        # The first recommendation from the sorted list is the best default
+        if recommendations:
             default_index, default_model, _ = recommendations[0]
-        elif not default_model:
+        else: # Fallback if no recommendations match
             default_model = models[0]
             default_index = 1
         
@@ -297,7 +291,7 @@ class CLIApp:
             
         print("\n💾 Saving results to history file...")
         self.processor.save_results(results)
-        print(f"Saved {len(results)} results to {config.get_csv_history_file()}\n")
+        print(f"Saved {len(results)} results to {config.get_history_file()}\n")
 
     def _get_queue_choice(self) -> str:
         """Get user choice for queuing."""

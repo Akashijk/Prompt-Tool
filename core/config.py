@@ -68,21 +68,52 @@ class Config:
         """Returns the path to the system prompt directory for the current workflow."""
         return os.path.join(self.SYSTEM_PROMPT_BASE_DIR, self.workflow)
     
-    def get_csv_history_file(self) -> str:
-        """Returns the path to the CSV history file for the current workflow."""
+    def get_history_file(self) -> str:
+        """Returns the path to the history file for the current workflow."""
         workflow_history_dir = os.path.join(self.HISTORY_DIR, self.workflow)
-        return os.path.join(workflow_history_dir, 'generated_prompts.csv')
+        return os.path.join(workflow_history_dir, 'history.jsonl')
     
     # CSV columns
     CSV_COLUMNS = [
         'original_prompt', 'status', 'enhanced_prompt', 'enhanced_sd_model',
         'cinematic_variation', 'cinematic_sd_model',
-        'artistic_variation', 'artistic_sd_model', 
-        'photorealistic_variation', 'photorealistic_sd_model'
+        'artistic_variation', 'artistic_sd_model',
+        'photorealistic_variation', 'photorealistic_sd_model',
+        'favorite'
     ]
 
 # Global config instance
 config = Config()
+
+# --- Model Recommendations ---
+# A data-driven list for recommending models. Lower priority is better.
+MODEL_RECOMMENDATIONS = [
+    {
+        "keywords": ["qwen", "7b"],
+        "reason": "Best overall for creative tasks",
+        "priority": 1
+    },
+    {
+        "keywords": ["qwen", "14b"],
+        "reason": "Excellent quality, needs more VRAM",
+        "priority": 2
+    },
+    {
+        "keywords": ["llama3", "8b"],
+        "reason": "Reliable and well-tested",
+        "priority": 3
+    },
+    {
+        "keywords": ["codegemma"],
+        "reason": "Optimized for code, not ideal for creative writing",
+        "priority": 99
+    },
+    {
+        "keywords": ["llava"],
+        "reason": "Vision model, not suitable for text generation",
+        "priority": 100
+    }
+]
 
 # --- DEFAULT SFW SYSTEM PROMPTS ---
 DEFAULT_SFW_ENHANCEMENT_INSTRUCTION = """You are a specialized AI prompt enhancement expert for Stable Diffusion. Your task is to take a user's prompt and enhance it to create a more detailed and visually appealing image.

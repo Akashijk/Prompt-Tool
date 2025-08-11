@@ -25,7 +25,12 @@ class TemplateEngine:
 
     def load_wildcards(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
         """Load all wildcard files from a list of directories, with later directories overriding earlier ones."""
-        self.wildcards = {}
+        self.wildcards = self.get_all_wildcards_data_from_dirs(wildcard_dirs)
+        return self.wildcards
+    
+    def get_all_wildcards_data_from_dirs(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
+        """Loads and returns all wildcard data from a list of directories without setting instance state."""
+        wildcards: Dict[str, Dict] = {}
         found_files: Dict[str, Dict[str, str]] = {} # {basename: {'.txt': path, '.json': path}}
         
         for wildcard_dir in wildcard_dirs:
@@ -44,19 +49,16 @@ class TemplateEngine:
             try:
                 if '.json' in paths: # Prefer .json if it exists
                     with open(paths['.json'], 'r', encoding='utf-8') as f:
-                        self.wildcards[basename] = json.load(f)
+                        wildcards[basename] = json.load(f)
                 elif '.txt' in paths: # Fallback to .txt
                     with open(paths['.txt'], 'r', encoding='utf-8') as f:
                         lines = [line.strip() for line in f if line.strip()]
                         # Convert to the standard JSON structure in memory
-                        self.wildcards[basename] = {
-                            "description": f"Legacy wildcard from {os.path.basename(paths['.txt'])}.",
-                            "choices": lines
-                        }
+                        wildcards[basename] = {"description": f"Legacy wildcard from {os.path.basename(paths['.txt'])}.", "choices": lines}
             except Exception as e:
                 print(f"Error loading or parsing wildcard file for {basename}: {e}")
                         
-        return self.wildcards
+        return wildcards
     
     def list_templates(self, template_dir: str) -> List[str]:
         """Get a sorted list of available template files."""
@@ -239,7 +241,7 @@ class TemplateEngine:
                     all_includes = global_includes + choice_includes
 
                     if all_includes:
-                        include_text = " " + " ".join([f"__{inc}__" for inc in all_includes])
+                        include_text = ", " + ", ".join([f"__{inc}__" for inc in all_includes]) + ", "
                         remaining_template = include_text + remaining_template[end_pos+2:]
                     else:
                         remaining_template = remaining_template[end_pos+2:]
@@ -249,7 +251,7 @@ class TemplateEngine:
 
         output_prompt += remaining_template
         
-        return output_prompt.strip()
+        return self.cleanup_prompt_string(output_prompt)
 
     def _get_wildcard_choice_object(self, key: str, context: Dict[str, Any]) -> Optional[Any]:
         """
@@ -372,7 +374,7 @@ class TemplateEngine:
                     resolved_context[key] = {'value': choice_text, 'tags': tags}
 
                     if all_includes:
-                        include_text = " " + " ".join([f"__{inc}__" for inc in all_includes])
+                        include_text = ", " + ", ".join([f"__{inc}__" for inc in all_includes]) + ", "
                         remaining_template = include_text + remaining_template[end_pos+2:]
                     else:
                         remaining_template = remaining_template[end_pos+2:]
@@ -393,7 +395,7 @@ class TemplateEngine:
                     resolved_context[key] = {'value': choice_text, 'tags': tags}
 
                     if all_includes:
-                        include_text = " " + " ".join([f"__{inc}__" for inc in all_includes])
+                        include_text = ", " + ", ".join([f"__{inc}__" for inc in all_includes]) + ", "
                         remaining_template = include_text + remaining_template[end_pos+2:]
                     else:
                         remaining_template = remaining_template[end_pos+2:]
@@ -405,3 +407,21 @@ class TemplateEngine:
             segments.append(PromptSegment(text=remaining_template))
 
         return segments
+
+    def cleanup_prompt_string(self, prompt: str) -> str:
+        """Cleans up a generated prompt string to fix common grammatical issues."""
+        if not prompt:
+            return ""
+
+        # 1. Consolidate whitespace and remove spaces before commas
+        cleaned = re.sub(r'\s+', ' ', prompt).strip()
+        cleaned = re.sub(r'\s+,', ',', cleaned)
+
+        # 2. Ensure a space after a comma (if not followed by a space or end of string)
+        cleaned = re.sub(r',(?=[^\s])', ', ', cleaned)
+
+        # 3. Consolidate multiple commas into one
+        cleaned = re.sub(r',,+', ',', cleaned)
+
+        # 4. Remove any leading or trailing commas/whitespace again
+        return cleaned.strip(' ,')

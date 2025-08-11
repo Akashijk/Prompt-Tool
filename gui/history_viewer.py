@@ -21,7 +21,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.parent_app = parent
         self.all_history_data: List[Dict[str, str]] = []
         self.tree: Optional[ttk.Treeview] = None
+        self.show_favorites_only_var = tk.BooleanVar(value=False)
         self.iid_map: Dict[str, Dict[str, str]] = {}
+        self.details_notebook: Optional[ttk.Notebook] = None
+        self.detail_tabs: Dict[str, Dict[str, Any]] = {}
+        self.tab_order = ['original', 'enhanced', 'cinematic', 'artistic', 'photorealistic']
 
         self._create_widgets()
         self.load_and_display_history()
@@ -37,9 +41,13 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         search_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *args: self._search_history())
+        self.search_var.trace_add("write", lambda *args: self._apply_filters())
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # Add favorites filter
+        favorites_check = ttk.Checkbutton(search_frame, text="Favorites Only ⭐", variable=self.show_favorites_only_var, command=self._apply_filters)
+        favorites_check.pack(side=tk.LEFT, padx=5)
 
         # Main paned window for table and details
         main_pane = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
@@ -49,7 +57,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         tree_frame = ttk.Frame(main_pane)
         main_pane.add(tree_frame, weight=3)
 
-        columns = ('original_prompt', 'enhanced_prompt', 'status', 'enhanced_sd_model')
+        columns = ('favorite', 'original_prompt', 'enhanced_prompt', 'status', 'enhanced_sd_model')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
 
         # --- Context Menu ---
@@ -63,6 +71,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Load to Main Window", command=self._load_to_main_window)
         self.context_menu.add_separator()
+        self.context_menu.add_command(label="Toggle Favorite ⭐", command=self._toggle_favorite)
+        self.context_menu.add_separator()
         self.context_menu.add_command(label="Delete Entry", command=self._delete_selected_history)
 
         right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
@@ -71,12 +81,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
 
         # Define headings
+        self.tree.heading('favorite', text='⭐')
         self.tree.heading('original_prompt', text='Original Prompt')
         self.tree.heading('enhanced_prompt', text='Enhanced Prompt')
         self.tree.heading('status', text='Status')
         self.tree.heading('enhanced_sd_model', text='SD Model')
 
         # Define column widths
+        self.tree.column('favorite', width=40, anchor='center', stretch=False)
         self.tree.column('original_prompt', width=300, minwidth=200)
         self.tree.column('enhanced_prompt', width=400, minwidth=200)
         self.tree.column('status', width=80, anchor='center', stretch=False)
@@ -92,86 +104,133 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.tree.pack(side='left', fill='both', expand=True)
 
         # --- Details View ---
-        details_frame = ttk.LabelFrame(main_pane, text="Selected Prompt Details", padding=5)
-        main_pane.add(details_frame, weight=2)
+        details_notebook_frame = ttk.LabelFrame(main_pane, text="Selected Prompt Details", padding=5)
+        main_pane.add(details_notebook_frame, weight=2)
 
-        self.details_text = tk.Text(details_frame, wrap=tk.WORD, state=tk.DISABLED, font=self.parent_app.default_font)
-        details_scrollbar = ttk.Scrollbar(details_frame, orient="vertical", command=self.details_text.yview)
-        self.details_text.configure(yscrollcommand=details_scrollbar.set)
-        details_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.details_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        TextContextMenu(self.details_text)
+        self.details_notebook = ttk.Notebook(details_notebook_frame)
+        self.details_notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Create tab content holders
+        tab_titles = {
+            'original': 'Original', 'enhanced': 'Enhanced',
+            'cinematic': 'Cinematic', 'artistic': 'Artistic', 'photorealistic': 'Photorealistic'
+        }
+
+        for key in self.tab_order:
+            frame = ttk.Frame(self.details_notebook, padding=5)
+            
+            text_widget = tk.Text(frame, wrap=tk.WORD, height=5, font=self.parent_app.default_font, state=tk.DISABLED)
+            TextContextMenu(text_widget)
+            text_widget.pack(fill=tk.BOTH, expand=True)
+            
+            model_label = ttk.Label(frame, text="", font=self.parent_app.small_font, foreground="gray")
+            model_label.pack(anchor='w', pady=(5,0))
+            
+            self.detail_tabs[key] = {
+                'frame': frame,
+                'text': text_widget,
+                'model_label': model_label,
+                'title': tab_titles.get(key, key.capitalize())
+            }
 
     def load_and_display_history(self):
-        """Loads data from the CSV and populates the treeview."""
+        """Loads data from the history file and populates the treeview once."""
         self.all_history_data = self.processor.get_full_history()
         self._populate_treeview(self.all_history_data)
 
     def _populate_treeview(self, data: List[Dict[str, str]]):
-        """Clears and fills the treeview with the given data."""
+        """Clears and fills the treeview with the given data. Called only on initial load."""
         if not self.tree: return
-        # Clear old data
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        # Clear old data efficiently
+        self.tree.delete(*self.tree.get_children())
         self.iid_map.clear()
 
         for row in data:
-            values = (row.get('original_prompt', ''), row.get('enhanced_prompt', ''), row.get('status', ''), row.get('enhanced_sd_model', ''))
+            is_fav = "⭐" if row.get('favorite') else ""
+            values = (is_fav, row.get('original_prompt', ''), row.get('enhanced_prompt', ''), row.get('status', ''), row.get('enhanced_sd_model', ''))
             iid = self.tree.insert('', tk.END, values=values)
             self.iid_map[iid] = row
 
-    def _search_history(self):
-        """Filters the treeview based on the search term."""
-        search_term = self.search_var.get().lower()
-        if not search_term:
-            self._populate_treeview(self.all_history_data)
-            return
+    def _apply_filters(self):
+        """Shows or hides treeview items based on the current filter criteria without rebuilding the tree."""
+        if not self.tree: return
         
-        filtered_data = [
-            row for row in self.all_history_data
-            if search_term in row.get('original_prompt', '').lower() or
-               search_term in row.get('enhanced_prompt', '').lower()
-        ]
-        self._populate_treeview(filtered_data)
+        search_term = self.search_var.get().lower()
+        show_favorites_only = self.show_favorites_only_var.get()
+
+        # Instead of deleting and re-inserting, we detach and move items.
+        # This is significantly faster for large lists.
+        for iid, row in self.iid_map.items():
+            is_favorite_match = not show_favorites_only or row.get('favorite')
+
+            original_prompt = row.get('original_prompt', '').lower()
+            enhanced_prompt = row.get('enhanced_prompt', '').lower()
+            is_search_match = not search_term or (search_term in original_prompt or search_term in enhanced_prompt)
+            
+            if is_favorite_match and is_search_match:
+                self.tree.move(iid, '', 'end') # Ensure the item is visible and in order
+            else:
+                self.tree.detach(iid) # Detach the item so it's not visible
 
     def _on_row_select(self, event=None):
         """Displays the full content of the selected row in the details view."""
-        if not self.tree: return
-        selected_items = self.tree.selection()
-        if not selected_items: return
+        if not self.tree or not self.details_notebook:
+            return
 
-        # Find the full data dictionary for the selected row
+        # Forget all tabs to ensure a clean slate for each selection
+        for tab_id in self.details_notebook.tabs():
+            self.details_notebook.forget(tab_id)
+
+        selected_items = self.tree.selection()
+        if not selected_items:
+            return # No selection, so no tabs should be visible.
+
         selected_iid = selected_items[0]
         full_row_data = self.iid_map.get(selected_iid)
 
         if not full_row_data:
-            self.details_text.config(state=tk.NORMAL)
-            self.details_text.delete("1.0", tk.END)
-            self.details_text.insert("1.0", "Error: Could not find details for the selected row.")
-            self.details_text.config(state=tk.DISABLED)
+            # Handle case where data for the selected row is missing
+            error_tab = self.detail_tabs['original']
+            error_tab['text'].config(state=tk.NORMAL)
+            error_tab['text'].delete("1.0", tk.END)
+            error_tab['text'].insert("1.0", "Error: Could not find details for the selected row.")
+            error_tab['text'].config(state=tk.DISABLED)
+            error_tab['model_label'].config(text="")
+            self.details_notebook.add(error_tab['frame'], text=error_tab['title'])
             return
 
-        original_prompt = full_row_data.get('original_prompt', '')
-        enhanced_prompt = full_row_data.get('enhanced_prompt', '')
+        # Iterate through the predefined tab order and add tabs if data exists
+        for key in self.tab_order:
+            prompt = ""
+            model = ""
+            data_exists = False
 
-        details_content = f"ORIGINAL PROMPT:\n{'-'*20}\n{original_prompt}\n\n"
-        details_content += f"ENHANCED PROMPT:\n{'-'*20}\n{enhanced_prompt}"
-
-        # Check for and add variations
-        variations_content = ""
-        for var_key in ['cinematic', 'artistic', 'photorealistic']:
-            prompt_key = f'{var_key}_variation'
-            model_key = f'{var_key}_sd_model'
-            if full_row_data.get(prompt_key):
-                variations_content += f"\n\n{var_key.upper()} VARIATION:\n{'-'*20}\n{full_row_data[prompt_key]}\n(Model: {full_row_data.get(model_key, 'N/A')})"
-
-        if variations_content:
-            details_content += "\n" + variations_content
-        
-        self.details_text.config(state=tk.NORMAL)
-        self.details_text.delete("1.0", tk.END)
-        self.details_text.insert("1.0", details_content)
-        self.details_text.config(state=tk.DISABLED)
+            if key == 'original':
+                prompt = full_row_data.get('original_prompt', '')
+                if prompt: data_exists = True
+            elif key == 'enhanced':
+                prompt = full_row_data.get('enhanced_prompt', '')
+                model = full_row_data.get('enhanced_sd_model', '')
+                if prompt: data_exists = True
+            else: # It's a variation
+                var_data = full_row_data.get('variations', {}).get(key)
+                if var_data:
+                    prompt = var_data.get('prompt', '')
+                    model = var_data.get('sd_model', '')
+                    if prompt: data_exists = True
+            
+            if data_exists:
+                tab = self.detail_tabs[key]
+                
+                # Update tab content
+                tab['text'].config(state=tk.NORMAL)
+                tab['text'].delete("1.0", tk.END)
+                tab['text'].insert("1.0", prompt)
+                tab['text'].config(state=tk.DISABLED)
+                tab['model_label'].config(text=f"Recommended Model: {model}" if model else "")
+                
+                # Add tab to notebook
+                self.details_notebook.add(self.detail_tabs[key]['frame'], text=self.detail_tabs[key]['title'])
 
     def _delete_selected_history(self):
         """Deletes the selected row from the history file and the view."""
@@ -197,15 +256,54 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             success = self.processor.delete_history_entry(full_row_data)
             if success:
                 # Remove from the Treeview and the internal data cache
+                row_to_remove = self.iid_map.pop(item_id, None)
                 self.tree.delete(item_id)
-                if item_id in self.iid_map:
-                    del self.iid_map[item_id]
-                self.all_history_data = list(self.iid_map.values())
+                if row_to_remove:
+                    try:
+                        self.all_history_data.remove(row_to_remove)
+                    except ValueError:
+                        # This can happen if the list is out of sync, but pop should handle the iid_map.
+                        self.all_history_data = list(self.iid_map.values())
                 messagebox.showinfo("Success", "History entry deleted.", parent=self)
             else:
                 messagebox.showerror("Error", "Could not delete the history entry. It may have already been deleted.", parent=self)
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred while deleting the entry:\n{e}", parent=self)
+
+    def _toggle_favorite(self):
+        """Toggles the favorite status of the selected item."""
+        if not self.tree: return
+        selected_items = self.tree.selection()
+        if not selected_items: return
+
+        item_id = selected_items[0]
+        original_row = self.iid_map.get(item_id)
+        if not original_row: return
+
+        # Create a copy to modify
+        updated_row = original_row.copy()
+        current_status = updated_row.get('favorite', False)
+        updated_row['favorite'] = not current_status
+
+        # Update the CSV file
+        success = self.processor.update_history_entry(original_row, updated_row)
+        if success:
+            # Update the in-memory data
+            self.iid_map[item_id] = updated_row
+            for i, row in enumerate(self.all_history_data):
+                if row.get('id') == original_row.get('id'):
+                    self.all_history_data[i] = updated_row
+                    break
+            
+            # Update the visible row directly in the treeview
+            is_fav = "⭐" if updated_row.get('favorite') else ""
+            self.tree.set(item_id, 'favorite', is_fav)
+
+            # If the favorites filter is on, the item might need to be hidden
+            if self.show_favorites_only_var.get() and not updated_row.get('favorite'):
+                self.tree.detach(item_id)
+        else:
+            messagebox.showerror("Error", "Failed to update favorite status.", parent=self)
 
     def _show_context_menu(self, event):
         """Shows the right-click context menu for a treeview row."""
@@ -221,13 +319,18 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
             if full_row_data:
                 # Enable/disable variation copy options
-                has_cinematic = bool(full_row_data.get('cinematic_variation'))
-                has_artistic = bool(full_row_data.get('artistic_variation'))
-                has_photo = bool(full_row_data.get('photorealistic_variation'))
+                variations = full_row_data.get('variations', {})
+                has_cinematic = 'cinematic' in variations
+                has_artistic = 'artistic' in variations
+                has_photo = 'photorealistic' in variations
                 
                 self.context_menu.entryconfig("Copy Cinematic Variation", state=tk.NORMAL if has_cinematic else tk.DISABLED)
                 self.context_menu.entryconfig("Copy Artistic Variation", state=tk.NORMAL if has_artistic else tk.DISABLED)
                 self.context_menu.entryconfig("Copy Photorealistic Variation", state=tk.NORMAL if has_photo else tk.DISABLED)
+
+                # Update favorite toggle label
+                is_fav = full_row_data.get('favorite', False)
+                self.context_menu.entryconfig("Toggle Favorite ⭐", label="Unfavorite ⭐" if is_fav else "Favorite ⭐")
 
             self.context_menu.tk_popup(event.x_root, event.y_root)
 
@@ -241,7 +344,13 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         selected_iid = selected_items[0]
         full_row_data = self.iid_map.get(selected_iid)
         if full_row_data:
-            content_to_copy = full_row_data.get(part_key, '')
+            content_to_copy = ""
+            if part_key in ['original_prompt', 'enhanced_prompt']:
+                content_to_copy = full_row_data.get(part_key, '')
+            else: # It's a variation
+                var_type = part_key.replace('_variation', '')
+                content_to_copy = full_row_data.get('variations', {}).get(var_type, {}).get('prompt', '')
+
             if content_to_copy:
                 self.clipboard_clear()
                 self.clipboard_append(content_to_copy)

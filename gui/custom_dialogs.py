@@ -20,6 +20,7 @@ class _CustomDialog(tk.Toplevel):
 
     def _center_window(self):
         """Centers the dialog over its parent window."""
+        self.withdraw()
         self.update_idletasks()
         parent_x = self.master.winfo_x()
         parent_y = self.master.winfo_y()
@@ -28,6 +29,7 @@ class _CustomDialog(tk.Toplevel):
         dialog_w = self.winfo_width()
         dialog_h = self.winfo_height()
         self.geometry(f"+{parent_x + (parent_w // 2) - (dialog_w // 2)}+{parent_y + (parent_h // 2) - (dialog_h // 2)}")
+        self.deiconify()
 
     def _on_ok(self, event=None):
         # To be implemented by subclasses

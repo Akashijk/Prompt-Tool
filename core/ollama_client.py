@@ -5,7 +5,7 @@ import re
 import requests
 import time
 from typing import List, Tuple, Optional, Dict, Any
-from .config import config
+from .config import config, MODEL_RECOMMENDATIONS
 
 def _clean_string(s: Any, replace_underscores: bool = True) -> str:
     """Helper to clean a string value by stripping whitespace and optionally replacing underscores."""
@@ -150,19 +150,26 @@ class OllamaClient:
             raise Exception(f"Error getting Ollama models from API: {e}")
     
     def get_model_recommendations(self, models: List[str]) -> List[Tuple[int, str, str]]:
-        """Get recommended models with reasons."""
-        recommendations = []
-        
+        """Get recommended models with reasons, based on data from config."""
+        found_recs = []
+
         for i, model in enumerate(models):
             model_lower = model.lower()
-            if 'qwen' in model_lower and '7b' in model_lower:
-                recommendations.append((i + 1, model, "Best overall for creative tasks"))
-            elif 'qwen' in model_lower and '14b' in model_lower:
-                recommendations.append((i + 1, model, "Excellent quality, needs more VRAM"))
-            elif 'llama3' in model_lower and '8b' in model_lower:
-                recommendations.append((i + 1, model, "Reliable and well-tested"))
+            for rule in MODEL_RECOMMENDATIONS:
+                if all(keyword in model_lower for keyword in rule['keywords']):
+                    found_recs.append({
+                        'idx': i + 1,
+                        'model': model,
+                        'reason': rule['reason'],
+                        'priority': rule.get('priority', 999) # Default to low priority
+                    })
+                    break # Move to the next model once a rule is matched
         
-        return recommendations
+        # Sort recommendations by priority (lower is better)
+        sorted_recs = sorted(found_recs, key=lambda x: x['priority'])
+        
+        # Format for the final output tuple
+        return [(rec['idx'], rec['model'], rec['reason']) for rec in sorted_recs]
     
     def parse_enhanced_response(self, response: str) -> Tuple[str, str]:
         """Parse the enhanced response to extract prompt and SD model recommendation."""
@@ -328,7 +335,68 @@ class OllamaClient:
         # The sanitize function will handle replacing underscores and filtering empty strings.
         return sanitize_wildcard_choices(cleaned_lines)
 
-    def create_single_variation(self, instruction: str, base_prompt: str, model: str, variation_type: str) -> Dict[str, str]:
+    def parse_json_object_from_response(self, response: str, fallback_topic: str) -> str:
+        """Extracts a JSON object from an AI's response, with fallback and cleanup."""
+        json_str = None
+        # First, try to find a markdown-fenced JSON block (most reliable)
+        match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            # Fallback: find the content between the first '{' and last '}'
+            start = response.find('{')
+            end = response.rfind('}')
+            if start != -1 and end != -1 and start < end:
+                json_str = response[start:end+1]
+
+        parsed_data = None
+        if json_str:
+            try:
+                parsed_data = json.loads(json_str)
+            except (json.JSONDecodeError, Exception):
+                pass # Fall through to text-based fallback
+
+        if parsed_data and 'choices' in parsed_data:
+            # Sanitize the choices list using the shared utility function
+            parsed_data['choices'] = sanitize_wildcard_choices(parsed_data.get('choices', []))
+            return json.dumps(parsed_data, indent=2)
+
+        # Fallback: If JSON parsing fails, treat the response as a plain list.
+        # This reuses the robust list parsing logic from the array parser.
+        print("INFO: Falling back to plain text list parsing for wildcard object.")
+        choices = self.parse_json_array_from_response(response)
+
+        fallback_data = {
+            "description": f"AI-generated list for the topic: {fallback_topic} (fallback mode)", 
+            "choices": choices
+        }
+        return json.dumps(fallback_data, indent=2)
+
+    def parse_template_from_response(self, response: str) -> Tuple[str, List[str]]:
+        """Parses the AI response for template and new wildcards."""
+        template_content = ""
+        new_wildcards = []
+        
+        # Use re.IGNORECASE to handle variations in casing like 'TEMPLATE:' vs 'Template:'
+        template_match = re.search(r"TEMPLATE:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        if template_match:
+            # Further split by NEW_WILDCARDS to ensure we only get the template part
+            # Use re.split for case-insensitivity to match the search
+            template_content = re.split(r"NEW_WILDCARDS:", template_match.group(1), flags=re.IGNORECASE)[0].strip()
+
+        wildcards_match = re.search(r"NEW_WILDCARDS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        if wildcards_match:
+            wildcards_str = wildcards_match.group(1).strip()
+            if wildcards_str.lower() != 'none':
+                new_wildcards = [w.strip() for w in wildcards_str.split(',') if w.strip()]
+
+        # If parsing fails (e.g., AI didn't follow format), fall back to treating the whole response as the template
+        if not template_content:
+            template_content = response
+            
+        return template_content, new_wildcards
+
+    def create_single_variation(self, instruction: str, base_prompt: str, base_sd_model: str, model: str, variation_type: str) -> Dict[str, str]:
         """Create a single variation of a given type."""
         try:
             full_instruction_prompt = instruction + base_prompt
@@ -337,8 +405,8 @@ class OllamaClient:
             return {'prompt': var_prompt.replace('\n', ' ').replace('  ', ' '), 'sd_model': var_sd_model}
         except Exception as e:
             print(f"Exception during variation creation for '{variation_type}': {e}")
-            # Fallback to the original enhanced prompt if variation fails
-            return {'prompt': base_prompt, 'sd_model': f"Stable Diffusion XL (SDXL) - {variation_type} fallback"}
+            # Fallback to the original enhanced prompt and its model if variation fails
+            return {'prompt': base_prompt, 'sd_model': base_sd_model}
 
     def unload_model(self, model: str) -> None:
         """Unload a model from memory to free VRAM using the keep_alive=0 method."""

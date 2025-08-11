@@ -3,10 +3,11 @@
 import json
 import os
 import random
+import re
 import threading
-from typing import List, Dict, Any, Optional, Callable, Tuple
+from typing import List, Dict, Any, Optional, Callable, Tuple, Set
 from .template_engine import TemplateEngine, PromptSegment
-from .csv_manager import CSVManager
+from .csv_manager import HistoryManager
 from .config import config, DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATION_INSTRUCTIONS, \
                     DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATION_INSTRUCTIONS
 from .ollama_client import OllamaClient
@@ -19,7 +20,7 @@ class PromptProcessor:
         self.template_engine = TemplateEngine()
         # Lazily import OllamaClient to avoid issues if it's not needed (e.g., in GUI)
         self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL) 
-        self.csv_manager = CSVManager()
+        self.history_manager = HistoryManager()
         self.rng = random.Random()
         
         # Callback functions for UI updates (optional)
@@ -51,40 +52,17 @@ class PromptProcessor:
     
     def _initialize_directories(self):
         """Ensures all necessary directories for templates and system prompts exist."""
-        # Create template directories
         os.makedirs(os.path.join(config.TEMPLATE_BASE_DIR, 'sfw'), exist_ok=True)
         os.makedirs(os.path.join(config.TEMPLATE_BASE_DIR, 'nsfw'), exist_ok=True)
 
-        # Create wildcard directories
         os.makedirs(config.WILDCARD_DIR, exist_ok=True)
         os.makedirs(config.WILDCARD_NSFW_DIR, exist_ok=True)
 
-        # Create history directories
         os.makedirs(os.path.join(config.HISTORY_DIR, 'sfw'), exist_ok=True)
         os.makedirs(os.path.join(config.HISTORY_DIR, 'nsfw'), exist_ok=True)
 
-        # Create system prompt directories and default files
-        workflows: List[Tuple[str, str, Dict[str, str]]] = [
-            ('sfw', DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATION_INSTRUCTIONS),
-            ('nsfw', DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATION_INSTRUCTIONS)
-        ]
-
-        for wf_name, enhancement_prompt, variation_prompts in workflows:
-            prompt_dir = os.path.join(config.SYSTEM_PROMPT_BASE_DIR, wf_name)
-            os.makedirs(prompt_dir, exist_ok=True)
-
-            # Enhancement prompt
-            enhancement_path = os.path.join(prompt_dir, 'enhancement.txt')
-            if not os.path.exists(enhancement_path):
-                with open(enhancement_path, 'w', encoding='utf-8') as f:
-                    f.write(enhancement_prompt)
-
-            # Variation prompts
-            for key, content in variation_prompts.items():
-                var_path = os.path.join(prompt_dir, f'{key}.txt')
-                if not os.path.exists(var_path):
-                    with open(var_path, 'w', encoding='utf-8') as f:
-                        f.write(content)
+        os.makedirs(os.path.join(config.SYSTEM_PROMPT_BASE_DIR, 'sfw'), exist_ok=True)
+        os.makedirs(os.path.join(config.SYSTEM_PROMPT_BASE_DIR, 'nsfw'), exist_ok=True)
 
     def _get_wildcard_load_order(self) -> List[str]:
         """Returns dirs for loading all wildcards. Specific (NSFW) overrides shared (root)."""
@@ -117,11 +95,15 @@ class PromptProcessor:
     
     def delete_history_entry(self, row_to_delete: Dict[str, str]) -> bool:
         """Pass-through to delete a history entry."""
-        return self.csv_manager.delete_history_entry(row_to_delete)
+        return self.history_manager.delete_history_entry(row_to_delete)
+
+    def update_history_entry(self, original_row: Dict[str, str], updated_row: Dict[str, str]) -> bool:
+        """Pass-through to update a history entry."""
+        return self.history_manager.update_history_entry(original_row, updated_row)
     
     def get_full_history(self) -> List[Dict[str, str]]:
         """Pass-through to get the full history data."""
-        return self.csv_manager.load_full_history()
+        return self.history_manager.load_full_history()
     
     def get_available_templates(self) -> List[str]:
         """Get a fresh, sorted list of available templates."""
@@ -134,6 +116,51 @@ class PromptProcessor:
     def get_wildcard_files(self) -> List[str]:
         """Get list of available wildcard files."""
         return self.template_engine.list_wildcard_files(self._get_wildcard_load_order())
+
+    def get_all_wildcard_files_mode_agnostic(self) -> List[str]:
+        """Gets a list of all wildcard files from all possible directories, regardless of mode."""
+        all_dirs = [config.WILDCARD_DIR, config.WILDCARD_NSFW_DIR]
+        return self.template_engine.list_wildcard_files(all_dirs)
+
+    def get_all_used_wildcards(self) -> set[str]:
+        """Scans all templates and wildcards across all workflows to find which wildcards are actively used."""
+        used_wildcards = set()
+        
+        # 1. Scan all templates from ALL workflows to be mode-agnostic
+        all_template_dirs = [
+            os.path.join(config.TEMPLATE_BASE_DIR, 'sfw'),
+            os.path.join(config.TEMPLATE_BASE_DIR, 'nsfw')
+        ]
+
+        for template_dir in all_template_dirs:
+            if not os.path.exists(template_dir):
+                continue
+            
+            for template_file in os.listdir(template_dir):
+                if template_file.endswith('.txt'):
+                    try:
+                        # Use the template engine directly to specify the directory,
+                        # bypassing the mode-specific self.load_template_content().
+                        content = self.template_engine.load_template(template_file, template_dir)
+                        found = re.findall(r'__([a-zA-Z0-9_.-]+)__', content)
+                        used_wildcards.update(found)
+                    except Exception as e:
+                        print(f"Warning: Could not scan template {os.path.join(template_dir, template_file)} for used wildcards: {e}")
+
+        # 2. Scan all wildcards from all directories for 'includes' clauses
+        all_wildcard_dirs = [config.WILDCARD_DIR, config.WILDCARD_NSFW_DIR]
+        all_wildcards_data = self.template_engine.get_all_wildcards_data_from_dirs(all_wildcard_dirs)
+        
+        for wildcard_data in all_wildcards_data.values():
+            if 'includes' in wildcard_data and isinstance(wildcard_data.get('includes'), list):
+                used_wildcards.update(wildcard_data['includes'])
+            if 'choices' in wildcard_data and isinstance(wildcard_data.get('choices'), list):
+                for choice in wildcard_data['choices']:
+                    if isinstance(choice, dict) and 'includes' in choice and isinstance(choice.get('includes'), list):
+                        used_wildcards.update(choice['includes'])
+                    if isinstance(choice, dict) and 'requires' in choice and isinstance(choice.get('requires'), dict):
+                        used_wildcards.update(choice['requires'].keys())
+        return used_wildcards
 
     def load_wildcard_content(self, wildcard_file: str) -> str:
         """Load content of a single wildcard file."""
@@ -218,6 +245,14 @@ class PromptProcessor:
     def load_system_prompt_content(self, filename: str) -> str:
         """Load the content of a system prompt file."""
         filepath = os.path.join(config.get_system_prompt_dir(), filename)
+        
+        # Lazy initialization: If the file doesn't exist, create it with default content.
+        if not os.path.exists(filepath):
+            default_content = self.get_default_system_prompt(filename)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(default_content)
+            return default_content
+            
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 return f.read()
@@ -259,6 +294,21 @@ class PromptProcessor:
         except Exception:
             # Re-raise to be caught by the GUI
             raise
+
+    def generate_wildcard_for_brainstorming(self, model: str, prompt: str, topic: str) -> str:
+        """
+        Handles one-shot wildcard generation and robust parsing for the brainstorming window.
+        """
+        raw_response = self.generate_for_brainstorming(model, prompt)
+        return self.ollama_client.parse_json_object_from_response(raw_response, topic)
+
+    def generate_template_for_brainstorming(self, model: str, prompt: str) -> Tuple[str, List[str]]:
+        """
+        Handles one-shot template generation and robust parsing for the brainstorming window.
+        """
+        raw_response = self.generate_for_brainstorming(model, prompt)
+        return self.ollama_client.parse_template_from_response(raw_response)
+
 
     def generate_raw_prompts(self, 
                            template_content: str, 
@@ -309,7 +359,7 @@ class PromptProcessor:
 
                     variation_instruction = self.load_system_prompt_content(f'{var_type}.txt')
                     self._update_status('variation_start', var_type=var_type, prompt_num=i+1, total_prompts=total_prompts)
-                    variation_result = self.ollama_client.create_single_variation(variation_instruction, enhanced, model, var_type)
+                    variation_result = self.ollama_client.create_single_variation(variation_instruction, enhanced, enhanced_sd_model, model, var_type)
                     # Send back variation result immediately
                     if self.result_callback:
                         self.result_callback(var_type, variation_result)
@@ -324,6 +374,21 @@ class PromptProcessor:
             self._update_status("batch_complete")
         
         return results
+
+    def regenerate_enhancement(self, original_prompt: str, model: str) -> Tuple[str, str]:
+        """Regenerates just the main enhancement for a given prompt."""
+        instruction = self.load_system_prompt_content('enhancement.txt')
+        full_prompt = instruction + original_prompt
+        return self.ollama_client.enhance_prompt(full_prompt, model)
+
+    def regenerate_variation(self, base_prompt: str, base_sd_model: str, model: str, variation_type: str) -> Dict[str, str]:
+        """Regenerates a single variation."""
+        instruction = self.load_system_prompt_content(f'{variation_type}.txt')
+        return self.ollama_client.create_single_variation(instruction, base_prompt, base_sd_model, model, variation_type)
+
+    def cleanup_prompt_string(self, prompt: str) -> str:
+        """Pass-through to the template engine's cleanup method."""
+        return self.template_engine.cleanup_prompt_string(prompt)
 
     def suggest_template_additions(self, prompt: str, model: str) -> str:
         """Uses AI to suggest additions to an existing prompt template."""
@@ -413,25 +478,12 @@ class PromptProcessor:
 
     def save_results(self, results: List[Dict[str, Any]]) -> None:
         """Save results to CSV."""
-        self.csv_manager.save_batch_results(results)
+        self.history_manager.save_batch_results(results)
     
     def save_skipped_prompt(self, prompt: str) -> None:
         """Save a skipped prompt to prevent regeneration."""
-        self.csv_manager.save_result(prompt, "", "", status="skipped")
+        self.history_manager.save_result(prompt, "", "", status="skipped")
     
     def cleanup_model(self, model: str) -> None:
         """Unload model to free resources."""
         self.ollama_client.unload_model(model)
-
-    def save_to_history(self, prompt: str, template: str, wildcards: Dict[str, Any]):
-        """Save the generated prompt and its metadata to history."""
-        timestamp = datetime.now().isoformat()
-        history_entry = {
-            "timestamp": timestamp,
-            "prompt": prompt,
-            "template": template,
-            "wildcards": wildcards,
-            "seed": self.template_engine.current_seed,
-            "seed_locked": self.template_engine.seed_locked
-        }
-        # ...existing saving code...
