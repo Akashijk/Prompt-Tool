@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Dict, Any
 from core.prompt_processor import PromptProcessor
-from core.config import config, DEFAULT_SFW_VARIATION_INSTRUCTIONS, DEFAULT_NSFW_VARIATION_INSTRUCTIONS
+from core.config import config
 
 class CLIApp:
     """Command-line interface for prompt generation."""
@@ -252,8 +252,10 @@ class CLIApp:
             
         self.processor.set_callbacks(status_callback=cli_status_callback)
         
-        variation_instructions = DEFAULT_SFW_VARIATION_INSTRUCTIONS if config.workflow == 'sfw' else DEFAULT_NSFW_VARIATION_INSTRUCTIONS
-        selected_variations = list(variation_instructions.keys()) if create_variations else None
+        selected_variations = None
+        if create_variations:
+            available_variations = self.processor.get_available_variations()
+            selected_variations = [v['key'] for v in available_variations]
         
         results = self.processor.process_enhancement_batch(
             prompts,

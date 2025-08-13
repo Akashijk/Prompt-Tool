@@ -1,2 +1,4 @@
 requests
 sv-ttk
+thefuzz
+python-Levenshtein

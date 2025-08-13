@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 import sys
 import re
-from typing import Callable
+from typing import Callable, Optional
 
 class Tooltip:
     """A simple tooltip for tkinter widgets."""
@@ -111,12 +111,15 @@ class BrainstormingContextMenu(TextContextMenu):
 
 class PromptPreviewContextMenu(TextContextMenu):
     """A context menu for the prompt preview with a wildcard generator."""
-    def __init__(self, widget, generate_wildcard_callback: Callable):
+    def __init__(self, widget, parent_app, generate_wildcard_callback: Callable, edit_wildcard_callback: Callable):
         super().__init__(widget)
+        self.parent_app = parent_app
         self.generate_wildcard_callback = generate_wildcard_callback
+        self.edit_wildcard_callback = edit_wildcard_callback
         self.last_event = None
         self.menu.add_separator()
         self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
+        self.menu.add_command(label="Edit Wildcard...", command=self._edit_wildcard, state=tk.DISABLED)
 
     def show_menu(self, event):
         self.last_event = event
@@ -129,43 +132,56 @@ class PromptPreviewContextMenu(TextContextMenu):
 
         index = self.widget.index(f"@{event.x},{event.y}")
         tags = self.widget.tag_names(index)
+        
+        is_missing = "missing_wildcard" in tags
+        is_wildcard = "wildcard" in tags
 
-        if "missing_wildcard" in tags:
-            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL)
-        else:
-            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.DISABLED)
+        self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL if is_missing else tk.DISABLED)
+        self.menu.entryconfig("Edit Wildcard...", state=tk.NORMAL if is_wildcard and not is_missing else tk.DISABLED)
         
         if original_state == tk.DISABLED:
             self.widget.config(state=original_state)
 
-    def _generate_wildcard(self):
-        if not self.last_event: return
-        
+    def _get_wildcard_name_from_event(self) -> Optional[str]:
+        """Finds the wildcard name associated with the segment under the cursor."""
+        if not self.last_event: return None
         try:
             index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
-            word_start = self.widget.index(f"{index} wordstart")
-            word_end = self.widget.index(f"{index} wordend")
-            clicked_word = self.widget.get(word_start, word_end)
             
-            match = re.fullmatch(r'__([a-zA-Z0-9_.-]+)__', clicked_word)
-            if match:
-                wildcard_name = match.group(1)
-                self.generate_wildcard_callback(wildcard_name)
-        except Exception as e:
-            print(f"Error getting wildcard for generation: {e}")
+            # Use the robust segment map instead of parsing tags
+            for start, end, seg_index in self.parent_app.segment_map:
+                if self.widget.compare(index, ">=", start) and self.widget.compare(index, "<", end):
+                    segment = self.parent_app.current_structured_prompt[seg_index]
+                    return segment.wildcard_name
+        except (IndexError, tk.TclError) as e:
+            print(f"Error getting wildcard name from event: {e}")
+        return None
+
+    def _generate_wildcard(self):
+        wildcard_name = self._get_wildcard_name_from_event()
+        if wildcard_name:
+            self.generate_wildcard_callback(wildcard_name)
+
+    def _edit_wildcard(self):
+        wildcard_name = self._get_wildcard_name_from_event()
+        if wildcard_name:
+            self.edit_wildcard_callback(wildcard_name)
 
 class TemplateEditorContextMenu(TextContextMenu):
     """A specialized context menu for the template editor with a wildcard generator."""
-    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable, create_wildcard_callback: Callable):
+    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable, create_wildcard_callback: Callable, edit_wildcard_callback: Callable):
         super().__init__(widget)
         self.generate_wildcard_callback = generate_wildcard_callback
         self.brainstorm_callback = brainstorm_callback
         self.create_wildcard_callback = create_wildcard_callback
+        self.edit_wildcard_callback = edit_wildcard_callback
         self.last_event = None
         self.menu.add_separator()
         self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
         self.menu.add_command(label="Create Wildcard from Selection...", command=self._create_wildcard, state=tk.DISABLED)
         self.menu.add_command(label="Brainstorm with AI...", command=self.brainstorm_callback, state=tk.DISABLED)
+        self.menu.add_separator()
+        self.menu.add_command(label="Edit Wildcard...", command=self._edit_wildcard, state=tk.DISABLED)
 
     def show_menu(self, event):
         self.last_event = event
@@ -174,10 +190,11 @@ class TemplateEditorContextMenu(TextContextMenu):
         index = self.widget.index(f"@{event.x},{event.y}")
         tags = self.widget.tag_names(index)
 
-        if "missing_wildcard" in tags:
-            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL)
-        else:
-            self.menu.entryconfig("Generate Missing Wildcard...", state=tk.DISABLED)
+        is_missing = "missing_wildcard" in tags
+        is_wildcard = "any_wildcard" in tags
+
+        self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL if is_missing else tk.DISABLED)
+        self.menu.entryconfig("Edit Wildcard...", state=tk.NORMAL if is_wildcard and not is_missing else tk.DISABLED)
         
         try:
             self.widget.selection_get()
@@ -198,12 +215,27 @@ class TemplateEditorContextMenu(TextContextMenu):
             word_end = self.widget.index(f"{index} wordend")
             clicked_word = self.widget.get(word_start, word_end)
             
-            match = re.fullmatch(r'__([a-zA-Z0-9_.-]+)__', clicked_word)
+            match = re.fullmatch(r'__([a-zA-Z0-9_.\s-]+)__', clicked_word)
             if match:
                 wildcard_name = match.group(1)
                 self.generate_wildcard_callback(wildcard_name)
         except Exception as e:
             print(f"Error getting wildcard for generation: {e}")
+
+    def _edit_wildcard(self):
+        if not self.last_event: return
+        try:
+            index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
+            word_start = self.widget.index(f"{index} wordstart")
+            word_end = self.widget.index(f"{index} wordend")
+            clicked_word = self.widget.get(word_start, word_end)
+            
+            match = re.fullmatch(r'__([a-zA-Z0-9_.\s-]+)__', clicked_word)
+            if match:
+                wildcard_name = match.group(1)
+                self.edit_wildcard_callback(wildcard_name)
+        except Exception as e:
+            print(f"Error getting wildcard for editing: {e}")
 
     def _create_wildcard(self):
         try:

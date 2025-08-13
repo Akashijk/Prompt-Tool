@@ -26,6 +26,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.details_notebook: Optional[ttk.Notebook] = None
         self.detail_tabs: Dict[str, Dict[str, Any]] = {}
         self.tab_order = ['original', 'enhanced', 'cinematic', 'artistic', 'photorealistic']
+        self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
 
         self._create_widgets()
         self.load_and_display_history()
@@ -57,23 +58,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         tree_frame = ttk.Frame(main_pane)
         main_pane.add(tree_frame, weight=3)
 
-        columns = ('favorite', 'original_prompt', 'enhanced_prompt', 'status', 'enhanced_sd_model')
+        columns = ('favorite', 'template_name', 'original_prompt', 'enhanced_prompt', 'status', 'enhanced_sd_model')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
 
-        # --- Context Menu ---
+        # --- Context Menu (built dynamically in _show_context_menu) ---
         self.context_menu = tk.Menu(self.tree, tearoff=0)
-        self.context_menu.add_command(label="Copy Original Prompt", command=lambda: self._copy_selected_prompt_part('original_prompt'))
-        self.context_menu.add_command(label="Copy Enhanced Prompt", command=lambda: self._copy_selected_prompt_part('enhanced_prompt'))
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Copy Cinematic Variation", command=lambda: self._copy_selected_prompt_part('cinematic_variation'), state=tk.DISABLED)
-        self.context_menu.add_command(label="Copy Artistic Variation", command=lambda: self._copy_selected_prompt_part('artistic_variation'), state=tk.DISABLED)
-        self.context_menu.add_command(label="Copy Photorealistic Variation", command=lambda: self._copy_selected_prompt_part('photorealistic_variation'), state=tk.DISABLED)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Load to Main Window", command=self._load_to_main_window)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Toggle Favorite ⭐", command=self._toggle_favorite)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Delete Entry", command=self._delete_selected_history)
 
         right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
         self.tree.bind(right_click_event, self._show_context_menu)
@@ -82,17 +71,19 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         # Define headings
         self.tree.heading('favorite', text='⭐')
+        self.tree.heading('template_name', text='Template')
         self.tree.heading('original_prompt', text='Original Prompt')
         self.tree.heading('enhanced_prompt', text='Enhanced Prompt')
         self.tree.heading('status', text='Status')
         self.tree.heading('enhanced_sd_model', text='SD Model')
 
         # Define column widths
-        self.tree.column('favorite', width=40, anchor='center', stretch=False)
-        self.tree.column('original_prompt', width=300, minwidth=200)
-        self.tree.column('enhanced_prompt', width=400, minwidth=200)
-        self.tree.column('status', width=80, anchor='center', stretch=False)
-        self.tree.column('enhanced_sd_model', width=200, minwidth=150)
+        self.tree.column('favorite', width=30, anchor='center', stretch=False)
+        self.tree.column('template_name', width=150, minwidth=100)
+        self.tree.column('original_prompt', width=250, minwidth=150)
+        self.tree.column('enhanced_prompt', width=350, minwidth=200)
+        self.tree.column('status', width=70, anchor='center', stretch=False)
+        self.tree.column('enhanced_sd_model', width=180, minwidth=150)
 
         # Scrollbars
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
@@ -147,7 +138,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         for row in data:
             is_fav = "⭐" if row.get('favorite') else ""
-            values = (is_fav, row.get('original_prompt', ''), row.get('enhanced_prompt', ''), row.get('status', ''), row.get('enhanced_sd_model', ''))
+            values = (
+                is_fav, 
+                row.get('template_name', ''),
+                row.get('original_prompt', ''), 
+                row.get('enhanced_prompt', ''), 
+                row.get('status', ''), 
+                row.get('enhanced_sd_model', '')
+            )
             iid = self.tree.insert('', tk.END, values=values)
             self.iid_map[iid] = row
 
@@ -306,33 +304,50 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             messagebox.showerror("Error", "Failed to update favorite status.", parent=self)
 
     def _show_context_menu(self, event):
-        """Shows the right-click context menu for a treeview row."""
+        """Dynamically builds and shows the right-click context menu for a treeview row."""
         if not self.tree: return
         row_id = self.tree.identify_row(event.y)
-        if row_id:
-            # Select the row that was right-clicked
-            self.tree.selection_set(row_id)
-            self._on_row_select() # Update the details pane
+        if not row_id: return
 
-            # Find full data to configure menu
-            full_row_data = self.iid_map.get(row_id)
+        # Select the row that was right-clicked
+        self.tree.selection_set(row_id)
+        self._on_row_select() # Update the details pane
 
-            if full_row_data:
-                # Enable/disable variation copy options
-                variations = full_row_data.get('variations', {})
-                has_cinematic = 'cinematic' in variations
-                has_artistic = 'artistic' in variations
-                has_photo = 'photorealistic' in variations
-                
-                self.context_menu.entryconfig("Copy Cinematic Variation", state=tk.NORMAL if has_cinematic else tk.DISABLED)
-                self.context_menu.entryconfig("Copy Artistic Variation", state=tk.NORMAL if has_artistic else tk.DISABLED)
-                self.context_menu.entryconfig("Copy Photorealistic Variation", state=tk.NORMAL if has_photo else tk.DISABLED)
+        # Find full data to configure menu
+        full_row_data = self.iid_map.get(row_id)
+        if not full_row_data: return
 
-                # Update favorite toggle label
-                is_fav = full_row_data.get('favorite', False)
-                self.context_menu.entryconfig("Toggle Favorite ⭐", label="Unfavorite ⭐" if is_fav else "Favorite ⭐")
+        # Clear the existing menu
+        self.context_menu.delete(0, tk.END)
 
-            self.context_menu.tk_popup(event.x_root, event.y_root)
+        # --- Build the menu dynamically ---
+        self.context_menu.add_command(label="Copy Original Prompt", command=lambda: self._copy_selected_prompt_part('original_prompt'))
+        self.context_menu.add_command(label="Copy Enhanced Prompt", command=lambda: self._copy_selected_prompt_part('enhanced_prompt'))
+        
+        # Add variations if they exist
+        variations = full_row_data.get('variations', {})
+        if variations:
+            self.context_menu.add_separator()
+            # Sort to ensure consistent order
+            for var_key in sorted(variations.keys()):
+                # Get the friendly name from the map, fall back to the key
+                var_name = self.available_variations_map.get(var_key, var_key.capitalize())
+                self.context_menu.add_command(label=f"Copy {var_name} Variation", command=lambda k=var_key: self._copy_selected_prompt_part(f"{k}_variation"))
+        
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Copy Template Name", command=lambda: self._copy_selected_prompt_part('template_name'))
+        self.context_menu.add_command(label="Load to Main Window", command=self._load_to_main_window)
+        self.context_menu.add_separator()
+        
+        # Favorite toggle
+        is_fav = full_row_data.get('favorite', False)
+        fav_label = "Unfavorite ⭐" if is_fav else "Favorite ⭐"
+        self.context_menu.add_command(label=fav_label, command=self._toggle_favorite)
+        
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Delete Entry", command=self._delete_selected_history)
+
+        self.context_menu.tk_popup(event.x_root, event.y_root)
 
     def _copy_selected_prompt_part(self, part_key: str):
         """Copies a specific part of the selected prompt by its column key."""
@@ -345,7 +360,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         full_row_data = self.iid_map.get(selected_iid)
         if full_row_data:
             content_to_copy = ""
-            if part_key in ['original_prompt', 'enhanced_prompt']:
+            if part_key in ['original_prompt', 'enhanced_prompt', 'template_name']:
                 content_to_copy = full_row_data.get(part_key, '')
             else: # It's a variation
                 var_type = part_key.replace('_variation', '')

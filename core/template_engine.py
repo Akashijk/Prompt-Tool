@@ -13,19 +13,26 @@ class PromptSegment:
     """Represents a piece of a generated prompt."""
     text: str
     wildcard_name: Optional[str] = None
-    includes: Optional[List[str]] = None
+    includes: Optional[Any] = None
+    is_from_include: bool = False
 
 class TemplateEngine:
     """Handles template loading and wildcard substitution."""
     
     def __init__(self):
         self.wildcards: Dict[str, Dict] = {} # Will now store the full parsed JSON object
+        self.templates: Dict[str, str] = {}
+        self.wildcard_files_cache: Optional[List[str]] = None
+        self.wildcard_dirs_for_cache: Optional[List[str]] = None
         self.current_seed: Optional[int] = None
         self.rng = random.Random()
 
     def load_wildcards(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
         """Load all wildcard files from a list of directories, with later directories overriding earlier ones."""
         self.wildcards = self.get_all_wildcards_data_from_dirs(wildcard_dirs)
+        # Invalidate the file list cache whenever we reload wildcards.
+        self.wildcard_files_cache = None
+        self.wildcard_dirs_for_cache = None
         return self.wildcards
     
     def get_all_wildcards_data_from_dirs(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
@@ -61,23 +68,46 @@ class TemplateEngine:
         return wildcards
     
     def list_templates(self, template_dir: str) -> List[str]:
-        """Get a sorted list of available template files."""
+        """Get a sorted list of available template files and cache their content."""
         if not os.path.exists(template_dir):
+            self.templates.clear()
             return []
             
-        return sorted([f for f in os.listdir(template_dir) if f.endswith('.txt')], key=str.lower)
+        template_files = sorted([f for f in os.listdir(template_dir) if f.endswith('.txt')], key=str.lower)
+        
+        # Clear old cache and load new content
+        self.templates.clear()
+        for filename in template_files:
+            try:
+                filepath = os.path.join(template_dir, filename)
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    self.templates[filename] = f.read()
+            except Exception as e:
+                print(f"Warning: Could not load and cache template {filename}: {e}")
+        
+        return template_files
     
     def load_template(self, template_file: str, template_dir: str) -> str:
-        """Load template content from file."""
+        """Load template content from file, preferring the cache."""
+        if template_file in self.templates:
+            return self.templates[template_file]
+        
+        print(f"INFO: Template '{template_file}' not in cache, loading from disk.")
         filepath = os.path.join(template_dir, template_file)
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                return f.read()
+                content = f.read()
+                self.templates[template_file] = content # Add to cache
+                return content
         except Exception as e:
             raise Exception(f"Error loading template {template_file}: {e}")
     
     def list_wildcard_files(self, wildcard_dirs: List[str]) -> List[str]:
         """Get a sorted, unique list of available wildcard files from multiple directories."""
+        # Check cache first. If the directories being requested are the same as last time, return the cached list.
+        if self.wildcard_files_cache is not None and self.wildcard_dirs_for_cache == wildcard_dirs:
+            return self.wildcard_files_cache
+
         # {basename: {'ext': '.json', 'filename': 'file.json'}}
         canonical_files: Dict[str, Dict[str, str]] = {}
 
@@ -95,7 +125,13 @@ class TemplateEngine:
                     canonical_files[basename] = {'ext': ext, 'filename': filename}
                 elif ext == canonical_files[basename]['ext']:
                     canonical_files[basename]['filename'] = filename # Same extension, later dir takes precedence
-        return sorted([data['filename'] for data in canonical_files.values()], key=str.lower)
+        
+        file_list = sorted([data['filename'] for data in canonical_files.values()], key=str.lower)
+        
+        # Update cache
+        self.wildcard_files_cache = file_list
+        self.wildcard_dirs_for_cache = wildcard_dirs
+        return file_list
 
     def load_wildcard_content(self, wildcard_file: str, wildcard_dirs: List[str]) -> str:
         """Load raw content of a wildcard file, checking directories in order."""
@@ -118,17 +154,21 @@ class TemplateEngine:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(json.loads(content), f, indent=2) # Prettify the JSON
             self.wildcards[wildcard_file[:-5]] = json.loads(content)
+            # Invalidate file list cache on save
+            self.wildcard_files_cache = None
         except Exception as e:
             raise Exception(f"Error saving wildcard file {wildcard_file}: {e}")
 
     def save_template(self, template_file: str, content: str, template_dir: str) -> None:
-        """Save template content to a file."""
+        """Save template content to a file and update the in-memory cache."""
         filepath = os.path.join(template_dir, template_file)
         try:
             # Ensure the directory exists
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(content)
+            # Update cache
+            self.templates[template_file] = content
         except Exception as e:
             raise Exception(f"Error saving template {template_file}: {e}")
 
@@ -159,13 +199,18 @@ class TemplateEngine:
 
     def archive_template(self, template_file: str, template_dir: str) -> None:
         """Move a template file to an 'archive' subdirectory."""
-        self._archive_file(template_file, [template_dir], "template")
+        def on_success():
+            self.templates.pop(template_file, None)
+
+        self._archive_file(template_file, [template_dir], "template", post_archive_callback=on_success)
 
     def archive_wildcard(self, wildcard_file: str, wildcard_dirs: List[str]) -> None:
         """Move a wildcard file to an 'archive' subdirectory, checking directories in order."""
         def on_success():
             key, _ = os.path.splitext(wildcard_file)
             self.wildcards.pop(key, None)
+            # Invalidate file list cache on archive
+            self.wildcard_files_cache = None
         
         self._archive_file(wildcard_file, wildcard_dirs, "wildcard", post_archive_callback=on_success)
 
@@ -189,6 +234,51 @@ class TemplateEngine:
             elif isinstance(choice, dict) and choice.get('value') == value:
                 return choice
         return None
+
+    def _process_includes(self, choice_obj: Any, wildcard_data: Optional[Dict]) -> str:
+        """
+        Processes includes and returns formatted string with proper spacing.
+        Handles both list-based includes and template strings.
+        """
+        final_includes = None
+        if isinstance(choice_obj, dict) and 'includes' in choice_obj:
+            final_includes = choice_obj.get('includes')
+        elif wildcard_data and 'includes' in wildcard_data:
+            final_includes = wildcard_data.get('includes')
+        
+        if not final_includes:
+            return ""
+
+        if isinstance(final_includes, list):
+            # Process list of wildcards
+            wildcards = []
+            for name in final_includes:
+                # Don't wrap if it's already a wildcard reference
+                if re.fullmatch(r'__.*__', str(name)):
+                    wildcards.append(str(name))
+                else:
+                    wildcards.append(f"__{name}__")
+            # Join with commas for better prompt structure and add spaces for separation.
+            return " " + ", ".join(wildcards) + " "
+        elif isinstance(final_includes, str):
+            # Process template string
+            processed = re.sub(r'\[([a-zA-Z0-9_.\s-]+?)\]', r'__\1__', final_includes)
+            # Important: Return with single spaces at start/end
+            return " " + processed.strip() + " "
+        
+        return ""
+
+    def _check_requirements(self, choice: Any, context: Optional[Dict[str, Any]]) -> bool:
+        """Checks if a given choice object meets the requirements of the current context."""
+        if not isinstance(choice, dict):
+            return True  # Simple string choices have no requirements.
+        
+        rules = choice.get('requires')
+        if not rules:
+            return True  # No 'requires' key means no requirements.
+        
+        # Pass the context to the rule checker. An empty context is valid.
+        return self._check_rules(rules, context or {})
 
     def generate_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, seed: Optional[int] = None) -> str:
         """
@@ -235,16 +325,8 @@ class TemplateEngine:
                     output_prompt += choice
                     resolved_context[key] = {'value': choice, 'tags': tags}
 
-                    # Combine global and choice-specific includes
-                    global_includes = wildcard_data.get('includes', []) if wildcard_data else []
-                    choice_includes = choice_obj.get('includes', []) if isinstance(choice_obj, dict) else []
-                    all_includes = global_includes + choice_includes
-
-                    if all_includes:
-                        include_text = ", " + ", ".join([f"__{inc}__" for inc in all_includes]) + ", "
-                        remaining_template = include_text + remaining_template[end_pos+2:]
-                    else:
-                        remaining_template = remaining_template[end_pos+2:]
+                    include_text_to_inject = self._process_includes(choice_obj, wildcard_data)
+                    remaining_template = include_text_to_inject + remaining_template[end_pos+2:]
                 else:
                     output_prompt += f"__{key}__"
                     remaining_template = remaining_template[end_pos+2:]
@@ -253,89 +335,213 @@ class TemplateEngine:
         
         return self.cleanup_prompt_string(output_prompt)
 
-    def _get_wildcard_choice_object(self, key: str, context: Dict[str, Any]) -> Optional[Any]:
-        """
-        Gets a choice object (string or dict) from a wildcard, respecting weights and context rules.
-        """
+    def _get_wildcard_choice_object(self, key: str, context: Dict[str, Any] = None) -> Optional[Any]:
+        """Gets a random choice for a wildcard key, considering context."""
         wildcard_data = self.wildcards.get(key)
+
         if not wildcard_data or 'choices' not in wildcard_data:
             return None
 
-        # 1. Filter choices based on context
-        valid_choices = []
-        for choice in wildcard_data['choices']:
-            if isinstance(choice, dict) and 'requires' in choice:
-                if self._check_rules(choice['requires'], context):
-                    valid_choices.append(choice)
-            else: # It's a simple string or a dict without rules
-                valid_choices.append(choice)
+        choices = wildcard_data['choices']
+        if not choices:
+            return None
 
+        # Filter choices based on requirements
+        valid_choices = [c for c in choices if self._check_requirements(c, context)]
         if not valid_choices:
             return None
 
-        # 2. Perform weighted random selection
-        weights = [c.get('weight', 1) if isinstance(c, dict) else 1 for c in valid_choices]
-        chosen_item = self.rng.choices(valid_choices, weights=weights, k=1)[0]
+        # Calculate total weight
+        total_weight = 0
+        for choice in valid_choices:
+            if isinstance(choice, dict):
+                total_weight += choice.get('weight', 1)
+            else:
+                total_weight += 1
 
-        return chosen_item
+        # Generate random number
+        r = self.rng.uniform(0, total_weight)
+
+        # Select choice based on weight
+        current_weight = 0
+        for choice in valid_choices:
+            if isinstance(choice, dict):
+                current_weight += choice.get('weight', 1)
+            else:
+                current_weight += 1
+            if r <= current_weight:
+                return choice
+
+        return valid_choices[-1]  # Fallback
 
     def _check_rules(self, rules: Dict[str, Any], context: Dict[str, Any]) -> bool:
-        """Recursively checks if a set of rules is satisfied by the current context."""
+        """
+        Recursively checks if a set of rules is satisfied by the current context.
+        Supports logical operators 'and', 'or', 'not' for complex, nested conditions.
+        """
+        # Base case: empty rules are always true.
+        if not rules:
+            return True
+
+        # Handle logical operators for nested conditions
+        if 'and' in rules:
+            # 'and' must be a list of rule dictionaries
+            if not isinstance(rules['and'], list): return False
+            return all(self._check_rules(rule, context) for rule in rules['and'])
+        
+        if 'or' in rules:
+            # 'or' must be a list of rule dictionaries
+            if not isinstance(rules['or'], list): return False
+            return any(self._check_rules(rule, context) for rule in rules['or'])
+
+        if 'not' in rules:
+            # 'not' must be a single rule dictionary
+            if not isinstance(rules['not'], dict): return False
+            return not self._check_rules(rules['not'], context)
+
+        # If no logical operators, it's an implicit 'and' of all key-value pairs.
         for key, condition in rules.items():
             if key == 'tags':
-                # Handle tag-based requirements
+                # Delegate tag checking to its own robust method
                 if not self._check_tag_rules(condition, context):
                     return False
-            elif isinstance(condition, dict):
-                # Composite rule (e.g., {"any": [...]})
-                if "any" in condition:
-                    if not any(context.get(key, {}).get('value') == val for val in condition["any"]):
-                        return False
-                if "all" in condition:
-                    if not all(context.get(key, {}).get('value') == val for val in condition["all"]):
-                        return False
             else:
-                # Simple key-value or key-[value] match
+                # This is a standard wildcard value check
                 context_value = context.get(key, {}).get('value')
-                if isinstance(condition, list):
+                
+                if isinstance(condition, dict):
+                    # Handle complex conditions like {"not": "value"} or {"any": [...]}
+                    # Note: 'any' is the same as a list, but we support it for clarity.
+                    if 'any' in condition:
+                        if not isinstance(condition['any'], list) or context_value not in condition['any']:
+                            return False
+                    if 'not' in condition:
+                        not_condition = condition['not']
+                        if isinstance(not_condition, list):
+                            if context_value in not_condition:
+                                return False
+                        elif context_value == not_condition:
+                            return False
+                elif isinstance(condition, list):
+                    # "wildcard": ["value1", "value2"] means value must be one of them.
                     if context_value not in condition:
                         return False
-                elif context_value != condition:
-                    return False
+                else:
+                    # "wildcard": "value" means an exact match is required.
+                    if context_value != condition:
+                        return False
         return True
 
     def _check_tag_rules(self, tag_rules: Dict[str, Any], context: Dict[str, Any]) -> bool:
-        """Checks tag-based rules against the context."""
+        """
+        Checks tag-based rules against the context.
+        Supports 'any', 'all', and 'not' conditions.
+        """
+        if not isinstance(tag_rules, dict):
+            return False # Malformed tag rules
+
         # Collect all tags from all previously resolved items in the context
         all_context_tags = set()
         for item in context.values():
             if isinstance(item, dict) and 'tags' in item:
                 all_context_tags.update(item['tags'])
 
-        if "any" in tag_rules:
-            if not any(tag in all_context_tags for tag in tag_rules["any"]):
+        # Check 'any' condition: at least one of the specified tags must be present.
+        if 'any' in tag_rules:
+            required_tags = tag_rules['any']
+            if not isinstance(required_tags, list) or not any(tag in all_context_tags for tag in required_tags):
                 return False
-        if "all" in tag_rules:
-            if not all(tag in all_context_tags for tag in tag_rules["all"]):
+            
+        # Check 'all' condition: all of the specified tags must be present.
+        if 'all' in tag_rules:
+            required_tags = tag_rules['all']
+            if not isinstance(required_tags, list) or not all(tag in all_context_tags for tag in required_tags):
                 return False
+            
+        # Check 'not' condition: none of the specified tags should be present.
+        if 'not' in tag_rules:
+            forbidden_tags = tag_rules['not']
+            if isinstance(forbidden_tags, list):
+                if any(tag in all_context_tags for tag in forbidden_tags):
+                    return False
+            elif isinstance(forbidden_tags, str): # Support for a single tag string
+                 if forbidden_tags in all_context_tags:
+                    return False
+
         return True
 
-    def generate_structured_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None, seed: Optional[int] = None) -> List[PromptSegment]:
+    def _find_or_generate_choice(self, key: str, existing_choices_map: Dict[str, str], resolved_context: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
+        """
+        Finds an existing choice or generates a new one for a given wildcard key.
+        Returns a tuple of (choice_object, choice_text).
+        """
+        # Priority 1: Check if this wildcard has already been resolved in this generation pass.
+        if key in resolved_context:
+            choice_text = resolved_context[key]['value']
+            # We need to find the original choice object to get its metadata (like includes) again.
+            choice_obj = self.find_choice_object_by_value(key, choice_text)
+            return choice_obj, choice_text
+
+        # Priority 2: Check if we are preserving a choice from a previous generation.
+        if key in existing_choices_map:
+            choice_text = existing_choices_map[key]
+            choice_obj = self.find_choice_object_by_value(key, choice_text)
+            
+            # If a choice object was found, we must validate its 'requires' clause
+            # against the current context, as dependencies may have changed.
+            if choice_obj:
+                is_still_valid = True
+                if isinstance(choice_obj, dict) and 'requires' in choice_obj:
+                    if not self._check_rules(choice_obj['requires'], resolved_context):
+                        is_still_valid = False
+                
+                if is_still_valid:
+                    return choice_obj, choice_text
+            # If the choice is no longer valid, fall through to generate a new one.
+        
+        # Priority 3: Generate a new choice.
+        choice_obj = self._get_wildcard_choice_object(key, resolved_context)
+        if choice_obj:
+            choice_text = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
+            return choice_obj, choice_text
+
+        return None, None
+
+    def _create_segment_and_update_context(self, key: str, choice_obj: Any, choice_text: str, resolved_context: Dict[str, Any]) -> Tuple[PromptSegment, str]:
+        """
+        Creates a PromptSegment, updates the context, and returns the segment and any text to inject.
+        """
+        wildcard_data = self.wildcards.get(key)
+        text_to_inject = self._process_includes(choice_obj, wildcard_data)
+        
+        raw_includes = (choice_obj.get('includes') if isinstance(choice_obj, dict) and 'includes' in choice_obj else wildcard_data.get('includes') if wildcard_data else None)
+        tags = choice_obj.get('tags', []) if isinstance(choice_obj, dict) else []
+        
+        new_segment = PromptSegment(text=choice_text, wildcard_name=key, includes=raw_includes)
+        resolved_context[key] = {'value': choice_text, 'tags': tags}
+        
+        return new_segment, text_to_inject
+
+    def generate_structured_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, 
+                             existing_segments: Optional[List[PromptSegment]] = None, 
+                             force_reroll: Optional[List[str]] = None,
+                             seed: Optional[int] = None) -> List[PromptSegment]:
         """Generate a prompt as a list of segments for rich interaction."""
         if wildcards is None:
             wildcards = self.wildcards
 
         # --- Seed Management ---
-        # The GUI now controls the seed logic. The engine just uses what it's given.
         if seed is None:
-            # If no seed is provided, generate a random one. This ensures that even
-            # if the GUI fails to provide one, we don't reuse the last seed unintentionally.
             seed = random.randint(0, 2**32 - 1)
             
         self.current_seed = seed
         self.rng.seed(self.current_seed)
 
-        # Build a map of existing choices to maintain them across edits
+        # --- Tag Mode Detection ---
+        is_tag_mode = template.lstrip().startswith("#- mode: tags -#")
+        if is_tag_mode:
+            # Remove the directive from the template so it's not processed as text
+            template = re.sub(r'#-\s*mode:\s*tags\s*-#', '', template).lstrip()
         existing_choices_map = {}
         if existing_segments:
             for segment in existing_segments:
@@ -345,66 +551,56 @@ class TemplateEngine:
                     if segment.wildcard_name not in existing_choices_map:
                         existing_choices_map[segment.wildcard_name] = segment.text
 
+        resolved_context: Dict[str, Any] = {}
+
+        # --- Processing Logic ---
         segments: List[PromptSegment] = []
-        remaining_template = template
-        resolved_context: Dict[str, Any] = {} # Can now hold strings or lists of tags
+        # Queue of (template_string, is_from_include_flag)
+        processing_queue: List[Tuple[str, bool]] = [(template, False)]
 
-        while '__' in remaining_template:
-            start_pos = remaining_template.find('__')
-            end_pos = remaining_template.find('__', start_pos + 2)
+        while processing_queue:
+            current_template, is_from_include = processing_queue.pop(0)
+            
+            match = re.search(r'__([a-zA-Z0-9_.\s-]+?)__', current_template)
+            
+            if not match:
+                # No wildcards left in this string, so it's all static text
+                if current_template:
+                    segments.append(PromptSegment(text=current_template))
+                continue # Move to the next item in the queue
 
-            if end_pos == -1:
-                break
+            # --- We found a wildcard ---
 
-            if start_pos > 0:
-                segments.append(PromptSegment(text=remaining_template[:start_pos]))
+            # 1. Add any static text that came before it
+            static_prefix = current_template[:match.start()]
+            if static_prefix:
+                segments.append(PromptSegment(text=static_prefix))
 
-            key = remaining_template[start_pos+2:end_pos]
-            if key in existing_choices_map:
-                choice_text = existing_choices_map[key]
-                choice_obj = self.find_choice_object_by_value(key, choice_text)
-                wildcard_data = self.wildcards.get(key)
+            # 2. Process the wildcard
+            key = match.group(1)
+            choice_obj, choice_text = self._find_or_generate_choice(key, existing_choices_map, resolved_context)
+            
+            # 3. Get the rest of the template to be processed later
+            rest_of_template = current_template[match.end():]
 
-                if choice_obj:
-                    global_includes = wildcard_data.get('includes', []) if wildcard_data else []
-                    choice_includes = choice_obj.get('includes', []) if isinstance(choice_obj, dict) else []
-                    all_includes = global_includes + choice_includes
-                    tags = choice_obj.get('tags') if isinstance(choice_obj, dict) else []
-                    segments.append(PromptSegment(text=choice_text, wildcard_name=key, includes=all_includes if all_includes else None))
-                    resolved_context[key] = {'value': choice_text, 'tags': tags}
-
-                    if all_includes:
-                        include_text = ", " + ", ".join([f"__{inc}__" for inc in all_includes]) + ", "
-                        remaining_template = include_text + remaining_template[end_pos+2:]
-                    else:
-                        remaining_template = remaining_template[end_pos+2:]
-                else:
-                    segments.append(PromptSegment(text=choice_text, wildcard_name=key))
-                    resolved_context[key] = {'value': choice_text, 'tags': []}
-                    remaining_template = remaining_template[end_pos+2:]
+            if choice_obj:
+                new_segment, text_to_inject = self._create_segment_and_update_context(key, choice_obj, choice_text, resolved_context)
+                new_segment.is_from_include = is_from_include
+                segments.append(new_segment)
+                
+                # 4. Queue up the rest of the work
+                # The rest of the original template goes on the queue first.
+                if rest_of_template:
+                    processing_queue.insert(0, (rest_of_template, is_from_include))
+                
+                # The included text goes on the front, to be processed next.
+                if text_to_inject:
+                    processing_queue.insert(0, (text_to_inject, True))
             else:
-                wildcard_data = self.wildcards.get(key)
-                choice_obj = self._get_wildcard_choice_object(key, resolved_context)
-                if choice_obj:
-                    choice_text = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
-                    global_includes = wildcard_data.get('includes', []) if wildcard_data else []
-                    choice_includes = choice_obj.get('includes', []) if isinstance(choice_obj, dict) else []
-                    all_includes = global_includes + choice_includes
-                    tags = choice_obj.get('tags') if isinstance(choice_obj, dict) else []
-                    segments.append(PromptSegment(text=choice_text, wildcard_name=key, includes=all_includes if all_includes else None))
-                    resolved_context[key] = {'value': choice_text, 'tags': tags}
-
-                    if all_includes:
-                        include_text = ", " + ", ".join([f"__{inc}__" for inc in all_includes]) + ", "
-                        remaining_template = include_text + remaining_template[end_pos+2:]
-                    else:
-                        remaining_template = remaining_template[end_pos+2:]
-                else:
-                    segments.append(PromptSegment(text=f"__{key}__", wildcard_name=key))
-                    remaining_template = remaining_template[end_pos+2:]
-
-        if remaining_template:
-            segments.append(PromptSegment(text=remaining_template))
+                # Wildcard not found, treat it as static text and queue the rest
+                segments.append(PromptSegment(text=match.group(0), wildcard_name=key, is_from_include=is_from_include))
+                if rest_of_template:
+                    processing_queue.insert(0, (rest_of_template, is_from_include))
 
         return segments
 

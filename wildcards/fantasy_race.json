@@ -1,10 +1,232 @@
 {
   "description": "A list of fantasy races for characters.",
   "choices": [
-    "human",
-    "elf",
-    "dwarf",
-    "orc",
-    "goblin"
+    {
+      "value": "centaur",
+      "weight": 3,
+      "tags": [
+        "beastly"
+      ],
+      "requires": {
+        "body_type": "tall"
+      }
+    },
+    {
+      "value": "dark knight",
+      "weight": 3
+    },
+    {
+      "value": "dragonborn",
+      "weight": 2,
+      "tags": [
+        "draconic"
+      ],
+      "includes": [
+        "tail"
+      ]
+    },
+    {
+      "value": "dwarf",
+      "weight": 4,
+      "tags": [
+        "stoneworker"
+      ],
+      "includes": [
+        "axe"
+      ]
+    },
+    {
+      "value": "elf",
+      "weight": 5,
+      "tags": [
+        "magical"
+      ],
+      "requires": {
+        "fantasy_race": "merfolk"
+      }
+    },
+    {
+      "value": "gnoll",
+      "weight": 3,
+      "tags": [
+        "beastly"
+      ],
+      "requires": {
+        "body_type": "large"
+      }
+    },
+    {
+      "value": "gnome",
+      "weight": 2,
+      "tags": [
+        "artisan"
+      ],
+      "includes": [
+        "clockwork_gadget"
+      ]
+    },
+    {
+      "value": "goblin",
+      "weight": 2,
+      "tags": [
+        "mischievous"
+      ]
+    },
+    {
+      "value": "half-elf",
+      "weight": 3,
+      "tags": [
+        "hybrid"
+      ],
+      "requires": {
+        "body_type": "average"
+      }
+    },
+    {
+      "value": "half-orc",
+      "weight": 3,
+      "tags": [
+        "ferocious"
+      ],
+      "requires": {
+        "body_type": "large"
+      }
+    },
+    {
+      "value": "half-troll",
+      "weight": 2,
+      "tags": [
+        "brawny"
+      ],
+      "includes": [
+        "tusk"
+      ]
+    },
+    {
+      "value": "halfling",
+      "weight": 3,
+      "tags": [
+        "lively"
+      ],
+      "includes": [
+        "stoutness"
+      ]
+    },
+    {
+      "value": "human",
+      "weight": 4,
+      "tags": [
+        "common"
+      ]
+    },
+    {
+      "value": "knight",
+      "weight": 4,
+      "tags": [
+        "warrior"
+      ],
+      "includes": [
+        "shield",
+        "sword"
+      ]
+    },
+    {
+      "value": "kobold",
+      "weight": 2,
+      "tags": [
+        "sneaky"
+      ]
+    },
+    {
+      "value": "merfolk",
+      "weight": 3,
+      "tags": [
+        "aquatic"
+      ],
+      "requires": {
+        "body_type": "lithe"
+      }
+    },
+    {
+      "value": "minotaur",
+      "weight": 3,
+      "tags": [
+        "monstrous"
+      ],
+      "includes": [
+        "bull_horn",
+        "club"
+      ]
+    },
+    {
+      "value": "orc",
+      "weight": 3,
+      "tags": [
+        "brutal"
+      ],
+      "requires": {
+        "body_type": "large"
+      }
+    },
+    {
+      "value": "satyr",
+      "weight": 4,
+      "tags": [
+        "lecherous"
+      ],
+      "requires": {
+        "body_type": "average"
+      }
+    },
+    {
+      "value": "sylvan",
+      "weight": 4,
+      "tags": [
+        "woodland"
+      ],
+      "includes": [
+        "bow",
+        "elf_ear"
+      ]
+    },
+    {
+      "value": "troglodyte",
+      "weight": 2,
+      "tags": [
+        "cave_dweller"
+      ],
+      "includes": [
+        "claw",
+        "bone_tattoo"
+      ]
+    },
+    {
+      "value": "vampire",
+      "weight": 3,
+      "tags": [
+        "undead"
+      ],
+      "includes": "with [fangs]"
+    },
+    {
+      "value": "wererat",
+      "weight": 2,
+      "tags": [
+        "lunatic"
+      ],
+      "includes": [
+        "rat_tail"
+      ]
+    },
+    {
+      "value": "werewolf",
+      "weight": 4,
+      "tags": [
+        "lycanthrope"
+      ],
+      "requires": {
+        "body_type": "large"
+      }
+    }
   ]
 }

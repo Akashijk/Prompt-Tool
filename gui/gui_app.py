@@ -13,7 +13,7 @@ from typing import Optional, List, Tuple, Dict, Any
 from tkinter import ttk
 from core.prompt_processor import PromptProcessor
 from core.template_engine import PromptSegment
-from core.config import config, DEFAULT_SFW_VARIATION_INSTRUCTIONS, DEFAULT_NSFW_VARIATION_INSTRUCTIONS, save_settings, load_settings
+from core.config import config, save_settings, load_settings
 from .enhancement_window import EnhancementResultWindow
 from .brainstorming_window import BrainstormingWindow
 from .action_bar import ActionBar
@@ -22,6 +22,7 @@ from .history_viewer import HistoryViewerWindow
 from .review_window import ReviewAndSaveWindow
 from .system_prompt_editor import SystemPromptEditorWindow
 from .wildcard_manager import WildcardManagerWindow
+from .menu_bar import MenuBar
 from .template_editor import TemplateEditor
 from .wildcard_inserter import WildcardInserter
 from . import custom_dialogs
@@ -74,7 +75,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.loading_animation: Optional[LoadingAnimation] = None
         self.template_editor: Optional[TemplateEditor] = None
         self.wildcard_inserter: Optional[WildcardInserter] = None
-        self.file_menu: Optional[tk.Menu] = None
+        self.menubar: Optional[MenuBar] = None
         self.wildcard_swap_menu: tk.Menu = tk.Menu(self, tearoff=0)
         self.enhancement_model_var = tk.StringVar()
         self.font_size_var = tk.IntVar(value=config.font_size)
@@ -124,7 +125,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _create_widgets(self):
         """Create and layout the main widgets."""
-        self._create_menu_bar()
+        self.menubar = MenuBar(self)
 
         # --- Top Control Frame ---
         control_frame = ttk.Frame(self, padding="10")
@@ -162,57 +163,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         status_bar = ttk.Label(status_frame, textvariable=self.status_var, anchor=tk.W, padding=(0, 5, 5, 5))
         status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-    def _create_menu_bar(self):
-        """Creates the main application menu bar."""
-        menubar = tk.Menu(self)
-        self.config(menu=menubar)
-        
-        # Initialize the file menu as a class attribute
-        self.file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=self.file_menu)
-        
-        # Add Generate Template option to File menu
-        self.file_menu.add_command(
-            label="Generate New Template...",
-            command=self._generate_new_template
-        )
-        self.file_menu.add_separator()
-        self.file_menu.add_command(label="New Template...", command=self._create_new_template_file)
-        self.file_menu.add_command(label="Save Template", command=self._save_template, state=tk.DISABLED)
-        self.file_menu.add_command(label="Archive Template...", command=self._archive_current_template, state=tk.DISABLED)
-        self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self._on_closing)
-
-        # --- Workflow Menu ---
-        workflow_menu = tk.Menu(menubar, tearoff=0)
-        workflow_menu.add_radiobutton(label="SFW (Safe For Work)", variable=self.workflow_var, value="sfw", command=self._switch_workflow)
-        workflow_menu.add_radiobutton(label="NSFW (Not Safe For Work)", variable=self.workflow_var, value="nsfw", command=self._switch_workflow)
-        menubar.add_cascade(label="Workflow", menu=workflow_menu)
-        self.workflow_var.set(config.workflow) # Ensure it's set on startup
-
-        # --- View Menu ---
-        view_menu = tk.Menu(menubar, tearoff=0)
-        theme_menu = tk.Menu(view_menu, tearoff=0)
-        theme_menu.add_command(label="Light", command=lambda: self._set_theme("light"))
-        theme_menu.add_command(label="Dark", command=lambda: self._set_theme("dark"))
-        view_menu.add_cascade(label="Theme", menu=theme_menu)
-
-        font_menu = tk.Menu(view_menu, tearoff=0)
-        for size in [10, 11, 12, 14, 16]:
-            font_menu.add_radiobutton(label=f"{size} pt", variable=self.font_size_var, value=size, command=self._set_font_size)
-        view_menu.add_cascade(label="Font Size", menu=font_menu)
-
-        menubar.add_cascade(label="View", menu=view_menu)
-
-        # --- Tools Menu ---
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        tools_menu.add_command(label="Wildcard Manager", command=self._open_wildcard_manager)
-        tools_menu.add_command(label="Ollama Server...", command=self._change_ollama_server)
-        tools_menu.add_command(label="AI Brainstorming", command=self._open_brainstorming_window)
-        tools_menu.add_command(label="System Prompt Editor", command=self._open_system_prompt_editor)
-        tools_menu.add_command(label="History Viewer", command=self._open_history_viewer)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
-
     def _generate_new_template(self):
         """Opens a dialog to generate a new template with AI."""
         concept = custom_dialogs.ask_string(self, "Generate Template", "What kind of template would you like to generate?\n\nDescribe the concept:")
@@ -245,7 +195,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             double_click_callback=self._on_template_double_click,
             generate_wildcard_callback=self._generate_missing_wildcard,
             brainstorm_callback=self._brainstorm_with_template,
-            create_wildcard_callback=self._create_wildcard_from_selection
+            create_wildcard_callback=self._create_wildcard_from_selection,
+            edit_wildcard_callback=self._edit_wildcard_file
         )
         top_h_pane.add(self.template_editor, weight=3)
 
@@ -265,7 +216,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         preview_pane.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
         self.prompt_text = tk.Text(preview_pane, wrap=tk.WORD, height=10, font=self.large_font, undo=True)
         self.prompt_text.pack(fill=tk.BOTH, expand=True)
-        PromptPreviewContextMenu(self.prompt_text, self._generate_missing_wildcard)
+        PromptPreviewContextMenu(self.prompt_text, self, self._generate_missing_wildcard, self._edit_wildcard_file)
         self.prompt_text.config(state=tk.DISABLED)
 
         # Configure tags and bindings for the interactive prompt text
@@ -374,6 +325,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Define colors for light and dark modes
         wildcard_bg = "#3c4c5c" if is_dark else "#d8e9f3"
         wildcard_hover_bg = "#4a5e73" if is_dark else "#b8d9e3"
+        included_wildcard_bg = "#2c503e" if is_dark else "#d8f3e9" # Muted green
         missing_wildcard_bg = "#6b2b2b" if is_dark else "#ffcccc"
         status_bar_dot_color = "lightgrey" if is_dark else "dimgray"
         status_bar_bg = self.cget('background')
@@ -381,6 +333,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Apply colors to tags
         self.prompt_text.tag_configure("wildcard", background=wildcard_bg)
         self.prompt_text.tag_configure("wildcard_hover", background=wildcard_hover_bg)
+        self.prompt_text.tag_configure("included_wildcard", background=included_wildcard_bg)
         self.prompt_text.tag_configure("missing_wildcard", background=missing_wildcard_bg)
         self.template_editor.text_widget.tag_configure("missing_wildcard", background=missing_wildcard_bg)
 
@@ -412,8 +365,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _update_action_bar_variations(self):
         """Updates the variation checkboxes in the action bar based on the current workflow."""
-        variation_keys = list(DEFAULT_SFW_VARIATION_INSTRUCTIONS.keys()) if config.workflow == 'sfw' else list(DEFAULT_NSFW_VARIATION_INSTRUCTIONS.keys())
-        self.action_bar.rebuild_variations(variation_keys)
+        variations = self.processor.get_available_variations()
+        self.action_bar.rebuild_variations(variations)
 
     def _load_models(self):
         """Loads available Ollama models into the dropdown menu."""
@@ -478,8 +431,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.config(state=tk.DISABLED)
         self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, suggest=tk.DISABLED, save_as_template=tk.DISABLED)
-        self.file_menu.entryconfig("Save Template", state=tk.DISABLED)
-        self.file_menu.entryconfig("Archive Template...", state=tk.DISABLED)
+        self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
     def _populate_wildcard_lists(self):
         """Populates both the inserter and editor wildcard lists."""
         wildcard_files = self.processor.get_wildcard_files()
@@ -527,8 +479,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # Update UI state
         self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, suggest=tk.NORMAL, save_as_template=tk.DISABLED)
-        self.file_menu.entryconfig("Save Template", state=tk.NORMAL)
-        self.file_menu.entryconfig("Archive Template...", state=tk.NORMAL)
+        self.menubar.update_file_menu_state(save_enabled=True, archive_enabled=True)
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.insert(tk.END, f"Template '{template_name}' loaded. Click 'Generate Next Preview' to start.")
@@ -660,7 +611,18 @@ class GUIApp(tk.Tk, SmartWindowMixin):
     def _swap_wildcard(self, segment_index: int, new_value: str):
         """Swap the text of a wildcard segment and redisplay the prompt."""
         if 0 <= segment_index < len(self.current_structured_prompt):
-            self.current_structured_prompt[segment_index].text = new_value
+            segment = self.current_structured_prompt[segment_index]
+            
+            # Find the new choice object to get its includes metadata
+            new_choice_obj = self.processor.find_wildcard_choice_object(segment.wildcard_name, new_value)
+            
+            # Update the segment's text and includes metadata
+            segment.text = new_value
+            if isinstance(new_choice_obj, dict):
+                segment.includes = new_choice_obj.get('includes')
+            else:
+                segment.includes = None # Simple string choices have no includes
+
             # Trigger a full live update. The template engine will now re-evaluate
             # the swapped choice and correctly process any 'includes' it has.
             self._perform_live_update()
@@ -713,8 +675,15 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.current_structured_prompt:
             for segment in self.current_structured_prompt:
                 if segment.includes:
-                    for included_wc in segment.includes:
-                        all_includes.add(included_wc)
+                    if isinstance(segment.includes, list):
+                        # It's a list of wildcard names
+                        for included_wc in segment.includes:
+                            all_includes.add(included_wc)
+                    elif isinstance(segment.includes, str):
+                        # It's a template string, find wildcards within it
+                        found_wildcards = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', segment.includes)
+                        all_includes.update(found_wildcards)
+
                 # Also check if the segment itself represents a missing wildcard placeholder
                 if segment.wildcard_name and segment.text == f"__{segment.wildcard_name}__":
                     all_includes.add(segment.wildcard_name)
@@ -828,6 +797,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # Create the results window immediately
         selected_variations = self.action_bar.get_selected_variations()
+        template_name = self.current_template_file
         initial_data = {'original': prompt_text, 'variations': {}}
 
         # Set up call counters for the new batch
@@ -854,15 +824,15 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.status_var.set(f"Enhancing prompt with {model}...")
 
         # Run enhancement in a separate thread to avoid freezing the GUI
-        thread = threading.Thread(target=self._run_enhancement_thread, args=(prompt_text, model, selected_variations, self.enhancement_cancellation_event), daemon=True)
+        thread = threading.Thread(target=self._run_enhancement_thread, args=(prompt_text, model, selected_variations, self.enhancement_cancellation_event, template_name), daemon=True)
         thread.start()
 
-    def _run_enhancement_thread(self, prompt: str, model: str, selected_variations: List[str], cancellation_event: threading.Event):
+    def _run_enhancement_thread(self, prompt: str, model: str, selected_variations: List[str], cancellation_event: threading.Event, template_name: Optional[str]):
         """The function that runs in a separate thread to process the prompt."""
         try:
             # This is now a fire-and-forget process from the GUI's perspective.
             # The processor will use callbacks to update the UI.
-            self.processor.process_enhancement_batch([prompt], model, selected_variations, cancellation_event)
+            self.processor.process_enhancement_batch([prompt], model, selected_variations, cancellation_event, template_name)
         except Exception as e:
             self.after(0, lambda: custom_dialogs.show_error(self, "Enhancement Error", f"An error occurred during processing:\n{e}"))
         finally:
@@ -987,7 +957,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         clicked_word = self.template_editor.text_widget.get(word_start, word_end)
 
         # Check if it's a wildcard tag
-        match = re.fullmatch(r'__([a-zA-Z0-9_.-]+)__', clicked_word)
+        match = re.fullmatch(r'__([a-zA-Z0-9_.\s-]+)__', clicked_word)
         if match:
             wildcard_name = match.group(1)
             self._open_wildcard_manager(initial_file=f"{wildcard_name}.json")
@@ -1034,8 +1004,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.prompt_text.delete("1.0", tk.END)
             self.prompt_text.config(state=tk.DISABLED)
             self.current_template_file = None
-            self.file_menu.entryconfig("Save Template", state=tk.DISABLED)
-            self.file_menu.entryconfig("Archive Template...", state=tk.DISABLED)
+            self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
             self._load_templates()
 
         except Exception as e:
@@ -1087,8 +1056,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.current_template_file = None
         self.current_template_content = None
         self.current_structured_prompt = []
-        self.file_menu.entryconfig("Save Template", state=tk.DISABLED)
-        self.file_menu.entryconfig("Archive Template...", state=tk.DISABLED)
+        self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
         self.action_bar.generate_button.config(state=tk.DISABLED) # Can't generate from a non-template
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
@@ -1315,3 +1283,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         }
         initial_content = json.dumps(initial_data, indent=2)
         self._open_wildcard_manager(f"{wildcard_name}.json", initial_content)
+
+    def _edit_wildcard_file(self, wildcard_name: str):
+        """Opens the wildcard manager to edit a specific wildcard file."""
+        if not wildcard_name:
+            return
+        self._open_wildcard_manager(initial_file=f"{wildcard_name}.json")

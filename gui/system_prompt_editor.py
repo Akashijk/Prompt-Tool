@@ -1,10 +1,13 @@
 """A window for editing system-level prompts (enhancement, variations)."""
 
+import json
+import os
 import tkinter as tk
 from tkinter import ttk
-from typing import Optional
+from typing import Optional, Dict
 
 from . import custom_dialogs
+from core.config import config
 from core.prompt_processor import PromptProcessor
 from .common import TextContextMenu, SmartWindowMixin
 
@@ -17,6 +20,7 @@ class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
 
         self.processor = processor
         self.selected_file: Optional[str] = None
+        self.display_name_to_file_map: Dict[str, str] = {}
 
         self._create_widgets()
         self._populate_file_list()
@@ -39,7 +43,7 @@ class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
         editor_frame = ttk.LabelFrame(main_pane, text="Edit Prompt", padding=5)
         main_pane.add(editor_frame, weight=3)
 
-        self.editor_text = tk.Text(editor_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, state=tk.DISABLED)
+        self.editor_text = tk.Text(editor_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, state=tk.DISABLED, exportselection=False)
         TextContextMenu(self.editor_text)
         self.editor_text.pack(fill=tk.BOTH, expand=True)
 
@@ -52,14 +56,40 @@ class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
 
     def _populate_file_list(self):
         self.file_listbox.delete(0, tk.END)
-        for filename in self.processor.get_system_prompt_files():
-            self.file_listbox.insert(tk.END, filename)
+        self.display_name_to_file_map.clear()
+        
+        # The processor now returns a list of file paths relative to the system prompt dir
+        for filepath in self.processor.get_system_prompt_files():
+            display_name = ""
+            if filepath == 'enhancement.txt':
+                display_name = "Enhancement"
+            elif filepath.startswith('variations/') and filepath.endswith('.json'):
+                try:
+                    # To get the display name, we need to load the JSON content
+                    full_path = os.path.join(config.get_system_prompt_dir(), filepath)
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        name = data.get('name', os.path.basename(filepath).replace('.json', ''))
+                        display_name = f"{name} (Variation)"
+                except Exception as e:
+                    print(f"Warning: Could not load variation name from {filepath}: {e}")
+                    display_name = f"{os.path.basename(filepath)} (Variation)"
+            
+            if display_name:
+                self.file_listbox.insert(tk.END, display_name)
+                self.display_name_to_file_map[display_name] = filepath
 
     def _on_file_select(self, event=None):
         selected_indices = self.file_listbox.curselection()
         if not selected_indices: return
 
-        self.selected_file = self.file_listbox.get(selected_indices[0])
+        display_name = self.file_listbox.get(selected_indices[0])
+        self.selected_file = self.display_name_to_file_map.get(display_name)
+
+        if not self.selected_file:
+            custom_dialogs.show_error(self, "Error", "Could not map display name to a file.")
+            return
+
         try:
             content = self.processor.load_system_prompt_content(self.selected_file)
             self.editor_text.config(state=tk.NORMAL)

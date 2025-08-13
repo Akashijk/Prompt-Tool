@@ -24,8 +24,9 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **Full-Featured Wildcard Management:**
     *   A powerful structured editor to easily manage complex choices with weights, tags, requirements, and includes.
     *   Find and automatically remove duplicate choices within a file.
-    *   Merge two wildcard files into a new one, intelligently combining their content.  --Not currently working
-    *   Scan your entire project to find unused wildcard files that can be archived or deleted. --Buggy
+    *   Merge multiple wildcard files into a new one, intelligently combining their content.
+    *   Scan your entire project to find unused wildcard files that can be archived or deleted.
+    *   Use AI to suggest new choices for a wildcard, or to automatically add weights, tags, and other metadata to your existing choices.
 *   **SFW/NSFW Workflows:** Keep your SFW and NSFW content completely separate. The app dynamically switches template, wildcard, and system prompt directories.
 *   **Customizable System Prompts:** Edit the underlying instructions given to the AI for enhancement and variations to tailor its output to your needs.
 *   **History Viewer:** Browse, search, and reuse all your past enhanced prompts, with the ability to mark favorites.
@@ -112,6 +113,8 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   View all wildcard files for the current workflow.
     *   Select a file to view and edit its contents.
     *   Use the structured editor to manage complex choices, or switch to the raw text editor for direct JSON editing.
+    *   Use the "Suggest Choices (AI)" button to have the AI generate new items for your list.
+    *   Use the "Refine Choices (AI)" button to have the AI analyze your existing choices and add metadata like weights, tags, and requirements.
     *   Find duplicates, sort choices, merge files, or find unused wildcards across your project.
     *   Click "Brainstorm with AI" to send the current wildcard list to the chat window for refinement.
 

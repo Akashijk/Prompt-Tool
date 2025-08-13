@@ -9,11 +9,8 @@ __pycache__/
 templates/**
 history/**
 wildcards/**
+system_prompts/**
 
 # Include exceptions for initial setup
-!templates/
-!templates/sfw/
-!templates/sfw/sfw_fantasy.txt
-!wildcards/
-!wildcards/fantasy_race.json
-!wildcards/sfw_outfit.json
+#!templates/
+#!wildcards/

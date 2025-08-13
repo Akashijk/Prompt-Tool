@@ -16,13 +16,14 @@ if TYPE_CHECKING:
 
 class ReviewAndSaveWindow(tk.Toplevel, SmartWindowMixin):
     """A window to review, edit, and save AI-generated content."""
-    def __init__(self, parent, processor: PromptProcessor, content_type: str, generated_content: str, update_callback: Callable, filename: Optional[str] = None, regenerate_callback: Optional[Callable] = None, is_loading: bool = False):
+    def __init__(self, parent, processor: PromptProcessor, content_type: str, generated_content: str, update_callback: Callable, filename: Optional[str] = None, regenerate_callback: Optional[Callable] = None, is_loading: bool = False, next_step_callback: Optional[Callable] = None):
         super().__init__(parent)
         self.processor = processor
         self.content_type = content_type # "wildcard" or "template"
         self.update_callback = update_callback
         self.prefilled_filename = filename
         self.regenerate_callback = regenerate_callback
+        self.next_step_callback = next_step_callback
 
         # Get the main GUIApp instance. This is tricky because the parent could be
         # the main app itself or another Toplevel window (like BrainstormingWindow).
@@ -46,7 +47,7 @@ class ReviewAndSaveWindow(tk.Toplevel, SmartWindowMixin):
             self.editor_notebook.add(self.structured_editor_frame, text="Structured Editor")
 
             self.raw_text_frame = ttk.Frame(self.editor_notebook)
-            self.raw_text_editor = tk.Text(self.raw_text_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True)
+            self.raw_text_editor = tk.Text(self.raw_text_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, exportselection=False)
             TextContextMenu(self.raw_text_editor)
             self.raw_text_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
             self.editor_notebook.add(self.raw_text_frame, text="Raw Text Editor")
@@ -54,7 +55,7 @@ class ReviewAndSaveWindow(tk.Toplevel, SmartWindowMixin):
             # For compatibility with existing methods that use self.text_widget
             self.text_widget = self.raw_text_editor
         else: # 'template'
-            self.text_widget = tk.Text(self, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True)
+            self.text_widget = tk.Text(self, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, exportselection=False)
             self.text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10,0))
             TextContextMenu(self.text_widget)
             
@@ -192,6 +193,8 @@ class ReviewAndSaveWindow(tk.Toplevel, SmartWindowMixin):
                 self.processor.save_template_content(filename, content)
             
             self.update_callback(self.content_type) # Refresh lists in the main UI
+            if self.next_step_callback:
+                self.next_step_callback(filename)
             self.destroy()
         except Exception as e:
             custom_dialogs.show_error(self, "Save Error", f"Could not save file:\n{e}")

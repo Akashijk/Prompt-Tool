@@ -5,7 +5,8 @@ import re
 import requests
 import time
 from typing import List, Tuple, Optional, Dict, Any
-from .config import config, MODEL_RECOMMENDATIONS
+from .config import config
+from .default_content import MODEL_RECOMMENDATIONS
 
 def _clean_string(s: Any, replace_underscores: bool = True) -> str:
     """Helper to clean a string value by stripping whitespace and optionally replacing underscores."""
@@ -84,10 +85,10 @@ def _sanitize_choice_object(choice_obj: Dict[str, Any]) -> Optional[Dict[str, An
 
 def sanitize_wildcard_choices(choices: List[Any]) -> List[Any]:
     """
-    Recursively sanitizes a list of wildcard choices from AI generation.
+    Recursively sanitizes and flattens a list of wildcard choices from AI generation.
+    - Flattens any nested lists of choices.
     - Replaces underscores with spaces in string values.
     - Handles simple strings and complex choice objects.
-    - Gracefully handles and removes `null` and empty string values at any level to prevent errors.
     """
     if not isinstance(choices, list):
         return choices  # Return as-is for malformed AI output
@@ -105,6 +106,9 @@ def sanitize_wildcard_choices(choices: List[Any]) -> List[Any]:
             cleaned_obj = _sanitize_choice_object(choice)
             if cleaned_obj:
                 cleaned_choices.append(cleaned_obj)
+        elif isinstance(choice, list):
+            # If the choice is a list, recursively sanitize and extend the main list
+            cleaned_choices.extend(sanitize_wildcard_choices(choice))
         else:
             # Keep other malformed items (e.g., numbers) as-is
             cleaned_choices.append(choice)

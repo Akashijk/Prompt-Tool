@@ -5,12 +5,6 @@ from tkinter import ttk
 from typing import Dict, List, Callable, Optional
 from .common import Tooltip
 
-VARIATION_TOOLTIPS = {
-    'cinematic': 'Re-writes the prompt with a focus on dramatic lighting, camera angles, and movie-like composition.',
-    'artistic': 'Re-writes the prompt to emphasize painterly qualities, specific art movements, or artistic techniques.',
-    'photorealistic': 'Re-writes the prompt to include technical photography details, realistic lighting, and high-quality descriptors.'
-}
-
 class ActionBar(ttk.Frame):
     """The main action bar with Generate, Enhance, and variation selection."""
     def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, suggest_callback: Callable, save_as_template_callback: Callable, **kwargs):
@@ -40,7 +34,7 @@ class ActionBar(ttk.Frame):
         self.save_as_template_button = ttk.Button(self, text="Save as Template", command=save_as_template_callback, state=tk.DISABLED)
         self.save_as_template_button.pack(side=tk.LEFT, padx=(5, 0))
 
-    def rebuild_variations(self, variation_keys: List[str]):
+    def rebuild_variations(self, variations: List[Dict[str, str]]):
         """Clears and recreates the variation checkboxes."""
         for widget in self.variations_frame.winfo_children():
             widget.destroy()
@@ -48,12 +42,15 @@ class ActionBar(ttk.Frame):
         self.variation_vars.clear()
         self.variation_tooltips.clear()
 
-        for key in variation_keys:
+        for variation in variations:
+            key = variation['key']
+            name = variation['name']
+            description = variation.get('description', 'Generate this variation.')
             var = tk.BooleanVar(value=True)
             self.variation_vars[key] = var
-            cb = ttk.Checkbutton(self.variations_frame, text=key.capitalize(), variable=var)
+            cb = ttk.Checkbutton(self.variations_frame, text=name, variable=var)
             cb.pack(side=tk.LEFT, padx=5)
-            tooltip = Tooltip(cb, VARIATION_TOOLTIPS.get(key, "Generate this variation."))
+            tooltip = Tooltip(cb, description)
             cb.bind("<Enter>", tooltip.show)
             cb.bind("<Leave>", tooltip.hide)
             self.variation_tooltips.append(tooltip)

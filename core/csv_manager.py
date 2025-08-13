@@ -37,7 +37,8 @@ class HistoryManager:
                         'enhanced_prompt': row.get('enhanced_prompt'),
                         'enhanced_sd_model': row.get('enhanced_sd_model'),
                         'favorite': row.get('favorite') == '1',
-                        'variations': variations
+                        'variations': variations,
+                        'template_name': None # Old format didn't have this
                     }
                     history.append(new_entry)
             
@@ -149,7 +150,8 @@ class HistoryManager:
                    enhanced_sd_model: str, 
                    variations: Optional[Dict[str, Dict[str, str]]] = None, 
                    status: str = "enhanced",
-                   favorite: bool = False) -> None:
+                   favorite: bool = False,
+                   template_name: Optional[str] = None) -> None:
         """Save a single result to the JSONL history file."""
         filepath = config.get_history_file()
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -161,7 +163,8 @@ class HistoryManager:
             'enhanced_prompt': enhanced,
             'enhanced_sd_model': enhanced_sd_model,
             'favorite': favorite,
-            'variations': variations or {}
+            'variations': variations or {},
+            'template_name': template_name
         }
 
         try:
@@ -179,5 +182,6 @@ class HistoryManager:
                 result['enhanced_sd_model'],
                 result.get('variations'),
                 result.get('status', 'enhanced'),
-                result.get('favorite', False)
+                result.get('favorite', False),
+                result.get('template_name')
             )

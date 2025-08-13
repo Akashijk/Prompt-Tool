@@ -13,7 +13,7 @@ from typing import Optional, List, Dict, Callable, Tuple, TYPE_CHECKING
 from core.prompt_processor import PromptProcessor
 from core.config import config
 from core.ollama_client import sanitize_wildcard_choices
-from . import custom_dialogs
+from . import custom_dialogs, wildcard_editor_widget
 from .review_window import ReviewAndSaveWindow
 from .common import BrainstormingContextMenu, TextContextMenu, SmartWindowMixin
 
@@ -21,6 +21,43 @@ if TYPE_CHECKING:
     from .gui_app import GUIApp
     from .model_usage_manager import ModelUsageManager
 
+class _AskLinkedWildcardTopicsDialog(custom_dialogs._CustomDialog):
+    """A dialog to get topics for linked wildcard generation."""
+    def __init__(self, parent):
+        super().__init__(parent, "Generate Linked Wildcards")
+
+        main_frame = ttk.Frame(self, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="This will generate two linked wildcard files. The primary file will be prompted to 'include' choices from the supporting file.", wraplength=350).pack(pady=(0, 15), anchor='w')
+
+        ttk.Label(main_frame, text="Primary Topic (e.g., 'character poses'):").pack(anchor='w')
+        self.primary_entry = ttk.Entry(main_frame, width=50)
+        self.primary_entry.pack(pady=(0, 10), fill=tk.X, expand=True)
+        self.primary_entry.focus_set()
+
+        ttk.Label(main_frame, text="Supporting Topic (e.g., 'handheld weapons'):").pack(anchor='w')
+        self.supporting_entry = ttk.Entry(main_frame, width=50)
+        self.supporting_entry.pack(pady=(0, 20), fill=tk.X, expand=True)
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X)
+
+        ok_button = ttk.Button(button_frame, text="Generate", command=self._on_ok, style="Accent.TButton")
+        ok_button.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+        self.bind("<Return>", self._on_ok)
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_ok(self, event=None):
+        primary = self.primary_entry.get().strip()
+        supporting = self.supporting_entry.get().strip()
+        if primary and supporting:
+            self.result = (primary, supporting)
+        self.destroy()
 
 class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
     """An interactive window for brainstorming with an AI model."""
@@ -51,6 +88,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
 
         ttk.Button(top_frame, text="Generate Wildcard File...", command=self._generate_wildcard_file).pack(side=tk.LEFT)
         ttk.Button(top_frame, text="Generate Template File...", command=self._generate_template_file).pack(side=tk.LEFT, padx=5)
+        ttk.Button(top_frame, text="Generate Linked Wildcards...", command=self._generate_linked_wildcard_files).pack(side=tk.LEFT)
 
         main_pane = ttk.PanedWindow(self, orient=tk.VERTICAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -80,7 +118,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         input_area_frame = ttk.LabelFrame(main_pane, text="Your Message (Enter to send, Shift+Enter for new line)", padding=5)
         main_pane.add(input_area_frame, weight=1)
 
-        self.input_text = tk.Text(input_area_frame, height=4, wrap=tk.WORD, font=self.parent_app.default_font)
+        self.input_text = tk.Text(input_area_frame, height=4, wrap=tk.WORD, font=self.parent_app.default_font, exportselection=False)
         self.input_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.input_text.bind("<Return>", self._on_send_message_event)
         TextContextMenu(self.input_text)
@@ -322,17 +360,45 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         topic = custom_dialogs.ask_string(self, "Generate Wildcard", "What is the topic for the new wildcard file?\n(e.g., 'sci-fi helmet designs', 'fantasy potion names')")
         self.generate_wildcard_with_topic(topic)
 
-    def generate_wildcard_with_topic(self, topic: str, filename: Optional[str] = None, existing_window: Optional[ReviewAndSaveWindow] = None):
+    def _generate_linked_wildcard_files(self):
+        """Orchestrates the two-step generation of linked wildcard files."""
+        dialog = _AskLinkedWildcardTopicsDialog(self)
+        if not dialog.result:
+            return
+
+        primary_topic, supporting_topic = dialog.result
+
+        # Define the second step of the process
+        def generate_primary_wildcard(supporting_filename: str):
+            # Force a reload of wildcards so the newly created one is available.
+            self.processor.reload_wildcards()
+            # The main app's UI also needs to be refreshed.
+            self.update_callback('wildcard')
+
+            custom_dialogs.show_info(
+                self, 
+                "Step 2: Primary Wildcard", 
+                f"Now we will generate the primary wildcard '{primary_topic}', which will be encouraged to use the supporting wildcard you just saved."
+            )
+            self.generate_wildcard_with_topic(primary_topic, supporting_wildcard_to_include=supporting_filename)
+
+        # Start the first step
+        custom_dialogs.show_info(
+            self, 
+            "Step 1: Supporting Wildcard", 
+            f"First, we will generate the supporting wildcard: '{supporting_topic}'.\n\nPlease review and save it. The primary wildcard generation will begin automatically after you save."
+        )
+        self.generate_wildcard_with_topic(supporting_topic, next_step_callback=generate_primary_wildcard)
+
+    def generate_wildcard_with_topic(self, topic: str, filename: Optional[str] = None, existing_window: Optional[ReviewAndSaveWindow] = None, next_step_callback: Optional[Callable] = None, supporting_wildcard_to_include: Optional[str] = None):
         """Starts the generation process for a wildcard with a given topic."""
         if not topic:
             return
 
-        # If no filename is provided, derive it from the topic for the 'Generate Wildcard' button.
-        # If a filename IS provided (from a missing wildcard link), use that directly.
         final_filename = filename if filename is not None else topic
 
         # Create or get the results window first with a loading state.
-        metadata = {'filename': final_filename, 'topic': topic, 'window': existing_window}
+        metadata = {'filename': final_filename, 'topic': topic, 'window': existing_window, 'next_step_callback': next_step_callback, 'supporting_wildcard_to_include': supporting_wildcard_to_include}
         results_window = self._handle_generated_content("", "wildcard", metadata)
         metadata['window'] = results_window
 
@@ -359,14 +425,27 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         sample_size = min(5, len(other_wildcard_names))
         wildcard_sample_str = ", ".join(random.sample(other_wildcard_names, sample_size)) if other_wildcard_names else "none"
 
+        # Add a special instruction if this is a linked wildcard generation.
+        linked_wildcard_instruction = ""
+        if supporting_wildcard_to_include:
+            supporting_basename, _ = os.path.splitext(supporting_wildcard_to_include)
+            linked_wildcard_instruction = (
+                f"\n\n**LINKED WILDCARD CONTEXT:**\n"
+                f"This wildcard ('{topic}') is being generated to work with a supporting wildcard named '{supporting_basename}'. "
+                f"The application will automatically add `\"includes\": [\"{supporting_basename}\"]` to the generated file. "
+                f"Your generated choices should be phrases or actions that can be combined with an item from '{supporting_basename}'. "
+                f"For example, if '{supporting_basename}' contains weapons, your choices for '{topic}' could be poses like 'swinging', 'holding', 'parrying with'."
+            )
+
         prompt = (
-            f"You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.\n\n"
+            f"You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'."
+            f"{linked_wildcard_instruction}\n\n"
             f"**CONTEXT:** {workflow_context}\n\n"
             f"**CRITICAL INSTRUCTIONS:**\n"
             f"1.  **Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.\n"
             f"2.  **JSON Format:** You MUST return a single JSON object with a `description` and a `choices` array.\n"
             f"3.  **Complex Choices:** The `choices` array should contain a mix of simple strings and complex objects. For objects, you can include `weight`, `tags`, `requires`, and `includes` keys.\n"
-            f"4.  **Requirements & Includes:** Use `requires` (e.g., `{{\"wildcard_name\": \"value\"}}`) for dependencies and `includes` (e.g., `[\"another_wildcard\"]`) to add more wildcards.\n"
+            f"4.  **Requirements & Includes:** Use `requires` for dependencies. This can be a value check (e.g., `{{\"wildcard_name\": \"value\"}}`) or a tag check (e.g., `{{\"tags\": {{\"any\": [\"tag1\"]}}}}`). Use `includes` (e.g., `[\"another_wildcard\"]`) to add more wildcards.\n"
             f"5.  **No Self-Reference:** The `requires` key MUST NOT refer to the wildcard being generated (`{wildcard_name_from_topic}`). This is a critical rule.\n"
             f"6.  **Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.\n"
             f"7.  **Unique Values:** Ensure all `value` fields within your generated `choices` array are unique. Do not repeat items.\n"
@@ -378,7 +457,8 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
             f'  "choices": [\n'
             f'    "peasant",\n'
             f'    {{"value": "elven archer", "weight": 3, "tags": ["ranged", "elf"], "requires": {{"fantasy_race": "elf"}}, "includes": ["elven_bow", "leather_armor"]}},\n'
-            f'    {{"value": "dwarven warrior", "weight": 3, "tags": ["melee", "dwarf"], "requires": {{"fantasy_race": "dwarf"}}, "includes": ["dwarven_axe", "plate_armor"]}}\n'
+            f'    {{"value": "dwarven warrior", "weight": 3, "tags": ["melee", "dwarf"], "requires": {{"fantasy_race": "dwarf"}}, "includes": ["dwarven_axe", "plate_armor"]}},\n'
+            f'    {{"value": "shadowmancer", "tags": ["magic", "stealth"], "requires": {{"tags": {{"any": ["night", "darkness"]}}}}}}\n'
             f'  ]\n'
             f"}}\n\n"
             f"Now, generate the JSON for the topic: '{topic}'."
@@ -498,6 +578,22 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
     def _handle_generated_wildcard(self, parsed_json_string: str, metadata: Optional[Dict] = None):
         """Handles the display of a newly generated wildcard and its new 'includes'."""
         try:
+            # --- Programmatic Linking ---
+            # If this generation was for a linked wildcard, inject the 'includes' key.
+            if metadata and metadata.get('supporting_wildcard_to_include'):
+                wildcard_data = json.loads(parsed_json_string)
+                supporting_filename = metadata['supporting_wildcard_to_include']
+                supporting_basename, _ = os.path.splitext(supporting_filename)
+                
+                # Add it to the global includes.
+                if 'includes' not in wildcard_data or not isinstance(wildcard_data.get('includes'), list):
+                    wildcard_data['includes'] = []
+                
+                if supporting_basename not in wildcard_data['includes']:
+                    wildcard_data['includes'].append(supporting_basename)
+                
+                parsed_json_string = json.dumps(wildcard_data, indent=2)
+
             wildcard_data = json.loads(parsed_json_string)
             included_wildcards = set()
             for choice in wildcard_data.get('choices', []):
@@ -539,7 +635,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         existing_wildcards = set(self.processor.get_wildcard_names())
         
         # Find all wildcards used in the template to be safe
-        used_wildcards = set(re.findall(r'__([a-zA-Z0-9_.-]+)__', template))
+        used_wildcards = set(re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', template))
         
         # Combine the AI's list with the parsed list, and then find what's genuinely new.
         all_potential_new = set(new_wildcards) | used_wildcards
@@ -578,13 +674,14 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         self.history_text.delete(start_index, end_index)
         self.history_text.insert(start_index, rewritten_text)
         self.history_text.config(state=tk.DISABLED)
-
-    def _handle_generated_content(self, content: str, content_type: str, metadata: Optional[Dict] = None) -> ReviewAndSaveWindow:
+    def _handle_generated_content(self, content: str, content_type: str, metadata: Optional[Dict] = None, next_step_callback: Optional[Callable] = None) -> ReviewAndSaveWindow:
         """
         Opens or updates the review window for newly generated content.
         If content is empty, it creates the window in a loading state.
         Returns the window instance.
         """
+        # Prioritize callback from metadata if it exists (for linked generation)
+        final_next_step_callback = metadata.get('next_step_callback') if metadata else next_step_callback
         existing_window = metadata.get('window') if metadata else None
 
         if existing_window and existing_window.winfo_exists():
@@ -603,7 +700,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                     regenerate_callback = lambda win: self.generate_template_with_concept(metadata['concept'], win)
 
             # If content is empty, is_loading will be True.
-            window = ReviewAndSaveWindow(self, self.processor, content_type, content or "", self.update_callback, filename=filename, regenerate_callback=regenerate_callback, is_loading=not bool(content))
+            window = ReviewAndSaveWindow(self, self.processor, content_type, content or "", self.update_callback, filename=filename, regenerate_callback=regenerate_callback, is_loading=not bool(content), next_step_callback=final_next_step_callback)
             return window
 
     def _on_model_var_change(self, *args):

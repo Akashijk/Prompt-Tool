@@ -4,6 +4,8 @@ user-friendly alternative to raw text editing.
 """
 
 import tkinter as tk
+import re
+import copy
 import json
 import sys
 from tkinter import ttk
@@ -147,8 +149,12 @@ class _EditChoiceDialog(_CustomDialog):
         ttk.Entry(requires_frame, textvariable=self.requires_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(requires_frame, text="Add...", command=self._add_requirement).pack(side=tk.LEFT, padx=(5,0))
 
-        ttk.Label(main_frame, text="Includes (wildcards, comma-sep):").grid(row=4, column=0, sticky='w', pady=2)
-        ttk.Entry(main_frame, textvariable=self.includes_var).grid(row=4, column=1, sticky='ew', pady=2)
+        ttk.Label(main_frame, text="Includes (list or template string):").grid(row=4, column=0, sticky='w', pady=2)
+        
+        includes_frame = ttk.Frame(main_frame)
+        includes_frame.grid(row=4, column=1, sticky='ew', pady=2)
+        ttk.Entry(includes_frame, textvariable=self.includes_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(includes_frame, text="Add...", command=self._add_include).pack(side=tk.LEFT, padx=(5,0))
         
         main_frame.columnconfigure(1, weight=1)
 
@@ -176,22 +182,68 @@ class _EditChoiceDialog(_CustomDialog):
     
     def _add_requirement(self):
         dialog = _AddRequirementDialog(self, self.processor)
-        if dialog.result:
-            try:
-                current_req_str = self.requires_var.get()
-                # If empty, start a new dict, otherwise parse existing
-                current_reqs = json.loads(current_req_str) if current_req_str else {}
+        if not dialog.result:
+            return
+
+        # Get current requirements, handling invalid JSON gracefully
+        try:
+            current_req_str = self.requires_var.get()
+            current_reqs = json.loads(current_req_str) if current_req_str else {}
+            if not isinstance(current_reqs, dict): # Ensure it's a dict
+                current_reqs = {}
+        except json.JSONDecodeError:
+            current_reqs = {}
+
+        # --- Intelligent Merge Logic ---
+        new_key, new_value = list(dialog.result.items())[0]
+
+        if new_key == 'tags':
+            # --- Handle Tag Merging ---
+            if 'tags' not in current_reqs or not isinstance(current_reqs.get('tags'), dict):
+                current_reqs['tags'] = new_value
+            else:
+                # Merge new tags into existing tag rules
+                existing_tags_rule = current_reqs['tags']
+                new_tags_rule = new_value
                 
-                # Merge the new rule into the existing ones
-                current_reqs.update(dialog.result)
+                for condition, tags_to_add in new_tags_rule.items(): # e.g., "any", ["tag1"]
+                    if condition not in existing_tags_rule:
+                        existing_tags_rule[condition] = tags_to_add
+                    else:
+                        # Combine and unique the lists
+                        combined = set(existing_tags_rule[condition]) | set(tags_to_add)
+                        existing_tags_rule[condition] = sorted(list(combined))
+        else:
+            # --- Handle Value Merging ---
+            if new_key not in current_reqs:
+                current_reqs[new_key] = new_value
+            else:
+                existing_value = current_reqs[new_key]
+                all_values = set()
                 
-                # Convert back to a compact JSON string for the entry field
-                new_req_str = json.dumps(current_reqs, separators=(',', ':'))
-                self.requires_var.set(new_req_str)
-            except json.JSONDecodeError:
-                # Handle case where existing text is not valid JSON by overwriting it
-                new_req_str = json.dumps(dialog.result, separators=(',', ':'))
-                self.requires_var.set(new_req_str)
+                if isinstance(existing_value, list): all_values.update(existing_value)
+                else: all_values.add(existing_value)
+                
+                if isinstance(new_value, list): all_values.update(new_value)
+                else: all_values.add(new_value)
+                
+                merged_list = sorted(list(all_values))
+                current_reqs[new_key] = merged_list[0] if len(merged_list) == 1 else merged_list
+
+        # Convert back to a compact JSON string for the entry field
+        new_req_str = json.dumps(current_reqs, separators=(',', ':')) if current_reqs else ""
+        self.requires_var.set(new_req_str)
+
+    def _add_include(self):
+        """Opens a dialog to add wildcards to the includes field."""
+        dialog = WildcardSelectorDialog(self, self.processor)
+        if not dialog.result:
+            return
+
+        current_text = self.includes_var.get().strip()
+        to_append = " ".join([f"[{w}]" for w in dialog.result])
+        new_text = f"{current_text} {to_append}".strip()
+        self.includes_var.set(new_text)
 
 class WildcardSelectorDialog(_CustomDialog):
     """A dialog for selecting wildcards to include."""
@@ -263,13 +315,15 @@ class WildcardSelectorDialog(_CustomDialog):
 
 class WildcardEditor(ttk.Frame):
     """A structured editor for wildcard files."""
-    def __init__(self, parent, processor: 'PromptProcessor', suggestion_callback: Optional[Callable] = None, **kwargs):
+    def __init__(self, parent, processor: 'PromptProcessor', suggestion_callback: Optional[Callable] = None, refinement_callback: Optional[Callable] = None, **kwargs):
         super().__init__(parent, **kwargs)
         self.processor = processor
         self.suggestion_callback = suggestion_callback
+        self.refinement_callback = refinement_callback
         self.iid_to_choice_map: Dict[str, Any] = {}
         # The parent is a frame inside the WildcardManagerWindow.
         # self.winfo_toplevel() will give us the WildcardManagerWindow instance, which has parent_app.
+        self.validation_error_tag = "validation_error"
         self.parent_app = self.winfo_toplevel().parent_app
         
         # Define colors for included items
@@ -286,20 +340,26 @@ class WildcardEditor(ttk.Frame):
         self.description_entry = ttk.Entry(desc_frame)
         self.description_entry.pack(fill=tk.X, expand=True)
 
-        # --- Main Paned Window (Choices and Includes) ---
-        main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        # --- Main Vertical Paned Window for a more compact layout ---
+        main_pane = ttk.PanedWindow(self, orient=tk.VERTICAL)
         main_pane.pack(fill=tk.BOTH, expand=True)
 
-        # --- Choices Pane ---
+        # --- Choices Pane (Top) ---
         choices_frame = ttk.LabelFrame(main_pane, text="Choices", padding=5)
-        main_pane.add(choices_frame, weight=3)
+        main_pane.add(choices_frame, weight=4)
 
         choices_toolbar = ttk.Frame(choices_frame)
         choices_toolbar.pack(fill=tk.X, pady=(0, 5))
         ttk.Button(choices_toolbar, text="Add", command=self._add_item).pack(side=tk.LEFT)
         ttk.Button(choices_toolbar, text="Delete", command=self._delete_item).pack(side=tk.LEFT, padx=5)
-        self.suggest_button = ttk.Button(choices_toolbar, text="Suggest Choices (AI)", command=self._on_suggest_choices, state=tk.DISABLED)
-        self.suggest_button.pack(side=tk.RIGHT)
+
+        # AI buttons on the right
+        ai_button_frame = ttk.Frame(choices_toolbar)
+        ai_button_frame.pack(side=tk.RIGHT)
+        self.suggest_button = ttk.Button(ai_button_frame, text="Suggest Choices (AI)", command=self._on_suggest_choices, state=tk.DISABLED)
+        self.suggest_button.pack(side=tk.LEFT)
+        self.refine_button = ttk.Button(ai_button_frame, text="Refine Choices (AI)", command=self._on_refine_choices, state=tk.DISABLED)
+        self.refine_button.pack(side=tk.LEFT, padx=(5,0))
 
         tree_container = ttk.Frame(choices_frame)
         tree_container.pack(fill=tk.BOTH, expand=True)
@@ -327,24 +387,17 @@ class WildcardEditor(ttk.Frame):
         right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
         self.tree.bind(right_click_event, self._show_context_menu)
 
-        # --- Includes Listbox ---
-        includes_frame = ttk.LabelFrame(main_pane, text="Global Includes", padding=5)
+        # --- Includes Pane (Bottom) ---
+        includes_frame = ttk.LabelFrame(main_pane, text="Global Includes (as list or template string)", padding=5)
         main_pane.add(includes_frame, weight=1)
 
         includes_toolbar = ttk.Frame(includes_frame)
         includes_toolbar.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(includes_toolbar, text="Add...", command=self._show_include_selector).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(includes_toolbar, text="Remove", command=self._remove_include).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        ttk.Button(includes_toolbar, text="Insert Wildcard...", command=self._insert_include_wildcard).pack(side=tk.LEFT)
 
-        listbox_container = ttk.Frame(includes_frame)
-        listbox_container.pack(fill=tk.BOTH, expand=True)
-        
-        self.includes_listbox = tk.Listbox(listbox_container)
-        includes_scrollbar = ttk.Scrollbar(listbox_container, orient="vertical", command=self.includes_listbox.yview)
-        self.includes_listbox.configure(yscrollcommand=includes_scrollbar.set)
-
-        self.includes_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        includes_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # The new text widget for includes
+        self.includes_text = tk.Text(includes_frame, height=5, wrap=tk.WORD, undo=True, exportselection=False)
+        self.includes_text.pack(fill=tk.BOTH, expand=True)
 
     def _get_included_choices(self, includes: List[str]) -> Dict[str, List[str]]:
         """Get all choices from included wildcards with their source files."""
@@ -382,10 +435,18 @@ class WildcardEditor(ttk.Frame):
         self.iid_to_choice_map.clear()
         
         # Get all choices from includes
-        included_choices = self._get_included_choices(data.get('includes', []))
+        includes_data = data.get('includes')
+        includes_for_check = []
+        if isinstance(includes_data, list):
+            includes_for_check = includes_data
+        elif isinstance(includes_data, str):
+            # If it's a string, parse wildcards from it for highlighting
+            includes_for_check = list(set(re.findall(r'__([a-zA-Z0-9_.-]+)__', includes_data)))
+        included_choices = self._get_included_choices(includes_for_check)
             
         # Add choices and highlight those from includes
-        for choice in data.get('choices', []):
+        choices = data.get('choices', [])
+        for choice in choices:
             if isinstance(choice, str):
                 item_id = self.tree.insert('', tk.END, values=(choice, '', '', '', ''))
                 self.iid_to_choice_map[item_id] = choice
@@ -397,25 +458,38 @@ class WildcardEditor(ttk.Frame):
                 tags = ", ".join(choice.get('tags', []))
                 requires_dict = choice.get('requires', {})
                 requires = json.dumps(requires_dict, separators=(',', ':')) if requires_dict else ""
-                includes = ", ".join(choice.get('includes', []))
+                
+                includes_val = choice.get('includes')
+                if isinstance(includes_val, list):
+                    includes_display = json.dumps(includes_val)
+                else:
+                    includes_display = includes_val or ''
                 
                 item_id = self.tree.insert('', tk.END, 
-                    values=(value, weight, tags, requires, includes))
+                    values=(value, weight, tags, requires, includes_display))
                 self.iid_to_choice_map[item_id] = choice
                 
                 if value in included_choices:
                     self.tree.item(item_id, tags=(self.included_tag,))
 
-        # Update includes listbox
-        self.includes_listbox.delete(0, tk.END)
-        for include in data.get('includes', []):
-            self.includes_listbox.insert(tk.END, include)
+        # Update includes text area
+        self.includes_text.delete("1.0", tk.END)
+        if isinstance(data.get('includes'), str):
+            self.includes_text.insert("1.0", includes_data)
+
+        # Update refine button state
+        has_choices = bool(choices)
+        self.refine_button.config(state=tk.NORMAL if has_choices else tk.DISABLED)
 
     def get_data(self) -> Dict[str, Any]:
         """Constructs the JSON data object from the UI widgets."""
         choices = [self._get_choice_from_tree_item(iid) for iid in self.tree.get_children()]
-        includes = [self.includes_listbox.get(i) for i in range(self.includes_listbox.size())]
-        return {"description": self.description_entry.get(), "choices": choices, "includes": includes}
+        
+        includes_text = self.includes_text.get("1.0", "end-1c").strip()
+        data_dict = {"description": self.description_entry.get(), "choices": choices}
+        if includes_text:
+            data_dict['includes'] = includes_text
+        return data_dict
 
     def _get_choice_from_tree_item(self, item_id) -> Any:
         """Converts a single Treeview item into a string or a dictionary."""
@@ -450,7 +524,16 @@ class WildcardEditor(ttk.Frame):
         
         # Parse includes
         if includes_str:
-            choice_obj['includes'] = [i.strip() for i in includes_str.split(',') if i.strip()]
+            try:
+                # Try to parse as JSON list first
+                parsed_includes = json.loads(includes_str)
+                if isinstance(parsed_includes, list):
+                    choice_obj['includes'] = parsed_includes
+                else: # It's some other JSON type, store as string
+                    choice_obj['includes'] = includes_str
+            except json.JSONDecodeError:
+                # Not a valid JSON, so it's a template string
+                choice_obj['includes'] = includes_str
         
         return choice_obj
 
@@ -466,22 +549,44 @@ class WildcardEditor(ttk.Frame):
                 del self.iid_to_choice_map[selected_item]
             self.tree.delete(selected_item)
 
-    def _on_edit_item(self, event):
+    def _on_edit_item(self, event=None):
         selection = self.tree.selection()
         if len(selection) != 1: return
         
         item_id = selection[0]
-        dialog = _EditChoiceDialog(self, "Edit Choice", self.tree.item(item_id, 'values'), self.processor)
-        if dialog.result:
-            self.tree.item(item_id, values=dialog.result)
-            updated_choice = self._get_choice_from_tree_item(item_id)
-            self.iid_to_choice_map[item_id] = updated_choice
+
+        manager_window = self.winfo_toplevel()
+
+        # This editor can be used in WildcardManager or ReviewAndSaveWindow.
+        # The focus-loss issue only applies to the WildcardManager, which has a listbox.
+        # We check for the listbox to avoid crashing in other contexts.
+        is_in_manager = hasattr(manager_window, 'wildcard_listbox')
+
+        if is_in_manager:
+            manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
+
+        try:
+            dialog = _EditChoiceDialog(self, "Edit Choice", self.tree.item(item_id, 'values'), self.processor)
+            if dialog.result:
+                self.tree.item(item_id, values=dialog.result)
+                updated_choice = self._get_choice_from_tree_item(item_id)
+                self.iid_to_choice_map[item_id] = updated_choice
+        finally:
+            # Always re-bind the event to restore normal functionality if it was unbound
+            if is_in_manager and manager_window.winfo_exists():
+                manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
 
     def _on_suggest_choices(self):
         """Callback to ask the manager window to trigger AI suggestions."""
         if self.suggestion_callback:
             current_data = self.get_data()
             self.suggestion_callback(current_data)
+
+    def _on_refine_choices(self):
+        """Callback to ask the manager window to trigger AI refinement."""
+        if self.refinement_callback:
+            current_data = self.get_data()
+            self.refinement_callback(current_data)
 
     def add_suggested_choices(self, new_choices: List[Any]):
         """Adds choices suggested by the AI to the treeview."""
@@ -510,21 +615,27 @@ class WildcardEditor(ttk.Frame):
                     item_id = self.tree.insert('', tk.END, values=(value, weight, tags, requires, includes))
                     self.iid_to_choice_map[item_id] = choice
 
-    def _show_include_selector(self):
-        """Shows a dialog to select wildcards to include."""
+    def update_with_refined_choices(self, refined_choices: List[Any]):
+        """Replaces the current choices with a refined list from the AI."""
+        if not refined_choices:
+            return
+
+        # Get the current full data structure
+        current_data = self.get_data()
+        
+        # Replace the old choices list with the new
+        current_data['choices'] = refined_choices
+        
+        # Reload the editor with the updated data
+        self.set_data(current_data)
+
+    def _insert_include_wildcard(self):
+        """Opens a dialog to select wildcards and inserts them into the includes text widget."""
         dialog = WildcardSelectorDialog(self, self.processor)
         if dialog.result:
-            current_includes = set(self.includes_listbox.get(0, tk.END))
             for wildcard in dialog.result:
-                if wildcard not in current_includes:
-                    self.includes_listbox.insert(tk.END, wildcard)
-            self._refresh_ui_from_includes_change()
-
-    def _remove_include(self):
-        """Removes the selected include from the list."""
-        selection = self.includes_listbox.curselection()
-        if selection:
-            self.includes_listbox.delete(selection)
+                # Insert at the current cursor position
+                self.includes_text.insert(tk.INSERT, f"[{wildcard}] ")
             self._refresh_ui_from_includes_change()
 
     def _refresh_ui_from_includes_change(self):
@@ -533,12 +644,11 @@ class WildcardEditor(ttk.Frame):
 
     def clear_highlights(self):
         """Removes all custom highlighting tags from the tree."""
+        tags_to_remove = [self.duplicate_tag, self.validation_error_tag]
         for item_id in self.tree.get_children():
-            # Get current tags and remove the duplicate tag if present
             current_tags = list(self.tree.item(item_id, 'tags'))
-            if self.duplicate_tag in current_tags:
-                current_tags.remove(self.duplicate_tag)
-                self.tree.item(item_id, tags=tuple(current_tags))
+            new_tags = [tag for tag in current_tags if tag not in tags_to_remove]
+            self.tree.item(item_id, tags=tuple(new_tags))
 
     def highlight_duplicates(self, iids_to_highlight: List[str]):
         """Applies the duplicate highlight tag to a list of item IDs."""
@@ -548,12 +658,31 @@ class WildcardEditor(ttk.Frame):
                 current_tags.append(self.duplicate_tag)
                 self.tree.item(item_id, tags=tuple(current_tags))
 
+    def highlight_validation_error(self, iid_to_highlight: str):
+        """Applies the validation error highlight tag to a specific item ID."""
+        current_tags = list(self.tree.item(iid_to_highlight, 'tags'))
+        if self.validation_error_tag not in current_tags:
+            current_tags.append(self.validation_error_tag)
+            self.tree.item(iid_to_highlight, tags=tuple(current_tags))
+
+    def highlight_choice_by_value(self, value_to_find: str):
+        """Finds a choice by its value and applies the validation error highlight."""
+        self.clear_highlights()
+        for iid, choice_obj in self.iid_to_choice_map.items():
+            value = choice_obj if isinstance(choice_obj, str) else choice_obj.get('value')
+            if str(value) == str(value_to_find):
+                self.highlight_validation_error(iid)
+                self.tree.see(iid)
+                self.tree.selection_set(iid)
+                break
+
     def update_theme(self):
         """Updates the tag colors in the treeview to match the current theme."""
         is_dark = self.parent_app.theme_manager.current_theme == "dark"
 
         included_bg = "#2c3e50" if is_dark else "#e6f3ff" # Dark muted blue / Light blue
         duplicate_bg = "#5e3333" if is_dark else "#ffcccc" # Dark muted red / Light red
+        validation_error_bg = "#6b4226" if is_dark else "#ffe4b5" # Dark muted orange / Moccasin
 
         self.tree.tag_configure(
             self.included_tag, 
@@ -563,15 +692,20 @@ class WildcardEditor(ttk.Frame):
             self.duplicate_tag,
             background=duplicate_bg
         )
+        self.tree.tag_configure(
+            self.validation_error_tag,
+            background=validation_error_bg
+        )
 
     def _create_context_menu(self):
         """Creates the right-click context menu for the choices treeview."""
         self.context_menu = tk.Menu(self.tree, tearoff=0)
         self.context_menu.add_command(label="Edit...", command=self._on_edit_item)
-        self.context_menu.add_command(label="Merge into New Item (2)", command=self._merge_selected_items)
+        self.context_menu.add_command(label="Merge Selected Items... (2)", command=self._merge_selected_items)
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Add New Choice", command=self._add_item)
         self.context_menu.add_command(label="Delete Selected", command=self._delete_item)
+        self.context_menu.add_command(label="Duplicate Selected", command=self._duplicate_items)
 
     def _show_context_menu(self, event):
         """Shows the context menu and configures its state based on the selection."""
@@ -586,14 +720,15 @@ class WildcardEditor(ttk.Frame):
         selection = self.tree.selection()
         
         self.context_menu.entryconfig("Edit...", state=tk.NORMAL if len(selection) == 1 else tk.DISABLED)
-        self.context_menu.entryconfig("Merge into New Item (2)", state=tk.NORMAL if len(selection) == 2 else tk.DISABLED)
+        self.context_menu.entryconfig("Merge Selected Items... (2)", state=tk.NORMAL if len(selection) == 2 else tk.DISABLED)
         self.context_menu.entryconfig("Delete Selected", state=tk.NORMAL if selection else tk.DISABLED)
+        self.context_menu.entryconfig("Duplicate Selected", state=tk.NORMAL if selection else tk.DISABLED)
 
         self.context_menu.tk_popup(event.x_root, event.y_root)
         return "break"
 
     def _merge_selected_items(self):
-        """Merges two selected items into a NEW item, leaving the originals."""
+        """Merges two selected items into a NEW item, with an option to delete the originals."""
         selection = self.tree.selection()
         if len(selection) != 2:
             return
@@ -603,7 +738,6 @@ class WildcardEditor(ttk.Frame):
         # Get data for both items
         choice1 = self._get_choice_from_tree_item(item1_id)
         choice2 = self._get_choice_from_tree_item(item2_id)
-
         # Ensure they are dicts for merging complex properties
         if isinstance(choice1, str): choice1 = {'value': choice1}
         if isinstance(choice2, str): choice2 = {'value': choice2}
@@ -613,12 +747,22 @@ class WildcardEditor(ttk.Frame):
         merged_value = choice1.get('value', '')
         merged_weight = choice1.get('weight', '')
 
-        # Combine tags and includes into unique, sorted lists
+        # Combine tags into a unique, sorted list
         merged_tags = sorted(list(set(choice1.get('tags', [])) | set(choice2.get('tags', []))))
-        merged_includes = sorted(list(set(choice1.get('includes', [])) | set(choice2.get('includes', []))))
+
+        # Merge 'includes' intelligently
+        inc1 = choice1.get('includes')
+        inc2 = choice2.get('includes')
+        merged_includes = None
+
+        if isinstance(inc1, list) and isinstance(inc2, list):
+            merged_includes = sorted(list(set(inc1) | set(inc2)))
+        else: # If one or both are strings, concatenate them to be safe.
+            s1 = json.dumps(inc1) if isinstance(inc1, list) else (inc1 or '')
+            s2 = json.dumps(inc2) if isinstance(inc2, list) else (inc2 or '')
+            merged_includes = f"{s1} {s2}".strip()
 
         # Intelligently merge 'requires' dictionaries.
-        # This will combine lists for the same key instead of overwriting.
         merged_reqs = choice1.get('requires', {}).copy()
         reqs2 = choice2.get('requires', {})
         for key, value2 in reqs2.items():
@@ -630,12 +774,19 @@ class WildcardEditor(ttk.Frame):
                 merged_reqs[key] = value2
 
         # --- Create new choice object and values tuple for the treeview ---
+        
+        # Format includes for display
+        if isinstance(merged_includes, list):
+            includes_display = ", ".join(merged_includes)
+        else:
+            includes_display = merged_includes or ""
+
         new_values = (
             merged_value,
-            str(merged_weight) if merged_weight else '',
+            str(merged_weight) if merged_weight is not None and merged_weight != '' else '',
             ", ".join(merged_tags),
             json.dumps(merged_reqs, separators=(',', ':')) if merged_reqs else "",
-            ", ".join(merged_includes)
+            includes_display
         )
 
         # Get index of the last selected item to insert the new one after it
@@ -645,16 +796,67 @@ class WildcardEditor(ttk.Frame):
         new_item_id = self.tree.insert('', last_index + 1, values=new_values)
         
         # Construct the object to store in the map, cleaning up empty keys
-        new_choice_obj = {
-            'value': merged_value,
-            'weight': merged_weight,
-            'tags': merged_tags,
-            'requires': merged_reqs,
-            'includes': merged_includes
-        }
-        if not new_choice_obj.get('weight'): del new_choice_obj['weight']
-        if not new_choice_obj.get('tags'): del new_choice_obj['tags']
-        if not new_choice_obj.get('requires'): del new_choice_obj['requires']
-        if not new_choice_obj.get('includes'): del new_choice_obj['includes']
+        new_choice_obj = {'value': merged_value}
+        # Clean up None/empty values, but preserve weight if it is 0
+        if merged_weight is not None and merged_weight != '':
+            new_choice_obj['weight'] = merged_weight
+        if merged_tags: new_choice_obj['tags'] = merged_tags
+        if merged_reqs: new_choice_obj['requires'] = merged_reqs
+        if merged_includes: new_choice_obj['includes'] = merged_includes
 
         self.iid_to_choice_map[new_item_id] = new_choice_obj
+
+        # --- Ask to delete originals, handling focus ---
+        manager_window = self.winfo_toplevel()
+        is_in_manager = hasattr(manager_window, 'wildcard_listbox')
+        
+        should_delete = False
+        if is_in_manager:
+            manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
+        
+        try:
+            should_delete = custom_dialogs.ask_yes_no(self, "Delete Originals?", "Would you like to delete the original items after merging?")
+        finally:
+            if is_in_manager and manager_window.winfo_exists():
+                manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
+
+        if should_delete:
+            self.tree.delete(item1_id)
+            self.tree.delete(item2_id)
+            if item1_id in self.iid_to_choice_map: del self.iid_to_choice_map[item1_id]
+            if item2_id in self.iid_to_choice_map: del self.iid_to_choice_map[item2_id]
+
+    def _duplicate_items(self):
+        """Duplicates the selected items in the treeview."""
+        selection = self.tree.selection()
+        if not selection:
+            return
+
+        for item_id in reversed(selection): # Reverse to insert correctly after each original
+            original_choice = self.iid_to_choice_map.get(item_id)
+            if not original_choice:
+                continue
+
+            # Deep copy the underlying data object to avoid shared references
+            new_choice_obj = copy.deepcopy(original_choice)
+
+            # Get the display values from the tree
+            original_values = list(self.tree.item(item_id, 'values'))
+            new_values = original_values[:] # Create a copy
+
+            # Modify the value to indicate it's a copy
+            if isinstance(new_choice_obj, dict):
+                new_value_str = f"{new_choice_obj.get('value', '')} (copy)"
+                new_choice_obj['value'] = new_value_str
+                new_values[0] = new_value_str
+            else: # It's a string
+                new_value_str = f"{original_choice} (copy)"
+                new_choice_obj = new_value_str # The object itself is the new string
+                new_values[0] = new_value_str
+
+            # Insert the new item into the treeview, right after the original
+            original_index = self.tree.index(item_id)
+            new_item_id = self.tree.insert('', original_index + 1, values=tuple(new_values))
+            
+            # Update the map with the new item's ID and its new data object
+            self.iid_to_choice_map[new_item_id] = new_choice_obj
