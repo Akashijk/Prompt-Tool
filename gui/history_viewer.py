@@ -24,8 +24,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.show_favorites_only_var = tk.BooleanVar(value=False)
         self.iid_map: Dict[str, Dict[str, str]] = {}
         self.details_notebook: Optional[ttk.Notebook] = None
+        self.filter_debounce_timer: Optional[str] = None
         self.detail_tabs: Dict[str, Dict[str, Any]] = {}
-        self.tab_order = ['original', 'enhanced', 'cinematic', 'artistic', 'photorealistic']
+        self.original_edit_content: Optional[str] = None
         self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
 
         self._create_widgets()
@@ -42,7 +43,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         search_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", lambda *args: self._apply_filters())
+        self.search_var.trace_add("write", lambda *args: self._schedule_filter_update())
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
 
@@ -101,28 +102,10 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.details_notebook = ttk.Notebook(details_notebook_frame)
         self.details_notebook.pack(fill=tk.BOTH, expand=True)
 
-        # Create tab content holders
-        tab_titles = {
-            'original': 'Original', 'enhanced': 'Enhanced',
-            'cinematic': 'Cinematic', 'artistic': 'Artistic', 'photorealistic': 'Photorealistic'
-        }
-
-        for key in self.tab_order:
-            frame = ttk.Frame(self.details_notebook, padding=5)
-            
-            text_widget = tk.Text(frame, wrap=tk.WORD, height=5, font=self.parent_app.default_font, state=tk.DISABLED)
-            TextContextMenu(text_widget)
-            text_widget.pack(fill=tk.BOTH, expand=True)
-            
-            model_label = ttk.Label(frame, text="", font=self.parent_app.small_font, foreground="gray")
-            model_label.pack(anchor='w', pady=(5,0))
-            
-            self.detail_tabs[key] = {
-                'frame': frame,
-                'text': text_widget,
-                'model_label': model_label,
-                'title': tab_titles.get(key, key.capitalize())
-            }
+        # Create the static tabs that are always present.
+        # Variation tabs will be created dynamically as needed.
+        self._create_detail_tab('original', 'Original')
+        self._create_detail_tab('enhanced', 'Enhanced')
 
     def load_and_display_history(self):
         """Loads data from the history file and populates the treeview once."""
@@ -170,10 +153,20 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             else:
                 self.tree.detach(iid) # Detach the item so it's not visible
 
+    def _schedule_filter_update(self):
+        """Schedules a filter update after a short delay to avoid excessive updates during typing."""
+        if self.filter_debounce_timer:
+            self.after_cancel(self.filter_debounce_timer)
+        self.filter_debounce_timer = self.after(300, self._apply_filters) # 300ms delay
+
     def _on_row_select(self, event=None):
         """Displays the full content of the selected row in the details view."""
         if not self.tree or not self.details_notebook:
             return
+
+        # Before doing anything, ensure we exit edit mode if it was active
+        if 'edit_button' in self.detail_tabs['enhanced']:
+            self._cancel_edit_mode('enhanced', force=True)
 
         # Forget all tabs to ensure a clean slate for each selection
         for tab_id in self.details_notebook.tabs():
@@ -187,8 +180,12 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         full_row_data = self.iid_map.get(selected_iid)
 
         if not full_row_data:
-            # Handle case where data for the selected row is missing
-            error_tab = self.detail_tabs['original']
+            # Ensure the 'original' tab exists before trying to use it for an error message
+            if 'original' not in self.detail_tabs:
+                self._create_detail_tab('original', 'Original')
+            error_tab = self.detail_tabs.get('original')
+            if not error_tab: return # Should not happen
+
             error_tab['text'].config(state=tk.NORMAL)
             error_tab['text'].delete("1.0", tk.END)
             error_tab['text'].insert("1.0", "Error: Could not find details for the selected row.")
@@ -197,8 +194,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             self.details_notebook.add(error_tab['frame'], text=error_tab['title'])
             return
 
-        # Iterate through the predefined tab order and add tabs if data exists
-        for key in self.tab_order:
+        # --- DYNAMIC TAB LOGIC ---
+        # 1. Determine the order of tabs to display for this specific entry
+        display_order = ['original', 'enhanced']
+        if 'variations' in full_row_data:
+            display_order.extend(sorted(full_row_data['variations'].keys()))
+
+        # 2. Iterate and display tabs
+        for key in display_order:
             prompt = ""
             model = ""
             data_exists = False
@@ -218,6 +221,10 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                     if prompt: data_exists = True
             
             if data_exists:
+                # 3. Ensure the tab widgets exist, creating them if necessary
+                if key not in self.detail_tabs:
+                    self._create_detail_tab(key)
+
                 tab = self.detail_tabs[key]
                 
                 # Update tab content
@@ -229,6 +236,41 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 
                 # Add tab to notebook
                 self.details_notebook.add(self.detail_tabs[key]['frame'], text=self.detail_tabs[key]['title'])
+
+    def _create_detail_tab(self, key: str, title: Optional[str] = None):
+        """Creates the widgets for a single detail tab if they don't already exist."""
+        if key in self.detail_tabs:
+            return
+
+        if title is None:
+            # For variations, get the friendly name or capitalize the key
+            title = self.available_variations_map.get(key, key.capitalize())
+
+        frame = ttk.Frame(self.details_notebook, padding=5)
+        
+        text_widget = tk.Text(frame, wrap=tk.WORD, height=5, font=self.parent_app.default_font, state=tk.DISABLED)
+        TextContextMenu(text_widget)
+        text_widget.pack(fill=tk.BOTH, expand=True)
+
+        bottom_bar = ttk.Frame(frame)
+        bottom_bar.pack(fill=tk.X, pady=(5,0))
+
+        model_label = ttk.Label(bottom_bar, text="", font=self.parent_app.small_font, foreground="gray")
+        model_label.pack(side=tk.LEFT, anchor='w')
+
+        self.detail_tabs[key] = {'frame': frame, 'text': text_widget, 'model_label': model_label, 'title': title}
+
+        # Special handling for the 'enhanced' tab's edit buttons
+        if key == 'enhanced':
+            button_container = ttk.Frame(bottom_bar)
+            button_container.pack(side=tk.RIGHT)
+            
+            edit_button = ttk.Button(button_container, text="Edit", command=lambda k=key: self._enter_edit_mode(k))
+            update_button = ttk.Button(button_container, text="Update", style="Accent.TButton", command=lambda k=key: self._update_edited_prompt(k))
+            cancel_button = ttk.Button(button_container, text="Cancel", command=lambda k=key: self._cancel_edit_mode(k))
+            
+            self.detail_tabs[key].update({'edit_button': edit_button, 'update_button': update_button, 'cancel_button': cancel_button})
+            edit_button.pack(side=tk.LEFT)
 
     def _delete_selected_history(self):
         """Deletes the selected row from the history file and the view."""
@@ -384,3 +426,80 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             if original_prompt:
                 self.parent_app.load_prompt_from_history(original_prompt)
                 self.destroy()
+
+    def _enter_edit_mode(self, key: str):
+        """Enables editing for a specific prompt text widget."""
+        tab_controls = self.detail_tabs.get(key)
+        if not tab_controls: return
+
+        text_widget = tab_controls['text']
+        
+        # Store original content for cancellation
+        self.original_edit_content = text_widget.get("1.0", "end-1c")
+        
+        text_widget.config(state=tk.NORMAL)
+        text_widget.focus_set()
+
+        tab_controls['edit_button'].pack_forget()
+        tab_controls['update_button'].pack(side=tk.LEFT, padx=(0, 5))
+        tab_controls['cancel_button'].pack(side=tk.LEFT)
+
+    def _cancel_edit_mode(self, key: str, force: bool = False):
+        """Disables editing and reverts changes if necessary."""
+        tab_controls = self.detail_tabs.get(key)
+        if not tab_controls or 'edit_button' not in tab_controls: return
+
+        text_widget = tab_controls['text']
+        
+        # Only revert if not forced (i.e., user clicked cancel)
+        if not force and hasattr(self, 'original_edit_content'):
+            text_widget.config(state=tk.NORMAL) # Enable to modify
+            text_widget.delete("1.0", tk.END)
+            text_widget.insert("1.0", self.original_edit_content)
+
+        text_widget.config(state=tk.DISABLED)
+
+        tab_controls['update_button'].pack_forget()
+        tab_controls['cancel_button'].pack_forget()
+        tab_controls['edit_button'].pack(side=tk.LEFT)
+        
+        if hasattr(self, 'original_edit_content'):
+            del self.original_edit_content
+
+    def _update_edited_prompt(self, key: str):
+        """Saves the edited prompt to history."""
+        tab_controls = self.detail_tabs.get(key)
+        if not tab_controls or not self.tree: return
+
+        selected_items = self.tree.selection()
+        if not selected_items: return
+        item_id = selected_items[0]
+
+        original_row = self.iid_map.get(item_id)
+        if not original_row: return
+
+        new_text = tab_controls['text'].get("1.0", "end-1c").strip()
+        if not new_text:
+            messagebox.showwarning("Warning", "Enhanced prompt cannot be empty.", parent=self)
+            return
+
+        updated_row = original_row.copy()
+        updated_row['enhanced_prompt'] = new_text
+
+        success = self.processor.update_history_entry(original_row, updated_row)
+        if success:
+            # Update the in-memory data
+            self.iid_map[item_id] = updated_row
+            for i, row in enumerate(self.all_history_data):
+                if row.get('id') == original_row.get('id'):
+                    self.all_history_data[i] = updated_row
+                    break
+            
+            # Update the visible row in the treeview
+            self.tree.set(item_id, 'enhanced_prompt', new_text)
+            
+            # Exit edit mode
+            self._cancel_edit_mode(key, force=True)
+            messagebox.showinfo("Success", "Prompt updated successfully.", parent=self)
+        else:
+            messagebox.showerror("Error", "Failed to update the prompt in the history file.", parent=self)

@@ -60,6 +60,8 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         button_frame.pack(fill=tk.X)
         self.save_button = ttk.Button(button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
         self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        self.regen_all_button = ttk.Button(button_frame, text="Regenerate All", command=self._regenerate_all, state=tk.DISABLED)
+        self.regen_all_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
         self.favorite_button = ttk.Checkbutton(button_frame, text="Favorite ⭐", variable=self.is_favorite, style='Switch.TCheckbutton')
         self.favorite_button.pack(side=tk.LEFT, padx=10)
         ttk.Button(button_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
@@ -161,6 +163,21 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         if content_to_copy:
             self._copy_to_clipboard(content_to_copy)
 
+    def _regenerate_all(self):
+        """Starts the regeneration process for all prompts in the window."""
+        keys_to_regen = ['enhanced'] + self.selected_variations
+        
+        if not keys_to_regen:
+            return
+            
+        # Disable the button to prevent spamming
+        self.regen_all_button.config(state=tk.DISABLED)
+            
+        for key in keys_to_regen:
+            # Check if the regen button for this key is visible (i.e., not already regenerating)
+            if key in self.regen_buttons and self.regen_buttons[key].winfo_ismapped():
+                self._start_regeneration(key)
+
     def _start_regeneration(self, prompt_key: str):
         """Starts the regeneration process for a specific prompt in a background thread."""
         # Notify the parent app to update its counters and status
@@ -215,6 +232,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
                 custom_dialogs.show_error(self, "Regeneration Error", result['error'])
                 # Notify parent that the call failed
                 self.parent_app.report_regeneration_finished(success=False)
+                self._check_and_enable_regen_all_button()
                 return
 
             new_prompt, new_sd_model = result['prompt'], result['sd_model']
@@ -238,6 +256,8 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             # Notify parent that the call is complete
             self.parent_app.report_regeneration_finished(success=True)
             
+            self._check_and_enable_regen_all_button()
+            
         except queue.Empty:
             self.regen_queue_after_id = self.after(100, self._check_regen_queue)
 
@@ -252,6 +272,8 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
                 self.result_data['enhanced_sd_model'] = data['sd_model']
                 if self.save_button:
                     self.save_button.config(state=tk.NORMAL)
+                if hasattr(self, 'regen_all_button'):
+                    self.regen_all_button.config(state=tk.NORMAL)
             else:
                 self.result_data['variations'][key] = data
 
@@ -269,7 +291,20 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
 
             # Notify parent that an API call has finished
             self.api_call_finish_callback()
+
+            self._check_and_enable_regen_all_button()
         except queue.Empty:
             pass # No new results yet
         finally:
             self.result_queue_after_id = self.after(100, self._check_result_queue)
+
+    def _check_and_enable_regen_all_button(self):
+        """Checks if all individual regeneration spinners are gone and re-enables the main button."""
+        if not hasattr(self, 'regen_all_button'):
+            return
+
+        # Check if any loading animation is still visible
+        is_any_loading = any(spinner.winfo_ismapped() for spinner in self.loading_animations.values())
+        
+        if not is_any_loading:
+            self.regen_all_button.config(state=tk.NORMAL)

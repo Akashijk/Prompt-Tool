@@ -40,10 +40,7 @@
       "weight": 5,
       "tags": [
         "magical"
-      ],
-      "requires": {
-        "fantasy_race": "merfolk"
-      }
+      ]
     },
     {
       "value": "gnoll",
