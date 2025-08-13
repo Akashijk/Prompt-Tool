@@ -7,31 +7,33 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 ## Key Features
 
 *   **Template-Based Generation:** Create complex prompts using simple templates and `__wildcard__` placeholders.
-*   **Interactive Template Editor:**
-    *   Get AI-powered suggestions to expand and improve your templates.
-    *   Double-click any `__wildcard__` to immediately open it in the Wildcard Manager.
-    *   Select any text and right-click to instantly turn it into a new wildcard file.
 *   **Live Preview & Interaction:**
     *   Instantly see a generated prompt and click on wildcard-generated text to swap it with other options from the source file.
     *   Automatically detects missing wildcards used in your template and provides clickable links to generate them on the fly.
 *   **AI-Powered Enhancement:** Use a local LLM to enhance your base prompts, adding detail, style, and quality keywords.
 *   **Automatic Variations:** Generate cinematic, artistic, and photorealistic variations of your enhanced prompt with a single click.
+*   **Interactive Template Editor:**
+    *   Get AI-powered suggestions to expand and improve your templates.
+    *   Double-click any `__wildcard__` to immediately open it in the Wildcard Manager.
+    *   Select any text and right-click to instantly turn it into a new wildcard file.
 *   **Advanced AI Brainstorming:**
     *   A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine, expand, and improve them.
-    *   Generate new wildcard or template files from scratch based on a concept.
+    *   Generate new wildcard, template, or even *linked* wildcard files from scratch based on a concept.
     *   The AI automatically detects when a generated template or wildcard requires *new* wildcards, and provides clickable links to generate them.
-    *   Select any text in the conversation and have the AI rewrite it based on your instructions.
+    *   Select any text in the conversation and have the AI rewrite it based on your instructions ("make it more poetic", "add more technical details", etc.).
 *   **Full-Featured Wildcard Management:**
     *   A powerful structured editor to easily manage complex choices with weights, tags, requirements, and includes.
-    *   Find and automatically remove duplicate choices within a file.
+    *   Advanced tools: Find & Replace, Find Similar Choices (fuzzy matching), and Sort Choices.
     *   Merge multiple wildcard files into a new one, intelligently combining their content.
     *   Scan your entire project to find unused wildcard files that can be archived or deleted.
+    *   **Interactive Validator:** Scan all files for errors (e.g., a `requires` clause pointing to a non-existent value). Double-click an error to jump directly to the problematic file and choice, or right-click to fix common issues automatically.
     *   Use AI to suggest new choices for a wildcard, or to automatically add weights, tags, and other metadata to your existing choices.
 *   **SFW/NSFW Workflows:** Keep your SFW and NSFW content completely separate. The app dynamically switches template, wildcard, and system prompt directories.
 *   **Customizable System Prompts:** Edit the underlying instructions given to the AI for enhancement and variations to tailor its output to your needs.
-*   **History Viewer:** Browse, search, and reuse all your past enhanced prompts, with the ability to mark favorites.
+*   **History Viewer:** Browse, search, and reuse all your past enhanced prompts. Tracks which template was used for each generation and allows you to mark favorites.
 *   **Seed Management:** Easily switch between a fixed seed for reproducible results and random seeds for variety.
 *   **Modern UI:** Features a clean, modern interface with light and dark themes and adjustable font sizes.
+*   **Resource Management:** Automatically unloads AI models from VRAM when they are no longer in use by any window, helping to manage system resources efficiently.
 
 ## Requirements
 
@@ -103,7 +105,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   **Enhance:** When you're happy with the preview, click "Enhance This Prompt". A new window will appear showing the AI's enhanced version and any selected variations.
 
 3.  **AI Brainstorming (`Tools -> AI Brainstorming`):**
-    *   Chat directly with the AI for general ideas.
+    *   Chat directly with the AI for general ideas or to generate new files from scratch.
     *   Load an existing wildcard or template (via the Wildcard Manager or Template Editor context menu) to have a focused, context-aware conversation about improving it.
     *   Use the "Generate Wildcard File..." or "Generate Template File..." buttons to have the AI create new content from scratch.
     *   When the AI generates content that uses a new, non-existent wildcard, it will appear as a clickable link in the chat history, allowing you to generate it instantly.
@@ -115,7 +117,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   Use the structured editor to manage complex choices, or switch to the raw text editor for direct JSON editing.
     *   Use the "Suggest Choices (AI)" button to have the AI generate new items for your list.
     *   Use the "Refine Choices (AI)" button to have the AI analyze your existing choices and add metadata like weights, tags, and requirements.
-    *   Find duplicates, sort choices, merge files, or find unused wildcards across your project.
+    *   Use the full suite of tools to find duplicates, sort choices, merge files, or validate your entire project for errors.
     *   Click "Brainstorm with AI" to send the current wildcard list to the chat window for refinement.
 
 ## Configuration
