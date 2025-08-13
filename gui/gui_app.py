@@ -541,7 +541,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             if segment.wildcard_name:
                 tag_name = f"wildcard_{i}"
                 self.prompt_text.tag_add(tag_name, start, end)
+                # Add the base tag for functionality (hover, click)
                 self.prompt_text.tag_add("wildcard", start, end)
+                
+                # Add a specific tag for styling based on its origin
+                if segment.is_from_include:
+                    self.prompt_text.tag_add("included_wildcard", start, end)
+
                 self.segment_map.append((start, end, i))
                 if segment.wildcard_name and segment.text == f"__{segment.wildcard_name}__":
                     self.prompt_text.tag_add("missing_wildcard", start, end)

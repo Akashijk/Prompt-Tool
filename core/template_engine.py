@@ -400,36 +400,46 @@ class TemplateEngine:
             return not self._check_rules(rules['not'], context)
 
         # If no logical operators, it's an implicit 'and' of all key-value pairs.
+        return self._check_single_rule_set(rules, context)
+
+    def _check_single_rule_set(self, rules: Dict[str, Any], context: Dict[str, Any]) -> bool:
+        """Checks a simple set of rules (an implicit AND) against the context."""
         for key, condition in rules.items():
             if key == 'tags':
                 # Delegate tag checking to its own robust method
                 if not self._check_tag_rules(condition, context):
                     return False
             else:
-                # This is a standard wildcard value check
-                context_value = context.get(key, {}).get('value')
-                
-                if isinstance(condition, dict):
-                    # Handle complex conditions like {"not": "value"} or {"any": [...]}
-                    # Note: 'any' is the same as a list, but we support it for clarity.
-                    if 'any' in condition:
-                        if not isinstance(condition['any'], list) or context_value not in condition['any']:
-                            return False
-                    if 'not' in condition:
-                        not_condition = condition['not']
-                        if isinstance(not_condition, list):
-                            if context_value in not_condition:
-                                return False
-                        elif context_value == not_condition:
-                            return False
-                elif isinstance(condition, list):
-                    # "wildcard": ["value1", "value2"] means value must be one of them.
-                    if context_value not in condition:
+                # It's a wildcard value check
+                if not self._check_value_condition(key, condition, context):
+                    return False
+        return True
+
+    def _check_value_condition(self, wildcard_name: str, condition: Any, context: Dict[str, Any]) -> bool:
+        """Checks if a single wildcard's value in the context matches a given condition."""
+        context_value = context.get(wildcard_name, {}).get('value')
+
+        if isinstance(condition, dict):
+            # Handle complex conditions like {"not": "value"} or {"any": [...]}
+            if 'any' in condition:
+                if not isinstance(condition.get('any'), list) or context_value not in condition['any']:
+                    return False
+            if 'not' in condition:
+                not_condition = condition['not']
+                if isinstance(not_condition, list):
+                    if context_value in not_condition:
                         return False
-                else:
-                    # "wildcard": "value" means an exact match is required.
-                    if context_value != condition:
-                        return False
+                elif context_value == not_condition:
+                    return False
+        elif isinstance(condition, list):
+            # "wildcard": ["value1", "value2"] means value must be one of them.
+            if context_value not in condition:
+                return False
+        else:
+            # "wildcard": "value" means an exact match is required.
+            if context_value != condition:
+                return False
+            
         return True
 
     def _check_tag_rules(self, tag_rules: Dict[str, Any], context: Dict[str, Any]) -> bool:
@@ -609,15 +619,8 @@ class TemplateEngine:
         if not prompt:
             return ""
 
-        # 1. Consolidate whitespace and remove spaces before commas
-        cleaned = re.sub(r'\s+', ' ', prompt).strip()
-        cleaned = re.sub(r'\s+,', ',', cleaned)
-
-        # 2. Ensure a space after a comma (if not followed by a space or end of string)
-        cleaned = re.sub(r',(?=[^\s])', ', ', cleaned)
-
-        # 3. Consolidate multiple commas into one
-        cleaned = re.sub(r',,+', ',', cleaned)
-
-        # 4. Remove any leading or trailing commas/whitespace again
-        return cleaned.strip(' ,')
+        # Split the prompt by commas, strip whitespace from each part,
+        # filter out any empty parts, and then join them back together.
+        parts = [part.strip() for part in prompt.split(',')]
+        cleaned_parts = [part for part in parts if part]
+        return ", ".join(cleaned_parts)
