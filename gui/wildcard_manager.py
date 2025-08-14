@@ -5,6 +5,7 @@ import os
 import re
 import copy
 import queue
+import difflib
 from collections import Counter
 import tkinter as tk
 from tkinter import ttk
@@ -83,6 +84,100 @@ class _FindReplaceDialog(custom_dialogs._CustomDialog):
             }
         self.destroy()
 
+class _DependencyViewerWindow(custom_dialogs._CustomDialog):
+    """A modal dialog to display the wildcard dependency graph."""
+    def __init__(self, parent, processor: PromptProcessor, manager_window: 'WildcardManagerWindow'):
+        super().__init__(parent, "Wildcard Dependency Viewer")
+        self.processor = processor
+        self.manager_window = manager_window
+        self.graph = self.processor.get_wildcard_dependency_graph()
+        self.all_wildcards = sorted(list(self.graph.keys()))
+
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Search bar
+        search_frame = ttk.Frame(main_frame)
+        search_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(search_frame, text="Filter:").pack(side=tk.LEFT)
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", self._filter_tree)
+        ttk.Entry(search_frame, textvariable=self.search_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # Treeview
+        tree_container = ttk.Frame(main_frame)
+        tree_container.pack(fill=tk.BOTH, expand=True)
+        self.tree = ttk.Treeview(tree_container, columns=('dependencies', 'dependents'), show='tree headings')
+        self.tree.heading('#0', text='Wildcard')
+        self.tree.heading('dependencies', text='Uses (Dependencies)')
+        self.tree.heading('dependents', text='Used By (Dependents)')
+        self.tree.column('dependencies', width=150, anchor='center')
+        self.tree.column('dependents', width=150, anchor='center')
+
+        scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.tree.bind("<Double-1>", self._on_double_click)
+        
+        self._populate_tree()
+
+        # Close button
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(button_frame, text="Close", command=self.destroy).pack(side=tk.RIGHT)
+        
+        self.geometry("800x600")
+        self._center_window()
+        self.wait_window(self)
+
+    def _populate_tree(self):
+        for wc_name in self.all_wildcards:
+            data = self.graph.get(wc_name, {'dependencies': [], 'dependents': []})
+            deps_count = len(data['dependencies'])
+            dependents_count = len(data['dependents'])
+            
+            parent_iid = self.tree.insert('', 'end', text=wc_name, values=(deps_count, dependents_count), open=False)
+
+            if deps_count > 0:
+                uses_iid = self.tree.insert(parent_iid, 'end', text=f"Uses ({deps_count})")
+                for dep in data['dependencies']:
+                    self.tree.insert(uses_iid, 'end', text=dep)
+            
+            if dependents_count > 0:
+                used_by_iid = self.tree.insert(parent_iid, 'end', text=f"Used By ({dependents_count})")
+                for dep in data['dependents']:
+                    self.tree.insert(used_by_iid, 'end', text=dep)
+
+    def _filter_tree(self, *args):
+        search_term = self.search_var.get().lower()
+        for iid in self.tree.get_children():
+            if search_term in self.tree.item(iid, 'text').lower():
+                self.tree.move(iid, '', self.tree.index(iid)) # Make it visible
+                self.tree.item(iid, open=True if search_term else False) # Auto-expand on search
+            else:
+                self.tree.detach(iid)
+
+    def _on_double_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid: return
+
+        wildcard_name = self.tree.item(iid, 'text')
+        
+        # Ignore category nodes
+        if wildcard_name.startswith("Uses (") or wildcard_name.startswith("Used By ("):
+            return
+
+        filename_to_open = f"{wildcard_name}.json"
+        
+        if filename_to_open in self.manager_window.all_wildcard_files:
+            self.manager_window.select_and_load_file(filename_to_open)
+            self.manager_window.lift()
+            self.destroy()
+        else:
+            custom_dialogs.show_warning(self, "File Not Found", f"The wildcard file '{filename_to_open}' could not be found in the current workflow.")
+
 class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     """A pop-up window to manage wildcard files."""
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor, update_callback: Callable, initial_file: Optional[str] = None, initial_content: Optional[str] = None):
@@ -102,8 +197,11 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.refinement_after_id: Optional[str] = None
         self.find_unused_queue = queue.Queue()
         self.find_unused_after_id: Optional[str] = None
+        self.dialog_is_open = False
         self.validation_queue = queue.Queue()
         self.validation_after_id: Optional[str] = None
+        self.fix_queue = queue.Queue()
+        self.fix_after_id: Optional[str] = None
 
         self._create_widgets()
         self._populate_wildcard_list()
@@ -123,7 +221,23 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.after_cancel(self.find_unused_after_id)
         if self.validation_after_id:
             self.after_cancel(self.validation_after_id)
+        if self.fix_after_id:
+            self.after_cancel(self.fix_after_id)
         self.destroy()
+
+    def _on_editor_focus_in(self, event=None):
+        """Unbinds the listbox selection event when an editor widget gains focus to prevent clearing the view."""
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+
+    def _on_editor_focus_out(self, event=None):
+        """Re-binds the listbox selection event when an editor widget loses focus."""
+        # Do not re-bind if a modal dialog is expected to be open.
+        if self.dialog_is_open:
+            return
+
+        # Check if the window still exists before trying to bind.
+        if self.winfo_exists():
+            self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
     def update_theme(self):
         """Updates the theme for its child widgets."""
@@ -171,6 +285,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.archive_button.pack(fill=tk.X, pady=(5, 0))
         self.find_unused_button = ttk.Button(button_container, text="Find Unused Files", command=self._find_unused_wildcards)
         self.find_unused_button.pack(fill=tk.X, pady=(5, 0))
+        self.dependencies_button = ttk.Button(button_container, text="View Dependencies", command=self._view_dependencies)
+        self.dependencies_button.pack(fill=tk.X, pady=(5, 0))
         self.validate_button = ttk.Button(button_container, text="Validate All Files", command=self._validate_all_wildcards)
         self.validate_button.pack(fill=tk.X, pady=(5, 0))
         h_pane.add(list_frame, weight=1)
@@ -184,12 +300,22 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         # Structured Editor Tab
         self.structured_editor_frame = ttk.Frame(self.editor_notebook)
         self.structured_editor = WildcardEditor(self.structured_editor_frame, self.processor, suggestion_callback=self.suggest_choices_with_ai, refinement_callback=self.refine_choices_with_ai)
+        # Bind focus events to prevent the editor from clearing when interacting with its components.
+        self.structured_editor.description_entry.bind("<FocusIn>", self._on_editor_focus_in)
+        self.structured_editor.description_entry.bind("<FocusOut>", self._on_editor_focus_out)
+        self.structured_editor.tree.bind("<FocusIn>", self._on_editor_focus_in)
+        self.structured_editor.tree.bind("<FocusOut>", self._on_editor_focus_out)
+        self.structured_editor.includes_text.bind("<FocusIn>", self._on_editor_focus_in)
+        self.structured_editor.includes_text.bind("<FocusOut>", self._on_editor_focus_out)
         self.structured_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.editor_notebook.add(self.structured_editor_frame, text="Structured Editor")
 
         # Raw Text Editor Tab
         self.raw_text_frame = ttk.Frame(self.editor_notebook)
         self.raw_text_editor = tk.Text(self.raw_text_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, exportselection=False)
+        # Also bind focus events to the raw text editor.
+        self.raw_text_editor.bind("<FocusIn>", self._on_editor_focus_in)
+        self.raw_text_editor.bind("<FocusOut>", self._on_editor_focus_out)
         TextContextMenu(self.raw_text_editor)
         self.raw_text_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.editor_notebook.add(self.raw_text_frame, text="Raw Text Editor")
@@ -210,6 +336,9 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         tools_menu.add_command(label="Find Exact Duplicates", command=self._find_duplicates)
         tools_menu.add_command(label="Find Similar...", command=self._find_similar_choices)
         tools_menu.add_command(label="Sort Choices", command=self._sort_choices)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Remove All 'requires'...", command=lambda: self._remove_all_keys('requires'))
+        tools_menu.add_command(label="Remove All 'includes'...", command=lambda: self._remove_all_keys('includes'))
         tools_menu.add_separator()
         tools_menu.add_command(label="Brainstorm with AI", command=self._brainstorm_with_ai)
 
@@ -363,13 +492,16 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_error(self, "Error", f"Could not save wildcard file. Please ensure it is valid JSON.\n\n{e}")
 
     def _create_new_wildcard_file(self):
-        filename = custom_dialogs.ask_string(self, "New Wildcard File", "Enter new wildcard filename:")
-        if not filename: return
-        if not filename.endswith('.json'): filename += '.json'
+        filename_result = None
+        is_nsfw_only = False
+
+        # Unbind to protect dialogs from causing focus loss issues
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
         try:
-            # Create a default JSON structure for the new file
-            default_content = '{\n  "description": "A new wildcard file.",\n  "choices": [\n    "item 1",\n    "item 2"\n  ]\n}'
-            is_nsfw_only = False
+            filename_result = custom_dialogs.ask_string(self, "New Wildcard File", "Enter new wildcard filename:")
+            if not filename_result:
+                return # User cancelled
+
             if config.workflow == 'nsfw':
                 is_nsfw_only = custom_dialogs.ask_yes_no(
                     self,
@@ -377,8 +509,20 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
                     "Save this as an NSFW-only wildcard?\n\n"
                     "(Choosing 'No' will save it to the shared folder, making it available in both SFW and NSFW modes.)"
                 )
+        finally:
+            # Always re-bind the event to restore normal functionality
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
-            # Create an empty file by saving empty content, respecting the user's choice
+        if not filename_result:
+            return
+
+        filename = filename_result
+        if not filename.endswith('.json'):
+            filename += '.json'
+
+        try:
+            default_content = '{\n  "description": "A new wildcard file.",\n  "choices": [\n    "item 1",\n    "item 2"\n  ]\n}'
             self.processor.save_wildcard_content(filename, default_content, is_nsfw_only=is_nsfw_only)
             self._populate_wildcard_list()
             self.update_callback()
@@ -401,8 +545,14 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         if num_files > 5:
             message += f"\n...and {num_files - 5} more."
         
-        if not custom_dialogs.ask_yes_no(self, "Confirm Archive", message):
-            return
+        # Unbind to prevent focus loss from clearing the editor
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        try:
+            if not custom_dialogs.ask_yes_no(self, "Confirm Archive", message):
+                return
+        finally:
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
         try:
             for filename in files_to_archive:
@@ -593,7 +743,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             try:
                 should_remove = custom_dialogs.ask_yes_no(self, "Remove Duplicates?", message)
             finally:
-                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+                if self.winfo_exists():
+                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
             if should_remove:
                 iids_to_delete = []
@@ -658,7 +809,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             )
         finally:
             # Always re-bind the event to restore normal functionality
-            self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
         if not threshold_str: return
         try:
@@ -722,10 +874,17 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         if not self.selected_wildcard_file:
             return
 
-        selection = self.structured_editor.tree.selection()
-        dialog = _FindReplaceDialog(self, selection_exists=bool(selection))
-        if not dialog.result:
-            return
+        # Unbind the selection event to prevent the dialog from clearing the editor on focus loss.
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        try:
+            selection = self.structured_editor.tree.selection()
+            dialog = _FindReplaceDialog(self, selection_exists=bool(selection))
+            if not dialog.result:
+                return
+        finally:
+            # Always re-bind the event to restore normal functionality
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
         params = dialog.result
         find_text = params['find']
@@ -832,6 +991,46 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.save_button.config(state=tk.NORMAL)
         custom_dialogs.show_info(self, "Sort Complete", "Choices have been sorted alphabetically.\n\nPlease save the file to apply the changes.")
 
+    def _remove_all_keys(self, key_to_remove: str):
+        """Removes all instances of a specific key ('requires' or 'includes') from all choices."""
+        if not self.selected_wildcard_file:
+            return
+
+        # Unbind to protect dialog from causing focus loss issues
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        try:
+            if not custom_dialogs.ask_yes_no(
+                self,
+                f"Confirm Removal",
+                f"Are you sure you want to remove ALL '{key_to_remove}' entries from every choice in this file?\n\nThis action cannot be undone."
+            ):
+                return
+        finally:
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+
+        # Proceed with the logic if the user confirmed
+        data = self.structured_editor.get_data() # Get data *after* dialog
+        choices = data.get('choices', [])
+        keys_removed_count = 0
+
+        for choice in choices:
+            if isinstance(choice, dict) and key_to_remove in choice:
+                del choice[key_to_remove]
+                keys_removed_count += 1
+        
+        # Also remove the global includes if that's what we're targeting
+        if key_to_remove == 'includes' and 'includes' in data:
+            del data['includes']
+            keys_removed_count += 1
+
+        if keys_removed_count > 0:
+            self.structured_editor.set_data(data)
+            self.save_button.config(state=tk.NORMAL)
+            custom_dialogs.show_info(self, "Removal Complete", f"Removed {keys_removed_count} '{key_to_remove}' entries.\n\nPlease save the file to apply the changes.")
+        else:
+            custom_dialogs.show_info(self, "No Changes", f"No '{key_to_remove}' entries were found to remove.")
+
     def _find_unused_wildcards(self):
         """Starts the 'find unused wildcards' process in a background thread."""
         self.find_unused_button.config(state=tk.DISABLED, text="Scanning...")
@@ -867,6 +1066,10 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
                 custom_dialogs.show_error(self, "Error", f"An error occurred while checking for unused wildcards:\n{result['error']}")
         except queue.Empty:
             self.find_unused_after_id = self.after(100, self._check_find_unused_queue)
+
+    def _view_dependencies(self):
+        """Opens the dependency viewer window."""
+        _DependencyViewerWindow(self, self.processor, self)
 
     def _validate_all_wildcards(self):
         """Starts the wildcard validation process in a background thread."""
@@ -912,6 +1115,12 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         ttk.Label(main_frame, text="The following issues were found. Double-click an error to jump to the file.", wraplength=780).pack(anchor='w', pady=(0, 10))
+
+        # --- Action Buttons ---
+        action_frame = ttk.Frame(main_frame)
+        action_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(action_frame, text="Attempt to Fix All Missing Values...", command=lambda: self._fix_all_missing_values(errors, error_window), style="Accent.TButton").pack(side=tk.LEFT)
+        ttk.Button(action_frame, text="Fix Selected with AI...", command=lambda: self._fix_error_with_ai(tree, iid_map, error_window)).pack(side=tk.LEFT, padx=5)
 
         # --- Treeview for errors ---
         text_frame = ttk.Frame(main_frame)
@@ -1001,6 +1210,178 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
         ttk.Button(main_frame, text="Close", command=error_window.destroy).pack(pady=(10, 0))
         
+    def _fix_error_with_ai(self, error_tree: ttk.Treeview, iid_map: Dict[str, Any], parent_window: tk.Toplevel):
+        """Handles the full workflow for fixing a selected error with AI."""
+        selection = error_tree.selection()
+        if not selection:
+            custom_dialogs.show_warning(parent_window, "No Selection", "Please select an error to fix.")
+            return
+
+        iid = selection[0]
+        error_details = iid_map.get(iid)
+        if not error_details: return
+
+        filename = error_details.get('source_file')
+        if not filename: return
+
+        try:
+            original_content = self.processor.load_wildcard_content(filename)
+        except Exception as e:
+            custom_dialogs.show_error(parent_window, "Error", f"Could not load file '{filename}':\n{e}")
+            return
+
+        loading_dialog = custom_dialogs._CustomDialog(parent_window, "AI Fixing Error")
+        ttk.Label(loading_dialog, text=f"Asking AI to fix error in '{filename}'...\nThis may take a moment.").pack(padx=20, pady=20)
+        loading_dialog.update_idletasks()
+        loading_dialog._center_window()
+
+        def task():
+            try:
+                model = self.parent_app.enhancement_model_var.get()
+                if not model or "model" in model.lower():
+                    raise Exception("Please select a valid Ollama model in the main window.")
+                
+                fixed_content = self.processor.fix_wildcard_error_with_ai(original_content, error_details, model)
+                self.fix_queue.put({'success': True, 'original': original_content, 'fixed': fixed_content, 'filename': filename})
+            except Exception as e:
+                self.fix_queue.put({'success': False, 'error': str(e)})
+            finally:
+                loading_dialog.after(0, loading_dialog.destroy)
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self._check_fix_queue(parent_window)
+
+    def _check_fix_queue(self, parent_window: tk.Toplevel):
+        """Checks for results from the AI fixer thread."""
+        try:
+            result = self.fix_queue.get_nowait()
+            if result['success']:
+                self._show_fix_confirmation(result['original'], result['fixed'], result['filename'], parent_window)
+            else:
+                custom_dialogs.show_error(parent_window, "AI Fix Error", f"The AI failed to fix the error:\n{result['error']}")
+        except queue.Empty:
+            self.fix_after_id = self.after(100, lambda: self._check_fix_queue(parent_window))
+
+    def _show_fix_confirmation(self, original_content: str, fixed_content: str, filename: str, parent_window: tk.Toplevel):
+        """Shows a diff view for the user to confirm the AI's proposed changes."""
+        if original_content.strip() == fixed_content.strip():
+            custom_dialogs.show_info(parent_window, "AI Fix", "The AI returned the content without any changes.")
+            return
+
+        diff = difflib.unified_diff(original_content.splitlines(keepends=True), fixed_content.splitlines(keepends=True), fromfile='original', tofile='fixed_by_ai')
+        diff_text = "".join(diff)
+
+        # This is a complex dialog, so we create it here instead of a separate class for now.
+        diff_window = custom_dialogs._CustomDialog(parent_window, f"Confirm AI Fix for {filename}")
+        diff_window.geometry("700x500")
+        self._create_diff_dialog_widgets(diff_window, diff_text, filename, fixed_content, parent_window)
+
+    def _fix_all_missing_values(self, errors: List[Dict[str, Any]], parent_window: tk.Toplevel):
+        """Attempts to automatically fix all 'missing_value' errors by adding the values to the target files."""
+        fixable_errors = [e for e in errors if e.get('details', {}).get('type') == 'missing_value']
+        
+        if not fixable_errors:
+            custom_dialogs.show_info(parent_window, "No Fixable Errors", "No errors of type 'missing value' were found to fix automatically.")
+            return
+
+        if not custom_dialogs.ask_yes_no(
+            parent_window,
+            "Confirm Auto-Fix",
+            f"Found {len(fixable_errors)} errors that can be automatically fixed by adding missing values to other wildcards.\n\nAre you sure you want to proceed?"
+        ):
+            return
+
+        # Group fixes by target file to avoid reading/writing the same file multiple times.
+        fixes_by_file: Dict[str, Set[str]] = {}
+        for error in fixable_errors:
+            details = error['details']
+            target_file = details['target_wildcard']
+            missing_value = details['missing_value']
+            if target_file not in fixes_by_file:
+                fixes_by_file[target_file] = set()
+            fixes_by_file[target_file].add(missing_value)
+
+        files_modified_count = 0
+        values_added_count = 0
+        errors_encountered = []
+
+        for target_file, values_to_add in fixes_by_file.items():
+            try:
+                target_data = self._load_and_parse_wildcard_file(target_file)
+                if target_data is None:
+                    errors_encountered.append(f"Could not load target file '{target_file}'.")
+                    continue
+                
+                if 'choices' not in target_data: target_data['choices'] = []
+                
+                existing_choices = {str(c.get('value') if isinstance(c, dict) else c) for c in target_data['choices']}
+                newly_added_count = 0
+                for value in values_to_add:
+                    if value not in existing_choices:
+                        target_data['choices'].append(value)
+                        newly_added_count += 1
+                
+                if newly_added_count > 0:
+                    new_content = json.dumps(target_data, indent=2)
+                    self.processor.save_wildcard_content(target_file, new_content)
+                    files_modified_count += 1
+                    values_added_count += newly_added_count
+            except Exception as e:
+                errors_encountered.append(f"Failed to modify '{target_file}': {e}")
+
+        summary_message = f"Auto-fix complete.\n\n- Added {values_added_count} missing values across {files_modified_count} files."
+        if errors_encountered:
+            summary_message += "\n\nErrors encountered:\n" + "\n".join([f"- {e}" for e in errors_encountered])
+        summary_message += "\n\nPlease re-run validation to confirm the fixes."
+        
+        custom_dialogs.show_info(parent_window, "Auto-Fix Complete", summary_message)
+        parent_window.destroy()
+
+    def _create_diff_dialog_widgets(self, diff_window: tk.Toplevel, diff_text: str, filename: str, fixed_content: str, parent_window: tk.Toplevel):
+        """Creates the widgets inside the diff confirmation dialog."""
+        main_frame = ttk.Frame(diff_window, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="The AI has proposed the following changes. Review the diff and click 'Apply Fix' to save.", wraplength=680).pack(anchor='w', pady=(0, 10))
+
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+        
+        diff_widget = tk.Text(text_frame, wrap=tk.WORD, font=self.parent_app.fixed_font)
+        diff_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=diff_widget.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        diff_widget.configure(yscrollcommand=scrollbar.set)
+
+        diff_widget.insert("1.0", diff_text)
+
+        # Add color highlighting for diff
+        diff_widget.tag_configure("addition", foreground="green")
+        diff_widget.tag_configure("deletion", foreground="red")
+
+        for i, line in enumerate(diff_text.splitlines(), 1):
+            if line.startswith('+') and not line.startswith('+++'):
+                diff_widget.tag_add("addition", f"{i}.0", f"{i}.end")
+            elif line.startswith('-') and not line.startswith('---'):
+                diff_widget.tag_add("deletion", f"{i}.0", f"{i}.end")
+        
+        diff_widget.config(state=tk.DISABLED)
+
+        def apply_fix():
+            try:
+                self.processor.save_wildcard_content(filename, fixed_content)
+                custom_dialogs.show_info(parent_window, "Success", f"Successfully applied AI fix to '{filename}'.\n\nPlease re-run validation.")
+                diff_window.destroy()
+                parent_window.destroy() # Close the validation error window too
+            except Exception as e:
+                custom_dialogs.show_error(diff_window, "Save Error", f"Could not save file:\n{e}")
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(button_frame, text="Apply Fix", command=apply_fix, style="Accent.TButton").pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Cancel", command=diff_window.destroy).pack(side=tk.RIGHT, padx=(0, 5))
+
     def _sort_treeview_column(self, tv, col, reverse):
         """Sort treeview contents when a column is clicked on."""
         l = [(tv.set(k, col), k) for k in tv.get_children('')]
@@ -1039,12 +1420,53 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_error(self, "File Load Error", f"Could not load or parse '{filename}':\n{e}")
             return None
 
+    def _rename_selected_wildcard(self):
+        """Renames the selected wildcard file."""
+        selected_indices = self.wildcard_listbox.curselection()
+        if len(selected_indices) != 1:
+            return
+
+        old_filename = self.wildcard_listbox.get(selected_indices[0])
+        old_basename, _ = os.path.splitext(old_filename)
+
+        # Unbind to prevent focus loss from clearing the editor
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        try:
+            new_basename = custom_dialogs.ask_string(
+                self, 
+                "Rename Wildcard", 
+                "Enter new name (without extension):", 
+                initialvalue=old_basename
+            )
+        finally:
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+
+        if not new_basename or new_basename.strip() == old_basename:
+            return
+
+        new_filename = f"{new_basename.strip()}.json"
+
+        try:
+            self.processor.rename_wildcard(old_filename, new_filename)
+            
+            self._populate_wildcard_list()
+            self.update_callback(modified_file=new_filename)
+            self.select_and_load_file(new_filename)
+            
+            custom_dialogs.show_info(self, "Rename Successful", f"Renamed '{old_filename}' to '{new_filename}'.")
+        except FileExistsError as e:
+            custom_dialogs.show_error(self, "Rename Error", str(e))
+        except Exception as e:
+            custom_dialogs.show_error(self, "Rename Error", f"Could not rename file:\n{e}")
+
     def _create_file_list_context_menu(self):
         """Creates the right-click context menu for the wildcard file list."""
         self.file_list_context_menu = tk.Menu(self.wildcard_listbox, tearoff=0)
         self.file_list_context_menu.add_command(label="Brainstorm with AI", command=self._brainstorm_with_ai)
         self.file_list_context_menu.add_separator()
         self.file_list_context_menu.add_command(label="Archive", command=self._archive_selected_wildcard)
+        self.file_list_context_menu.add_command(label="Rename...", command=self._rename_selected_wildcard)
 
     def _show_file_list_context_menu(self, event):
         """
@@ -1085,6 +1507,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
         # Configure menu items based on the final selection
         self.file_list_context_menu.entryconfig("Brainstorm with AI", state=tk.NORMAL if selection_count == 1 else tk.DISABLED)
+        self.file_list_context_menu.entryconfig("Rename...", state=tk.NORMAL if selection_count == 1 else tk.DISABLED)
         self.file_list_context_menu.entryconfig("Archive", state=tk.NORMAL if selection_count > 0 else tk.DISABLED)
 
         self.file_list_context_menu.tk_popup(event.x_root, event.y_root)
@@ -1175,5 +1598,11 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
                 return # Error was already shown
             all_data.append((file_name, data))
 
-        merged_data = self._perform_merge(all_data)
-        self._save_and_finalize_merge(merged_data, file_names)
+        # Unbind here to protect all dialogs within the merge and save steps.
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        try:
+            merged_data = self._perform_merge(all_data)
+            self._save_and_finalize_merge(merged_data, file_names)
+        finally:
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)

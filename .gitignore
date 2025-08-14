@@ -10,6 +10,7 @@ templates/**
 history/**
 wildcards/**
 system_prompts/**
+tests/**
 
 # Include exceptions for initial setup
 #!templates/

@@ -402,69 +402,10 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         results_window = self._handle_generated_content("", "wildcard", metadata)
         metadata['window'] = results_window
 
-        # Add workflow context to the prompt
-        workflow_context = ""
-        if config.workflow == 'nsfw':
-            workflow_context = (
-                "The user is currently in NSFW (Not Safe For Work) mode. "
-                "Generated items may include explicit, adult-oriented, and pornographic elements if the subject naturally calls for it. "
-                "Only include sexual or explicit details when they are relevant to the subject or enhance its realism—avoid forcing explicit terms into unrelated or inanimate objects unless it makes natural sense in an erotic context. "
-                "If the request involves neutral topics like furniture, backdrops, landscapes, or clothing styles, describe them normally unless there is a clear erotic reason to make them explicit. "
-                "Use realistic and coherent descriptions rather than absurd combinations, and prioritize plausible adult themes over randomness."
-            )
-        else:
-            workflow_context = "The user is currently in SFW (Safe For Work) mode. The items should be general-purpose and not contain any explicit content."
-
-        # Sanitize the topic to create a likely wildcard name for the 'no self-reference' rule.
-        wildcard_name_from_topic = re.sub(r'\s+', '_', topic.strip()).lower()
-        wildcard_name_from_topic = re.sub(r'[^a-z0-9_]', '', wildcard_name_from_topic)
-
-        # Get a sample of other wildcards, making sure not to include the one we are generating.
-        all_wildcard_names = self.processor.get_wildcard_names()
-        other_wildcard_names = [wc for wc in all_wildcard_names if wc != wildcard_name_from_topic]
-        sample_size = min(5, len(other_wildcard_names))
-        wildcard_sample_str = ", ".join(random.sample(other_wildcard_names, sample_size)) if other_wildcard_names else "none"
-
-        # Add a special instruction if this is a linked wildcard generation.
-        linked_wildcard_instruction = ""
-        if supporting_wildcard_to_include:
-            supporting_basename, _ = os.path.splitext(supporting_wildcard_to_include)
-            linked_wildcard_instruction = (
-                f"\n\n**LINKED WILDCARD CONTEXT:**\n"
-                f"This wildcard ('{topic}') is being generated to work with a supporting wildcard named '{supporting_basename}'. "
-                f"The application will automatically add `\"includes\": [\"{supporting_basename}\"]` to the generated file. "
-                f"Your generated choices should be phrases or actions that can be combined with an item from '{supporting_basename}'. "
-                f"For example, if '{supporting_basename}' contains weapons, your choices for '{topic}' could be poses like 'swinging', 'holding', 'parrying with'."
-            )
-
-        prompt = (
-            f"You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'."
-            f"{linked_wildcard_instruction}\n\n"
-            f"**CONTEXT:** {workflow_context}\n\n"
-            f"**CRITICAL INSTRUCTIONS:**\n"
-            f"1.  **Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.\n"
-            f"2.  **JSON Format:** You MUST return a single JSON object with a `description` and a `choices` array.\n"
-            f"3.  **Complex Choices:** The `choices` array should contain a mix of simple strings and complex objects. For objects, you can include `weight`, `tags`, `requires`, and `includes` keys.\n"
-            f"4.  **Requirements & Includes:** Use `requires` for dependencies. This can be a value check (e.g., `{{\"wildcard_name\": \"value\"}}`) or a tag check (e.g., `{{\"tags\": {{\"any\": [\"tag1\"]}}}}`). Use `includes` (e.g., `[\"another_wildcard\"]`) to add more wildcards.\n"
-            f"5.  **No Self-Reference:** The `requires` key MUST NOT refer to the wildcard being generated (`{wildcard_name_from_topic}`). This is a critical rule.\n"
-            f"6.  **Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.\n"
-            f"7.  **Unique Values:** Ensure all `value` fields within your generated `choices` array are unique. Do not repeat items.\n"
-            f"8.  **No Extra Text:** Do not add any commentary outside of the JSON object.\n\n"
-            f"**Existing Wildcards sample for 'requires' and 'includes' clauses:** {wildcard_sample_str}\n\n"
-            f"**EXAMPLE for topic 'fantasy_character_class':**\n"
-            f"{{\n"
-            f'  "description": "A list of fantasy character classes.",\n'
-            f'  "choices": [\n'
-            f'    "peasant",\n'
-            f'    {{"value": "elven archer", "weight": 3, "tags": ["ranged", "elf"], "requires": {{"fantasy_race": "elf"}}, "includes": ["elven_bow", "leather_armor"]}},\n'
-            f'    {{"value": "dwarven warrior", "weight": 3, "tags": ["melee", "dwarf"], "requires": {{"fantasy_race": "dwarf"}}, "includes": ["dwarven_axe", "plate_armor"]}},\n'
-            f'    {{"value": "shadowmancer", "tags": ["magic", "stealth"], "requires": {{"tags": {{"any": ["night", "darkness"]}}}}}}\n'
-            f'  ]\n'
-            f"}}\n\n"
-            f"Now, generate the JSON for the topic: '{topic}'."
-        )
         self._add_message("AI", f"Generating wildcard ideas for '{topic}'...", "thinking")
-        self._run_generation_task(prompt, "wildcard", metadata=metadata)
+        # The task now just needs the topic, not the full prompt.
+        # The processor will build the full prompt internally.
+        self._run_generation_task(topic, "wildcard", metadata=metadata)
 
     def _generate_template_file(self):
         """Guides the user to generate a new template file."""
@@ -480,59 +421,32 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         metadata = {'concept': concept, 'window': existing_window}
         results_window = self._handle_generated_content("", "template", metadata)
         metadata['window'] = results_window
-
-        wildcard_names = self.processor.get_wildcard_names()
-        # Suggest a smaller, random sample of wildcards to avoid overwhelming the AI
-        sample_size = min(15, len(wildcard_names))
-        wildcard_sample_str = ", ".join(random.sample(wildcard_names, sample_size)) if wildcard_names else "none"
-
-        # Add workflow context to the prompt
-        workflow_context = ""
-        if config.workflow == 'nsfw':
-            workflow_context = (
-                "The user is currently in NSFW (Not Safe For Work) mode. "
-                "The template should be designed for generating explicit, adult-oriented, and pornographic imagery. "
-                "It should be descriptive and graphic where appropriate."
-            )
-        else:
-            workflow_context = "The user is currently in SFW (Safe For Work) mode. The template should be suitable for general-purpose, non-explicit imagery."
-
-        prompt = (
-            f"You are an AI assistant that creates templates for a Stable Diffusion prompt generator. "
-            f"The user wants a template for the concept: '{concept}'.\n\n"
-            f"**CONTEXT:** {workflow_context}\n\n"
-            f"Your task is to write a descriptive prompt template. You can use existing wildcards from the list below, but you are also **strongly encouraged to invent new, relevant wildcard names** to make the template more versatile.\n\n"
-            f"**CRITICAL INSTRUCTIONS:**\n"
-            f"1.  All wildcard names, existing or new, MUST be in the exact format `__wildcard_name__`.\n"
-            f"2.  The final template should be a single paragraph of comma-separated keywords and phrases.\n"
-            f"3.  You MUST return your response in the following format, with nothing before or after:\n"
-            f"TEMPLATE: [The full template text you generated]\n"
-            f"NEW_WILDCARDS: [A comma-separated list of any new wildcard names you invented. If you invented none, write 'none'.]\n\n"
-            f"**EXAMPLE RESPONSE:**\n"
-            f"TEMPLATE: a portrait of a __character_class__, __hair_style__ hair, wearing __fantasy_armor__, holding a __weapon_type__, in a __fantasy_forest__, __lighting_style__\n"
-            f"NEW_WILDCARDS: fantasy_armor, fantasy_forest\n\n"
-            f"Here is a sample of EXISTING wildcards you can use: {wildcard_sample_str}\n\n"
-            f"Now, generate the template for the concept: '{concept}'."
-        )
         self._add_message("AI", f"Generating a template for '{concept}'...", "thinking")
-        self._run_generation_task(prompt, "template", metadata=metadata)
+        # The task now just needs the concept, not the full prompt.
+        # The processor will build the full prompt internally.
+        self._run_generation_task(concept, "template", metadata=metadata)
 
-    def _run_generation_task(self, prompt: str, content_type: str, metadata: Optional[Dict] = None):
+    def _run_generation_task(self, prompt_or_topic: str, content_type: str, metadata: Optional[Dict] = None):
         """Runs a generation task in a background thread."""
         model = self.model_var.get()
         self.send_button.config(state=tk.DISABLED)
 
         def task():
             try:
-                # Use the new one-shot generation method
+                # Use the one-shot generation method which builds the prompt internally
                 if content_type == 'wildcard':
-                    response = self.processor.generate_wildcard_for_brainstorming(model, prompt, metadata.get('topic', ''))
+                    # The processor method now takes the topic and metadata directly
+                    response = self.processor.generate_wildcard_for_brainstorming(model, prompt_or_topic, metadata)
                     self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
                 elif content_type == 'template':
-                    template, new_wildcards = self.processor.generate_template_for_brainstorming(model, prompt)
+                    # The processor method now takes the concept directly
+                    template, new_wildcards = self.processor.generate_template_for_brainstorming(model, prompt_or_topic)
                     self.chat_queue.put({'response': (template, new_wildcards), 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
-                else: # rewrite
-                    response = self.processor.generate_for_brainstorming(model, prompt)
+                elif content_type == 'rewrite':
+                    if not metadata: return
+                    selected_text = metadata.get('selected_text', '')
+                    instructions = metadata.get('instructions', '')
+                    response = self.processor.rewrite_text(selected_text, instructions, model)
                     self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
             except Exception as e:
                 # Pass metadata along with the error so we can handle the UI correctly
@@ -558,13 +472,6 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         )
         if not instructions: return
 
-        prompt = (
-            f"You are an AI assistant. Your task is to rewrite the following text based on the user's instruction.\n\n"
-            f"INSTRUCTION: {instructions}\n\n"
-            f"ORIGINAL TEXT:\n---\n{selected_text}\n---\n\n"
-            f"Return only the rewritten text, with no extra commentary."
-        )
-        
         # Replace selected text with a loading message
         self.history_text.config(state=tk.NORMAL)
         self.history_text.delete(start_index, end_index)
@@ -572,8 +479,15 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         self.history_text.insert(start_index, placeholder, ("thinking",))
         new_end_index = self.history_text.index(f"{start_index} + {len(placeholder)}c")
         self.history_text.config(state=tk.DISABLED)
-        metadata = {'start_index': start_index, 'end_index': new_end_index}
-        self._run_generation_task(prompt, "rewrite", metadata=metadata)
+        
+        # Pass the raw components to the generation task
+        metadata = {
+            'start_index': start_index, 
+            'end_index': new_end_index,
+            'selected_text': selected_text,
+            'instructions': instructions
+        }
+        self._run_generation_task("", "rewrite", metadata=metadata)
 
     def _handle_generated_wildcard(self, parsed_json_string: str, metadata: Optional[Dict] = None):
         """Handles the display of a newly generated wildcard and its new 'includes'."""

@@ -9,8 +9,12 @@ from typing import List, Dict, Any, Optional, Callable, Tuple, Set
 from .template_engine import TemplateEngine, PromptSegment
 from .csv_manager import HistoryManager
 from .config import config
-from .default_content import DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, \
-                             DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS
+from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS,
+                              DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS,
+                              DEFAULT_BRAINSTORM_TEMPLATE_PROMPT, DEFAULT_BRAINSTORM_WILDCARD_PROMPT,
+                              DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION,
+                              DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT,
+                              DEFAULT_BRAINSTORM_REWRITE_PROMPT)
 from .ollama_client import OllamaClient
 from datetime import datetime
 
@@ -231,9 +235,54 @@ class PromptProcessor:
                             used_wildcards.update(re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', choice_includes))
                         
                         # Handle requires
-                        if 'requires' in choice and isinstance(choice.get('requires'), dict):
-                            used_wildcards.update(choice['requires'].keys())
+                        requires_data = choice.get('requires')
+                        if isinstance(requires_data, dict):
+                            # Recursively find all keys which are wildcard names
+                            def find_keys(d):
+                                for k, v in d.items():
+                                    if k not in ['tags', 'and', 'or', 'not']:
+                                        used_wildcards.add(k)
+                                    if isinstance(v, dict):
+                                        find_keys(v)
+                                    elif isinstance(v, list):
+                                        for item in v:
+                                            if isinstance(item, dict):
+                                                find_keys(item)
+                            find_keys(requires_data)
+
         return used_wildcards
+
+    def get_wildcard_dependency_graph(self) -> Dict[str, Dict[str, List[str]]]:
+        """
+        Builds a dependency graph for all wildcards.
+        Returns a dictionary where each key is a wildcard name, and the value is a
+        dict containing 'dependencies' (what it uses) and 'dependents' (what uses it).
+        """
+        if self.all_wildcards_cache is None:
+            self._load_all_wildcards_into_cache()
+        
+        if self.all_wildcards_cache is None: return {}
+
+        graph = {wc_name: {'dependencies': set(), 'dependents': set()} for wc_name in self.all_wildcards_cache.keys()}
+
+        for wc_name, wc_data in self.all_wildcards_cache.items():
+            # Use the existing robust logic to find all wildcards this file uses
+            used_wildcards = self.get_all_used_wildcards_for_single_file(wc_data)
+            
+            for dep in used_wildcards:
+                if dep in graph: # Ensure the dependency is a known wildcard
+                    graph[wc_name]['dependencies'].add(dep)
+                    graph[dep]['dependents'].add(wc_name)
+
+        # Convert sets to sorted lists for consistent output
+        final_graph = {}
+        for wc_name in sorted(graph.keys()):
+            final_graph[wc_name] = {
+                'dependencies': sorted(list(graph[wc_name]['dependencies'])),
+                'dependents': sorted(list(graph[wc_name]['dependents']))
+            }
+            
+        return final_graph
 
     def load_wildcard_content(self, wildcard_file: str) -> str:
         """Load content of a single wildcard file."""
@@ -306,6 +355,25 @@ class PromptProcessor:
         basename, _ = os.path.splitext(wildcard_file)
         if self.all_wildcards_cache is not None:
             self.all_wildcards_cache.pop(basename, None)
+
+    def rename_wildcard(self, old_filename: str, new_filename: str) -> None:
+        """Renames a wildcard file on disk and updates internal caches."""
+        search_order = self._get_wildcard_search_order()
+        
+        # Perform the file system operation
+        self.template_engine.rename_wildcard(old_filename, new_filename, search_order)
+        
+        # Update caches
+        old_basename, _ = os.path.splitext(old_filename)
+        new_basename, _ = os.path.splitext(new_filename)
+
+        # Update template engine's main wildcard cache
+        if old_basename in self.template_engine.wildcards:
+            self.template_engine.wildcards[new_basename] = self.template_engine.wildcards.pop(old_basename)
+
+        # Update the mode-agnostic cache
+        if self.all_wildcards_cache is not None and old_basename in self.all_wildcards_cache:
+            self.all_wildcards_cache[new_basename] = self.all_wildcards_cache.pop(old_basename)
 
     def generate_single_structured_prompt(self, template_content: str, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None, seed: Optional[int] = None) -> List[PromptSegment]:
         """Generates a single structured prompt for GUI use, optionally reusing existing wildcard choices."""
@@ -516,19 +584,110 @@ class PromptProcessor:
             # Re-raise to be caught by the GUI
             raise
 
-    def generate_wildcard_for_brainstorming(self, model: str, prompt: str, topic: str) -> str:
+    def generate_wildcard_for_brainstorming(self, model: str, topic: str, metadata: Optional[Dict] = None) -> str:
         """
         Handles one-shot wildcard generation and robust parsing for the brainstorming window.
+        This method now constructs the prompt internally.
         """
+        if metadata is None:
+            metadata = {}
+
+        # --- Prompt Construction ---
+        workflow_context = self._get_workflow_context()
+        wildcard_name_from_topic = re.sub(r'\s+', '_', topic.strip()).lower()
+        wildcard_name_from_topic = re.sub(r'[^a-z0-9_]', '', wildcard_name_from_topic)
+
+        all_wildcard_names = self.get_wildcard_names()
+        other_wildcard_names = [wc for wc in all_wildcard_names if wc != wildcard_name_from_topic]
+        sample_size = min(5, len(other_wildcard_names))
+        wildcard_sample_str = ", ".join(random.sample(other_wildcard_names, sample_size)) if other_wildcard_names else "none"
+
+        linked_wildcard_instruction = ""
+        supporting_wildcard_to_include = metadata.get('supporting_wildcard_to_include')
+        if supporting_wildcard_to_include:
+            supporting_basename, _ = os.path.splitext(supporting_wildcard_to_include)
+            linked_wildcard_instruction = DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION.format(
+                topic=topic,
+                supporting_basename=supporting_basename
+            )
+
+        prompt = DEFAULT_BRAINSTORM_WILDCARD_PROMPT.format(
+            topic=topic,
+            linked_wildcard_instruction=linked_wildcard_instruction,
+            workflow_context=workflow_context,
+            wildcard_name_from_topic=wildcard_name_from_topic,
+            wildcard_sample_str=wildcard_sample_str
+        )
+        # --- End Prompt Construction ---
+
         raw_response = self.generate_for_brainstorming(model, prompt)
         return self.ollama_client.parse_json_object_from_response(raw_response, topic)
 
-    def generate_template_for_brainstorming(self, model: str, prompt: str) -> Tuple[str, List[str]]:
+    def _get_workflow_context(self) -> str:
+        """Returns a string describing the current SFW/NSFW workflow context for an AI prompt."""
+        if config.workflow == 'nsfw':
+            return (
+                "The user is currently in NSFW (Not Safe For Work) mode. "
+                "The template should be designed for generating explicit, adult-oriented, and pornographic imagery. "
+                "It should be descriptive and graphic where appropriate."
+            )
+        else:
+            return "The user is currently in SFW (Safe For Work) mode. The template should be suitable for general-purpose, non-explicit imagery."
+
+    def generate_template_for_brainstorming(self, model: str, concept: str) -> Tuple[str, List[str]]:
         """
         Handles one-shot template generation and robust parsing for the brainstorming window.
+        This method now constructs the prompt internally.
         """
+        # --- Prompt Construction ---
+        workflow_context = self._get_workflow_context()
+        wildcard_names = self.get_wildcard_names()
+        sample_size = min(15, len(wildcard_names))
+        wildcard_sample_str = ", ".join(random.sample(wildcard_names, sample_size)) if wildcard_names else "none"
+
+        prompt = DEFAULT_BRAINSTORM_TEMPLATE_PROMPT.format(
+            concept=concept,
+            workflow_context=workflow_context,
+            wildcard_sample_str=wildcard_sample_str
+        )
+        #
         raw_response = self.generate_for_brainstorming(model, prompt)
         return self.ollama_client.parse_template_from_response(raw_response)
+
+    def rewrite_text(self, selected_text: str, instructions: str, model: str) -> str:
+        """
+        Uses an AI model to rewrite a piece of text based on instructions.
+        """
+        prompt = DEFAULT_BRAINSTORM_REWRITE_PROMPT.format(
+            selected_text=selected_text,
+            instructions=instructions
+        )
+        # Use the one-shot generation method for this task.
+        return self.generate_for_brainstorming(model, prompt)
+
+    def fix_wildcard_error_with_ai(self, file_content: str, error_details: Dict[str, Any], model: str) -> str:
+        """Uses AI to attempt to fix a validation error in a wildcard file."""
+        all_wildcard_names = self.get_wildcard_names()
+        available_wildcards_str = ", ".join(all_wildcard_names) if all_wildcard_names else "none"
+
+        prompt = DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT.format(
+            file_content=file_content,
+            source_file=error_details.get('source_file', 'N/A'),
+            choice_value=error_details.get('choice_value', 'N/A'),
+            message=error_details.get('message', 'N/A'),
+            available_wildcards_str=available_wildcards_str
+        )
+
+        # Use a one-shot generation call.
+        # We expect a JSON object back, so we can try to parse it.
+        raw_response = self.generate_for_brainstorming(model, prompt)
+        
+        # The AI should return a full JSON blob. We can use the existing parser.
+        # The fallback topic isn't super relevant here, but we need to provide something.
+        fallback_topic = os.path.splitext(error_details.get('source_file', 'unknown'))[0]
+        # This will attempt to parse the JSON and return it as a string, which is what we want.
+        # The parser itself returns a string representation of the JSON.
+        return self.ollama_client.parse_json_object_from_response(raw_response, fallback_topic)
 
 
     def generate_raw_prompts(self, 
@@ -667,12 +826,13 @@ class PromptProcessor:
         # Use the one-shot generation method for this simple task.
         return self.generate_for_brainstorming(model, instruction)
 
-    def suggest_wildcard_choices(self, wildcard_data: Dict[str, Any], model: str, current_wildcard_filename: Optional[str] = None) -> List[Any]:
-        """Uses AI to suggest new choices for an existing wildcard file."""
+    def _prepare_suggestion_context(self, wildcard_data: Dict[str, Any], current_wildcard_filename: Optional[str]) -> Tuple[str, str, str, str, Optional[str]]:
+        """Prepares context variables for the AI suggestion prompt."""
         description = wildcard_data.get('description', 'No description.')
+        
         # Get a sample of existing choices to give the AI context
         existing_choices = wildcard_data.get('choices', [])
-        sample_size = min(25, len(existing_choices)) # Increased sample size
+        sample_size = min(25, len(existing_choices))
         sample_choices_full = self.rng.sample(existing_choices, sample_size) if existing_choices else []
         
         # Extract just the values for a more concise prompt.
@@ -694,7 +854,10 @@ class PromptProcessor:
         other_sample_size = min(5, len(other_wildcards))
         other_wildcard_sample = ", ".join(self.rng.sample(other_wildcards, other_sample_size)) if other_wildcards else "none"
 
-        # Build instructions dynamically
+        return topic, description, sample_choices_str, other_wildcard_sample, current_wildcard_name
+
+    def _build_suggestion_instructions(self, topic: str, current_wildcard_name: Optional[str]) -> str:
+        """Builds the list of critical instructions for the AI suggestion prompt."""
         instructions = [
             f"**Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.",
             "**JSON Format:** You MUST return a JSON array of the new choices. Do NOT return a full object with 'description', just the array of choices.",
@@ -711,26 +874,37 @@ class PromptProcessor:
         ])
 
         # Format instructions with numbers
-        formatted_instructions = "\n".join([f"{i+1}.  {inst}" for i, inst in enumerate(instructions)])
+        return "\n".join([f"{i+1}.  {inst}" for i, inst in enumerate(instructions)])
 
-        prompt = (
-            f"You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing wildcard file on the topic of '{topic}' and suggest 5-10 new, creative, and relevant choices that expand upon it.\n\n"
-            f"**EXISTING WILDCARD DESCRIPTION:** {description}\n\n"
-            f"**SAMPLE OF EXISTING CHOICES (DO NOT REPEAT THESE):**\n{sample_choices_str}\n\n"
-            f"**CRITICAL INSTRUCTIONS:**\n{formatted_instructions}\n\n"
-            f"**Existing Wildcards sample for context:** {other_wildcard_sample}\n\n"
-            f"**EXAMPLE RESPONSE for a 'fantasy_race' wildcard:**\n"
-            f'[\n'
-            f'  "gnome",\n'
-            f'  {{"value": "tiefling", "weight": 2, "tags": ["fiendish"], "requires": {{"body_type": "curvy"}} }},\n'
-            f'  {{"value": "aasimar", "weight": 2, "tags": ["celestial"], "includes": ["halo"]}},\n'
-            f'  {{"value": "orc shaman", "tags": ["magic", "orc"], "includes": "chanting a __tribal_spell__"}}\n'
-            f']\n\n'
-            f"Now, generate the JSON array of new choices."
+    def _format_suggestion_prompt(self, topic: str, description: str, sample_choices_str: str, instructions: str, other_wildcard_sample: str) -> str:
+        """Formats the final prompt string for the AI suggestion task."""
+        return DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT.format(
+            topic=topic,
+            description=description,
+            sample_choices_str=sample_choices_str,
+            instructions=instructions,
+            other_wildcard_sample=other_wildcard_sample
+        )
+
+    def suggest_wildcard_choices(self, wildcard_data: Dict[str, Any], model: str, current_wildcard_filename: Optional[str] = None) -> List[Any]:
+        """Uses AI to suggest new choices for an existing wildcard file."""
+        # 1. Prepare context
+        topic, description, sample_choices_str, other_wildcard_sample, current_wildcard_name = self._prepare_suggestion_context(wildcard_data, current_wildcard_filename)
+
+        # 2. Build instructions
+        formatted_instructions = self._build_suggestion_instructions(topic, current_wildcard_name)
+
+        # 3. Format the final prompt
+        prompt = self._format_suggestion_prompt(
+            topic=topic,
+            description=description,
+            sample_choices_str=sample_choices_str,
+            instructions=formatted_instructions,
+            other_wildcard_sample=other_wildcard_sample
         )
             
+        # 4. Call the AI and parse the response
         response = self.generate_for_brainstorming(model, prompt)
-        
         return self.ollama_client.parse_json_array_from_response(response)
 
     def _prepare_refinement_context(self, current_wildcard_filename: Optional[str]) -> Tuple[str, Optional[str], List[str]]:

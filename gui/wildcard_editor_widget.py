@@ -10,7 +10,7 @@ import json
 import sys
 from tkinter import ttk
 from typing import Dict, List, Any, Optional, Tuple, Callable, TYPE_CHECKING
-
+from .common import Tooltip
 from .custom_dialogs import _CustomDialog
 
 if TYPE_CHECKING:
@@ -53,13 +53,17 @@ class _AddRequirementDialog(_CustomDialog):
         self.value_frame.columnconfigure(1, weight=1)
 
         # --- Widgets for Tag Frame ---
+        self.tag_frame.columnconfigure(0, weight=1) # Let columns share space
+        self.tag_frame.columnconfigure(1, weight=1)
+
         self.tag_match_type_var = tk.StringVar(value="any")
-        ttk.Label(self.tag_frame, text="Match Type:").pack(anchor='w')
-        ttk.Radiobutton(self.tag_frame, text="Any of these tags", variable=self.tag_match_type_var, value="any").pack(anchor='w', padx=10)
-        ttk.Radiobutton(self.tag_frame, text="All of these tags", variable=self.tag_match_type_var, value="all").pack(anchor='w', padx=10)
-        ttk.Label(self.tag_frame, text="Required Tags (comma-separated):").pack(anchor='w', pady=(10, 2))
+        ttk.Label(self.tag_frame, text="Match Type:").grid(row=0, column=0, columnspan=2, sticky='w')
+        ttk.Radiobutton(self.tag_frame, text="Any of these tags", variable=self.tag_match_type_var, value="any").grid(row=1, column=0, sticky='w', padx=10)
+        ttk.Radiobutton(self.tag_frame, text="All of these tags", variable=self.tag_match_type_var, value="all").grid(row=1, column=1, sticky='w', padx=10)
+        
+        ttk.Label(self.tag_frame, text="Required Tags (comma-separated):").grid(row=2, column=0, columnspan=2, sticky='w', pady=(10, 2))
         self.tags_entry = ttk.Entry(self.tag_frame)
-        self.tags_entry.pack(fill=tk.X, expand=True)
+        self.tags_entry.grid(row=3, column=0, columnspan=2, sticky='ew')
 
         # --- OK/Cancel Buttons ---
         button_frame = ttk.Frame(main_frame)
@@ -122,6 +126,7 @@ class _EditChoiceDialog(_CustomDialog):
     """A dialog for editing a single choice from a wildcard file."""
     def __init__(self, parent, title: str, initial_values: Tuple[str, str, str, str, str], processor: 'PromptProcessor'):
         super().__init__(parent, title)
+        self.parent_app = parent.parent_app
 
         self.value_var = tk.StringVar(value=initial_values[0])
         self.weight_var = tk.StringVar(value=initial_values[1])
@@ -146,15 +151,17 @@ class _EditChoiceDialog(_CustomDialog):
         
         requires_frame = ttk.Frame(main_frame)
         requires_frame.grid(row=3, column=1, sticky='ew', pady=2)
-        ttk.Entry(requires_frame, textvariable=self.requires_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(requires_frame, text="Add...", command=self._add_requirement).pack(side=tk.LEFT, padx=(5,0))
+        requires_frame.columnconfigure(0, weight=1)
+        ttk.Entry(requires_frame, textvariable=self.requires_var).grid(row=0, column=0, sticky='ew')
+        ttk.Button(requires_frame, text="Add...", command=self._add_requirement).grid(row=0, column=1, padx=(5, 0))
 
         ttk.Label(main_frame, text="Includes (list or template string):").grid(row=4, column=0, sticky='w', pady=2)
         
         includes_frame = ttk.Frame(main_frame)
         includes_frame.grid(row=4, column=1, sticky='ew', pady=2)
-        ttk.Entry(includes_frame, textvariable=self.includes_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(includes_frame, text="Add...", command=self._add_include).pack(side=tk.LEFT, padx=(5,0))
+        includes_frame.columnconfigure(0, weight=1)
+        ttk.Entry(includes_frame, textvariable=self.includes_var).grid(row=0, column=0, sticky='ew')
+        ttk.Button(includes_frame, text="Add...", command=self._add_include).grid(row=0, column=1, padx=(5, 0))
         
         main_frame.columnconfigure(1, weight=1)
 
@@ -250,6 +257,10 @@ class WildcardSelectorDialog(_CustomDialog):
     def __init__(self, parent, processor: 'PromptProcessor'):
         super().__init__(parent, "Select Wildcards to Include")
         
+        # Get the main app instance for callbacks
+        self.parent_app = parent.parent_app
+        self.processor = processor
+        
         # Create main frame
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -257,29 +268,43 @@ class WildcardSelectorDialog(_CustomDialog):
         # Add search box
         search_frame = ttk.Frame(main_frame)
         search_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+        search_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(search_frame, text="Search:").grid(row=0, column=0, sticky='w')
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", self._filter_wildcards)
-        ttk.Entry(search_frame, textvariable=self.search_var).pack(side=tk.LEFT, 
-                                                                  fill=tk.X, 
-                                                                  expand=True, 
-                                                                  padx=(5, 0))
+        ttk.Entry(search_frame, textvariable=self.search_var).grid(row=0, column=1, sticky='ew', padx=(5, 0))
         
-        # Create listbox with scrollbar
-        self.listbox = tk.Listbox(main_frame, selectmode=tk.MULTIPLE, height=15)
-        scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, 
+        # Create listbox with scrollbar inside a container frame
+        list_container = ttk.Frame(main_frame)
+        list_container.pack(fill=tk.BOTH, expand=True)
+
+        self.listbox = tk.Listbox(list_container, selectmode=tk.MULTIPLE, height=15)
+        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, 
                                 command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=scrollbar.set)
         
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
         
         # Populate with wildcards
         self.all_wildcards = sorted(processor.get_wildcard_names())
         for wildcard in self.all_wildcards:
             self.listbox.insert(tk.END, wildcard)
         
+        # --- Tooltip for preview ---
+        self.tooltip = Tooltip(self.listbox)
+        self.tooltip_after_id = None
+        self.last_hovered_index = -1
+        self.listbox.bind("<Motion>", self._schedule_tooltip)
+        self.listbox.bind("<Leave>", self._hide_tooltip)
+
+        # --- Context Menu for full review ---
+        self.context_menu = tk.Menu(self.listbox, tearoff=0)
+        self.context_menu.add_command(label="Open in Wildcard Manager", command=self._open_in_manager)
+        right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
+        self.listbox.bind(right_click_event, self._show_context_menu)
+
         # Add buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=(10, 0))
@@ -312,6 +337,66 @@ class WildcardSelectorDialog(_CustomDialog):
         if selection:
             self.result = [self.listbox.get(i) for i in selection]
         self.destroy()
+
+    def _schedule_tooltip(self, event):
+        """Schedules a tooltip to appear after a short delay."""
+        if self.tooltip_after_id:
+            self.after_cancel(self.tooltip_after_id)
+
+        index = self.listbox.nearest(event.y)
+        if index != self.last_hovered_index:
+            self.tooltip.hide() # Hide immediately if moving to a new item
+        self.last_hovered_index = index
+        self.tooltip_after_id = self.after(500, lambda: self._display_tooltip(index, event))
+
+    def _display_tooltip(self, index, event):
+        """Fetches content and displays the tooltip. This is called after a delay."""
+        try:
+            wildcard_name = self.listbox.get(index)
+            options = self.processor.get_wildcard_options(wildcard_name)
+
+            if not options:
+                self.tooltip.text = f"{wildcard_name} (empty)"
+            else:
+                preview_count = 10
+                preview_options = options[:preview_count]
+                
+                tooltip_text = f"'{wildcard_name}' choices:\n" + "\n".join([f"- {opt}" for opt in preview_options])
+                if len(options) > preview_count:
+                    tooltip_text += f"\n...and {len(options) - preview_count} more"
+                
+                self.tooltip.text = tooltip_text
+            
+            self.tooltip.show(event)
+        except tk.TclError:
+            # This can happen if the mouse is over an empty part of the listbox
+            self.tooltip.hide()
+
+    def _hide_tooltip(self, event=None):
+        """Hides the wildcard preview tooltip."""
+        self.last_hovered_index = -1
+        if self.tooltip_after_id:
+            self.after_cancel(self.tooltip_after_id)
+            self.tooltip_after_id = None
+        self.tooltip.hide()
+
+    def _show_context_menu(self, event):
+        """Shows the context menu for the listbox."""
+        index = self.listbox.nearest(event.y)
+        if index != -1:
+            if not self.listbox.selection_includes(index):
+                self.listbox.selection_clear(0, tk.END)
+                self.listbox.selection_set(index)
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+
+    def _open_in_manager(self):
+        """Opens the selected wildcard in the Wildcard Manager."""
+        selection = self.listbox.curselection()
+        if not selection:
+            return
+        
+        wildcard_name = self.listbox.get(selection[0])
+        self.parent_app._open_wildcard_manager(initial_file=f"{wildcard_name}.json")
 
 class WildcardEditor(ttk.Frame):
     """A structured editor for wildcard files."""
@@ -563,6 +648,7 @@ class WildcardEditor(ttk.Frame):
         is_in_manager = hasattr(manager_window, 'wildcard_listbox')
 
         if is_in_manager:
+            manager_window.dialog_is_open = True
             manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
 
         try:
@@ -572,9 +658,13 @@ class WildcardEditor(ttk.Frame):
                 updated_choice = self._get_choice_from_tree_item(item_id)
                 self.iid_to_choice_map[item_id] = updated_choice
         finally:
-            # Always re-bind the event to restore normal functionality if it was unbound
-            if is_in_manager and manager_window.winfo_exists():
-                manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
+            try:
+                # Always re-bind the event to restore normal functionality if it was unbound
+                if is_in_manager and manager_window.winfo_exists():
+                    manager_window.dialog_is_open = False
+                    manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
+            except tk.TclError:
+                pass # Window was likely destroyed.
 
     def _on_suggest_choices(self):
         """Callback to ask the manager window to trigger AI suggestions."""
@@ -631,12 +721,26 @@ class WildcardEditor(ttk.Frame):
 
     def _insert_include_wildcard(self):
         """Opens a dialog to select wildcards and inserts them into the includes text widget."""
-        dialog = WildcardSelectorDialog(self, self.processor)
-        if dialog.result:
-            for wildcard in dialog.result:
-                # Insert at the current cursor position
-                self.includes_text.insert(tk.INSERT, f"[{wildcard}] ")
-            self._refresh_ui_from_includes_change()
+        manager_window = self.winfo_toplevel()
+        is_in_manager = hasattr(manager_window, 'wildcard_listbox')
+
+        if is_in_manager:
+            manager_window.dialog_is_open = True
+            manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
+        
+        try:
+            dialog = WildcardSelectorDialog(self, self.processor)
+            if dialog.result:
+                for wildcard in dialog.result:
+                    self.includes_text.insert(tk.INSERT, f"[{wildcard}] ")
+                self._refresh_ui_from_includes_change()
+        finally:
+            try:
+                if is_in_manager and manager_window.winfo_exists():
+                    manager_window.dialog_is_open = False
+                    manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
+            except tk.TclError:
+                pass # Window was likely destroyed.
 
     def _refresh_ui_from_includes_change(self):
         """Refreshes the editor data to update highlighting after an include change."""
@@ -755,12 +859,21 @@ class WildcardEditor(ttk.Frame):
         inc2 = choice2.get('includes')
         merged_includes = None
 
-        if isinstance(inc1, list) and isinstance(inc2, list):
+        is_inc1_list = isinstance(inc1, list)
+        is_inc2_list = isinstance(inc2, list)
+
+        if is_inc1_list and is_inc2_list:
+            # Both are lists, so we can safely merge them.
             merged_includes = sorted(list(set(inc1) | set(inc2)))
-        else: # If one or both are strings, concatenate them to be safe.
-            s1 = json.dumps(inc1) if isinstance(inc1, list) else (inc1 or '')
-            s2 = json.dumps(inc2) if isinstance(inc2, list) else (inc2 or '')
-            merged_includes = f"{s1} {s2}".strip()
+        elif inc1 or inc2: # At least one exists, and they are not both lists.
+            # To avoid data corruption, we convert both to template strings and concatenate.
+            # A list `["a", "b"]` becomes a string `[a] [b]`.
+            s1 = " ".join([f"[{w}]" for w in inc1]) if is_inc1_list else (inc1 or '')
+            s2 = " ".join([f"[{w}]" for w in inc2]) if is_inc2_list else (inc2 or '')
+            
+            combined_str = f"{s1} {s2}".strip()
+            if combined_str:
+                merged_includes = combined_str
 
         # Intelligently merge 'requires' dictionaries.
         merged_reqs = choice1.get('requires', {}).copy()
@@ -777,8 +890,8 @@ class WildcardEditor(ttk.Frame):
         
         # Format includes for display
         if isinstance(merged_includes, list):
-            includes_display = ", ".join(merged_includes)
-        else:
+            includes_display = json.dumps(merged_includes)
+        else: # It's a string or None
             includes_display = merged_includes or ""
 
         new_values = (
@@ -811,14 +924,18 @@ class WildcardEditor(ttk.Frame):
         is_in_manager = hasattr(manager_window, 'wildcard_listbox')
         
         should_delete = False
-        if is_in_manager:
-            manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
-        
         try:
+            if is_in_manager:
+                manager_window.dialog_is_open = True
+                manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
             should_delete = custom_dialogs.ask_yes_no(self, "Delete Originals?", "Would you like to delete the original items after merging?")
         finally:
-            if is_in_manager and manager_window.winfo_exists():
-                manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
+            try:
+                if is_in_manager and manager_window.winfo_exists():
+                    manager_window.dialog_is_open = False
+                    manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
+            except tk.TclError:
+                pass # Window was likely destroyed.
 
         if should_delete:
             self.tree.delete(item1_id)

@@ -214,6 +214,30 @@ class TemplateEngine:
         
         self._archive_file(wildcard_file, wildcard_dirs, "wildcard", post_archive_callback=on_success)
 
+    def rename_wildcard(self, old_filename: str, new_filename: str, search_dirs: List[str]) -> None:
+        """Renames a wildcard file on disk."""
+        old_path = None
+        source_dir = None
+        for directory in search_dirs:
+            path_to_check = os.path.join(directory, old_filename)
+            if os.path.exists(path_to_check):
+                old_path = path_to_check
+                source_dir = directory
+                break
+        
+        if not old_path or not source_dir:
+            raise FileNotFoundError(f"Wildcard file not found in any provided directory: {old_filename}")
+
+        new_path = os.path.join(source_dir, new_filename)
+
+        if os.path.exists(new_path):
+            raise FileExistsError(f"A file named '{new_filename}' already exists in '{source_dir}'.")
+
+        try:
+            os.rename(old_path, new_path)
+        except OSError as e:
+            raise Exception(f"Error renaming file from '{old_path}' to '{new_path}': {e}")
+
     def get_wildcard_options(self, wildcard_name: str) -> List[str]:
         """Get all sorted options for a given wildcard."""
         wildcard_data = self.wildcards.get(wildcard_name, {})
