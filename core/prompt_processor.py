@@ -16,7 +16,9 @@ from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_V
                               DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION,
                               DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT,
                               DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT,
-                              DEFAULT_BRAINSTORM_REWRITE_PROMPT)
+                              DEFAULT_BRAINSTORM_REWRITE_PROMPT,
+                              DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT,
+                              DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT)
 from .ollama_client import OllamaClient
 from datetime import datetime
 
@@ -1061,21 +1063,26 @@ class PromptProcessor:
 
             # Enhance the prompt
             self._update_status('enhancement_start', prompt_num=i+1, total_prompts=total_prompts)
-            enhanced, negative, enhanced_sd_model = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
+            enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
+            
+            # Send back the main enhancement result immediately
+            if self.result_callback:
+                self.result_callback('enhanced', {'prompt': enhanced, 'sd_model': enhanced_sd_model})
+
+            # Now, generate the negative prompt as a separate step
+            negative_prompt = self.ollama_client.generate_negative_prompt(enhanced, model)
+            if self.result_callback:
+                self.result_callback('negative', {'prompt': negative_prompt, 'sd_model': ''})
             
             result = {
                 'original': prompt,
                 'enhanced': enhanced,
-                'negative_prompt': negative,
+                'negative_prompt': negative_prompt,
                 'enhanced_sd_model': enhanced_sd_model,
                 'variations': {},
                 'status': 'enhanced',
-                'template_name': template_name
+                'template_name': template_name,
             }
-            
-            # Send back the main enhancement result immediately
-            if self.result_callback:
-                self.result_callback('enhanced', {'prompt': enhanced, 'negative_prompt': negative, 'sd_model': enhanced_sd_model})
             
             # Create variations if requested
             if selected_variations:
@@ -1085,7 +1092,8 @@ class PromptProcessor:
 
                     variation_instruction = available_variations[var_type]['prompt']
                     self._update_status('variation_start', var_type=var_type, prompt_num=i+1, total_prompts=total_prompts)
-                    variation_result = self.ollama_client.create_single_variation(variation_instruction, enhanced, enhanced_sd_model, model, var_type)
+                    var_prompt, var_sd_model = self.ollama_client.create_single_variation(variation_instruction, enhanced, enhanced_sd_model, model, var_type)
+                    variation_result = {'prompt': var_prompt, 'sd_model': var_sd_model}
                     # Send back variation result immediately
                     if self.result_callback:
                         self.result_callback(var_type, variation_result)
@@ -1105,7 +1113,9 @@ class PromptProcessor:
         """Regenerates just the main enhancement for a given prompt."""
         instruction = self.load_system_prompt_content('enhancement.txt')
         full_prompt = instruction + original_prompt
-        return self.ollama_client.enhance_prompt(full_prompt, model)
+        enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(full_prompt, model)
+        negative = self.ollama_client.generate_negative_prompt(enhanced, model)
+        return enhanced, negative, enhanced_sd_model
 
     def regenerate_variation(self, base_prompt: str, base_sd_model: str, model: str, variation_type: str) -> Dict[str, str]:
         """Regenerates a single variation."""
@@ -1114,7 +1124,8 @@ class PromptProcessor:
         if not variation_data:
             raise ValueError(f"Variation '{variation_type}' not found or is invalid.")
         instruction = variation_data['prompt']
-        return self.ollama_client.create_single_variation(instruction, base_prompt, base_sd_model, model, variation_type)
+        var_prompt, var_sd_model = self.ollama_client.create_single_variation(instruction, base_prompt, base_sd_model, model, variation_type)
+        return {'prompt': var_prompt, 'sd_model': var_sd_model}
 
     def cleanup_prompt_string(self, prompt: str) -> str:
         """Pass-through to the template engine's cleanup method."""
@@ -1141,31 +1152,6 @@ class PromptProcessor:
                 rich_sample_parts.append(f"- __{wc_name}__ (empty)")
         
         return "\n".join(rich_sample_parts) if rich_sample_parts else "none"
-
-    def suggest_template_additions(self, prompt: str, model: str) -> str:
-        """Uses AI to suggest additions to an existing prompt template."""
-        rich_wildcard_sample = self._get_rich_wildcard_sample_str()
-        workflow_context = self._get_workflow_context()
-
-        instruction = (
-            f"You are a world-class visual artist and prompt engineer with a deep understanding of Stable Diffusion. Your task is to analyze the user's prompt template and suggest 3-5 highly creative and context-aware additions to elevate it from good to exceptional.\n\n"
-            f"**CONTEXT:** {workflow_context}\n\n"
-            f"**EXISTING TEMPLATE:**\n---\n{prompt}\n---\n\n"
-            f"**CRITICAL INSTRUCTIONS:**\n"
-            f"1.  **Analyze Intent:** Deeply analyze the user's template to understand its core subject, style, and intent.\n"
-            f"2.  **Be Creative & Complementary:** Suggest genuinely new and complementary details. Think about lighting, atmosphere, composition, artistic style, camera angles, or specific subject details. Don't just add generic quality tags.\n"
-            f"3.  **Use Existing Wildcards:** When relevant, use wildcards from the 'Existing Wildcards' list below. This is preferred over inventing a new one if a good match exists.\n"
-            f"4.  **Invent New Wildcards:** If no existing wildcard fits your creative suggestion, invent a new, logically named `__wildcard__`.\n"
-            f"5.  **Format:** Return ONLY a comma-separated list of your suggested additions. Do not repeat any part of the original template. Do not include any extra commentary, explanations, or labels like 'SUGGESTIONS:'.\n"
-            f"6.  **Be Concise:** Keep the suggestions brief and impactful.\n\n"
-            f"**EXISTING WILDCARDS (SAMPLE):**\n{rich_wildcard_sample}\n\n"
-            f"**EXAMPLE:**\n"
-            f"If the existing template is 'a portrait of a __character_class__, wearing __fantasy_armor__', and 'lighting_style' and 'fantasy_forest' are existing wildcards, a good response would be: '__lighting_style__, in a __fantasy_forest__, intricate details, masterpiece, from behind'\n\n"
-            f"Now, provide the suggested additions for the user's template."
-        )
-        
-        # Use the one-shot generation method for this simple task.
-        return self.generate_for_brainstorming(model, instruction)
 
     def _prepare_suggestion_context(self, wildcard_data: Dict[str, Any], current_wildcard_filename: Optional[str]) -> Tuple[str, str, str, str, Optional[str]]:
         """Prepares context variables for the AI suggestion prompt."""
@@ -1203,7 +1189,7 @@ class PromptProcessor:
             f"**Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.",
             "**JSON Format:** You MUST return a JSON array of the new choices. Do NOT return a full object with 'description', just the array of choices.",
             "**Complex Choices:** The new choices should be a mix of simple strings and complex objects with `weight`, `tags`, `requires`, and `includes` keys where appropriate. The `includes` key can be a list of wildcard names or a template string (e.g., \"wearing a __hat__\").",
-            "**Contextual Suggestions:** Use the 'Existing Wildcards' list below to create relevant `requires` and `includes` clauses. The `requires` key must be an object (e.g., `{\"key\": \"value\"}`).",
+            "**Contextual Suggestions:** Use the 'Existing Wildcards' list below to create relevant `requires` and `includes` clauses. The `requires` key must be an object (e.g., `{{\"key\": \"value\"}}`).",
             "**Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.",
         ]
         if current_wildcard_name:

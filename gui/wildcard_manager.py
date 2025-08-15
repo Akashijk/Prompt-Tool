@@ -345,8 +345,6 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         tools_menu.add_command(label="Find and Replace...", command=self._find_and_replace)
         tools_menu.add_command(label="Find Exact Duplicates", command=self._find_duplicates)
         tools_menu.add_command(label="Find Similar...", command=self._find_similar_choices)
-        tools_menu.add_command(label="Sort Choices", command=self._sort_choices)
-        tools_menu.add_command(label="Convert to Complex Choices", command=self._convert_to_complex_choices)
         tools_menu.add_separator()
         tools_menu.add_command(label="Remove All 'requires'...", command=lambda: self._remove_all_keys('requires'))
         tools_menu.add_command(label="Remove All 'includes'...", command=lambda: self._remove_all_keys('includes'))
@@ -430,10 +428,24 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
     def _display_valid_wildcard(self, wildcard_data: Dict[str, Any]):
         """Updates the editor UI for a successfully loaded wildcard."""
+        # Work on a copy to avoid modifying the in-memory cache directly
+        display_data = copy.deepcopy(wildcard_data)
+
+        # --- Auto-sort choices upon loading ---
+        choices = display_data.get('choices', [])
+        if choices:
+            def sort_key(choice):
+                # Handles both simple strings and complex dicts for sorting
+                value = choice.get('value') if isinstance(choice, dict) else choice
+                return str(value).lower() if value is not None else ""
+            choices.sort(key=sort_key)
+            display_data['choices'] = choices
+        # --- End auto-sort ---
+
         self.structured_editor.clear_highlights()
-        self.structured_editor.set_data(wildcard_data)
+        self.structured_editor.set_data(display_data)
         
-        pretty_content = json.dumps(wildcard_data, indent=2)
+        pretty_content = json.dumps(display_data, indent=2)
         self.raw_text_editor.delete("1.0", tk.END)
         self.raw_text_editor.insert("1.0", pretty_content)
         self.editor_notebook.select(self.structured_editor_frame)
@@ -1092,93 +1104,6 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_info(self, "Replace Complete", f"Made {replacements_made} replacement(s) across {choices_affected} choice(s).\n\nPlease save the file to apply the changes.")
         else:
             custom_dialogs.show_info(self, "Find and Replace", f"No occurrences of '{find_text}' were found.")
-
-    def _sort_choices(self):
-        """Sorts the choices in the structured editor alphabetically by value."""
-        if not self.selected_wildcard_file:
-            return
-
-        data = self.structured_editor.get_data()
-        choices = data.get('choices', [])
-
-        if not choices:
-            custom_dialogs.show_info(self, "Sort Choices", "No choices to sort.")
-            return
-
-        # Define a key function for case-insensitive sorting
-        def sort_key(choice):
-            value = choice.get('value') if isinstance(choice, dict) else choice
-            return value.lower() if isinstance(value, str) else ""
-
-        # Sort the choices list
-        choices.sort(key=sort_key)
-        
-        data['choices'] = choices
-        self.structured_editor.set_data(data)
-        
-        self.save_button.config(state=tk.NORMAL)
-        # This is a dialog, so it needs focus protection
-        self.wildcard_listbox.unbind("<<ListboxSelect>>")
-        self.dialog_is_open = True
-        try:
-            custom_dialogs.show_info(self, "Sort Complete", "Choices have been sorted alphabetically.\n\nPlease save the file to apply the changes.")
-        finally:
-            self.dialog_is_open = False
-            if self.winfo_exists():
-                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
-
-    def _convert_to_complex_choices(self):
-        """Converts all simple string choices into complex objects with a default weight."""
-        if not self.selected_wildcard_file:
-            return
-
-        data = self.structured_editor.get_data()
-        choices = data.get('choices', [])
-
-        if not choices:
-            # This is a dialog, so it needs focus protection
-            self.wildcard_listbox.unbind("<<ListboxSelect>>")
-            self.dialog_is_open = True
-            try:
-                custom_dialogs.show_info(self, "Convert Choices", "No choices to convert.")
-            finally:
-                self.dialog_is_open = False
-                if self.winfo_exists():
-                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
-            return
-
-        new_choices = []
-        converted_count = 0
-        for choice in choices:
-            if isinstance(choice, str):
-                new_choices.append({"value": choice, "weight": 1})
-                converted_count += 1
-            elif isinstance(choice, dict):
-                new_choices.append(choice)
-        
-        if converted_count > 0:
-            data['choices'] = new_choices
-            self.structured_editor.set_data(data)
-            self.save_button.config(state=tk.NORMAL)
-            # This is a dialog, so it needs focus protection
-            self.wildcard_listbox.unbind("<<ListboxSelect>>")
-            self.dialog_is_open = True
-            try:
-                custom_dialogs.show_info(self, "Conversion Complete", f"Converted {converted_count} simple choice(s) to complex objects with a default weight of 1.\n\nPlease save the file to apply the changes.")
-            finally:
-                self.dialog_is_open = False
-                if self.winfo_exists():
-                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
-        else:
-            # This is a dialog, so it needs focus protection
-            self.wildcard_listbox.unbind("<<ListboxSelect>>")
-            self.dialog_is_open = True
-            try:
-                custom_dialogs.show_info(self, "No Changes", "All choices are already in the complex object format.")
-            finally:
-                self.dialog_is_open = False
-                if self.winfo_exists():
-                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
     def _remove_all_keys(self, key_to_remove: str):
         """Removes all instances of a specific key ('requires' or 'includes') from all choices."""

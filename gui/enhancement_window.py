@@ -46,15 +46,15 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Create all text areas with placeholder content for dynamic fields
-        self._create_text_area(main_frame, 'original', "Original Prompt", self.result_data['original'], height=3)
-        self._create_text_area(main_frame, 'enhanced', "Enhanced Prompt", "Generating...", sd_model="Generating...", height=6)
-        self._create_text_area(main_frame, 'negative', "Negative Prompt", "Generating...", height=3, has_regen=False)
+        self._create_text_area(main_frame, 'original', "Original Prompt", self.result_data['original'], height=3, has_regen=False, is_loading=False)
+        self._create_text_area(main_frame, 'enhanced', "Enhanced Prompt", "Generating...", sd_model="Generating...", height=6, is_loading=True)
+        self._create_text_area(main_frame, 'negative', "Negative Prompt", "Generating...", height=3, has_regen=False, is_loading=True)
 
         if self.selected_variations:
             variations_frame = ttk.LabelFrame(main_frame, text="Variations", padding="10")
             variations_frame.pack(fill=tk.BOTH, expand=True, pady=5)
             for var_type in self.selected_variations:
-                self._create_text_area(variations_frame, var_type, var_type.capitalize(), "Generating...", sd_model="Generating...", height=4)
+                self._create_text_area(variations_frame, var_type, var_type.capitalize(), "Generating...", sd_model="Generating...", height=4, is_loading=True)
 
         # --- Action Buttons ---
         button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
@@ -87,7 +87,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             self.cancel_callback()
         self.destroy()
     
-    def _create_text_area(self, parent, prompt_key: str, title: str, content: str, height: int, sd_model: Optional[str] = None, has_regen: bool = True):
+    def _create_text_area(self, parent, prompt_key: str, title: str, content: str, height: int, sd_model: Optional[str] = None, has_regen: bool = True, is_loading: bool = False):
         frame = ttk.LabelFrame(parent, text=title, padding="5")
         frame.pack(fill=tk.X, pady=5)
         
@@ -116,7 +116,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         copy_button.pack(fill=tk.X)
         self.copy_buttons[prompt_key] = copy_button
 
-        if has_regen:
+        if is_loading:
             # Create spinner and regen button, but only show the spinner initially
             loading_animation = LoadingAnimation(button_container)
             is_dark = self.parent_app.theme_manager.current_theme == "dark"
@@ -126,11 +126,12 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             loading_animation.pack(fill=tk.X, pady=(5,0))
             loading_animation.start()
             self.loading_animations[prompt_key] = loading_animation
+            copy_button.config(state=tk.DISABLED)
 
+        if has_regen:
             regen_button = ttk.Button(button_container, text="Regen", command=lambda key=prompt_key: self._start_regeneration(key))
             # Don't pack the regen button yet
             self.regen_buttons[prompt_key] = regen_button
-            copy_button.config(state=tk.DISABLED)
 
         # Add SD model label if provided
         if sd_model:
@@ -216,8 +217,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
                 variation_result = self.processor.regenerate_variation(
                     base_prompt, base_sd_model, self.model, prompt_key
                 )
-                # Variations can have their own negative prompts now
-                result = {'key': prompt_key, 'prompt': variation_result['prompt'], 'negative_prompt': variation_result.get('negative_prompt', ''), 'sd_model': variation_result['sd_model']}
+                result = {'key': prompt_key, 'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
             self.regen_queue.put(result)
         except Exception as e:
             self.regen_queue.put({'key': prompt_key, 'error': str(e)})
@@ -265,7 +265,6 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
                 # Variations now also carry their own negative prompts
                 self.result_data['variations'][key]['prompt'] = new_prompt
                 self.result_data['variations'][key]['sd_model'] = new_sd_model
-                self.result_data['variations'][key]['negative_prompt'] = result.get('negative_prompt', '')
             
             # Notify parent that the call is complete
             self.parent_app.report_regeneration_finished(success=True)
@@ -280,11 +279,42 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         try:
             key, data = self.result_queue.get_nowait()
             
-            # Update internal data for saving
+            # --- Handle the result for the specific key (enhanced or a variation) ---
+            self.text_widgets[key].config(state=tk.NORMAL)
+            self.text_widgets[key].delete("1.0", tk.END)
+            self.text_widgets[key].insert("1.0", data['prompt'])
+            self.text_widgets[key].config(state=tk.DISABLED)
+            
+            if key in self.sd_model_labels:
+                self.sd_model_labels[key].config(text=f"Recommended Model: {data['sd_model']}")
+            
+            # Stop the spinner and show the regen button if it exists
+            if key in self.loading_animations:
+                self.loading_animations[key].stop()
+                self.loading_animations[key].pack_forget()
+            if key in self.regen_buttons:
+                self.regen_buttons[key].pack(fill=tk.X, pady=(5,0))
+            if key in self.copy_buttons:
+                self.copy_buttons[key].config(state=tk.NORMAL)
+
+            # --- Special handling when the main enhancement result arrives ---
             if key == 'enhanced':
+                # Update internal data for saving
                 self.result_data['enhanced'] = data['prompt']
                 self.result_data['negative_prompt'] = data.get('negative_prompt', '')
                 self.result_data['enhanced_sd_model'] = data['sd_model']
+                # Also update the negative prompt UI
+                self.text_widgets['negative'].config(state=tk.NORMAL)
+                self.text_widgets['negative'].delete("1.0", tk.END)
+                self.text_widgets['negative'].insert("1.0", self.result_data['negative_prompt'])
+                self.text_widgets['negative'].config(state=tk.DISABLED)
+                # Stop its spinner too
+                if 'negative' in self.loading_animations:
+                    self.loading_animations['negative'].stop()
+                    self.loading_animations['negative'].pack_forget()
+                if 'negative' in self.copy_buttons:
+                    self.copy_buttons['negative'].config(state=tk.NORMAL)
+
                 if self.save_button:
                     self.save_button.config(state=tk.NORMAL)
                 if hasattr(self, 'regen_all_button'):
@@ -292,29 +322,9 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             else:
                 self.result_data['variations'][key] = data
 
-            self.text_widgets[key].config(state=tk.NORMAL)
-            self.text_widgets[key].delete("1.0", tk.END)
-            self.text_widgets[key].insert("1.0", data['prompt'])
-            self.text_widgets[key].config(state=tk.DISABLED)
-
-            # Update negative prompt UI if it's an enhanced result
-            if key == 'enhanced':
-                self.text_widgets['negative'].config(state=tk.NORMAL)
-                self.text_widgets['negative'].delete("1.0", tk.END)
-                self.text_widgets['negative'].insert("1.0", data.get('negative_prompt', ''))
-                self.text_widgets['negative'].config(state=tk.DISABLED)
-
-            self.sd_model_labels[key].config(text=f"Recommended Model: {data['sd_model']}")
-            # Hide spinner and show regen button
-            self.loading_animations[key].stop()
-            self.loading_animations[key].pack_forget()
-            self.regen_buttons[key].pack(fill=tk.X, pady=(5,0))
-            self.copy_buttons[key].config(state=tk.NORMAL)
-
             # Notify parent that an API call has finished
             self.api_call_finish_callback()
 
-            self._check_and_enable_regen_all_button()
         except queue.Empty:
             pass # No new results yet
         finally:

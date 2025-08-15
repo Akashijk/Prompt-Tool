@@ -77,6 +77,8 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         self.after_id: Optional[str] = None
         self.suggestion_queue = queue.Queue()
         self.suggestion_after_id: Optional[str] = None
+        self.generate_template_queue = queue.Queue()
+        self.generate_template_after_id: Optional[str] = None
 
         # --- Widgets ---
         top_frame = ttk.Frame(self, padding=10)
@@ -90,6 +92,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         ttk.Button(top_frame, text="Generate Wildcard File...", command=self._generate_wildcard_file).pack(side=tk.LEFT)
         ttk.Button(top_frame, text="Generate Template File...", command=self._generate_template_file).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Generate Linked Wildcards...", command=self._generate_linked_wildcard_files).pack(side=tk.LEFT)
+        ttk.Button(top_frame, text="Template from All Wildcards...", command=self._generate_template_from_all_wildcards).pack(side=tk.LEFT, padx=5)
 
         main_pane = ttk.PanedWindow(self, orient=tk.VERTICAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -169,6 +172,9 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         if self.suggestion_after_id:
             self.after_cancel(self.suggestion_after_id)
             self.suggestion_after_id = None
+        if self.generate_template_after_id:
+            self.after_cancel(self.generate_template_after_id)
+            self.generate_template_after_id = None
         
         # Unregister the model used by this window before destroying it
         self.model_usage_manager.unregister_usage(self.active_brainstorm_model)
@@ -310,6 +316,61 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
         self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
+
+    def _generate_template_from_all_wildcards(self, theme: Optional[str] = None, existing_window: Optional[ReviewAndSaveWindow] = None):
+        """Asks for a theme and generates a template using all available wildcards."""
+        if theme is None:
+            theme = custom_dialogs.ask_string(self, "Generate Template from Wildcards", "Enter a theme or concept for the new template:")
+        
+        if not theme:
+            return
+
+        model = self.model_var.get()
+        
+        # Create or get the results window first with loading state
+        metadata = {'theme': theme, 'window': existing_window}
+        results_window = self._handle_generated_content("", "template", metadata)
+        metadata['window'] = results_window
+
+        self._add_message("AI", f"Generating a template for '{theme}' using all available wildcards...", "thinking")
+
+        def task():
+            try:
+                template_content = self.processor.generate_template_from_all_wildcards(model, theme)
+                # The queue now needs to know which window to update
+                self.generate_template_queue.put({'success': True, 'template': template_content, 'theme': theme, 'window': results_window})
+            except Exception as e:
+                self.generate_template_queue.put({'success': False, 'error': str(e), 'window': results_window})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.generate_template_after_id = self.after(100, self._check_generate_template_queue)
+
+    def _check_generate_template_queue(self):
+        """Checks for the result of the template generation and updates the review window."""
+        try:
+            result = self.generate_template_queue.get_nowait()
+            
+            # Remove the "Thinking..." message from the main chat
+            self.history_text.config(state=tk.NORMAL)
+            self.history_text.delete("end-2l", "end-1c")
+            self.history_text.config(state=tk.DISABLED)
+
+            window_to_update = result.get('window')
+
+            if result['success']:
+                template_content = result.get('template', '')
+                self._add_message("AI", f"Generated a template for '{result.get('theme', 'your theme')}'. See the new window to review and save.", "ai")
+                # The window already exists, we just need to update its content
+                if window_to_update and window_to_update.winfo_exists():
+                    window_to_update.update_content(template_content)
+            else:
+                self._add_message("System", f"Error during generation: {result['error']}", "error")
+                # If there was an error, close the loading window
+                if window_to_update and window_to_update.winfo_exists():
+                    window_to_update.destroy()
+        except queue.Empty:
+            self.generate_template_after_id = self.after(100, self._check_generate_template_queue)
 
     def _check_suggestion_queue(self):
         """Checks for AI reply suggestions and updates the input box."""
@@ -644,7 +705,14 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
             existing_window.lift()
             return existing_window
         else:
-            filename = metadata.get('filename') if metadata else None
+            # For the new template generation, create a filename from the theme
+            if content_type == 'template' and metadata and 'theme' in metadata:
+                theme = metadata.get('theme', 'new_template')
+                suggested_filename = re.sub(r'\s+', '_', theme.strip()).lower()
+                filename = f"{re.sub(r'[^a-z0-9_]', '', suggested_filename)}.txt"
+            else:
+                filename = metadata.get('filename') if metadata else None
+                
             regenerate_callback = None
             if metadata:
                 if content_type == 'wildcard' and 'topic' in metadata:
@@ -652,6 +720,8 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                     regenerate_callback = lambda win: self.generate_wildcard_with_topic(metadata['topic'], filename=original_filename, existing_window=win)
                 elif content_type == 'template' and 'concept' in metadata:
                     regenerate_callback = lambda win: self.generate_template_with_concept(metadata['concept'], win)
+                elif content_type == 'template' and 'theme' in metadata:
+                    regenerate_callback = lambda win: self._generate_template_from_all_wildcards(metadata['theme'], existing_window=win)
 
             # If content is empty, is_loading will be True.
             window = ReviewAndSaveWindow(self, self.processor, content_type, content or "", self.update_callback, filename=filename, regenerate_callback=regenerate_callback, is_loading=not bool(content), next_step_callback=final_next_step_callback)

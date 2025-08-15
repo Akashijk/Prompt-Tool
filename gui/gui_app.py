@@ -83,10 +83,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.font_size_var = tk.IntVar(value=config.font_size)
         self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
-        self.enhancement_suggestion_queue = queue.Queue()
-        self.generate_from_wildcards_queue = queue.Queue()
-        self.generate_from_wildcards_after_id: Optional[str] = None
-        self.enhancement_suggestion_after_id: Optional[str] = None
         self.missing_wildcards_container: Optional[ttk.Frame] = None
 
         # Create widgets
@@ -250,7 +246,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             generate_callback=self._generate_preview,
             enhance_callback=self._on_select_for_enhancement,
             copy_callback=self._copy_generated_prompt,
-            suggest_callback=self._suggest_template_additions,
             save_as_template_callback=self._save_preview_as_template
         )
         self._update_action_bar_variations()
@@ -439,7 +434,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.config(state=tk.DISABLED)
-        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, suggest=tk.DISABLED, save_as_template=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED)
         self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
     def _populate_wildcard_lists(self):
         """Populates both the inserter and editor wildcard lists."""
@@ -487,7 +482,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self._highlight_template_wildcards()
 
         # Update UI state
-        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, suggest=tk.NORMAL, save_as_template=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED)
         self.menubar.update_file_menu_state(save_enabled=True, archive_enabled=True)
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
@@ -531,7 +526,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             generate=tk.NORMAL, 
             enhance=tk.NORMAL if is_prompt_available else tk.DISABLED, 
             copy=tk.NORMAL if is_prompt_available else tk.DISABLED, 
-            suggest=tk.NORMAL,
             save_as_template=tk.NORMAL if is_prompt_available else tk.DISABLED
         )
 
@@ -646,9 +640,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Schedules a live update of the prompt preview after a short delay."""
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
-        
-        has_text = bool(self.template_editor.get_content().strip())
-        self.action_bar.suggest_button.config(state=tk.NORMAL if has_text else tk.DISABLED)
 
         self.debounce_timer = self.after(500, self._perform_live_update)
 
@@ -849,7 +840,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             # The processor will use callbacks to update the UI.
             self.processor.process_enhancement_batch([prompt], model, selected_variations, cancellation_event, template_name)
         except Exception as e:
-            self.after(0, lambda: custom_dialogs.show_error(self, "Enhancement Error", f"An error occurred during processing:\n{e}"))
+            self.after(0, lambda err=e: custom_dialogs.show_error(self, "Enhancement Error", f"An error occurred during processing:\n{err}"))
         finally:
             # Re-enable the main enhance button when processing is complete
             self.action_bar.select_button.config(state=tk.NORMAL)
@@ -1329,10 +1320,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             print("Cleanup complete.")
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
-        if self.enhancement_suggestion_after_id:
-            self.after_cancel(self.enhancement_suggestion_after_id)
-        if self.generate_from_wildcards_after_id:
-            self.after_cancel(self.generate_from_wildcards_after_id)
         self.destroy()
 
     def _show_missing_wildcard_menu(self, event, wildcard_name: str):

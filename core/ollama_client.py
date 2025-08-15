@@ -6,7 +6,7 @@ import requests
 import time
 from typing import List, Tuple, Optional, Dict, Any
 from .config import config
-from .default_content import MODEL_RECOMMENDATIONS
+from .default_content import MODEL_RECOMMENDATIONS, DEFAULT_NEGATIVE_PROMPT_GENERATION_PROMPT
 
 def _clean_string(s: Any, replace_underscores: bool = True) -> str:
     """Helper to clean a string value by stripping whitespace and optionally replacing underscores."""
@@ -176,19 +176,51 @@ class OllamaClient:
         return [(rec['idx'], rec['model'], rec['reason']) for rec in sorted_recs]
     
     def parse_enhanced_response(self, response: str) -> Tuple[str, str]:
-        """Parse the enhanced response to extract prompt and SD model recommendation."""
-        enhanced_prompt_match = re.search(r"ENHANCED_PROMPT:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
-        sd_model_match = re.search(r"SD_MODEL:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        """
+        Parse the enhanced response to extract prompt and SD model recommendation.
+        This method is designed to be robust against variations in AI output, such as missing sections or
+        sections appearing out of order.
+        """
+        # Find the starting positions of each key, case-insensitively
+        enhanced_match = re.search(r"ENHANCED_PROMPT:", response, re.IGNORECASE)
+        sd_model_match = re.search(r"SD_MODEL:", response, re.IGNORECASE)
 
-        enhanced_prompt = enhanced_prompt_match.group(1).strip() if enhanced_prompt_match else response.strip()
-        sd_model = sd_model_match.group(1).strip() if sd_model_match else "Stable Diffusion XL (SDXL) - general purpose"
+        # If ENHANCED_PROMPT is missing, assume the whole response is the prompt
+        if not enhanced_match:
+            enhanced_prompt = response.strip()
+            sd_model = "Stable Diffusion XL (SDXL) - general purpose"
+            return enhanced_prompt, sd_model
 
-        # If the prompt still contains the model line, strip it out.
-        if sd_model_match:
-            enhanced_prompt = re.split(r"SD_MODEL:", enhanced_prompt, flags=re.IGNORECASE)[0].strip()
+        # Create a list of found sections with their start positions
+        sections = []
+        if enhanced_match: sections.append({'key': 'enhanced', 'pos': enhanced_match.start(), 'match': enhanced_match})
+        if sd_model_match: sections.append({'key': 'sd_model', 'pos': sd_model_match.start(), 'match': sd_model_match})
+
+        # Sort sections by their position in the string
+        sections.sort(key=lambda x: x['pos'])
+
+        # Extract content for each section
+        results = {'enhanced': '', 'sd_model': ''}
+        for i, section in enumerate(sections):
+            key = section['key']
+            start_pos = section['match'].end() # Start extracting content *after* the key
+            
+            # Determine the end position for this section's content
+            if i + 1 < len(sections):
+                # The end is the start of the next section
+                end_pos = sections[i+1]['pos']
+            else:
+                # This is the last section, so it goes to the end of the string
+                end_pos = len(response)
+            
+            content = response[start_pos:end_pos].strip()
+            results[key] = content
+
+        enhanced_prompt = results.get('enhanced', response.strip())
+        sd_model = results.get('sd_model', "Stable Diffusion XL (SDXL) - general purpose")
 
         return enhanced_prompt, sd_model
-    
+
     def _post_request(self, endpoint: str, payload: Dict[str, Any], timeout: int) -> Dict[str, Any]:
         """Centralized method for making POST requests to the Ollama API with a retry mechanism."""
         api_url = f"{self.base_url}{endpoint}"
@@ -254,16 +286,24 @@ class OllamaClient:
         response_data = self._post_request("/api/generate", payload, timeout)
         return response_data.get('response', '')
 
-    def enhance_prompt(self, full_instruction_prompt: str, model: str) -> Tuple[str, str, str]:
+    def generate_negative_prompt(self, enhanced_prompt: str, model: str) -> str:
+        """Generates a negative prompt based on an enhanced prompt."""
+        full_prompt = DEFAULT_NEGATIVE_PROMPT_GENERATION_PROMPT.format(enhanced_prompt=enhanced_prompt)
+        try:
+            return self._generate(model, full_prompt, config.DEFAULT_TIMEOUT)
+        except Exception:
+            raise
+
+    def enhance_prompt(self, full_instruction_prompt: str, model: str) -> Tuple[str, str]:
         """Enhance a single prompt using the specified model."""
         try:
             raw_response = self._generate(model, full_instruction_prompt, config.DEFAULT_TIMEOUT)
             
-            enhanced, negative, sd_model = self.parse_enhanced_response(raw_response)
+            enhanced, sd_model = self.parse_enhanced_response(raw_response)
             
             # Clean up formatting
             enhanced = enhanced.replace('\n', ' ').replace('  ', ' ')
-            return enhanced, negative, sd_model
+            return enhanced, sd_model
                 
         except Exception:
             # Re-raise to be caught by the GUI and displayed to the user.
@@ -400,17 +440,17 @@ class OllamaClient:
             
         return template_content, new_wildcards
 
-    def create_single_variation(self, instruction: str, base_prompt: str, base_sd_model: str, model: str, variation_type: str) -> Dict[str, str]:
+    def create_single_variation(self, instruction: str, base_prompt: str, base_sd_model: str, model: str, variation_type: str) -> Tuple[str, str]:
         """Create a single variation of a given type."""
         try:
             full_instruction_prompt = instruction + base_prompt
             raw_response = self._generate(model, full_instruction_prompt, config.VARIATION_TIMEOUT)
-            var_prompt, var_neg_prompt, var_sd_model = self.parse_enhanced_response(raw_response)
-            return {'prompt': var_prompt.replace('\n', ' ').replace('  ', ' '), 'negative_prompt': var_neg_prompt, 'sd_model': var_sd_model}
+            var_prompt, var_sd_model = self.parse_enhanced_response(raw_response)
+            return var_prompt.replace('\n', ' ').replace('  ', ' '), var_sd_model
         except Exception as e:
             print(f"Exception during variation creation for '{variation_type}': {e}")
             # Fallback to the original enhanced prompt and its model if variation fails
-            return {'prompt': base_prompt, 'negative_prompt': '', 'sd_model': base_sd_model}
+            return base_prompt, base_sd_model
 
     def unload_model(self, model: str) -> None:
         """Unload a model from memory to free VRAM using the keep_alive=0 method."""
