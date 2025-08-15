@@ -13,17 +13,21 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **AI-Powered Enhancement:** Use a local LLM to enhance your base prompts, adding detail, style, and quality keywords.
 *   **Automatic Variations:** Generate cinematic, artistic, and photorealistic variations of your enhanced prompt with a single click.
 *   **Interactive Template Editor:**
-    *   Get AI-powered suggestions to expand and improve your templates.
+    *   Right-click to "Brainstorm with AI" to get suggestions and refine your template in a dedicated chat window.
     *   Double-click any `__wildcard__` to immediately open it in the Wildcard Manager.
     *   Select any text and right-click to instantly turn it into a new wildcard file.
+    *   Drag and drop `__wildcard__` tags to easily reorder your prompt.
+    *   Get instant visual feedback with tooltips for `requires` clauses that are out of order.
 *   **Advanced AI Brainstorming:**
     *   A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine, expand, and improve them.
-    *   Generate new wildcard, template, or even *linked* wildcard files from scratch based on a concept.
+    *   Generate new wildcard files, templates from a concept, templates from *all* your existing wildcards, or even linked wildcard files from scratch.
     *   The AI automatically detects when a generated template or wildcard requires *new* wildcards, and provides clickable links to generate them.
     *   Select any text in the conversation and have the AI rewrite it based on your instructions ("make it more poetic", "add more technical details", etc.).
 *   **Full-Featured Wildcard Management:**
     *   A powerful structured editor to easily manage complex choices with weights, tags, requirements, and includes.
-    *   Advanced tools: Find & Replace, Find Similar Choices (fuzzy matching), and Sort Choices.
+    *   Choices are automatically sorted alphabetically when a file is loaded for a consistent editing experience.
+    *   Advanced tools: Find & Replace, Find Similar Choices (fuzzy matching), and Find Duplicates.
+    *   **Intelligent Refactoring:** When you rename a wildcard or change a choice's value, the app will offer to scan your entire project and automatically update all other wildcards that depend on it.
     *   Merge multiple wildcard files into a new one, intelligently combining their content.
     *   Scan your entire project to find unused wildcard files that can be archived or deleted.
     *   **Interactive Validator:** Scan all files for errors (e.g., a `requires` clause pointing to a non-existent value). Double-click an error to jump directly to the problematic file and choice, or right-click to fix common issues automatically.
@@ -112,7 +116,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 3.  **AI Brainstorming (`Tools -> AI Brainstorming`):**
     *   Chat directly with the AI for general ideas or to generate new files from scratch.
     *   Load an existing wildcard or template (via the Wildcard Manager or Template Editor context menu) to have a focused, context-aware conversation about improving it.
-    *   Use the "Generate Wildcard File..." or "Generate Template File..." buttons to have the AI create new content from scratch.
+    *   Use the "Generate..." buttons to have the AI create new content, including templates from a concept or from all of your existing wildcards.
     *   When the AI generates content that uses a new, non-existent wildcard, it will appear as a clickable link in the chat history, allowing you to generate it instantly.
     *   Right-click on text in the conversation to "Rewrite Selection with AI...".
 
@@ -122,7 +126,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   Use the structured editor to manage complex choices, or switch to the raw text editor for direct JSON editing.
     *   Use the "Suggest Choices (AI)" button to have the AI generate new items for your list.
     *   Use the "Refine Choices (AI)" button to have the AI analyze your existing choices and add metadata like weights, tags, and requirements.
-    *   Use the full suite of tools to find duplicates, sort choices, merge files, or validate your entire project for errors.
+    *   Use the full suite of tools to find duplicates, merge files, or validate your entire project for errors.
     *   Click "Brainstorm with AI" to send the current wildcard list to the chat window for refinement.
 
 ## Configuration
