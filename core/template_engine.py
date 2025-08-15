@@ -27,6 +27,41 @@ class TemplateEngine:
         self.current_seed: Optional[int] = None
         self.rng = random.Random()
 
+    def _load_wildcard_cache(self) -> Dict[str, Any]:
+        """Loads the wildcard cache from disk."""
+        from .config import WILDCARD_CACHE_FILE
+        if not os.path.exists(WILDCARD_CACHE_FILE):
+            return {}
+        try:
+            with open(WILDCARD_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (IOError, json.JSONDecodeError):
+            # If cache is corrupted or unreadable, start fresh.
+            return {}
+
+    def _save_wildcard_cache(self, cache_data: Dict[str, Any]):
+        """Saves the wildcard cache to disk."""
+        from .config import WILDCARD_CACHE_FILE
+        try:
+            os.makedirs(os.path.dirname(WILDCARD_CACHE_FILE), exist_ok=True)
+            with open(WILDCARD_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f) # No indent for smaller file size
+        except IOError as e:
+            print(f"Warning: Could not save wildcard cache: {e}")
+
+    def clear_wildcard_cache_file(self) -> bool:
+        """Deletes the wildcard cache file from disk."""
+        from .config import WILDCARD_CACHE_FILE
+        if os.path.exists(WILDCARD_CACHE_FILE):
+            try:
+                os.remove(WILDCARD_CACHE_FILE)
+                print("INFO: Wildcard cache file deleted.")
+                return True
+            except OSError as e:
+                print(f"Warning: Could not delete wildcard cache file: {e}")
+                return False
+        return True # It's already clear if it doesn't exist
+
     def load_wildcards(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
         """Load all wildcard files from a list of directories, with later directories overriding earlier ones."""
         self.wildcards = self.get_all_wildcards_data_from_dirs(wildcard_dirs)
@@ -36,10 +71,17 @@ class TemplateEngine:
         return self.wildcards
     
     def get_all_wildcards_data_from_dirs(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
-        """Loads and returns all wildcard data from a list of directories without setting instance state."""
+        """
+        Loads and returns all wildcard data from a list of directories,
+        using a file-based cache to speed up subsequent loads.
+        """
+        disk_cache = self._load_wildcard_cache()
         wildcards: Dict[str, Dict] = {}
-        found_files: Dict[str, Dict[str, str]] = {} # {basename: {'.txt': path, '.json': path}}
         
+        # {basename: {ext: '.json', path: '/path/to/file.json', mtime: 12345.67}}
+        found_files: Dict[str, Dict[str, Any]] = {}
+        
+        # 1. Scan all files on disk to get their paths and modification times.
         for wildcard_dir in wildcard_dirs:
             if not os.path.exists(wildcard_dir):
                 continue
@@ -47,24 +89,48 @@ class TemplateEngine:
             for filename in os.listdir(wildcard_dir):
                 basename, ext = os.path.splitext(filename)
                 if ext in ['.txt', '.json']:
-                    if basename not in found_files:
-                        found_files[basename] = {}
-                    # Later dirs override earlier ones for the same extension
-                    found_files[basename][ext] = os.path.join(wildcard_dir, filename)
-
-        for basename, paths in found_files.items():
-            try:
-                if '.json' in paths: # Prefer .json if it exists
-                    with open(paths['.json'], 'r', encoding='utf-8') as f:
-                        wildcards[basename] = json.load(f)
-                elif '.txt' in paths: # Fallback to .txt
-                    with open(paths['.txt'], 'r', encoding='utf-8') as f:
-                        lines = [line.strip() for line in f if line.strip()]
-                        # Convert to the standard JSON structure in memory
-                        wildcards[basename] = {"description": f"Legacy wildcard from {os.path.basename(paths['.txt'])}.", "choices": lines}
-            except Exception as e:
-                print(f"Error loading or parsing wildcard file for {basename}: {e}")
+                    path = os.path.join(wildcard_dir, filename)
+                    try:
+                        mtime = os.path.getmtime(path)
                         
+                        # Prioritize .json over .txt. Later dirs override earlier ones.
+                        if basename not in found_files or \
+                           (ext == '.json' and found_files[basename]['ext'] == '.txt') or \
+                           (ext == found_files[basename]['ext']):
+                            found_files[basename] = {'ext': ext, 'path': path, 'mtime': mtime}
+                    except FileNotFoundError:
+                        continue # File might have been deleted during the scan
+
+        # 2. Process files, using cache where possible.
+        current_cache = {}
+        for basename, file_info in found_files.items():
+            path = file_info['path']
+            mtime = file_info['mtime']
+            
+            # Check if a valid, up-to-date entry exists in the cache.
+            if path in disk_cache and disk_cache[path].get('mtime') == mtime:
+                wildcards[basename] = disk_cache[path]['data']
+                current_cache[path] = disk_cache[path] # Keep the valid entry
+                continue
+
+            # If not in cache or outdated, load from disk.
+            try:
+                if file_info['ext'] == '.json':
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                else: # .txt
+                    with open(path, 'r', encoding='utf-8') as f:
+                        lines = [line.strip() for line in f if line.strip()]
+                        data = {"description": f"Legacy wildcard from {os.path.basename(path)}.", "choices": lines}
+                
+                wildcards[basename] = data
+                current_cache[path] = {'mtime': mtime, 'data': data} # Update cache
+            except Exception as e:
+                print(f"Error loading or parsing wildcard file {path}: {e}")
+
+        # 3. Save the updated cache back to disk.
+        self._save_wildcard_cache(current_cache)
+        
         return wildcards
     
     def list_templates(self, template_dir: str) -> List[str]:

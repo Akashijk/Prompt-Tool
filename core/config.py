@@ -13,6 +13,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # --- User Settings Management ---
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".prompt_tool_v2")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
+WILDCARD_CACHE_FILE = os.path.join(CONFIG_DIR, "wildcards.cache.json")
 
 def load_settings() -> dict:
     """Loads user settings from the config file."""

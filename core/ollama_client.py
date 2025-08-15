@@ -254,16 +254,16 @@ class OllamaClient:
         response_data = self._post_request("/api/generate", payload, timeout)
         return response_data.get('response', '')
 
-    def enhance_prompt(self, full_instruction_prompt: str, model: str) -> Tuple[str, str]:
+    def enhance_prompt(self, full_instruction_prompt: str, model: str) -> Tuple[str, str, str]:
         """Enhance a single prompt using the specified model."""
         try:
             raw_response = self._generate(model, full_instruction_prompt, config.DEFAULT_TIMEOUT)
             
-            enhanced, sd_model = self.parse_enhanced_response(raw_response)
+            enhanced, negative, sd_model = self.parse_enhanced_response(raw_response)
             
             # Clean up formatting
             enhanced = enhanced.replace('\n', ' ').replace('  ', ' ')
-            return enhanced, sd_model
+            return enhanced, negative, sd_model
                 
         except Exception:
             # Re-raise to be caught by the GUI and displayed to the user.
@@ -405,12 +405,12 @@ class OllamaClient:
         try:
             full_instruction_prompt = instruction + base_prompt
             raw_response = self._generate(model, full_instruction_prompt, config.VARIATION_TIMEOUT)
-            var_prompt, var_sd_model = self.parse_enhanced_response(raw_response)
-            return {'prompt': var_prompt.replace('\n', ' ').replace('  ', ' '), 'sd_model': var_sd_model}
+            var_prompt, var_neg_prompt, var_sd_model = self.parse_enhanced_response(raw_response)
+            return {'prompt': var_prompt.replace('\n', ' ').replace('  ', ' '), 'negative_prompt': var_neg_prompt, 'sd_model': var_sd_model}
         except Exception as e:
             print(f"Exception during variation creation for '{variation_type}': {e}")
             # Fallback to the original enhanced prompt and its model if variation fails
-            return {'prompt': base_prompt, 'sd_model': base_sd_model}
+            return {'prompt': base_prompt, 'negative_prompt': '', 'sd_model': base_sd_model}
 
     def unload_model(self, model: str) -> None:
         """Unload a model from memory to free VRAM using the keep_alive=0 method."""

@@ -202,6 +202,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.validation_after_id: Optional[str] = None
         self.fix_queue = queue.Queue()
         self.fix_after_id: Optional[str] = None
+        self.json_fix_queue = queue.Queue()
+        self.json_fix_after_id: Optional[str] = None
 
         self._create_widgets()
         self._populate_wildcard_list()
@@ -223,6 +225,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.after_cancel(self.validation_after_id)
         if self.fix_after_id:
             self.after_cancel(self.fix_after_id)
+        if self.json_fix_after_id:
+            self.after_cancel(self.json_fix_after_id)
         self.destroy()
 
     def _on_editor_focus_in(self, event=None):
@@ -336,6 +340,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         tools_menu.add_command(label="Find Exact Duplicates", command=self._find_duplicates)
         tools_menu.add_command(label="Find Similar...", command=self._find_similar_choices)
         tools_menu.add_command(label="Sort Choices", command=self._sort_choices)
+        tools_menu.add_command(label="Convert to Complex Choices", command=self._convert_to_complex_choices)
         tools_menu.add_separator()
         tools_menu.add_command(label="Remove All 'requires'...", command=lambda: self._remove_all_keys('requires'))
         tools_menu.add_command(label="Remove All 'includes'...", command=lambda: self._remove_all_keys('includes'))
@@ -346,6 +351,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         """Populates the list of wildcard files."""
         self.all_wildcard_files = self.processor.get_wildcard_files()
         self.wildcard_list_var.set(self.all_wildcard_files)
+        # Force the UI to update the listbox from the variable before we try to select an item in it.
+        self.update_idletasks()
         # Clear search to ensure the full list is displayed initially
         self.search_var.set("")
 
@@ -455,21 +462,27 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.tools_menubutton.config(state=tk.DISABLED)
 
     def _save_wildcard_file(self):
-        if not self.selected_wildcard_file: return
+        if not self.selected_wildcard_file:
+            return
 
         content = ""
-        try:
-            # Get content from the currently active tab
-            active_tab_index = self.editor_notebook.index(self.editor_notebook.select())
-            if active_tab_index == 0: # Structured Editor
-                data = self.structured_editor.get_data()
-                content = json.dumps(data, indent=2)
-            else: # Raw Text Editor
-                content = self.raw_text_editor.get("1.0", "end-1c")
-            
-            # Validate that it's proper JSON before saving
-            json.loads(content)
+        is_raw_editor = self.editor_notebook.index(self.editor_notebook.select()) == 1
 
+        if is_raw_editor:
+            content = self.raw_text_editor.get("1.0", "end-1c")
+            try:
+                # Validate JSON from raw editor
+                json.loads(content)
+            except json.JSONDecodeError as e:
+                # If invalid, show the AI fix dialog and stop the save process.
+                self._handle_invalid_json_save(content, str(e))
+                return  # Stop here. The user will have to click save again after fixing.
+        else:  # Structured Editor
+            data = self.structured_editor.get_data()
+            content = json.dumps(data, indent=2)
+
+        # If we reach here, the content is valid JSON.
+        try:
             # The processor will handle saving and migration (.txt -> .json)
             self.processor.save_wildcard_content(self.selected_wildcard_file, content)
 
@@ -480,16 +493,64 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
             # If the file was new, or if its name changed (migration), refresh the list
             if new_filename != self.selected_wildcard_file:
-                self.selected_wildcard_file = new_filename # Update the tracked filename
+                self.selected_wildcard_file = new_filename  # Update the tracked filename
                 self._populate_wildcard_list()
                 self.select_and_load_file(self.selected_wildcard_file)
             else:
                 # If the name didn't change, just reload the content to ensure it's up-to-date
+                # and the structured editor reflects the raw text changes.
                 self._on_wildcard_file_select()
 
             self.update_callback(modified_file=self.selected_wildcard_file)
         except Exception as e:
-            custom_dialogs.show_error(self, "Error", f"Could not save wildcard file. Please ensure it is valid JSON.\n\n{e}")
+            # This will catch file system errors, etc.
+            custom_dialogs.show_error(self, "Save Error", f"Could not save wildcard file:\n{e}")
+
+    def _handle_invalid_json_save(self, broken_content: str, error_message: str):
+        """Shows a dialog when the user tries to save invalid JSON from the raw editor."""
+        message = f"The content is not valid JSON.\n\nError: {error_message}\n\nWould you like to ask an AI to try and fix the syntax?"
+        
+        if custom_dialogs.ask_yes_no(self, "Invalid JSON", message):
+            self._run_ai_json_fix(broken_content)
+
+    def _run_ai_json_fix(self, broken_content: str):
+        """Runs the AI JSON fixer in a background thread."""
+        loading_dialog = custom_dialogs._CustomDialog(self, "AI Fixing JSON")
+        ttk.Label(loading_dialog, text="Asking AI to fix JSON syntax...\nThis may take a moment.").pack(padx=20, pady=20)
+        loading_dialog.update_idletasks()
+        loading_dialog._center_window()
+
+        def task():
+            try:
+                model = self.parent_app.enhancement_model_var.get()
+                if not model or "model" in model.lower():
+                    raise Exception("Please select a valid Ollama model in the main window.")
+                
+                fixed_json = self.processor.fix_json_syntax_with_ai(broken_content, model)
+                self.json_fix_queue.put({'success': True, 'fixed_json': fixed_json})
+            except Exception as e:
+                self.json_fix_queue.put({'success': False, 'error': str(e)})
+            finally:
+                # Ensure the loading dialog is closed from the main thread
+                loading_dialog.after(0, loading_dialog.destroy)
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self._check_json_fix_queue()
+
+    def _check_json_fix_queue(self):
+        """Checks for results from the AI JSON fixer thread."""
+        try:
+            result = self.json_fix_queue.get_nowait()
+            if result['success']:
+                fixed_json = result['fixed_json']
+                self.raw_text_editor.delete("1.0", tk.END)
+                self.raw_text_editor.insert("1.0", fixed_json)
+                custom_dialogs.show_info(self, "JSON Fixed", "The AI has corrected the JSON syntax. Please review and click 'Save Changes' again.")
+            else:
+                custom_dialogs.show_error(self, "AI Fix Failed", f"The AI could not fix the JSON syntax:\n{result['error']}")
+        except queue.Empty:
+            self.json_fix_after_id = self.after(100, self._check_json_fix_queue)
 
     def _create_new_wildcard_file(self):
         filename_result = None
@@ -546,14 +607,17 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             message += f"\n...and {num_files - 5} more."
         
         # Unbind to prevent focus loss from clearing the editor
+        should_archive = False
         self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        self.dialog_is_open = True
         try:
-            if not custom_dialogs.ask_yes_no(self, "Confirm Archive", message):
-                return
+            should_archive = custom_dialogs.ask_yes_no(self, "Confirm Archive", message)
         finally:
+            self.dialog_is_open = False
             if self.winfo_exists():
                 self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
+        if not should_archive: return
         try:
             for filename in files_to_archive:
                 self.processor.archive_wildcard(filename)
@@ -739,10 +803,14 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             message += "\n\nWould you like to automatically remove these duplicates? (The first occurrence of each will be kept)"
 
             # Unbind the selection event to prevent the dialog from clearing the editor on focus loss.
+            should_remove = False
             self.wildcard_listbox.unbind("<<ListboxSelect>>")
+            self.dialog_is_open = True
             try:
-                should_remove = custom_dialogs.ask_yes_no(self, "Remove Duplicates?", message)
+                dialog = custom_dialogs._MessageBox(self, "Remove Duplicates?", message, yes_no=True)
+                should_remove = dialog.result
             finally:
+                self.dialog_is_open = False
                 if self.winfo_exists():
                     self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
@@ -799,16 +867,20 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             return
 
         # Unbind the selection event to prevent the dialog from clearing the editor on focus loss.
+        threshold_str = None
         self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        self.dialog_is_open = True
         try:
-            threshold_str = custom_dialogs.ask_string(
+            dialog = custom_dialogs._AskStringDialog(
                 self,
                 "Similarity Threshold",
                 "Enter a similarity threshold (1-100).\nHigher values mean more similar.",
                 initialvalue="85"
             )
+            threshold_str = dialog.result
         finally:
             # Always re-bind the event to restore normal functionality
+            self.dialog_is_open = False
             if self.winfo_exists():
                 self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
@@ -875,18 +947,23 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             return
 
         # Unbind the selection event to prevent the dialog from clearing the editor on focus loss.
+        dialog_result = None
         self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        self.dialog_is_open = True
         try:
             selection = self.structured_editor.tree.selection()
             dialog = _FindReplaceDialog(self, selection_exists=bool(selection))
-            if not dialog.result:
-                return
+            dialog_result = dialog.result
         finally:
             # Always re-bind the event to restore normal functionality
+            self.dialog_is_open = False
             if self.winfo_exists():
                 self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
-        params = dialog.result
+        if not dialog_result:
+            return
+
+        params = dialog_result
         find_text = params['find']
         replace_text = params['replace']
         
@@ -930,7 +1007,26 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
                         new_choice_obj = new_value
                     
                     self.structured_editor.iid_to_choice_map[iid] = new_choice_obj
-                    self.structured_editor.tree.set(iid, 'value', new_value)
+
+                    # Update the entire treeview item to prevent UI desync.
+                    if isinstance(new_choice_obj, dict):
+                        value = new_choice_obj.get('value', '')
+                        weight = new_choice_obj.get('weight', '')
+                        tags = ", ".join(new_choice_obj.get('tags', []))
+                        requires_dict = new_choice_obj.get('requires', {})
+                        requires = json.dumps(requires_dict, separators=(',', ':')) if requires_dict else ""
+                        
+                        includes_val = new_choice_obj.get('includes')
+                        if isinstance(includes_val, list):
+                            includes_display = json.dumps(includes_val)
+                        else:
+                            includes_display = includes_val or ''
+                        
+                        new_values_tuple = (value, str(weight) if weight is not None and weight != '' else '', tags, requires, includes_display)
+                    else: # it's a string
+                        new_values_tuple = (new_choice_obj, '', '', '', '')
+
+                    self.structured_editor.tree.item(iid, values=new_values_tuple)
         else:
             # --- Logic for entire file ---
             current_data = self.structured_editor.get_data()
@@ -989,7 +1085,68 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.structured_editor.set_data(data)
         
         self.save_button.config(state=tk.NORMAL)
-        custom_dialogs.show_info(self, "Sort Complete", "Choices have been sorted alphabetically.\n\nPlease save the file to apply the changes.")
+        # This is a dialog, so it needs focus protection
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        self.dialog_is_open = True
+        try:
+            custom_dialogs.show_info(self, "Sort Complete", "Choices have been sorted alphabetically.\n\nPlease save the file to apply the changes.")
+        finally:
+            self.dialog_is_open = False
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+
+    def _convert_to_complex_choices(self):
+        """Converts all simple string choices into complex objects with a default weight."""
+        if not self.selected_wildcard_file:
+            return
+
+        data = self.structured_editor.get_data()
+        choices = data.get('choices', [])
+
+        if not choices:
+            # This is a dialog, so it needs focus protection
+            self.wildcard_listbox.unbind("<<ListboxSelect>>")
+            self.dialog_is_open = True
+            try:
+                custom_dialogs.show_info(self, "Convert Choices", "No choices to convert.")
+            finally:
+                self.dialog_is_open = False
+                if self.winfo_exists():
+                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+            return
+
+        new_choices = []
+        converted_count = 0
+        for choice in choices:
+            if isinstance(choice, str):
+                new_choices.append({"value": choice, "weight": 1})
+                converted_count += 1
+            elif isinstance(choice, dict):
+                new_choices.append(choice)
+        
+        if converted_count > 0:
+            data['choices'] = new_choices
+            self.structured_editor.set_data(data)
+            self.save_button.config(state=tk.NORMAL)
+            # This is a dialog, so it needs focus protection
+            self.wildcard_listbox.unbind("<<ListboxSelect>>")
+            self.dialog_is_open = True
+            try:
+                custom_dialogs.show_info(self, "Conversion Complete", f"Converted {converted_count} simple choice(s) to complex objects with a default weight of 1.\n\nPlease save the file to apply the changes.")
+            finally:
+                self.dialog_is_open = False
+                if self.winfo_exists():
+                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+        else:
+            # This is a dialog, so it needs focus protection
+            self.wildcard_listbox.unbind("<<ListboxSelect>>")
+            self.dialog_is_open = True
+            try:
+                custom_dialogs.show_info(self, "No Changes", "All choices are already in the complex object format.")
+            finally:
+                self.dialog_is_open = False
+                if self.winfo_exists():
+                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
     def _remove_all_keys(self, key_to_remove: str):
         """Removes all instances of a specific key ('requires' or 'includes') from all choices."""
@@ -997,17 +1154,22 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             return
 
         # Unbind to protect dialog from causing focus loss issues
+        should_proceed = False
         self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        self.dialog_is_open = True
         try:
-            if not custom_dialogs.ask_yes_no(
+            should_proceed = custom_dialogs.ask_yes_no(
                 self,
                 f"Confirm Removal",
                 f"Are you sure you want to remove ALL '{key_to_remove}' entries from every choice in this file?\n\nThis action cannot be undone."
-            ):
-                return
+            )
         finally:
+            self.dialog_is_open = False
             if self.winfo_exists():
                 self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+
+        if not should_proceed:
+            return
 
         # Proceed with the logic if the user confirmed
         data = self.structured_editor.get_data() # Get data *after* dialog
@@ -1055,15 +1217,23 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             result = self.find_unused_queue.get_nowait()
             self.find_unused_button.config(state=tk.NORMAL, text="Find Unused Files")
 
-            if result['success']:
-                unused_wildcards = result['unused']
-                if not unused_wildcards:
-                    custom_dialogs.show_info(self, "Find Unused Wildcards", "No unused wildcard files found. All wildcards are referenced in at least one template or another wildcard's 'includes' clause.")
+            # This is a dialog, so it needs focus protection
+            self.wildcard_listbox.unbind("<<ListboxSelect>>")
+            self.dialog_is_open = True
+            try:
+                if result['success']:
+                    unused_wildcards = result['unused']
+                    if not unused_wildcards:
+                        custom_dialogs.show_info(self, "Find Unused Wildcards", "No unused wildcard files found. All wildcards are referenced in at least one template or another wildcard's 'includes' clause.")
+                    else:
+                        message = "The following wildcard files appear to be unused:\n\n" + "\n".join([f"- {wc}" for wc in unused_wildcards]) + "\n\nNote: This check may not detect wildcards used in complex, indirect ways. Please review before deleting."
+                        custom_dialogs.show_info(self, "Unused Wildcards Found", message)
                 else:
-                    message = "The following wildcard files appear to be unused:\n\n" + "\n".join([f"- {wc}" for wc in unused_wildcards]) + "\n\nNote: This check may not detect wildcards used in complex, indirect ways. Please review before deleting."
-                    custom_dialogs.show_info(self, "Unused Wildcards Found", message)
-            else:
-                custom_dialogs.show_error(self, "Error", f"An error occurred while checking for unused wildcards:\n{result['error']}")
+                    custom_dialogs.show_error(self, "Error", f"An error occurred while checking for unused wildcards:\n{result['error']}")
+            finally:
+                self.dialog_is_open = False
+                if self.winfo_exists():
+                    self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
         except queue.Empty:
             self.find_unused_after_id = self.after(100, self._check_find_unused_queue)
 
@@ -1095,9 +1265,24 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             if result['success']:
                 errors = result['errors']
                 if not errors:
-                    custom_dialogs.show_info(self, "Validation Complete", "No validation errors found in 'requires' clauses.")
+                    # This is a dialog, so it needs focus protection
+                    self.wildcard_listbox.unbind("<<ListboxSelect>>")
+                    self.dialog_is_open = True
+                    try:
+                        custom_dialogs.show_info(self, "Validation Complete", "No validation errors found in 'requires' clauses.")
+                    finally:
+                        self.dialog_is_open = False
+                        if self.winfo_exists():
+                            self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
                 else:
-                    self._show_validation_errors(errors)
+                    self.wildcard_listbox.unbind("<<ListboxSelect>>")
+                    self.dialog_is_open = True
+                    try:
+                        self._show_validation_errors(errors)
+                    finally:
+                        self.dialog_is_open = False
+                        if self.winfo_exists():
+                            self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
             else:
                 custom_dialogs.show_error(self, "Error", f"An error occurred during validation:\n{result['error']}")
         except queue.Empty:
@@ -1430,15 +1615,19 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         old_basename, _ = os.path.splitext(old_filename)
 
         # Unbind to prevent focus loss from clearing the editor
+        new_basename = None
         self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        self.dialog_is_open = True
         try:
-            new_basename = custom_dialogs.ask_string(
+            dialog = custom_dialogs._AskStringDialog(
                 self, 
                 "Rename Wildcard", 
                 "Enter new name (without extension):", 
                 initialvalue=old_basename
             )
+            new_basename = dialog.result
         finally:
+            self.dialog_is_open = False
             if self.winfo_exists():
                 self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
@@ -1472,38 +1661,18 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         """
         Handles the right-click event on the file list, preserving selection on macOS.
         """
-        # Identify the item under the cursor.
         index = self.wildcard_listbox.nearest(event.y)
 
         # If the click is on an actual item and that item is not already selected,
         # then we perform the standard "select only this item" behavior.
-        # This mimics native OS context menu behavior.
+        # This will trigger the <<ListboxSelect>> event, which correctly updates the editor.
         if index != -1 and not self.wildcard_listbox.selection_includes(index):
             self.wildcard_listbox.selection_clear(0, tk.END)
             self.wildcard_listbox.selection_set(index)
             self.wildcard_listbox.activate(index)
 
-        # We now have the correct selection. We can configure and post the menu.
-        # We use self.after(1, ...) to delay the popup slightly. This is a common
-        # technique on macOS to prevent the default binding from interfering
-        # with our custom selection logic.
-        self.after(1, lambda: self._popup_context_menu(event))
-
-        # Crucially, we return "break" to stop the event propagation immediately.
-        # This should prevent the default listbox binding that clears the selection.
-        return "break"
-
-    def _popup_context_menu(self, event):
-        """Configures and displays the context menu. Called via self.after()."""
+        # Now that the selection is correct, configure and show the menu.
         selection_count = len(self.wildcard_listbox.curselection())
-
-        # Update the editor view based on the selection count
-        if selection_count == 1:
-            # A single selection should always trigger the file load.
-            self._on_wildcard_file_select()
-        elif selection_count > 1:
-            # A multi-selection should clear the editor pane.
-            self._clear_editor_view(preserve_selection=True)
 
         # Configure menu items based on the final selection
         self.file_list_context_menu.entryconfig("Brainstorm with AI", state=tk.NORMAL if selection_count == 1 else tk.DISABLED)
@@ -1511,6 +1680,9 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.file_list_context_menu.entryconfig("Archive", state=tk.NORMAL if selection_count > 0 else tk.DISABLED)
 
         self.file_list_context_menu.tk_popup(event.x_root, event.y_root)
+        
+        # Return "break" to prevent any other default bindings from firing.
+        return "break"
 
     def _perform_merge(self, all_data: List[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
         """Contains the core logic for merging data from multiple wildcard files."""
@@ -1524,17 +1696,78 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             merged_desc_parts.append(f"--- {basename} ---\n{desc}")
         merged_desc = f"Merged from {len(basenames)} files: {', '.join(basenames)}.\n\n" + "\n\n".join(merged_desc_parts)
 
-        # --- Merge Choices (uniquely) ---
-        seen_values = set()
-        merged_choices = []
+        # --- Merge Choices (uniquely and intelligently) ---
+        merged_choices_map: Dict[str, Any] = {}
         for _, data in all_data:
             for choice in data.get('choices', []):
-                value = choice if isinstance(choice, str) else choice.get('value')
-                if value is not None and value not in seen_values:
-                    merged_choices.append(choice)
-                    seen_values.add(value)
+                is_new_dict = isinstance(choice, dict)
+                value = choice.get('value') if is_new_dict else choice
+                
+                if value is None:
+                    continue
 
-        # --- Merge Includes (intelligently) ---
+                if value not in merged_choices_map:
+                    # First time seeing this value, add a deepcopy to avoid modifying original data.
+                    merged_choices_map[value] = copy.deepcopy(choice)
+                else:
+                    # Duplicate value found, merge properties.
+                    existing_choice = merged_choices_map[value]
+                    
+                    # Ensure both are dicts for merging.
+                    if not isinstance(existing_choice, dict):
+                        existing_choice = {'value': existing_choice}
+                    
+                    new_choice_data = choice if is_new_dict else {'value': choice}
+
+                    # Merge 'tags'
+                    existing_tags = set(existing_choice.get('tags', []))
+                    new_tags = set(new_choice_data.get('tags', []))
+                    if existing_tags or new_tags:
+                        existing_choice['tags'] = sorted(list(existing_tags | new_tags))
+
+                    # Merge 'requires'
+                    existing_reqs = existing_choice.get('requires', {})
+                    new_reqs = new_choice_data.get('requires', {})
+                    if existing_reqs or new_reqs:
+                        merged_reqs = copy.deepcopy(existing_reqs)
+                        for key, value2 in new_reqs.items():
+                            if key in merged_reqs:
+                                value1 = merged_reqs[key]
+                                set1 = set(value1) if isinstance(value1, list) else {value1}
+                                set2 = set(value2) if isinstance(value2, list) else {value2}
+                                merged_values = sorted(list(set1 | set2))
+                                # Keep it as a single value if only one results from the merge
+                                merged_reqs[key] = merged_values[0] if len(merged_values) == 1 else merged_values
+                            else:
+                                merged_reqs[key] = value2
+
+                        existing_choice['requires'] = merged_reqs
+                    
+                    # Merge 'includes'
+                    inc1 = existing_choice.get('includes')
+                    inc2 = new_choice_data.get('includes')
+                    is_inc1_list = isinstance(inc1, list)
+                    is_inc2_list = isinstance(inc2, list)
+
+                    merged_includes = None
+                    if is_inc1_list and is_inc2_list:
+                        merged_includes = sorted(list(set(inc1) | set(inc2)))
+                    elif inc1 or inc2:
+                        s1 = " ".join([f"[{w}]" for w in inc1]) if is_inc1_list else (inc1 or '')
+                        s2 = " ".join([f"[{w}]" for w in inc2]) if is_inc2_list else (inc2 or '')
+                        combined_str = f"{s1} {s2}".strip()
+                        if combined_str:
+                            merged_includes = combined_str
+                    
+                    if merged_includes:
+                        existing_choice['includes'] = merged_includes
+
+                    # Update the map with the merged choice object.
+                    merged_choices_map[value] = existing_choice
+        
+        merged_choices = list(merged_choices_map.values())
+
+        # --- Merge Global Includes (intelligently) ---
         all_includes = set()
         for _, data in all_data:
             includes = data.get('includes')
@@ -1600,9 +1833,11 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
         # Unbind here to protect all dialogs within the merge and save steps.
         self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        self.dialog_is_open = True
         try:
             merged_data = self._perform_merge(all_data)
             self._save_and_finalize_merge(merged_data, file_names)
         finally:
+            self.dialog_is_open = False
             if self.winfo_exists():
                 self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)

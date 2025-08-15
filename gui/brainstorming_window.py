@@ -8,6 +8,7 @@ import threading
 import json
 import re
 import random
+import traceback
 from typing import Optional, List, Dict, Callable, Tuple, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
@@ -174,16 +175,25 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         
         self.destroy()
 
+    def _log_verbose_error(self, context: str, e: Exception):
+        """Logs an error to the console if verbose mode is enabled."""
+        if self.processor.verbose:
+            print(f"\n--- VERBOSE: GUI-LEVEL ERROR ({context}) ---", flush=True)
+            print(f"Error: {e}", flush=True)
+            traceback.print_exc()
+            print("--------------------------------------------------\n", flush=True)
+
     def update_theme(self):
         """Updates the tag colors to match the current theme."""
         self._configure_tags()
-    def _handle_wildcard_link_click(self, wildcard_name: str, tag_name: str):
+    def _handle_wildcard_link_click(self, wildcard_name: str, tag_name: str, template_context: Optional[str] = None):
         """Handles a click on a new wildcard link, disabling it and starting generation."""
         # Disable the link to prevent multiple clicks
         self.history_text.tag_config(tag_name, foreground="gray", underline=False)
         self.history_text.tag_unbind(tag_name, "<Button-1>")
         
-        self.generate_wildcard_with_topic(wildcard_name)
+        # Pass the context if it exists
+        self.generate_wildcard_with_topic(wildcard_name, template_context=template_context)
 
     def _on_send_message_event(self, event):
         # If shift is pressed, allow default newline behavior. Otherwise, send message.
@@ -217,6 +227,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
             response = self.processor.chat_with_model(model, self.conversation_history)
             self.chat_queue.put({'response': response, 'tag': 'ai'})
         except Exception as e:
+            self._log_verbose_error("Chat Response", e)
             self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error'})
 
     def _get_initial_ai_response(self, model: str):
@@ -226,6 +237,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
             response = self.processor.chat_with_model(model, self.conversation_history)
             self.chat_queue.put({'response': response, 'tag': 'ai'})
         except Exception as e:
+            self._log_verbose_error("Initial Chat Response", e)
             self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error'})
 
     def _check_chat_queue(self):
@@ -292,6 +304,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                 suggestion = self.processor.suggest_chat_reply(self.conversation_history, model)
                 self.suggestion_queue.put({'success': True, 'suggestion': suggestion})
             except Exception as e:
+                self._log_verbose_error("Suggest Reply", e)
                 self.suggestion_queue.put({'success': False, 'error': str(e)})
         
         thread = threading.Thread(target=task, daemon=True)
@@ -370,6 +383,12 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
 
         # Define the second step of the process
         def generate_primary_wildcard(supporting_filename: str):
+            # Check if the brainstorming window was closed in the meantime.
+            # This prevents a crash if the user saves the supporting file after closing the main window.
+            if not self.winfo_exists():
+                print("INFO: Brainstorming window was closed before the linked wildcard generation could continue.")
+                return
+
             # Force a reload of wildcards so the newly created one is available.
             self.processor.reload_wildcards()
             # The main app's UI also needs to be refreshed.
@@ -378,7 +397,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_info(
                 self, 
                 "Step 2: Primary Wildcard", 
-                f"Now we will generate the primary wildcard '{primary_topic}', which will be encouraged to use the supporting wildcard you just saved."
+                f"Now we will generate the primary wildcard '{primary_topic}', which will be prompted to include choices from the supporting wildcard you just saved."
             )
             self.generate_wildcard_with_topic(primary_topic, supporting_wildcard_to_include=supporting_filename)
 
@@ -390,22 +409,33 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         )
         self.generate_wildcard_with_topic(supporting_topic, next_step_callback=generate_primary_wildcard)
 
-    def generate_wildcard_with_topic(self, topic: str, filename: Optional[str] = None, existing_window: Optional[ReviewAndSaveWindow] = None, next_step_callback: Optional[Callable] = None, supporting_wildcard_to_include: Optional[str] = None):
+    def generate_wildcard_with_topic(self, topic: str, filename: Optional[str] = None, existing_window: Optional[ReviewAndSaveWindow] = None, next_step_callback: Optional[Callable] = None, supporting_wildcard_to_include: Optional[str] = None, template_context: Optional[str] = None):
         """Starts the generation process for a wildcard with a given topic."""
         if not topic:
             return
 
-        final_filename = filename if filename is not None else topic
+        # Create metadata dictionary with all necessary information
+        metadata = {
+            'filename': filename or f"{topic}.json",  # Ensure .json extension
+            'topic': topic,
+            'window': existing_window,
+            'next_step_callback': next_step_callback,
+            'supporting_wildcard_to_include': supporting_wildcard_to_include,
+            'template_context': template_context
+        }
 
-        # Create or get the results window first with a loading state.
-        metadata = {'filename': final_filename, 'topic': topic, 'window': existing_window, 'next_step_callback': next_step_callback, 'supporting_wildcard_to_include': supporting_wildcard_to_include}
+        # Create or get the results window first with loading state
         results_window = self._handle_generated_content("", "wildcard", metadata)
         metadata['window'] = results_window
 
         self._add_message("AI", f"Generating wildcard ideas for '{topic}'...", "thinking")
-        # The task now just needs the topic, not the full prompt.
-        # The processor will build the full prompt internally.
-        self._run_generation_task(topic, "wildcard", metadata=metadata)
+        
+        # Run the generation task
+        self._run_generation_task(
+            prompt_or_topic=topic,
+            content_type="wildcard",
+            metadata=metadata
+        )
 
     def _generate_template_file(self):
         """Guides the user to generate a new template file."""
@@ -449,6 +479,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                     response = self.processor.rewrite_text(selected_text, instructions, model)
                     self.chat_queue.put({'response': response, 'tag': 'ai_generated', 'content_type': content_type, 'metadata': metadata})
             except Exception as e:
+                self._log_verbose_error(f"Generation Task ({content_type})", e)
                 # Pass metadata along with the error so we can handle the UI correctly
                 self.chat_queue.put({'response': f"An error occurred: {e}", 'tag': 'error', 'metadata': metadata})
 
@@ -511,9 +542,13 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
             wildcard_data = json.loads(parsed_json_string)
             included_wildcards = set()
             for choice in wildcard_data.get('choices', []):
-                if isinstance(choice, dict) and 'includes' in choice:
-                    for included_wc in choice['includes']:
-                        included_wildcards.add(included_wc)
+                if isinstance(choice, dict):
+                    includes_val = choice.get('includes')
+                    if isinstance(includes_val, list):
+                        included_wildcards.update(includes_val)
+                    elif isinstance(includes_val, str):
+                        found = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', includes_val)
+                        included_wildcards.update(found)
             
             existing_wildcards = set(self.processor.get_wildcard_names())
             genuinely_new_wildcards = sorted(list(included_wildcards - existing_wildcards))
@@ -527,10 +562,15 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                 # Add the links
                 self.history_text.config(state=tk.NORMAL)
                 self.history_text.insert(tk.END, "\n")
+
+                # Get the original template context to pass down the chain.
+                original_template_context = metadata.get('template_context') if metadata else None
+
                 for i, wc in enumerate(genuinely_new_wildcards):
                     tag_name = f"new_wc_{wc}_{i}" # Unique tag
                     self.history_text.insert(tk.END, wc, ("new_wildcard_link", tag_name))
-                    self.history_text.tag_bind(tag_name, "<Button-1>", lambda e, w=wc, t=tag_name: self._handle_wildcard_link_click(w, t))
+                    # Pass the original template context, not the current wildcard's JSON.
+                    self.history_text.tag_bind(tag_name, "<Button-1>", lambda e, w=wc, t=tag_name, ctx=original_template_context: self._handle_wildcard_link_click(w, t, ctx))
                     if i < len(genuinely_new_wildcards) - 1:
                         self.history_text.insert(tk.END, ", ")
                 self.history_text.config(state=tk.DISABLED)
@@ -567,8 +607,8 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
             for i, wc in enumerate(genuinely_new_wildcards):
                 tag_name = f"new_wc_{wc}_{i}" # Unique tag
                 self.history_text.insert(tk.END, wc, ("new_wildcard_link", tag_name))
-                # Use a default argument in lambda to capture the current value of wc
-                self.history_text.tag_bind(tag_name, "<Button-1>", lambda e, w=wc, t=tag_name: self._handle_wildcard_link_click(w, t))
+                # Use a default argument in lambda to capture the current value of wc and the template context
+                self.history_text.tag_bind(tag_name, "<Button-1>", lambda e, w=wc, t=tag_name, ctx=template: self._handle_wildcard_link_click(w, t, ctx))
                 if i < len(genuinely_new_wildcards) - 1:
                     self.history_text.insert(tk.END, ", ")
             self.history_text.insert(tk.END, "\n\n")

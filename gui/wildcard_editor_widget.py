@@ -879,11 +879,21 @@ class WildcardEditor(ttk.Frame):
         merged_reqs = choice1.get('requires', {}).copy()
         reqs2 = choice2.get('requires', {})
         for key, value2 in reqs2.items():
-            if key in merged_reqs and isinstance(merged_reqs.get(key), list) and isinstance(value2, list):
-                # Both values are lists, so combine them into a unique set
-                merged_reqs[key] = sorted(list(set(merged_reqs[key]) | set(value2)))
+            if key in merged_reqs:
+                # Key exists, so we need to merge values robustly.
+                value1 = merged_reqs[key]
+                
+                # Create sets of values to merge, handling both strings and lists.
+                set1 = set(value1) if isinstance(value1, list) else {value1}
+                set2 = set(value2) if isinstance(value2, list) else {value2}
+                
+                merged_values = sorted(list(set1 | set2))
+                
+                # If the result is a single item, store it as a string, otherwise as a list.
+                # This keeps the format clean and readable.
+                merged_reqs[key] = merged_values[0] if len(merged_values) == 1 else merged_values
             else:
-                # Otherwise, the second value overwrites the first (standard dict update behavior)
+                # Key is new, just add it.
                 merged_reqs[key] = value2
 
         # --- Create new choice object and values tuple for the treeview ---

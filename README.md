@@ -96,6 +96,11 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     python main.py  # Assuming the main script is named main.py
     ```
 
+    **Verbose Mode:**
+    For debugging or to see the raw output from the AI during brainstorming tasks, you can run the application with the `--verbose` or `-v` flag:
+    ```bash
+    python main.py --verbose
+    ```
 2.  **Main Window Workflow:**
     *   **Workflow:** Choose `SFW` or `NSFW` from the "Workflow" menu. This changes the content available.
     *   **Model:** Select an active Ollama model from the dropdown.
@@ -132,6 +137,30 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **Backend:** Interacts with a local Ollama instance via its REST API. All AI processing happens on your machine.
 *   **Workflows:** The SFW/NSFW toggle is a core feature that changes the directories from which templates, wildcards, and system prompts are loaded, ensuring strict content separation.
 *   **State Management:** The application tracks model usage across all windows and automatically sends requests to Ollama to unload models from VRAM when they are no longer active, helping to manage system resources.
+
+## Project Architecture
+
+The application is designed with a clear separation of concerns, divided into two main packages: `core` and `gui`.
+
+*   **`main.py`**: The main entry point for the application. It handles command-line argument parsing (like `--verbose`) and initializes the `GUIApp`.
+
+*   **`core/`**: This package contains all the backend logic, decoupled from the user interface.
+    *   `prompt_processor.py`: The central orchestrator. It coordinates interactions between the template engine, Ollama client, and history manager.
+    *   `template_engine.py`: Manages loading, parsing, and resolving templates and wildcards, including the complex logic for `requires` and `includes`.
+    *   `ollama_client.py`: A dedicated client for all communication with the Ollama REST API, handling prompt enhancement, variations, and brainstorming chats.
+    *   `csv_manager.py`: Handles reading and writing to the prompt history files (which use the `.jsonl` format).
+    *   `config.py`: Centralizes all application settings and paths.
+    *   `default_content.py`: Stores the default text for system prompts and variations, allowing for easy restoration.
+
+*   **`gui/`**: This package contains all the frontend `tkinter` components.
+    *   `gui_app.py`: The main application class (`tk.Tk`). It builds the main window and manages the lifecycle of all other tool windows.
+    *   `wildcard_manager.py`, `brainstorming_window.py`, etc.: Each major feature has its own dedicated window class, promoting modularity.
+    *   `common.py`, `theme_manager.py`, etc.: Contain reusable components like custom dialogs, tooltips, and theme management logic.
+
+*   **Data Directories**:
+    *   `templates/`, `wildcards/`, `system_prompts/`: Store user-customizable content.
+    *   `history/`: Stores the generated prompt history.
+    *   `assets/`: Contains static assets like the application icon.
 
 ## Contributing
 

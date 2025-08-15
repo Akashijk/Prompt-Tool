@@ -45,8 +45,11 @@ DEFAULT_SFW_ENHANCEMENT_INSTRUCTION = """You are a specialized AI prompt enhance
 6.  Add quality and realism boosters (e.g., masterpiece, photorealistic, highly detailed, 8k).
 7.  Keep the enhanced prompt under 200 words in a comma-separated format suitable for Stable Diffusion.
 
+**Negative Prompt Guidelines:** Generate a standard negative prompt including terms like "ugly, deformed, disfigured, poor details, bad anatomy, worst quality, low quality, extra limbs, extra fingers, blurry".
+
 **IMPORTANT FORMAT:** Respond with EXACTLY this format:
 ENHANCED_PROMPT: [your enhanced prompt here]
+NEGATIVE_PROMPT: [your negative prompt here]
 SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason]
 
 **SD Model Guidelines:**
@@ -61,17 +64,17 @@ DEFAULT_SFW_VARIATIONS = {
     "cinematic": {
         "name": "Cinematic",
         "description": "Re-writes the prompt with a focus on dramatic lighting, camera angles, and movie-like composition.",
-        "prompt": "Transform this Stable Diffusion prompt into a CINEMATIC version with dramatic lighting, movie-like composition, and camera angles. Focus on cinematography terms and dramatic atmosphere.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this Stable Diffusion prompt into a CINEMATIC version with dramatic lighting, movie-like composition, and camera angles. Focus on cinematography terms and dramatic atmosphere.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nNEGATIVE_PROMPT: [your negative prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic content]\n\n**Original prompt to transform:**\n"
     },
     "artistic": {
         "name": "Artistic",
         "description": "Re-writes the prompt to emphasize painterly qualities, specific art movements, or artistic techniques.",
-        "prompt": "Transform this Stable Diffusion prompt into an ARTISTIC version emphasizing painterly qualities, specific art movements, or artistic techniques. Focus on traditional art styles and mediums.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for artistic content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this Stable Diffusion prompt into an ARTISTIC version emphasizing painterly qualities, specific art movements, or artistic techniques. Focus on traditional art styles and mediums.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nNEGATIVE_PROMPT: [your negative prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for artistic content]\n\n**Original prompt to transform:**\n"
     },
     "photorealistic": {
         "name": "Photorealistic",
         "description": "Re-writes the prompt to include technical photography details, realistic lighting, and high-quality descriptors.",
-        "prompt": "Transform this Stable Diffusion prompt into a PHOTOREALISTIC version with technical photography details, realistic lighting, and high-quality descriptors. Focus on camera settings and professional photography.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this Stable Diffusion prompt into a PHOTOREALISTIC version with technical photography details, realistic lighting, and high-quality descriptors. Focus on camera settings and professional photography.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nNEGATIVE_PROMPT: [your negative prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic content]\n\n**Original prompt to transform:**\n"
     }
 }
 
@@ -93,8 +96,11 @@ DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION = """You are a specialized AI prompt enhanc
 -   Add realism (fluids, skin sheen, flushed cheeks, arousal cues, muscle tension)
 -   Maintain pronouns, roles, or positions already present
 
+**Negative Prompt Guidelines:** Generate a standard negative prompt including terms like "ugly, deformed, disfigured, poor details, bad anatomy, worst quality, low quality, extra limbs, extra fingers, blurry, cartoon, 3d, (deformed iris, deformed pupils)". Avoid terms that might restrict creative anatomy unless they contradict the core prompt.
+
 **IMPORTANT FORMAT:** Respond with EXACTLY this format:
 ENHANCED_PROMPT: [your enhanced prompt here]
+NEGATIVE_PROMPT: [your negative prompt here]
 SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason]
 
 **SD Model Guidelines:**
@@ -109,27 +115,25 @@ DEFAULT_NSFW_VARIATIONS = {
     "cinematic": {
         "name": "Cinematic",
         "description": "Re-writes the prompt with a focus on dramatic, moody lighting and intimate camera angles to enhance the erotic tone.",
-        "prompt": "Transform this NSFW Stable Diffusion prompt into a CINEMATIC version with dramatic, moody lighting, intimate camera angles, and a film-like quality. Focus on cinematography terms that enhance the erotic and atmospheric tone.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic NSFW content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this NSFW Stable Diffusion prompt into a CINEMATIC version with dramatic, moody lighting, intimate camera angles, and a film-like quality. Focus on cinematography terms that enhance the erotic and atmospheric tone.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nNEGATIVE_PROMPT: [your negative prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic NSFW content]\n\n**Original prompt to transform:**\n"
     },
     "artistic": {
         "name": "Artistic",
         "description": "Re-writes the prompt to emphasize painterly qualities, erotic art movements (like Shunga), or sensual artistic techniques.",
-        "prompt": "Transform this NSFW Stable Diffusion prompt into an ARTISTIC version, emphasizing painterly qualities, erotic art movements (like Shunga or Rococo), or sensual artistic techniques. Focus on styles that complement the adult theme.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for artistic NSFW content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this NSFW Stable Diffusion prompt into an ARTISTIC version, emphasizing painterly qualities, erotic art movements (like Shunga or Rococo), or sensual artistic techniques. Focus on styles that complement the adult theme.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nNEGATIVE_PROMPT: [your negative prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for artistic NSFW content]\n\n**Original prompt to transform:**\n"
     },
     "photorealistic": {
         "name": "Photorealistic",
         "description": "Re-writes the prompt to be hyper-realistic, focusing on details like skin pores, sweat, and raw, intimate lighting.",
-        "prompt": "Transform this NSFW Stable Diffusion prompt into a hyper-realistic PHOTOREALISTIC version. Focus on technical photography details like skin pores, sweat, bodily fluids, and realistic lighting to create a raw, intimate, and high-quality image.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic NSFW content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this NSFW Stable Diffusion prompt into a hyper-realistic PHOTOREALISTIC version. Focus on technical photography details like skin pores, sweat, bodily fluids, and realistic lighting to create a raw, intimate, and high-quality image.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nNEGATIVE_PROMPT: [your negative prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic NSFW content]\n\n**Original prompt to transform:**\n"
     }
 }
 
 # --- DEFAULT BRAINSTORMING PROMPTS ---
 
-DEFAULT_BRAINSTORM_TEMPLATE_PROMPT = """You are an AI assistant that creates templates for a Stable Diffusion prompt generator. The user wants a template for the concept: '{concept}'.
+DEFAULT_BRAINSTORM_TEMPLATE_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to write a descriptive prompt template based on the user's concept. You can use existing wildcards from the list below, but you are also **strongly encouraged to invent new, relevant wildcard names** to make the template more versatile.
 
 **CONTEXT:** {workflow_context}
-
-Your task is to write a descriptive prompt template. You can use existing wildcards from the list below, but you are also **strongly encouraged to invent new, relevant wildcard names** to make the template more versatile.
 
 **CRITICAL INSTRUCTIONS:**
 1.  All wildcard names, existing or new, MUST be in the exact format `__wildcard_name__`.
@@ -147,7 +151,7 @@ Here is a sample of EXISTING wildcards you can use: {wildcard_sample_str}
 Now, generate the template for the concept: '{concept}'.
 """
 
-DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.{linked_wildcard_instruction}
+DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.{template_context_section}{linked_wildcard_instruction}
 
 **CONTEXT:** {workflow_context}
 
@@ -155,7 +159,7 @@ DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specia
 1.  **Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.
 2.  **JSON Format:** You MUST return a single JSON object with a `description` and a `choices` array.
 3.  **Complex Choices:** The `choices` array should contain a mix of simple strings and complex objects. For objects, you can include `weight`, `tags`, `requires`, and `includes` keys.
-4.  **Requirements & Includes:** Use `requires` for dependencies. This can be a value check (e.g., `{{\\"wildcard_name\\": \\"value\\"}}`) or a tag check (e.g., `{{\\"tags\\": {{\"any\": [\\"tag1\\"]}}}}`). Use `includes` (e.g., `[\\"another_wildcard\\"]`) to add more wildcards.
+4.  **Requirements & Includes:** Use `requires` for dependencies. This can be a value check (e.g., `{{ "wildcard_name": "value" }}`) or a tag check (e.g., `{{ "tags": {{"any": ["tag1"]}} }}`). Use `includes` (e.g., `["another_wildcard"]`) to add more wildcards.
 5.  **No Self-Reference:** The `requires` key MUST NOT refer to the wildcard being generated (`{wildcard_name_from_topic}`). This is a critical rule.
 6.  **Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.
 7.  **Unique Values:** Ensure all `value` fields within your generated `choices` array are unique. Do not repeat items.
@@ -170,7 +174,7 @@ DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specia
     "peasant",
     {{"value": "elven archer", "weight": 3, "tags": ["ranged", "elf"], "requires": {{"fantasy_race": "elf"}}, "includes": ["elven_bow", "leather_armor"]}},
     {{"value": "dwarven warrior", "weight": 3, "tags": ["melee", "dwarf"], "requires": {{"fantasy_race": "dwarf"}}, "includes": ["dwarven_axe", "plate_armor"]}},
-    {{"value": "shadowmancer", "tags": ["magic", "stealth"], "requires": {{"tags": {{\"any\": [\\"night\\", \\"darkness\\"]}}}}}}
+    {{"value": "shadowmancer", "tags": ["magic", "stealth"], "requires": {{"tags": {{"any": ["night", "darkness"]}}}}}}
   ]
 }}
 
@@ -185,6 +189,8 @@ This wildcard ('{topic}') is being generated to work with a supporting wildcard 
 
 DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT = """You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing wildcard file on the topic of '{topic}' and suggest 5-10 new, creative, and relevant choices that expand upon it.
 
+**CONTEXT:** {workflow_context}
+
 **EXISTING WILDCARD DESCRIPTION:** {description}
 
 **SAMPLE OF EXISTING CHOICES (DO NOT REPEAT THESE):**
@@ -198,9 +204,9 @@ DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT = """You are an expert conten
 **EXAMPLE RESPONSE for a 'fantasy_race' wildcard:**
 [
   "gnome",
-  {{"value": "tiefling", "weight": 2, "tags": ["fiendish"], "requires": {{"body_type": "curvy"}} }},
-  {{"value": "aasimar", "weight": 2, "tags": ["celestial"], "includes": ["halo"]}},
-  {{"value": "orc shaman", "tags": ["magic", "orc"], "includes": "chanting a __tribal_spell__"}}
+  {"value": "tiefling", "weight": 2, "tags": ["fiendish"], "requires": {"body_type": "curvy"} },
+  {"value": "aasimar", "weight": 2, "tags": ["celestial"], "includes": ["halo"]},
+  {"value": "orc shaman", "tags": ["magic", "orc"], "includes": "chanting a __tribal_spell__"}
 ]
 
 Now, generate the JSON array of new choices.
@@ -240,4 +246,19 @@ DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT = """You are an expert AI assistant that fi
 {available_wildcards_str}
 
 Now, provide the full, corrected JSON content for the file.
+"""
+
+DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT = """You are an expert AI assistant that fixes broken JSON. The user has provided text that is not valid JSON. Your task is to analyze the text and return a corrected, valid JSON object.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Return ONLY JSON:** Your entire response MUST be a single, valid JSON object. Do not include any commentary, explanations, or markdown fences like ```json.
+2.  **Preserve Data:** Do your best to preserve all the original data and structure. Fix syntax errors like missing commas, mismatched brackets, or incorrect quoting. Do not invent new data.
+3.  **Handle Common Errors:** Be prepared to fix common errors like trailing commas, single quotes instead of double quotes, and unquoted keys.
+
+**BROKEN JSON TEXT:**
+---
+{broken_json}
+---
+
+Now, provide the corrected JSON content.
 """

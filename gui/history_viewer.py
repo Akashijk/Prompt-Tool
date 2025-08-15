@@ -1,9 +1,10 @@
 """A window to view and search the prompt generation history."""
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 import sys
 from typing import List, Dict, Optional, TYPE_CHECKING
+from . import custom_dialogs
 
 from core.prompt_processor import PromptProcessor
 from .common import TextContextMenu, SmartWindowMixin
@@ -196,12 +197,16 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         # --- DYNAMIC TAB LOGIC ---
         # 1. Determine the order of tabs to display for this specific entry
-        display_order = ['original', 'enhanced']
+        display_order = ['original', 'enhanced', 'negative']
         if 'variations' in full_row_data:
             display_order.extend(sorted(full_row_data['variations'].keys()))
 
         # 2. Iterate and display tabs
         for key in display_order:
+            # Skip negative tab if there's no content for it
+            if key == 'negative' and not full_row_data.get('negative_prompt'):
+                continue
+
             prompt = ""
             model = ""
             data_exists = False
@@ -213,6 +218,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 prompt = full_row_data.get('enhanced_prompt', '')
                 model = full_row_data.get('enhanced_sd_model', '')
                 if prompt: data_exists = True
+            elif key == 'negative':
+                prompt = full_row_data.get('negative_prompt', '')
+                if prompt: data_exists = True
             else: # It's a variation
                 var_data = full_row_data.get('variations', {}).get(key)
                 if var_data:
@@ -223,7 +231,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             if data_exists:
                 # 3. Ensure the tab widgets exist, creating them if necessary
                 if key not in self.detail_tabs:
-                    self._create_detail_tab(key)
+                    self._create_detail_tab(key, key.capitalize() if key != 'negative' else 'Negative')
 
                 tab = self.detail_tabs[key]
                 
@@ -260,8 +268,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         self.detail_tabs[key] = {'frame': frame, 'text': text_widget, 'model_label': model_label, 'title': title}
 
-        # Special handling for the 'enhanced' tab's edit buttons
-        if key == 'enhanced':
+        # Special handling for the 'enhanced' and 'negative' tab's edit buttons
+        if key in ['enhanced', 'negative']:
             button_container = ttk.Frame(bottom_bar)
             button_container.pack(side=tk.RIGHT)
             
@@ -283,32 +291,28 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         full_row_data = self.iid_map.get(item_id)
 
         if not full_row_data:
-            messagebox.showerror("Error", "Could not find data for the selected row to delete.", parent=self)
+            custom_dialogs.show_error(self, "Error", "Could not find data for the selected row to delete.")
             return
 
         original_prompt_preview = full_row_data.get('original_prompt', 'Unknown Prompt')
 
-        if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to permanently delete this history entry?\n\nOriginal: \"{original_prompt_preview[:80]}...\"", parent=self):
+        if not custom_dialogs.ask_yes_no(self, "Confirm Delete", f"Are you sure you want to permanently delete this history entry?\n\nOriginal: \"{original_prompt_preview[:80]}...\""):
             return
 
         try:
             # Pass the entire dictionary to ensure the correct row is deleted
             success = self.processor.delete_history_entry(full_row_data)
             if success:
-                # Remove from the Treeview and the internal data cache
+                # Remove from the Treeview and rebuild the internal data cache for robustness
                 row_to_remove = self.iid_map.pop(item_id, None)
                 self.tree.delete(item_id)
-                if row_to_remove:
-                    try:
-                        self.all_history_data.remove(row_to_remove)
-                    except ValueError:
-                        # This can happen if the list is out of sync, but pop should handle the iid_map.
-                        self.all_history_data = list(self.iid_map.values())
-                messagebox.showinfo("Success", "History entry deleted.", parent=self)
+                if row_to_remove: # Rebuild the list by filtering out the deleted item by its unique ID
+                    self.all_history_data = [row for row in self.all_history_data if row.get('id') != row_to_remove.get('id')]
+                custom_dialogs.show_info(self, "Success", "History entry deleted.")
             else:
-                messagebox.showerror("Error", "Could not delete the history entry. It may have already been deleted.", parent=self)
+                custom_dialogs.show_error(self, "Error", "Could not delete the history entry. It may have already been deleted.")
         except Exception as e:
-            messagebox.showerror("Error", f"An error occurred while deleting the entry:\n{e}", parent=self)
+            custom_dialogs.show_error(self, "Error", f"An error occurred while deleting the entry:\n{e}")
 
     def _toggle_favorite(self):
         """Toggles the favorite status of the selected item."""
@@ -343,7 +347,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             if self.show_favorites_only_var.get() and not updated_row.get('favorite'):
                 self.tree.detach(item_id)
         else:
-            messagebox.showerror("Error", "Failed to update favorite status.", parent=self)
+            custom_dialogs.show_error(self, "Error", "Failed to update favorite status.")
 
     def _show_context_menu(self, event):
         """Dynamically builds and shows the right-click context menu for a treeview row."""
@@ -365,6 +369,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         # --- Build the menu dynamically ---
         self.context_menu.add_command(label="Copy Original Prompt", command=lambda: self._copy_selected_prompt_part('original_prompt'))
         self.context_menu.add_command(label="Copy Enhanced Prompt", command=lambda: self._copy_selected_prompt_part('enhanced_prompt'))
+        self.context_menu.add_command(label="Copy Negative Prompt", command=lambda: self._copy_selected_prompt_part('negative_prompt'))
         
         # Add variations if they exist
         variations = full_row_data.get('variations', {})
@@ -402,7 +407,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         full_row_data = self.iid_map.get(selected_iid)
         if full_row_data:
             content_to_copy = ""
-            if part_key in ['original_prompt', 'enhanced_prompt', 'template_name']:
+            if part_key in ['original_prompt', 'enhanced_prompt', 'negative_prompt', 'template_name']:
                 content_to_copy = full_row_data.get(part_key, '')
             else: # It's a variation
                 var_type = part_key.replace('_variation', '')
@@ -480,26 +485,33 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         new_text = tab_controls['text'].get("1.0", "end-1c").strip()
         if not new_text:
-            messagebox.showwarning("Warning", "Enhanced prompt cannot be empty.", parent=self)
+            custom_dialogs.show_warning(self, "Warning", "Prompt cannot be empty.")
             return
 
         updated_row = original_row.copy()
-        updated_row['enhanced_prompt'] = new_text
+        if key == 'enhanced':
+            updated_row['enhanced_prompt'] = new_text
+        elif key == 'negative':
+            updated_row['negative_prompt'] = new_text
+        else:
+            return # Should not happen
 
         success = self.processor.update_history_entry(original_row, updated_row)
         if success:
             # Update the in-memory data
             self.iid_map[item_id] = updated_row
             for i, row in enumerate(self.all_history_data):
-                if row.get('id') == original_row.get('id'):
+                # Use the unique ID for a robust match
+                if row.get('id') and row.get('id') == original_row.get('id'):
                     self.all_history_data[i] = updated_row
                     break
             
             # Update the visible row in the treeview
-            self.tree.set(item_id, 'enhanced_prompt', new_text)
+            if key == 'enhanced':
+                self.tree.set(item_id, 'enhanced_prompt', new_text)
             
             # Exit edit mode
             self._cancel_edit_mode(key, force=True)
-            messagebox.showinfo("Success", "Prompt updated successfully.", parent=self)
+            custom_dialogs.show_info(self, "Success", "Prompt updated successfully.")
         else:
-            messagebox.showerror("Error", "Failed to update the prompt in the history file.", parent=self)
+            custom_dialogs.show_error(self, "Error", "Failed to update the prompt in the history file.")

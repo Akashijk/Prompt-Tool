@@ -33,8 +33,10 @@ from .theme_manager import ThemeManager
 class GUIApp(tk.Tk, SmartWindowMixin):
     """A GUI for the Stable Diffusion Prompt Generator."""
 
-    def __init__(self):
+    def __init__(self, verbose: bool = False):
         super().__init__()
+        if verbose:
+            print("--- VERBOSE MODE ENABLED ---", flush=True)
         self.geometry("900x700")
 
         # Set application icon
@@ -52,7 +54,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             print(f"Warning: Could not load application icon: {e}")
 
         # Core logic
-        self.processor = PromptProcessor()
+        self.processor = PromptProcessor(verbose=verbose)
         self.processor.initialize()
         self.processor.set_callbacks(status_callback=self._update_status_bar)
         self.model_usage_manager = ModelUsageManager(self.processor)
@@ -359,6 +361,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.template_dropdown.config(state=tk.NORMAL)
         for template in templates:
             menu.add_command(label=template, command=lambda value=template: self.template_var.set(value))
+        
+        # Force the UI to update the dropdown menu before any subsequent code tries to set its value.
+        self.update_idletasks()
         
         # Prompt the user to make a selection
         self.template_var.set("Select a template")
@@ -1096,6 +1101,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # The topic for the wildcard is derived from its name
         topic = wildcard_name.replace('_', ' ').replace('-', ' ')
         
+        # Get the current template content to provide context to the AI
+        template_context = self.template_editor.get_content().strip()
+
         # Open brainstorming window if not already open
         self._open_brainstorming_window()
         
@@ -1103,7 +1111,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.brainstorming_window.lift()
             self.brainstorming_window.focus_force()
             # Call the method to start generation, passing the original name as the filename
-            self.brainstorming_window.generate_wildcard_with_topic(topic, filename=wildcard_name)
+            # and the template content as context.
+            self.brainstorming_window.generate_wildcard_with_topic(
+                topic, 
+                filename=wildcard_name,
+                template_context=template_context
+            )
 
     def _suggest_template_additions(self):
         """Asks the AI to suggest additions for the current prompt template."""
@@ -1229,6 +1242,34 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 self.status_var.set(f"Ollama server set to {new_url}")
             except Exception as e:
                 custom_dialogs.show_error(self, "Connection Failed", f"Could not connect to Ollama server at:\n{new_url}\n\nError: {e}")
+
+    def _clear_wildcard_cache(self):
+        """Clears the wildcard cache and reloads all wildcard-dependent UI components."""
+        if not custom_dialogs.ask_yes_no(
+            self,
+            "Confirm Clear Cache",
+            "Are you sure you want to clear the wildcard cache?\n\n"
+            "This will force the application to re-read all wildcard files from disk. "
+            "This can be useful for troubleshooting if wildcards seem out of date."
+        ):
+            return
+
+        try:
+            # The processor method handles both clearing and reloading.
+            self.processor.clear_wildcard_cache_and_reload()
+            
+            # Refresh UI components that depend on wildcards.
+            self._populate_wildcard_lists()
+            
+            # If the wildcard manager is open, it also needs to be refreshed.
+            if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
+                self.wildcard_manager_window._populate_wildcard_list()
+                self.wildcard_manager_window._clear_editor_view()
+
+            custom_dialogs.show_info(self, "Success", "Wildcard cache has been cleared and reloaded.")
+            self.status_var.set("Wildcard cache cleared and reloaded.")
+        except Exception as e:
+            custom_dialogs.show_error(self, "Error", f"Failed to clear wildcard cache:\n{e}")
 
     def _on_closing(self):
         """Handles the main window closing event to clean up resources."""

@@ -26,7 +26,8 @@ class HistoryManager:
                     for var_type in ['cinematic', 'artistic', 'photorealistic']:
                         if row.get(f'{var_type}_variation'):
                             variations[var_type] = {
-                                'prompt': row.get(f'{var_type}_variation'),
+                                'prompt': row.get(f'{var_type}_variation', ''),
+                                'negative_prompt': '', # Old format didn't have this
                                 'sd_model': row.get(f'{var_type}_sd_model')
                             }
                     
@@ -35,6 +36,7 @@ class HistoryManager:
                         'original_prompt': row.get('original_prompt'),
                         'status': row.get('status'),
                         'enhanced_prompt': row.get('enhanced_prompt'),
+                        'negative_prompt': '', # Old format didn't have this
                         'enhanced_sd_model': row.get('enhanced_sd_model'),
                         'favorite': row.get('favorite') == '1',
                         'variations': variations,
@@ -148,6 +150,7 @@ class HistoryManager:
                    original: str, 
                    enhanced: str, 
                    enhanced_sd_model: str, 
+                   negative_prompt: Optional[str] = None,
                    variations: Optional[Dict[str, Dict[str, str]]] = None, 
                    status: str = "enhanced",
                    favorite: bool = False,
@@ -161,6 +164,7 @@ class HistoryManager:
             'original_prompt': original,
             'status': status,
             'enhanced_prompt': enhanced,
+            'negative_prompt': negative_prompt or '',
             'enhanced_sd_model': enhanced_sd_model,
             'favorite': favorite,
             'variations': variations or {},
@@ -180,6 +184,7 @@ class HistoryManager:
                 result['original'],
                 result['enhanced'],
                 result['enhanced_sd_model'],
+                result.get('negative_prompt'),
                 result.get('variations'),
                 result.get('status', 'enhanced'),
                 result.get('favorite', False),

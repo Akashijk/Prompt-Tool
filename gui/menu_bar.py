@@ -53,6 +53,8 @@ class MenuBar(tk.Menu):
         tools_menu.add_command(label="AI Brainstorming", command=self.parent_app._open_brainstorming_window)
         tools_menu.add_command(label="System Prompt Editor", command=self.parent_app._open_system_prompt_editor)
         tools_menu.add_command(label="History Viewer", command=self.parent_app._open_history_viewer)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Clear Wildcard Cache", command=self.parent_app._clear_wildcard_cache)
         self.add_cascade(label="Tools", menu=tools_menu)
 
     def update_file_menu_state(self, save_enabled: bool, archive_enabled: bool):
