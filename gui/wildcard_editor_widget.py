@@ -639,6 +639,8 @@ class WildcardEditor(ttk.Frame):
         if len(selection) != 1: return
         
         item_id = selection[0]
+        original_values = self.tree.item(item_id, 'values')
+        original_value_str = original_values[0] if original_values else ""
 
         manager_window = self.winfo_toplevel()
 
@@ -652,9 +654,16 @@ class WildcardEditor(ttk.Frame):
             manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
 
         try:
-            dialog = _EditChoiceDialog(self, "Edit Choice", self.tree.item(item_id, 'values'), self.processor)
+            dialog = _EditChoiceDialog(self, "Edit Choice", original_values, self.processor)
             if dialog.result:
-                self.tree.item(item_id, values=dialog.result)
+                new_values = dialog.result
+                new_value_str = new_values[0] if new_values else ""
+                
+                # Check if the value changed and register it for refactoring
+                if new_value_str != original_value_str and hasattr(manager_window, 'register_value_change'):
+                    manager_window.register_value_change(original_value_str, new_value_str)
+
+                self.tree.item(item_id, values=new_values)
                 updated_choice = self._get_choice_from_tree_item(item_id)
                 self.iid_to_choice_map[item_id] = updated_choice
         finally:

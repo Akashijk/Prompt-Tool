@@ -5,6 +5,7 @@ import os
 import re
 import copy
 import queue
+import threading
 import difflib
 from collections import Counter
 import tkinter as tk
@@ -202,6 +203,9 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.validation_after_id: Optional[str] = None
         self.fix_queue = queue.Queue()
         self.fix_after_id: Optional[str] = None
+        self.refactor_queue = queue.Queue()
+        self.refactor_after_id: Optional[str] = None
+        self.pending_value_refactors: List[Tuple[str, str, str]] = []
         self.json_fix_queue = queue.Queue()
         self.json_fix_after_id: Optional[str] = None
 
@@ -225,6 +229,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.after_cancel(self.validation_after_id)
         if self.fix_after_id:
             self.after_cancel(self.fix_after_id)
+        if self.refactor_after_id:
+            self.after_cancel(self.refactor_after_id)
         if self.json_fix_after_id:
             self.after_cancel(self.json_fix_after_id)
         self.destroy()
@@ -486,6 +492,29 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             # The processor will handle saving and migration (.txt -> .json)
             self.processor.save_wildcard_content(self.selected_wildcard_file, content)
 
+            # --- Handle pending value refactors ---
+            if self.pending_value_refactors:
+                # Make a copy to iterate over, as the background tasks might take a while
+                refactors_to_process = self.pending_value_refactors[:]
+                self.pending_value_refactors.clear()
+
+                for basename, old_value, new_value in refactors_to_process:
+                    if custom_dialogs.ask_yes_no(
+                        self,
+                        "Refactor Value Change?",
+                        f"You changed the value '{old_value}' to '{new_value}' in '{basename}'.\n\n"
+                        f"Would you like to scan all other wildcards and update any 'requires' clauses that depend on the old value?"
+                    ):
+                        def on_value_refactor_complete(modified_count, ov=old_value):
+                            custom_dialogs.show_info(self, "Refactor Complete", f"Updated {modified_count} file(s) that required the value '{ov}'.")
+                            self.update_callback()
+
+                        self._run_background_task(
+                            task_callable=lambda b=basename, o=old_value, n=new_value: self.processor.refactor_wildcard_value_references(b, o, n),
+                            title="Refactoring Value",
+                            message=f"Scanning for dependencies on '{old_value}'...",
+                            on_complete=on_value_refactor_complete
+                        )
             # The filename might have changed from .txt to .json
             basename, _ = os.path.splitext(self.selected_wildcard_file)
             new_filename = f"{basename}.json"
@@ -642,6 +671,9 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.structured_editor.suggest_button.config(state=tk.DISABLED)
         self.structured_editor.refine_button.config(state=tk.DISABLED)
         self.editor_container.config(text="No file selected")
+        
+        self.pending_value_refactors.clear()
+
 
     def _brainstorm_with_ai(self):
         """Sends the current wildcard content to the brainstorming window."""
@@ -1643,7 +1675,21 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.update_callback(modified_file=new_filename)
             self.select_and_load_file(new_filename)
             
-            custom_dialogs.show_info(self, "Rename Successful", f"Renamed '{old_filename}' to '{new_filename}'.")
+            if custom_dialogs.ask_yes_no(
+                self, 
+                "Refactor References?", 
+                f"Successfully renamed to '{new_filename}'.\n\nWould you like to scan all other wildcards and update references from '{old_basename}' to '{new_basename}'?"
+            ):
+                def on_rename_refactor_complete(modified_count):
+                    custom_dialogs.show_info(self, "Refactor Complete", f"Updated {modified_count} file(s) that referenced '{old_basename}'.")
+                    self.update_callback() 
+
+                self._run_background_task(
+                    task_callable=lambda: self.processor.refactor_wildcard_references(old_basename, new_basename.strip()),
+                    title="Refactoring References",
+                    message=f"Scanning for references to '{old_basename}'...",
+                    on_complete=on_rename_refactor_complete
+                )
         except FileExistsError as e:
             custom_dialogs.show_error(self, "Rename Error", str(e))
         except Exception as e:

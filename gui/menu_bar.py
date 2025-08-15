@@ -20,6 +20,7 @@ class MenuBar(tk.Menu):
         self.add_cascade(label="File", menu=self.file_menu)
         
         self.file_menu.add_command(label="Generate New Template...", command=self.parent_app._generate_new_template)
+        self.file_menu.add_command(label="Generate Template from All Wildcards...", command=self.parent_app._generate_template_from_all_wildcards)
         self.file_menu.add_separator()
         self.file_menu.add_command(label="New Template...", command=self.parent_app._create_new_template_file)
         self.file_menu.add_command(label="Save Template", command=self.parent_app._save_template, state=tk.DISABLED)

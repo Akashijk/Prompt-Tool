@@ -84,6 +84,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
         self.enhancement_suggestion_queue = queue.Queue()
+        self.generate_from_wildcards_queue = queue.Queue()
+        self.generate_from_wildcards_after_id: Optional[str] = None
         self.enhancement_suggestion_after_id: Optional[str] = None
         self.missing_wildcards_container: Optional[ttk.Frame] = None
 
@@ -328,7 +330,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         wildcard_bg = "#3c4c5c" if is_dark else "#d8e9f3"
         wildcard_hover_bg = "#4a5e73" if is_dark else "#b8d9e3"
         included_wildcard_bg = "#2c503e" if is_dark else "#d8f3e9" # Muted green
-        missing_wildcard_bg = "#6b2b2b" if is_dark else "#ffcccc"
+        error_bg = "#6b2b2b" if is_dark else "#ffcccc" # Muted red
+        ordering_error_bg = "#6b4226" if is_dark else "#ffe4b5" # Muted orange
         status_bar_dot_color = "lightgrey" if is_dark else "dimgray"
         status_bar_bg = self.cget('background')
 
@@ -336,8 +339,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.prompt_text.tag_configure("wildcard", background=wildcard_bg)
         self.prompt_text.tag_configure("wildcard_hover", background=wildcard_hover_bg)
         self.prompt_text.tag_configure("included_wildcard", background=included_wildcard_bg)
-        self.prompt_text.tag_configure("missing_wildcard", background=missing_wildcard_bg)
-        self.template_editor.text_widget.tag_configure("missing_wildcard", background=missing_wildcard_bg)
+        self.prompt_text.tag_configure("missing_wildcard", background=error_bg)
+        self.template_editor.text_widget.tag_configure("missing_wildcard", background=error_bg)
+        self.template_editor.text_widget.tag_configure("ordering_error", background=ordering_error_bg)
 
         if self.loading_animation:
             self.loading_animation.update_style(bg_color=status_bar_bg, dot_color=status_bar_dot_color, is_dark_theme=is_dark)
@@ -1173,6 +1177,50 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         except queue.Empty:
             self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
 
+    def _generate_template_from_all_wildcards(self):
+        """Asks for a theme and generates a template using all available wildcards."""
+        theme = custom_dialogs.ask_string(self, "Generate Template from Wildcards", "Enter a theme or concept for the new template:")
+        if not theme:
+            return
+
+        model = self.enhancement_model_var.get()
+        if not model or "model" in model.lower():
+            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
+            return
+
+        self.status_var.set(f"Generating template for '{theme}' using all wildcards...")
+        self.loading_animation.start()
+
+        def task():
+            try:
+                template_content = self.processor.generate_template_from_all_wildcards(model, theme)
+                self.generate_from_wildcards_queue.put({'success': True, 'template': template_content, 'theme': theme})
+            except Exception as e:
+                self.generate_from_wildcards_queue.put({'success': False, 'error': str(e)})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.generate_from_wildcards_after_id = self.after(100, self._check_generate_from_wildcards_queue)
+
+    def _check_generate_from_wildcards_queue(self):
+        """Checks for the result of the template generation and opens the review window."""
+        try:
+            result = self.generate_from_wildcards_queue.get_nowait()
+            self.loading_animation.stop()
+            self.status_var.set("Ready")
+
+            if result['success']:
+                template_content = result.get('template', '')
+                theme = result.get('theme', 'new_template')
+                suggested_filename = re.sub(r'\s+', '_', theme.strip()).lower()
+                suggested_filename = re.sub(r'[^a-z0-9_]', '', suggested_filename)
+                
+                ReviewAndSaveWindow(self, self.processor, content_type='template', generated_content=template_content, update_callback=self._handle_ai_content_update, filename=f"{suggested_filename}.txt")
+            else:
+                custom_dialogs.show_error(self, "Generation Error", f"An error occurred while generating the template:\n{result['error']}")
+        except queue.Empty:
+            self.generate_from_wildcards_after_id = self.after(100, self._check_generate_from_wildcards_queue)
+
     def _create_wildcard_from_selection(self, selected_text: str):
         """Creates a new wildcard file from the selected text in the template editor."""
         # Suggest a filename based on the selection
@@ -1283,6 +1331,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.after_cancel(self.debounce_timer)
         if self.enhancement_suggestion_after_id:
             self.after_cancel(self.enhancement_suggestion_after_id)
+        if self.generate_from_wildcards_after_id:
+            self.after_cancel(self.generate_from_wildcards_after_id)
         self.destroy()
 
     def _show_missing_wildcard_menu(self, event, wildcard_name: str):

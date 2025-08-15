@@ -1,18 +1,20 @@
 """Main prompt processing and coordination logic."""
 
 import json
+import copy
 import os
 import random
 import re
 import threading
 from typing import List, Dict, Any, Optional, Callable, Tuple, Set
 from .template_engine import TemplateEngine, PromptSegment
-from .csv_manager import HistoryManager
+from .history_manager import HistoryManager
 from .config import config
 from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS,
                               DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS,
                               DEFAULT_BRAINSTORM_TEMPLATE_PROMPT, DEFAULT_BRAINSTORM_WILDCARD_PROMPT,
                               DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION,
+                              DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT,
                               DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT,
                               DEFAULT_BRAINSTORM_REWRITE_PROMPT)
 from .ollama_client import OllamaClient
@@ -413,6 +415,240 @@ class PromptProcessor:
             seed=seed
         )
 
+    def validate_template_order(self, template_content: str) -> Dict[str, str]:
+        """
+        Validates that any wildcard with a 'requires' clause does not depend on a
+        wildcard that appears later in the template.
+        Returns a dictionary mapping problematic wildcard names to error messages.
+        """
+        errors = {}
+        wildcards_in_order = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', template_content)
+        
+        # Create a map of wildcard name to its first appearance index
+        wildcard_indices = {}
+        for i, wc_name in enumerate(wildcards_in_order):
+            if wc_name not in wildcard_indices:
+                wildcard_indices[wc_name] = i
+
+        # Now check each wildcard's requirements
+        for wc_name, appearance_index in wildcard_indices.items():
+            wildcard_data = self.template_engine.wildcards.get(wc_name)
+            if not wildcard_data or 'choices' not in wildcard_data:
+                continue
+
+            for choice in wildcard_data.get('choices', []):
+                if not isinstance(choice, dict) or 'requires' not in choice:
+                    continue
+                
+                rules = choice.get('requires')
+                if not isinstance(rules, dict):
+                    continue
+
+                # Recursive helper to find all required wildcard keys
+                required_keys = set()
+                def find_required_keys(d):
+                    for k, v in d.items():
+                        if k not in ['tags', 'and', 'or', 'not']:
+                            required_keys.add(k)
+                        if isinstance(v, dict): find_required_keys(v)
+                        elif isinstance(v, list):
+                            for item in v:
+                                if isinstance(item, dict): find_required_keys(item)
+                find_required_keys(rules)
+
+                for req_key in required_keys:
+                    req_key_index = wildcard_indices.get(req_key)
+                    if req_key_index is None or req_key_index >= appearance_index:
+                        errors[wc_name] = f"Requires '{req_key}', which is not present before it in the template."
+                        break 
+                if wc_name in errors:
+                    break
+
+        return errors
+
+    def refactor_wildcard_references(self, old_basename: str, new_basename: str) -> int:
+        """
+        Scans all wildcard files and replaces references to old_basename with new_basename
+        in 'requires' and 'includes' clauses.
+        Returns the number of files modified.
+        """
+        if self.all_wildcards_cache is None:
+            self._load_all_wildcards_into_cache()
+        
+        if self.all_wildcards_cache is None: return 0
+
+        modified_files_count = 0
+        
+        # We need to iterate over a copy of the items because we might modify the cache
+        for wc_name, wc_data in list(self.all_wildcards_cache.items()):
+            # Don't refactor the file that was just renamed
+            if wc_name == new_basename:
+                continue
+
+            modified_data = copy.deepcopy(wc_data)
+            made_change = False
+
+            # 1. Refactor global 'includes'
+            if 'includes' in modified_data:
+                includes = modified_data['includes']
+                if isinstance(includes, list) and old_basename in includes:
+                    modified_data['includes'] = [new_basename if item == old_basename else item for item in includes]
+                    made_change = True
+                elif isinstance(includes, str):
+                    # Handle template string includes
+                    new_includes_str, count = re.subn(rf'__({re.escape(old_basename)})__', f'__{new_basename}__', includes)
+                    if count > 0:
+                        modified_data['includes'] = new_includes_str
+                        made_change = True
+
+            # 2. Refactor 'choices'
+            if 'choices' in modified_data and isinstance(modified_data.get('choices'), list):
+                for choice in modified_data['choices']:
+                    if not isinstance(choice, dict):
+                        continue
+                    
+                    # Refactor choice-level 'includes'
+                    if 'includes' in choice:
+                        choice_includes = choice['includes']
+                        if isinstance(choice_includes, list) and old_basename in choice_includes:
+                            choice['includes'] = [new_basename if item == old_basename else item for item in choice_includes]
+                            made_change = True
+                        elif isinstance(choice_includes, str):
+                            new_choice_includes_str, count = re.subn(rf'__({re.escape(old_basename)})__', f'__{new_basename}__', choice_includes)
+                            if count > 0:
+                                choice['includes'] = new_choice_includes_str
+                                made_change = True
+                    
+                    # Refactor 'requires'
+                    if 'requires' in choice and isinstance(choice.get('requires'), dict):
+                        def refactor_requires_recursive(d):
+                            nonlocal made_change
+                            # Use list(d.keys()) to avoid issues with changing dict size during iteration
+                            for key in list(d.keys()):
+                                if key == old_basename:
+                                    d[new_basename] = d.pop(old_basename)
+                                    made_change = True
+                                    # Continue checking the rest of the dict with the new key
+                                    if isinstance(d[new_basename], dict):
+                                        refactor_requires_recursive(d[new_basename])
+                                    elif isinstance(d[new_basename], list):
+                                        for item in d[new_basename]:
+                                            if isinstance(item, dict):
+                                                refactor_requires_recursive(item)
+                                elif isinstance(d[key], dict):
+                                    refactor_requires_recursive(d[key])
+                                elif isinstance(d[key], list):
+                                    for item in d[key]:
+                                        if isinstance(item, dict):
+                                            refactor_requires_recursive(item)
+                        
+                        refactor_requires_recursive(choice['requires'])
+
+            if made_change:
+                # Save the modified file
+                try:
+                    # Find the correct directory to save to
+                    filename_to_save = f"{wc_name}.json"
+                    save_dir = None
+                    # This needs to check all possible directories to find where the file lives.
+                    # The mode-agnostic cache doesn't store the file's original workflow.
+                    all_possible_dirs = [config.WILDCARD_NSFW_DIR, config.WILDCARD_DIR]
+                    for directory in all_possible_dirs:
+                        if os.path.exists(os.path.join(directory, filename_to_save)):
+                            save_dir = directory
+                            break
+                    
+                    if save_dir:
+                        self.template_engine.save_wildcard_content(filename_to_save, json.dumps(modified_data, indent=2), save_dir)
+                        modified_files_count += 1
+                        # Update the cache with the modified data
+                        if self.all_wildcards_cache:
+                            self.all_wildcards_cache[wc_name] = modified_data
+                    else:
+                        print(f"Warning: Could not find original path for wildcard '{wc_name}' during refactor. Skipping save.")
+
+                except Exception as e:
+                    print(f"Error saving refactored wildcard '{wc_name}': {e}")
+        
+        return modified_files_count
+
+    def refactor_wildcard_value_references(self, wildcard_name: str, old_value: str, new_value: str) -> int:
+        """
+        Scans all wildcard files and replaces references to an old value with a new value
+        in 'requires' clauses.
+        Returns the number of files modified.
+        """
+        if self.all_wildcards_cache is None:
+            self._load_all_wildcards_into_cache()
+        
+        if self.all_wildcards_cache is None: return 0
+
+        modified_files_count = 0
+
+        for wc_name, wc_data in list(self.all_wildcards_cache.items()):
+            modified_data = copy.deepcopy(wc_data)
+            made_change = False
+
+            if 'choices' in modified_data and isinstance(modified_data.get('choices'), list):
+                for choice in modified_data['choices']:
+                    if not isinstance(choice, dict) or 'requires' not in choice:
+                        continue
+                    
+                    if 'requires' in choice and isinstance(choice.get('requires'), dict):
+                        def refactor_value_recursive(d):
+                            nonlocal made_change
+                            for key, value in d.items():
+                                if key == wildcard_name:
+                                    if isinstance(value, str) and value == old_value:
+                                        d[key] = new_value
+                                        made_change = True
+                                    elif isinstance(value, list) and old_value in value:
+                                        d[key] = [new_value if v == old_value else v for v in value]
+                                        made_change = True
+                                    elif isinstance(value, dict):
+                                        # Handle complex conditions like {"any": [...]} or {"not": ...}
+                                        if 'any' in value and isinstance(value.get('any'), list) and old_value in value['any']:
+                                            value['any'] = [new_value if v == old_value else v for v in value['any']]
+                                            made_change = True
+                                        if 'not' in value:
+                                            not_val = value['not']
+                                            if isinstance(not_val, str) and not_val == old_value:
+                                                value['not'] = new_value
+                                                made_change = True
+                                            elif isinstance(not_val, list) and old_value in not_val:
+                                                value['not'] = [new_value if v == old_value else v for v in not_val]
+                                                made_change = True
+                                elif isinstance(value, dict):
+                                    refactor_value_recursive(value)
+                                elif isinstance(value, list):
+                                    for item in value:
+                                        if isinstance(item, dict):
+                                            refactor_value_recursive(item)
+                        
+                        refactor_value_recursive(choice['requires'])
+
+            if made_change:
+                try:
+                    filename_to_save = f"{wc_name}.json"
+                    save_dir = None
+                    all_possible_dirs = [config.WILDCARD_NSFW_DIR, config.WILDCARD_DIR]
+                    for directory in all_possible_dirs:
+                        if os.path.exists(os.path.join(directory, filename_to_save)):
+                            save_dir = directory
+                            break
+                    
+                    if save_dir:
+                        self.template_engine.save_wildcard_content(filename_to_save, json.dumps(modified_data, indent=2), save_dir)
+                        modified_files_count += 1
+                        if self.all_wildcards_cache:
+                            self.all_wildcards_cache[wc_name] = modified_data
+                    else:
+                        print(f"Warning: Could not find original path for wildcard '{wc_name}' during value refactor. Skipping save.")
+                except Exception as e:
+                    print(f"Error saving refactored wildcard '{wc_name}': {e}")
+
+        return modified_files_count
+    
     def validate_all_wildcards(self) -> List[Dict[str, Any]]:
         """
         Scans all wildcards and validates 'requires' clauses to ensure that
@@ -677,6 +913,28 @@ class PromptProcessor:
         raw_response = self.chat_with_model(model, messages)
         return self.ollama_client.parse_template_from_response(raw_response)
 
+    def generate_template_from_all_wildcards(self, model: str, theme: str) -> str:
+        """
+        Generates a new template using all available wildcards based on a theme.
+        """
+        workflow_context = self._get_workflow_context()
+        wildcard_names = self.get_wildcard_names()
+        if not wildcard_names:
+            raise ValueError("No wildcards available to generate a template.")
+
+        # Get a rich sample of wildcards with example values for better AI context.
+        # The count is high to try and include as many as possible.
+        rich_wildcard_sample_str = self._get_rich_wildcard_sample_str(count=100)
+
+        prompt = DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT.format(
+            theme=theme,
+            workflow_context=workflow_context,
+            wildcard_list_str=rich_wildcard_sample_str
+        )
+
+        # Use the one-shot generation method for this task. The AI should return only the template.
+        return self.generate_for_brainstorming(model, prompt)
+
     def rewrite_text(self, selected_text: str, instructions: str, model: str) -> str:
         """
         Uses an AI model to rewrite a piece of text based on instructions.
@@ -878,9 +1136,9 @@ class PromptProcessor:
                 option_sample = self.rng.sample(options, min(3, len(options)))
                 # Truncate long options for the prompt
                 truncated_options = [(opt[:30] + '...' if len(opt) > 30 else opt) for opt in option_sample]
-                rich_sample_parts.append(f"- {wc_name}: (e.g., \"{', '.join(truncated_options)}\")")
+                rich_sample_parts.append(f"- __{wc_name}__: (e.g., \"{', '.join(truncated_options)}\")")
             else:
-                rich_sample_parts.append(f"- {wc_name} (empty)")
+                rich_sample_parts.append(f"- __{wc_name}__ (empty)")
         
         return "\n".join(rich_sample_parts) if rich_sample_parts else "none"
 
@@ -945,7 +1203,7 @@ class PromptProcessor:
             f"**Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.",
             "**JSON Format:** You MUST return a JSON array of the new choices. Do NOT return a full object with 'description', just the array of choices.",
             "**Complex Choices:** The new choices should be a mix of simple strings and complex objects with `weight`, `tags`, `requires`, and `includes` keys where appropriate. The `includes` key can be a list of wildcard names or a template string (e.g., \"wearing a __hat__\").",
-            "**Contextual Suggestions:** Use the 'Existing Wildcards' list below to create relevant `requires` and `includes` clauses. The `requires` key must be an object (e.g., `{{\"key\": \"value\"}}`).",
+            "**Contextual Suggestions:** Use the 'Existing Wildcards' list below to create relevant `requires` and `includes` clauses. The `requires` key must be an object (e.g., `{\"key\": \"value\"}`).",
             "**Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.",
         ]
         if current_wildcard_name:

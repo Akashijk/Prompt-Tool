@@ -148,7 +148,7 @@ The application is designed with a clear separation of concerns, divided into tw
     *   `prompt_processor.py`: The central orchestrator. It coordinates interactions between the template engine, Ollama client, and history manager.
     *   `template_engine.py`: Manages loading, parsing, and resolving templates and wildcards, including the complex logic for `requires` and `includes`.
     *   `ollama_client.py`: A dedicated client for all communication with the Ollama REST API, handling prompt enhancement, variations, and brainstorming chats.
-    *   `csv_manager.py`: Handles reading and writing to the prompt history files (which use the `.jsonl` format).
+    *   `history_manager.py`: Handles reading and writing to the prompt history files (which use the `.jsonl` format).
     *   `config.py`: Centralizes all application settings and paths.
     *   `default_content.py`: Stores the default text for system prompts and variations, allowing for easy restoration.
 
@@ -161,6 +161,46 @@ The application is designed with a clear separation of concerns, divided into tw
     *   `templates/`, `wildcards/`, `system_prompts/`: Store user-customizable content.
     *   `history/`: Stores the generated prompt history.
     *   `assets/`: Contains static assets like the application icon.
+
+## Troubleshooting
+
+Here are solutions to some common issues you might encounter.
+
+### "Ollama server is not running" Error
+
+This is the most common issue. It means the application cannot connect to the Ollama service on your machine.
+
+*   **Solution:**
+    1.  Make sure you have installed Ollama from ollama.com.
+    2.  Open your terminal or command prompt and run `ollama ps`. If the server is running, you will see a list of models. If it's not, you'll likely get a "connection refused" error.
+    3.  If it's not running, start the Ollama application on your system. On macOS and Windows, this is usually a background application. On Linux, you may need to start it with `systemctl start ollama`.
+
+### "Model not found" Error
+
+This error occurs when the application tries to use a model that Ollama doesn't have.
+
+*   **Solution:**
+    1.  Open your terminal and run `ollama list` to see which models you have installed.
+    2.  If the model you want to use is not in the list, pull it using `ollama run <model_name>` (e.g., `ollama run qwen:7b`).
+    3.  Restart the Prompt Tool GUI to refresh the model list.
+
+### Slow AI Responses
+
+The time it takes for the AI to respond depends heavily on your computer's hardware (CPU, RAM, and especially VRAM on your GPU) and the size of the model you are using.
+
+*   **Tips for Better Performance:**
+    *   Use smaller models (e.g., 7B models like `qwen:7b` or `llama3:8b`) for faster responses. Larger models (13B+) are higher quality but require more resources.
+    *   Ensure no other resource-intensive applications are running.
+    *   If you have a dedicated GPU, make sure Ollama is configured to use it.
+
+### Wildcard File Errors
+
+If you see warnings about "invalid JSON" when using the Wildcard Manager, it means a `.json` file has a syntax error.
+
+*   **Solution:**
+    1.  In the Wildcard Manager, the file will be loaded into the "Raw Text Editor".
+    2.  You can manually fix the syntax (e.g., add a missing comma, fix quotes).
+    3.  Alternatively, when you try to save, the application will offer to use an AI to attempt to fix the broken JSON for you.
 
 ## Contributing
 

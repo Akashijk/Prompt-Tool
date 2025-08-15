@@ -1,4 +1,4 @@
-"""CSV file operations for prompt history."""
+"""History file operations for prompt history."""
 
 import csv
 import os

@@ -151,6 +151,24 @@ Here is a sample of EXISTING wildcards you can use: {wildcard_sample_str}
 Now, generate the template for the concept: '{concept}'.
 """
 
+DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to write a high-quality, detailed, and creative prompt template based on the user's theme.
+
+**THEME:** {theme}
+
+**CONTEXT:** {workflow_context}
+
+**CRITICAL INSTRUCTIONS:**
+1.  You are encouraged to use a wide variety of wildcards from the 'AVAILABLE WILDCARDS' list below. The examples provided for each wildcard should guide you in combining them in creative and logical ways.
+2.  Weave the wildcards and other descriptive keywords into a coherent, comma-separated paragraph. The template should describe a scene or subject, not just be a list of wildcards. Add connecting words and adjectives to make it evocative.
+3.  All wildcard names MUST be in the exact format `__wildcard_name__`, as shown in the list below.
+4.  Return ONLY the generated template text. Do not include any other commentary, titles, or explanations.
+
+**AVAILABLE WILDCARDS (with examples):**
+{wildcard_list_str}
+
+Now, generate the template.
+"""
+
 DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.{template_context_section}{linked_wildcard_instruction}
 
 **CONTEXT:** {workflow_context}
