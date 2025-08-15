@@ -57,14 +57,36 @@ class TextContextMenu:
         self.menu.add_separator()
         self.menu.add_command(label="Select All", command=self.select_all)
 
-        # Platform-specific binding for right-click
+        # Use ButtonPress to handle the event before the widget's default selection behavior
         if sys.platform == "darwin":  # macOS
-            self.widget.bind("<Button-2>", self.show_menu)
+            self.widget.bind("<ButtonPress-2>", self.show_menu)
             self.widget.bind("<Control-Button-1>", self.show_menu)
         else:  # Windows/Linux
-            self.widget.bind("<Button-3>", self.show_menu)
+            self.widget.bind("<ButtonPress-3>", self.show_menu)
 
     def show_menu(self, event):
+        """
+        The main entry point for showing the context menu. It sets the cursor,
+        calls the configuration hook, and then displays the menu.
+        """
+        # Move cursor to click position
+        self.widget.mark_set(tk.INSERT, f"@{event.x},{event.y}")
+        
+        # This is the hook for subclasses to configure their specific menu items.
+        self._configure_menu_items(event)
+
+        self.menu.tk_popup(event.x_root, event.y_root)
+        return "break" # Prevent default OS behavior (like text selection)
+
+    def _configure_menu_items(self, event):
+        """
+        Configures the state of the base menu items (Cut, Copy, Paste).
+        Subclasses should override this method to add their own logic after
+        calling super()._configure_menu_items(event).
+        """
+        # Clear any existing selection to prevent unexpected behavior
+        self.widget.tag_remove("sel", "1.0", "end")
+
         # Disable/enable menu items based on state
         try:
             self.widget.selection_get()
@@ -80,8 +102,6 @@ class TextContextMenu:
         except tk.TclError:
             self.menu.entryconfig("Paste", state=tk.DISABLED)
 
-        self.menu.tk_popup(event.x_root, event.y_root)
-
     def cut(self): self.widget.event_generate("<<Cut>>")
     def copy(self): self.widget.event_generate("<<Copy>>")
     def paste(self): self.widget.event_generate("<<Paste>>")
@@ -95,8 +115,8 @@ class BrainstormingContextMenu(TextContextMenu):
         self.menu.add_separator()
         self.menu.add_command(label="Rewrite Selection with AI...", command=self._rewrite_selection, state=tk.DISABLED)
 
-    def show_menu(self, event):
-        super().show_menu(event)
+    def _configure_menu_items(self, event):
+        super()._configure_menu_items(event)
         try:
             self.widget.selection_get()
             self.menu.entryconfig("Rewrite Selection with AI...", state=tk.NORMAL)
@@ -121,15 +141,15 @@ class PromptPreviewContextMenu(TextContextMenu):
         self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
         self.menu.add_command(label="Edit Wildcard...", command=self._edit_wildcard, state=tk.DISABLED)
 
-    def show_menu(self, event):
+    def _configure_menu_items(self, event):
         self.last_event = event
         # We need to temporarily enable the widget to check tags if it's disabled
         original_state = self.widget.cget("state")
         if original_state == tk.DISABLED:
             self.widget.config(state=tk.NORMAL)
 
-        super().show_menu(event) # Call parent to set cut/copy/paste
-
+        super()._configure_menu_items(event) # Call parent to set cut/copy/paste
+        
         index = self.widget.index(f"@{event.x},{event.y}")
         tags = self.widget.tag_names(index)
         
@@ -183,9 +203,9 @@ class TemplateEditorContextMenu(TextContextMenu):
         self.menu.add_separator()
         self.menu.add_command(label="Edit Wildcard...", command=self._edit_wildcard, state=tk.DISABLED)
 
-    def show_menu(self, event):
+    def _configure_menu_items(self, event):
         self.last_event = event
-        super().show_menu(event) # Call parent to set cut/copy/paste
+        super()._configure_menu_items(event) # Call parent to set cut/copy/paste
 
         index = self.widget.index(f"@{event.x},{event.y}")
         tags = self.widget.tag_names(index)
@@ -207,35 +227,39 @@ class TemplateEditorContextMenu(TextContextMenu):
         else:
             self.menu.entryconfig("Brainstorm with AI...", state=tk.DISABLED)
 
+    def _get_wildcard_at_event(self) -> Optional[str]:
+        """Helper to get the full wildcard tag text under the last click event."""
+        if not self.last_event:
+            return None
+        
+        index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
+        
+        # Find the tag range that contains the index
+        tag_ranges = self.widget.tag_ranges("any_wildcard")
+        for i in range(0, len(tag_ranges), 2):
+            start, end = tag_ranges[i], tag_ranges[i+1]
+            if self.widget.compare(index, ">=", start) and self.widget.compare(index, "<", end):
+                return self.widget.get(start, end)
+        
+        return None
+
     def _generate_wildcard(self):
-        if not self.last_event: return
-        try:
-            index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
-            word_start = self.widget.index(f"{index} wordstart")
-            word_end = self.widget.index(f"{index} wordend")
-            clicked_word = self.widget.get(word_start, word_end)
-            
-            match = re.fullmatch(r'__([a-zA-Z0-9_.\s-]+)__', clicked_word)
-            if match:
-                wildcard_name = match.group(1)
-                self.generate_wildcard_callback(wildcard_name)
-        except Exception as e:
-            print(f"Error getting wildcard for generation: {e}")
+        wildcard_text = self._get_wildcard_at_event()
+        if not wildcard_text: return
+        
+        match = re.fullmatch(r'__([a-zA-Z0-9_.\s-]+)__', wildcard_text)
+        if match:
+            wildcard_name = match.group(1)
+            self.generate_wildcard_callback(wildcard_name)
 
     def _edit_wildcard(self):
-        if not self.last_event: return
-        try:
-            index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
-            word_start = self.widget.index(f"{index} wordstart")
-            word_end = self.widget.index(f"{index} wordend")
-            clicked_word = self.widget.get(word_start, word_end)
-            
-            match = re.fullmatch(r'__([a-zA-Z0-9_.\s-]+)__', clicked_word)
-            if match:
-                wildcard_name = match.group(1)
-                self.edit_wildcard_callback(wildcard_name)
-        except Exception as e:
-            print(f"Error getting wildcard for editing: {e}")
+        wildcard_text = self._get_wildcard_at_event()
+        if not wildcard_text: return
+        
+        match = re.fullmatch(r'__([a-zA-Z0-9_.\s-]+)__', wildcard_text)
+        if match:
+            wildcard_name = match.group(1)
+            self.edit_wildcard_callback(wildcard_name)
 
     def _create_wildcard(self):
         try:

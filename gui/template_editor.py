@@ -36,7 +36,8 @@ class TemplateEditor(ttk.Frame):
         # Drag and drop bindings for wildcard tags
         self.text_widget.tag_bind("any_wildcard", "<ButtonPress-1>", self._on_drag_start)
         self.text_widget.tag_bind("any_wildcard", "<B1-Motion>", self._on_drag_motion)
-        self.text_widget.tag_bind("any_wildcard", "<ButtonRelease-1>", self._on_drag_end)
+        # Bind release to the whole widget to catch it even if the mouse moves off the tag
+        self.text_widget.bind("<ButtonRelease-1>", self._on_drag_end)
         # Bindings for the ordering error tooltip
         self.text_widget.tag_bind("ordering_error", "<Enter>", self._on_ordering_error_enter)
         self.text_widget.tag_bind("ordering_error", "<Leave>", self._on_ordering_error_leave)
@@ -123,7 +124,7 @@ class TemplateEditor(ttk.Frame):
                 self.drag_start_index = start
                 self.dragged_text = self.text_widget.get(start, end)
                 self.text_widget.config(cursor="hand2")
-                return
+                return "break" # Prevent default text selection behavior
 
     def _on_drag_motion(self, event):
         """Handles the motion during a drag operation (currently just for visual feedback)."""
@@ -140,18 +141,47 @@ class TemplateEditor(ttk.Frame):
         self.is_dragging = False
         self.text_widget.config(cursor="")
 
-        drop_index = self.text_widget.index(f"@{event.x},{event.y}")
+        raw_drop_index = self.text_widget.index(f"@{event.x},{event.y}")
         start_index_obj = self.text_widget.index(self.drag_start_index)
 
-        if self.text_widget.compare(drop_index, ">=", start_index_obj) and self.text_widget.compare(drop_index, "<=", f"{start_index_obj} + {len(self.dragged_text)}c"):
+        if self.text_widget.compare(raw_drop_index, ">=", start_index_obj) and self.text_widget.compare(raw_drop_index, "<=", f"{start_index_obj} + {len(self.dragged_text)}c"):
             return # Dropped on itself, do nothing
+
+        # --- Smart Drop Logic ---
+        insertion_point = raw_drop_index
+        text_to_insert = self.dragged_text
+
+        # Check if we are dropping onto another wildcard
+        tag_ranges = self.text_widget.tag_ranges("any_wildcard")
+        for i in range(0, len(tag_ranges), 2):
+            start, end = tag_ranges[i], tag_ranges[i+1]
+            # Skip the tag we are currently dragging
+            if self.text_widget.compare(start, "==", self.drag_start_index):
+                continue
+
+            if self.text_widget.compare(raw_drop_index, ">=", start) and self.text_widget.compare(raw_drop_index, "<", end):
+                # We dropped onto another tag. Decide whether to prepend or append.
+                # A simple heuristic: check if the drop point is in the first or second half of the target tag.
+                start_num = float(str(self.text_widget.index(start)).split('.')[1])
+                end_num = float(str(self.text_widget.index(end)).split('.')[1])
+                drop_num = float(str(self.text_widget.index(raw_drop_index)).split('.')[1])
+                midpoint = start_num + (end_num - start_num) / 2
+
+                if drop_num < midpoint: # Dropped on the first half
+                    insertion_point = start
+                    text_to_insert = f"{self.dragged_text}, "
+                else: # Dropped on the second half
+                    insertion_point = end
+                    text_to_insert = f", {self.dragged_text}"
+                break
 
         self.text_widget.delete(self.drag_start_index, f"{self.drag_start_index} + {len(self.dragged_text)}c")
 
-        if self.text_widget.compare(drop_index, ">", start_index_obj):
-            drop_index = self.text_widget.index(f"{drop_index} - {len(self.dragged_text)}c")
+        # Adjust insertion point if it was after the deleted text
+        if self.text_widget.compare(insertion_point, ">", start_index_obj):
+            insertion_point = self.text_widget.index(f"{insertion_point} - {len(self.dragged_text)}c")
 
-        self.text_widget.insert(drop_index, self.dragged_text)
+        self.text_widget.insert(insertion_point, text_to_insert)
         self.app_instance._schedule_live_update()
 
     def _on_ordering_error_enter(self, event):
