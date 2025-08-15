@@ -557,10 +557,15 @@ class WildcardEditor(ttk.Frame):
                 if value in included_choices:
                     self.tree.item(item_id, tags=(self.included_tag,))
 
-        # Update includes text area
+        # Update includes text area, handling both string and list types
         self.includes_text.delete("1.0", tk.END)
-        if isinstance(data.get('includes'), str):
+        includes_data = data.get('includes')
+        if isinstance(includes_data, str):
             self.includes_text.insert("1.0", includes_data)
+        elif isinstance(includes_data, list):
+            # Convert list to a display string of bracketed wildcards for easy editing
+            display_str = " ".join([f"[{w}]" for w in includes_data])
+            self.includes_text.insert("1.0", display_str)
 
         # Update refine button state
         has_choices = bool(choices)
@@ -572,8 +577,17 @@ class WildcardEditor(ttk.Frame):
         
         includes_text = self.includes_text.get("1.0", "end-1c").strip()
         data_dict = {"description": self.description_entry.get(), "choices": choices}
+        
         if includes_text:
-            data_dict['includes'] = includes_text
+            # Check if the text consists only of bracketed wildcards, suggesting it should be a list
+            bracket_wildcards = re.findall(r'\[([a-zA-Z0-9_.-]+)\]', includes_text)
+            reconstructed_text = " ".join([f"[{w}]" for w in bracket_wildcards])
+            
+            if len(bracket_wildcards) > 0 and includes_text == reconstructed_text:
+                data_dict['includes'] = bracket_wildcards
+            else:
+                data_dict['includes'] = includes_text
+        
         return data_dict
 
     def _get_choice_from_tree_item(self, item_id) -> Any:

@@ -686,6 +686,48 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         
         self.pending_value_refactors.clear()
 
+    def _run_background_task(self, task_callable: Callable, title: str, message: str, on_complete: Callable):
+        """Runs a potentially long task in a background thread with a loading dialog."""
+        loading_dialog = custom_dialogs._CustomDialog(self, title)
+        ttk.Label(loading_dialog, text=message).pack(padx=20, pady=20)
+        loading_dialog.update_idletasks()
+        loading_dialog._center_window()
+
+        def task_wrapper():
+            try:
+                result = task_callable()
+                self.refactor_queue.put({'success': True, 'result': result, 'on_complete': on_complete})
+            except Exception as e:
+                self.refactor_queue.put({'success': False, 'error': str(e)})
+            finally:
+                # Ensure the loading dialog is closed from the main thread
+                loading_dialog.after(0, loading_dialog.destroy)
+
+        thread = threading.Thread(target=task_wrapper, daemon=True)
+        thread.start()
+        self._check_refactor_queue()
+
+    def _check_refactor_queue(self):
+        """Checks for results from a background refactoring task."""
+        try:
+            result = self.refactor_queue.get_nowait()
+            if result['success']:
+                result['on_complete'](result['result'])
+            else:
+                custom_dialogs.show_error(self, "Refactor Error", result['error'])
+        except queue.Empty:
+            self.refactor_after_id = self.after(100, self._check_refactor_queue)
+
+    def register_value_change(self, old_value: str, new_value: str):
+        """Registers that a choice's value has been changed, to be handled on save."""
+        if not self.selected_wildcard_file: return
+        basename, _ = os.path.splitext(self.selected_wildcard_file)
+        # Avoid queuing up redundant changes for the same value.
+        # If user changes 'a' -> 'b' then 'b' -> 'c', we only care about 'a' -> 'c'.
+        self.pending_value_refactors = [
+            (b, o, n) for b, o, n in self.pending_value_refactors if not (b == basename and n == old_value)
+        ]
+        self.pending_value_refactors.append((basename, old_value, new_value))
 
     def _brainstorm_with_ai(self):
         """Sends the current wildcard content to the brainstorming window."""

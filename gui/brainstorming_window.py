@@ -4,6 +4,7 @@ import tkinter.font as tkfont
 import tkinter as tk
 from tkinter import ttk
 import queue
+import os
 import threading
 import json
 import re
@@ -591,12 +592,20 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
                 supporting_filename = metadata['supporting_wildcard_to_include']
                 supporting_basename, _ = os.path.splitext(supporting_filename)
                 
-                # Add it to the global includes.
-                if 'includes' not in wildcard_data or not isinstance(wildcard_data.get('includes'), list):
-                    wildcard_data['includes'] = []
-                
-                if supporting_basename not in wildcard_data['includes']:
-                    wildcard_data['includes'].append(supporting_basename)
+                # Intelligently add the supporting wildcard to the global includes.
+                existing_includes = wildcard_data.get('includes')
+                if existing_includes is None:
+                    # No includes key, so we add one as a list.
+                    wildcard_data['includes'] = [supporting_basename]
+                elif isinstance(existing_includes, list):
+                    # It's a list, so we append if not present.
+                    if supporting_basename not in existing_includes:
+                        existing_includes.append(supporting_basename)
+                elif isinstance(existing_includes, str):
+                    # It's a string, so we append the wildcard reference.
+                    # Check if it's already in the string to avoid duplicates.
+                    if f"__{supporting_basename}__" not in existing_includes and f"[{supporting_basename}]" not in existing_includes:
+                        wildcard_data['includes'] = f"{existing_includes.strip()} __{supporting_basename}__"
                 
                 parsed_json_string = json.dumps(wildcard_data, indent=2)
 
