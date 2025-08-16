@@ -585,13 +585,16 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Handle clicking on a wildcard tag."""
         # Find the segment that was clicked
         clicked_segment_index = -1
+        # Use the event coordinates for a more reliable index
+        index_at_click = self.prompt_text.index(f"@{event.x},{event.y}")
         for start, end, seg_index in self.segment_map:
-            if self.prompt_text.compare(start, "<=", "current") and self.prompt_text.compare("current", "<", end):
+            if self.prompt_text.compare(start, "<=", index_at_click) and self.prompt_text.compare(index_at_click, "<", end):
                 clicked_segment_index = seg_index
                 break
 
         if clicked_segment_index != -1:
             self._show_swap_menu(event, clicked_segment_index)
+            return "break" # Prevent the default text selection behavior
 
     def _show_swap_menu(self, event, segment_index: int):
         """Display a context menu to swap the wildcard value."""
