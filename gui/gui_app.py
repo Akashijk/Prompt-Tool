@@ -58,7 +58,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Core logic
         self.processor = PromptProcessor(verbose=verbose)
         self.processor.initialize()
-        self.processor.set_callbacks(status_callback=self._update_status_bar)
+        self.processor.set_callbacks(status_callback=self._update_status_bar_from_event)
         self.model_usage_manager = ModelUsageManager(self.processor)
         self.enhancement_total_calls = 0
         self.enhancement_calls_made = 0
@@ -68,6 +68,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # State
         self.current_template_content: Optional[str] = None
         self.current_template_file: Optional[str] = None
+        self.last_generation_result: Dict[str, Any] = {}
         self.current_structured_prompt: List[PromptSegment] = []
         self.segment_map: List[Tuple[str, str, int]] = []  # start, end, segment_index
         self.wildcard_tooltip: Optional[Tooltip] = None
@@ -86,6 +87,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.font_size_var = tk.IntVar(value=config.font_size)
         self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
+        self.ai_cleanup_queue = queue.Queue()
+        self.ai_cleanup_after_id: Optional[str] = None
         self.missing_wildcards_container: Optional[ttk.Frame] = None
 
         # Create widgets
@@ -249,7 +252,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             generate_callback=self._generate_preview,
             enhance_callback=self._on_select_for_enhancement,
             copy_callback=self._copy_generated_prompt,
-            save_as_template_callback=self._save_preview_as_template
+            save_as_template_callback=self._save_preview_as_template,
+            ai_cleanup_callback=self._ai_cleanup_prompt
         )
         self._update_action_bar_variations()
 
@@ -393,8 +397,16 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             for model in models:
                 menu.add_command(label=model, command=lambda value=model: self.enhancement_model_var.set(value))
 
-            # Set a default model if possible
-            default_model = next((m for m in models if 'qwen' in m.lower()), models[0])
+            # Set a default model by finding the highest-priority recommended model.
+            recommendations = self.processor.get_model_recommendations(models)
+            if recommendations:
+                # The recommendations are sorted by priority. The first one is the best.
+                # The tuple is (index, model_name, reason). We want the model name.
+                default_model = recommendations[0][1]
+            else:
+                # Fallback if no models match our recommendation rules
+                default_model = models[0]
+
             self.enhancement_model_var.set(default_model)
             
             # Register initial model usage
@@ -444,11 +456,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.current_template_content = None
         self.current_structured_prompt = []
         self.template_editor.clear()
-        self.template_editor.set_label("Template Content")
+        self.template_editor.set_label("Template Content") # This line is duplicated, but it's fine.
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.config(state=tk.DISABLED)
-        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, ai_cleanup=tk.DISABLED)
         self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
     def _populate_wildcard_lists(self):
         """Populates both the inserter and editor wildcard lists."""
@@ -484,6 +496,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.model_usage_manager.unregister_usage(old_model)
             self.model_usage_manager.register_usage(new_model)
             self.main_window_model = new_model
+            # Notify the wildcard manager if it's open
+            if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
+                self.wildcard_manager_window.update_active_model(old_model, new_model)
 
     def _on_template_select(self, template_name: str):
         """Callback for when a template is selected from the dropdown."""
@@ -495,8 +510,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.template_editor.set_content(self.current_template_content)
         self._highlight_template_wildcards()
 
-        # Update UI state
-        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, ai_cleanup=tk.DISABLED)
         self.menubar.update_file_menu_state(save_enabled=True, archive_enabled=True)
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
@@ -525,10 +539,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 seed = random.randint(0, 2**32 - 1)
                 self.seed_var.set(str(seed))
 
-        # Generate with fresh random wildcards, so pass existing_segments=None
-        self.current_structured_prompt = self.processor.generate_single_structured_prompt(
-            live_content, existing_segments=None, seed=seed
+        # Generate with fresh random wildcards
+        segments, context = self.processor.generate_single_structured_prompt(
+            live_content, existing_context=None, seed=seed
         )
+        self.last_generation_result = {'segments': segments, 'context': context}
+        self.current_structured_prompt = segments # Keep this for UI rendering
         self._update_prompt_preview()
 
     def _update_prompt_preview(self):
@@ -540,7 +556,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             generate=tk.NORMAL, 
             enhance=tk.NORMAL if is_prompt_available else tk.DISABLED, 
             copy=tk.NORMAL if is_prompt_available else tk.DISABLED, 
-            save_as_template=tk.NORMAL if is_prompt_available else tk.DISABLED
+            save_as_template=tk.NORMAL if is_prompt_available else tk.DISABLED,
+            ai_cleanup=tk.NORMAL if is_prompt_available else tk.DISABLED
         )
 
     def _display_structured_prompt(self):
@@ -636,31 +653,25 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _swap_wildcard(self, segment_index: int, new_value: str):
         """Swap the text of a wildcard segment and redisplay the prompt."""
-        if 0 <= segment_index < len(self.current_structured_prompt):
-            segment = self.current_structured_prompt[segment_index]
-            
-            # Find the new choice object to get its includes metadata
-            new_choice_obj = self.processor.find_wildcard_choice_object(segment.wildcard_name, new_value)
-            
-            # Update the segment's text and includes metadata
-            segment.text = new_value
-            if isinstance(new_choice_obj, dict):
-                segment.includes = new_choice_obj.get('includes')
-            else:
-                segment.includes = None # Simple string choices have no includes
+        if not (0 <= segment_index < len(self.current_structured_prompt)):
+            return
 
-            # Trigger a full live update. The template engine will now re-evaluate
-            # the swapped choice and correctly process any 'includes' it has.
-            self._perform_live_update()
+        segment = self.current_structured_prompt[segment_index]
+        wildcard_to_swap = segment.wildcard_name
+        if not wildcard_to_swap: return
 
-    def _schedule_live_update(self, event=None):
+        # We don't modify the segments directly anymore.
+        # We tell the live update function to force this wildcard to the new value.
+        self._perform_live_update(force_swap={wildcard_to_swap: new_value})
+
+    def _schedule_live_update(self, event=None, force_swap: Optional[Dict[str, str]] = None):
         """Schedules a live update of the prompt preview after a short delay."""
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
 
         self.debounce_timer = self.after(500, self._perform_live_update)
 
-    def _perform_live_update(self, force_reroll: Optional[List[str]] = None):
+    def _perform_live_update(self, force_reroll: Optional[List[str]] = None, force_swap: Optional[Dict[str, str]] = None):
         """Updates the prompt preview using the current template text and existing wildcards."""
         self.debounce_timer = None
         if not self.current_template_content:
@@ -678,13 +689,19 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             seed = random.randint(0, 2**32 - 1)
             self.seed_var.set(str(seed))
 
+        # Get the existing context from the last generation result
+        existing_context = self.last_generation_result.get('context')
+
         # Regenerate the prompt, reusing the existing wildcard choices
-        self.current_structured_prompt = self.processor.generate_single_structured_prompt(
+        segments, new_context = self.processor.generate_single_structured_prompt(
             live_content,
-            existing_segments=self.current_structured_prompt,
+            existing_context=existing_context,
             force_reroll=force_reroll,
+            force_swap=force_swap,
             seed=seed
         )
+        self.last_generation_result = {'segments': segments, 'context': new_context}
+        self.current_structured_prompt = segments
         self._update_prompt_preview()
         self._highlight_template_wildcards()
         if force_reroll:
@@ -781,7 +798,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _copy_generated_prompt(self):
         """Copies the current generated prompt text to the clipboard."""
-        prompt_text = self._get_current_prompt_string()
+        # If the structured prompt is empty, it means the preview pane is showing
+        # a static prompt (e.g., after AI cleanup). In this case, get the text directly.
+        if not self.current_structured_prompt:
+            prompt_text = self.prompt_text.get("1.0", "end-1c").strip()
+        else:
+            # Otherwise, construct the string from the interactive segments.
+            prompt_text = self._get_current_prompt_string()
 
         if not prompt_text:
             self.status_var.set("Nothing to copy.")
@@ -872,17 +895,31 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.enhancement_cancellation_event and self.enhancement_cancellation_event.is_set() and event_type == 'batch_complete':
             return
 
-        self.enhancement_calls_made += 1
         message = ""
         if event_type == 'enhancement_start':
+            self.enhancement_calls_made += 1
             message = f"Enhancing main prompt... (call {self.enhancement_calls_made}/{self.enhancement_total_calls})"
         elif event_type == 'variation_start':
+            self.enhancement_calls_made += 1
             var_type = kwargs.get('var_type', 'unknown')
             message = f"Creating '{var_type}' variation... (call {self.enhancement_calls_made}/{self.enhancement_total_calls})"
         elif event_type == 'batch_complete':
             message = "Batch processing complete."
         elif event_type == 'batch_cancelled':
             message = "Processing cancelled."
+        elif event_type == 'compatibility_check_step':
+            step = kwargs.get('step', '?')
+            total_steps = kwargs.get('total_steps', '?')
+            step_message = kwargs.get('message', 'Processing...')
+            message = f"Step {step}/{total_steps}: {step_message}"
+        elif event_type == 'brainstorm_template_step':
+            step = kwargs.get('step', '?')
+            total_steps = kwargs.get('total_steps', '?')
+            step_message = kwargs.get('message', 'Processing...')
+            message = f"Generating Template (Step {step}/{total_steps}: {step_message})"
+        else:
+            # Fallback for simple status updates from the processor
+            message = kwargs.get('message', event_type)
         
         if message:
             self._update_status_bar(message)
@@ -1090,9 +1127,65 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.template_editor.set_content(prompt_text)
 
         # Enable enhancement actions
-        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.NORMAL, copy=tk.NORMAL)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.NORMAL, copy=tk.NORMAL, ai_cleanup=tk.NORMAL)
         self.status_var.set("Loaded prompt from history. Ready to enhance.")
 
+    def _ai_cleanup_prompt(self):
+        """Uses AI to clean up the currently generated prompt."""
+        model = self.enhancement_model_var.get()
+        if not model or "model" in model.lower():
+            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
+            return
+        
+        prompt_to_clean = self._get_current_prompt_string()
+        if not prompt_to_clean:
+            custom_dialogs.show_error(self, "Error", "No prompt to clean up.")
+            return
+
+        self.action_bar.ai_cleanup_button.config(state=tk.DISABLED, text="Cleaning...")
+        self.loading_animation.start()
+
+        def task():
+            try:
+                cleaned_prompt = self.processor.ai_cleanup_prompt(prompt_to_clean, model)
+                self.ai_cleanup_queue.put({'success': True, 'prompt': cleaned_prompt})
+            except Exception as e:
+                self.ai_cleanup_queue.put({'success': False, 'error': str(e)})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.ai_cleanup_after_id = self.after(100, self._check_ai_cleanup_queue)
+
+    def _check_ai_cleanup_queue(self):
+        """Checks for results from the AI cleanup thread."""
+        try:
+            result = self.ai_cleanup_queue.get_nowait()
+            self.loading_animation.stop()
+            self.action_bar.ai_cleanup_button.config(state=tk.NORMAL, text="AI Cleanup ✨")
+
+            if result['success']:
+                cleaned_prompt = result['prompt']
+                
+                # The cleanup action invalidates the structured prompt, as the text has changed.
+                # We display the cleaned text as a final, static result.
+                self.current_structured_prompt = []
+                self.segment_map = []
+                
+                self.prompt_text.config(state=tk.NORMAL)
+                self.prompt_text.delete("1.0", tk.END)
+                self.prompt_text.insert("1.0", cleaned_prompt)
+                self.prompt_text.config(state=tk.DISABLED)
+                
+                # The user can now copy or enhance this final prompt.
+                # The "Generate" button remains active to create a new preview from the original template.
+                self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.NORMAL, copy=tk.NORMAL, save_as_template=tk.NORMAL, ai_cleanup=tk.NORMAL)
+                
+                self.status_var.set("Prompt cleaned up by AI.")
+            else:
+                custom_dialogs.show_error(self, "AI Cleanup Error", f"An error occurred during cleanup:\n{result['error']}")
+                self.status_var.set("AI cleanup failed.")
+        except queue.Empty:
+            self.ai_cleanup_after_id = self.after(100, self._check_ai_cleanup_queue)
     def _brainstorm_with_template(self):
         """Sends the current template content to the brainstorming window."""
         if not self.template_editor: return
@@ -1323,6 +1416,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _on_closing(self):
         """Handles the main window closing event to clean up resources."""
+        # Explicitly close child windows first to allow them to unregister their models.
+        # This prevents the main window from prematurely unloading a model that's still
+        # in use by a tool window.
+        if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
+            self.wildcard_manager_window.close()
+        if self.brainstorming_window and self.brainstorming_window.winfo_exists():
+            self.brainstorming_window.close()
         active_models_on_exit = self.model_usage_manager.get_active_models()
         if active_models_on_exit:
             print(f"Unloading all active models: {', '.join(active_models_on_exit)}...")
@@ -1331,6 +1431,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             print("Cleanup complete.")
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
+        if self.ai_cleanup_after_id:
+            self.after_cancel(self.ai_cleanup_after_id)
         self.destroy()
 
     def _show_missing_wildcard_menu(self, event, wildcard_name: str):

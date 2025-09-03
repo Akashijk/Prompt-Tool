@@ -47,13 +47,15 @@ class Tooltip:
         self.tooltip_window = None
 
 class TextContextMenu:
-    """A context menu for tkinter Text widgets."""
-    def __init__(self, widget):
+    """A context menu for tkinter Text and Entry widgets."""
+    def __init__(self, widget, insert_wildcard_callback: Optional[Callable] = None):
         self.widget = widget
+        self.insert_wildcard_callback = insert_wildcard_callback
         self.menu = tk.Menu(widget, tearoff=0)
         self.menu.add_command(label="Cut", command=self.cut)
         self.menu.add_command(label="Copy", command=self.copy)
         self.menu.add_command(label="Paste", command=self.paste)
+        self.menu.add_command(label="Insert Wildcard...", command=self._insert_wildcard, state=tk.DISABLED)
         self.menu.add_separator()
         self.menu.add_command(label="Select All", command=self.select_all)
 
@@ -69,11 +71,12 @@ class TextContextMenu:
         The main entry point for showing the context menu. It sets the cursor,
         calls the configuration hook, and then displays the menu.
         """
-        # Move cursor to click position
-        # Only move the cursor if there is no active selection.
-        # Right-clicking on a selection should not move the cursor.
-        if not self.widget.tag_ranges("sel"):
-            self.widget.mark_set(tk.INSERT, f"@{event.x},{event.y}")
+        # For Text widgets, move cursor to click position if there's no selection.
+        # For Entry widgets, this is generally the default behavior.
+        if isinstance(self.widget, tk.Text):
+            if not self.widget.tag_ranges("sel"):
+                self.widget.mark_set(tk.INSERT, f"@{event.x},{event.y}")
+
         # This is the hook for subclasses to configure their specific menu items.
         self._configure_menu_items(event)
 
@@ -101,10 +104,23 @@ class TextContextMenu:
         except tk.TclError:
             self.menu.entryconfig("Paste", state=tk.DISABLED)
 
+        # Enable the insert wildcard option if the callback is provided
+        if self.insert_wildcard_callback:
+            self.menu.entryconfig("Insert Wildcard...", state=tk.NORMAL)
+
     def cut(self): self.widget.event_generate("<<Cut>>")
     def copy(self): self.widget.event_generate("<<Copy>>")
     def paste(self): self.widget.event_generate("<<Paste>>")
-    def select_all(self): self.widget.tag_add("sel", "1.0", "end"); return "break"
+    def select_all(self):
+        if isinstance(self.widget, tk.Text):
+            self.widget.tag_add("sel", "1.0", "end")
+        elif isinstance(self.widget, (tk.Entry, ttk.Entry)):
+            self.widget.selection_range(0, 'end')
+        return "break"
+
+    def _insert_wildcard(self):
+        if self.insert_wildcard_callback:
+            self.insert_wildcard_callback()
 
 class BrainstormingContextMenu(TextContextMenu):
     """A context menu for the brainstorming history with a rewrite function."""

@@ -4,6 +4,7 @@ import os
 import json
 import re
 import random
+import copy
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from .config import config
@@ -405,21 +406,21 @@ class TemplateEngine:
             if key in resolved_context:
                 choice_val = resolved_context[key]['value']
                 output_prompt += choice_val
-                remaining_template = remaining_template[end_pos+2:]
             else:
                 wildcard_data = self.wildcards.get(key)
                 choice_obj = self._get_wildcard_choice_object(key, resolved_context)
                 if choice_obj:
                     choice = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
-                    tags = choice_obj.get('tags') if isinstance(choice_obj, dict) else []
-                    output_prompt += choice
-                    resolved_context[key] = {'value': choice, 'tags': tags}
-
+                    tags = choice_obj.get('tags', []) if isinstance(choice_obj, dict) else []
+                    resolved_context[key] = {'value': choice, 'tags': tags} # Update context to prevent recursion
                     include_text_to_inject = self._process_includes(choice_obj, wildcard_data)
-                    remaining_template = include_text_to_inject + remaining_template[end_pos+2:]
+                    # Prepend the choice and its includes to the remaining template for recursive processing
+                    remaining_template = choice + include_text_to_inject + remaining_template[end_pos+2:]
+                    continue # Restart the loop with the new template string
                 else:
                     output_prompt += f"__{key}__"
-                    remaining_template = remaining_template[end_pos+2:]
+            
+            remaining_template = remaining_template[end_pos+2:]
 
         output_prompt += remaining_template
         
@@ -570,11 +571,18 @@ class TemplateEngine:
 
         return True
 
-    def _find_or_generate_choice(self, key: str, existing_choices_map: Dict[str, str], resolved_context: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
+    def _find_or_generate_choice(self, key: str, existing_choices_map: Dict[str, str], resolved_context: Dict[str, Any], force_swap: Optional[Dict[str, str]] = None) -> Tuple[Optional[Any], Optional[str]]:
         """
         Finds an existing choice or generates a new one for a given wildcard key.
         Returns a tuple of (choice_object, choice_text).
         """
+        # Priority 0: A forced swap from the UI takes precedence over everything.
+        if force_swap and key in force_swap:
+            choice_text = force_swap[key]
+            # We still need to find the choice object to get its metadata (like includes).
+            choice_obj = self.find_choice_object_by_value(key, choice_text)
+            return choice_obj, choice_text
+
         # Priority 1: Check if this wildcard has already been resolved in this generation pass.
         if key in resolved_context:
             choice_text = resolved_context[key]['value']
@@ -607,25 +615,47 @@ class TemplateEngine:
 
         return None, None
 
-    def _create_segment_and_update_context(self, key: str, choice_obj: Any, choice_text: str, resolved_context: Dict[str, Any]) -> Tuple[PromptSegment, str]:
-        """
-        Creates a PromptSegment, updates the context, and returns the segment and any text to inject.
-        """
-        wildcard_data = self.wildcards.get(key)
-        text_to_inject = self._process_includes(choice_obj, wildcard_data)
-        
-        raw_includes = (choice_obj.get('includes') if isinstance(choice_obj, dict) and 'includes' in choice_obj else wildcard_data.get('includes') if wildcard_data else None)
-        tags = choice_obj.get('tags', []) if isinstance(choice_obj, dict) else []
-        
-        new_segment = PromptSegment(text=choice_text, wildcard_name=key, includes=raw_includes)
-        resolved_context[key] = {'value': choice_text, 'tags': tags}
-        
-        return new_segment, text_to_inject
+    def _recursive_generate(self, template_string: str, parent_wildcard_name: Optional[str], resolved_context: Dict[str, Any], existing_choices_map: Dict[str, str], force_swap: Optional[Dict[str, str]], is_from_include: bool) -> List[PromptSegment]:
+        """Recursively generates segments, correctly attributing text to its parent wildcard."""
+        segments: List[PromptSegment] = []
+        remaining_template = template_string
+
+        while '__' in remaining_template:
+            match = re.search(r'__([a-zA-Z0-9_.\s-]+?)__', remaining_template)
+            if not match:
+                break
+
+            # Add any static text that came before the wildcard
+            prefix = remaining_template[:match.start()]
+            if prefix:
+                segments.append(PromptSegment(text=prefix, wildcard_name=parent_wildcard_name, is_from_include=is_from_include))
+
+            key = match.group(1)
+            choice_obj, choice_text = self._find_or_generate_choice(key, existing_choices_map, resolved_context, force_swap)
+
+            if choice_obj:
+                tags = choice_obj.get('tags', []) if isinstance(choice_obj, dict) else []
+                resolved_context[key] = {'value': choice_text, 'tags': tags}
+                
+                # Recursively process the choice's value and its includes
+                segments.extend(self._recursive_generate(choice_text, key, resolved_context, existing_choices_map, force_swap, True))
+                include_text = self._process_includes(choice_obj, self.wildcards.get(key))
+                segments.extend(self._recursive_generate(include_text, key, resolved_context, existing_choices_map, force_swap, True))
+            else:
+                segments.append(PromptSegment(text=match.group(0), wildcard_name=key, is_from_include=is_from_include))
+
+            remaining_template = remaining_template[match.end():]
+
+        if remaining_template:
+            segments.append(PromptSegment(text=remaining_template, wildcard_name=parent_wildcard_name, is_from_include=is_from_include))
+
+        return segments
 
     def generate_structured_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, 
-                             existing_segments: Optional[List[PromptSegment]] = None, 
+                             existing_context: Optional[Dict[str, Any]] = None, 
                              force_reroll: Optional[List[str]] = None,
-                             seed: Optional[int] = None) -> List[PromptSegment]:
+                             force_swap: Optional[Dict[str, str]] = None,
+                             seed: Optional[int] = None) -> Tuple[List[PromptSegment], Dict[str, Any]]:
         """Generate a prompt as a list of segments for rich interaction."""
         if wildcards is None:
             wildcards = self.wildcards
@@ -637,72 +667,26 @@ class TemplateEngine:
         self.current_seed = seed
         self.rng.seed(self.current_seed)
 
-        # --- Tag Mode Detection ---
-        is_tag_mode = template.lstrip().startswith("#- mode: tags -#")
-        if is_tag_mode:
-            # Remove the directive from the template so it's not processed as text
-            template = re.sub(r'#-\s*mode:\s*tags\s*-#', '', template).lstrip()
-        existing_choices_map = {}
-        if existing_segments:
-            for segment in existing_segments:
-                if segment.wildcard_name:
-                    if force_reroll and segment.wildcard_name in force_reroll:
-                        continue
-                    if segment.wildcard_name not in existing_choices_map:
-                        existing_choices_map[segment.wildcard_name] = segment.text
+        # --- Context and Map Initialization ---
+        # The context_to_preserve starts as a deepcopy of the existing one to avoid modifying the original.
+        resolved_context: Dict[str, Any] = copy.deepcopy(existing_context) if existing_context else {}
 
-        resolved_context: Dict[str, Any] = {}
+        # Handle rerolls and swaps by removing the keys from the context we're about to use.
+        if force_reroll:
+            for key in force_reroll:
+                resolved_context.pop(key, None)
+        if force_swap:
+            for key in force_swap:
+                resolved_context.pop(key, None)
+        
+        # The existing_choices_map is now built from the context. This map is used by
+        # _find_or_generate_choice to know which values to preserve.
+        existing_choices_map = {k: v['value'] for k, v in resolved_context.items()}
 
-        # --- Processing Logic ---
-        segments: List[PromptSegment] = []
-        # Queue of (template_string, is_from_include_flag)
-        processing_queue: List[Tuple[str, bool]] = [(template, False)]
-
-        while processing_queue:
-            current_template, is_from_include = processing_queue.pop(0)
-            
-            match = re.search(r'__([a-zA-Z0-9_.\s-]+?)__', current_template)
-            
-            if not match:
-                # No wildcards left in this string, so it's all static text
-                if current_template:
-                    segments.append(PromptSegment(text=current_template))
-                continue # Move to the next item in the queue
-
-            # --- We found a wildcard ---
-
-            # 1. Add any static text that came before it
-            static_prefix = current_template[:match.start()]
-            if static_prefix:
-                segments.append(PromptSegment(text=static_prefix))
-
-            # 2. Process the wildcard
-            key = match.group(1)
-            choice_obj, choice_text = self._find_or_generate_choice(key, existing_choices_map, resolved_context)
-            
-            # 3. Get the rest of the template to be processed later
-            rest_of_template = current_template[match.end():]
-
-            if choice_obj:
-                new_segment, text_to_inject = self._create_segment_and_update_context(key, choice_obj, choice_text, resolved_context)
-                new_segment.is_from_include = is_from_include
-                segments.append(new_segment)
-                
-                # 4. Queue up the rest of the work
-                # The rest of the original template goes on the queue first.
-                if rest_of_template:
-                    processing_queue.insert(0, (rest_of_template, is_from_include))
-                
-                # The included text goes on the front, to be processed next.
-                if text_to_inject:
-                    processing_queue.insert(0, (text_to_inject, True))
-            else:
-                # Wildcard not found, treat it as static text and queue the rest
-                segments.append(PromptSegment(text=match.group(0), wildcard_name=key, is_from_include=is_from_include))
-                if rest_of_template:
-                    processing_queue.insert(0, (rest_of_template, is_from_include))
-
-        return segments
+        # The context for the new run starts empty and gets populated by the recursive generation.
+        newly_resolved_context: Dict[str, Any] = {}
+        segments = self._recursive_generate(template, None, newly_resolved_context, existing_choices_map, force_swap, False)
+        return segments, newly_resolved_context
 
     def cleanup_prompt_string(self, prompt: str) -> str:
         """Cleans up a generated prompt string to fix common grammatical issues."""

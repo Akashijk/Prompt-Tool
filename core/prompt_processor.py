@@ -10,16 +10,17 @@ from typing import List, Dict, Any, Optional, Callable, Tuple, Set
 from .template_engine import TemplateEngine, PromptSegment
 from .history_manager import HistoryManager
 from .config import config
-from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS,
+from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT,
                               DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS,
-                              DEFAULT_BRAINSTORM_TEMPLATE_PROMPT, DEFAULT_BRAINSTORM_WILDCARD_PROMPT,
+                              DEFAULT_BRAINSTORM_TEMPLATE_PROMPT, DEFAULT_BRAINSTORM_WILDCARD_PROMPT, DEFAULT_AI_REFACTOR_CHOICES_PROMPT,
                               DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION,
                               DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT,
                               DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT,
-                              DEFAULT_BRAINSTORM_REWRITE_PROMPT,
+                              DEFAULT_BRAINSTORM_REWRITE_PROMPT, DEFAULT_AI_FIX_GRAMMAR_PROMPT, DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT, DEFAULT_AI_CLEANUP_PROMPT,
                               DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT,
                               DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT)
 from .ollama_client import OllamaClient
+from .utils import sanitize_wildcard_choices
 from datetime import datetime
 
 class PromptProcessor:
@@ -386,14 +387,8 @@ class PromptProcessor:
         # Save the new .json file.
         self.template_engine.save_wildcard_content(new_filename, content, save_dir)
 
-        # Update the mode-agnostic cache
-        basename, _ = os.path.splitext(new_filename)
-        if self.all_wildcards_cache is not None:
-            try:
-                self.all_wildcards_cache[basename] = json.loads(content)
-            except json.JSONDecodeError:
-                print(f"Warning: Could not update all_wildcards_cache for {basename} due to invalid JSON.")
-        self._used_wildcards_cache = None
+        # After saving, force a full reload to ensure all caches and lists are perfectly in sync.
+        self.reload_wildcards()
 
         # If we migrated from .txt, delete the old file.
         if old_ext == '.txt':
@@ -451,12 +446,13 @@ class PromptProcessor:
             self.all_wildcards_cache[new_basename] = self.all_wildcards_cache.pop(old_basename)
         self._used_wildcards_cache = None
 
-    def generate_single_structured_prompt(self, template_content: str, existing_segments: Optional[List[PromptSegment]] = None, force_reroll: Optional[List[str]] = None, seed: Optional[int] = None) -> List[PromptSegment]:
+    def generate_single_structured_prompt(self, template_content: str, existing_context: Optional[Dict[str, Any]] = None, force_reroll: Optional[List[str]] = None, force_swap: Optional[Dict[str, str]] = None, seed: Optional[int] = None) -> Tuple[List[PromptSegment], Dict[str, Any]]:
         """Generates a single structured prompt for GUI use, optionally reusing existing wildcard choices."""
         return self.template_engine.generate_structured_prompt(
             template_content, 
-            existing_segments=existing_segments, 
+            existing_context=existing_context, 
             force_reroll=force_reroll,
+            force_swap=force_swap,
             seed=seed
         )
 
@@ -959,26 +955,45 @@ class PromptProcessor:
         return self.ollama_client.parse_template_from_response(raw_response)
 
     def generate_template_from_all_wildcards(self, model: str, theme: str) -> str:
-        """
-        Generates a new template using all available wildcards based on a theme.
-        """
-        workflow_context = self._get_workflow_context()
-        wildcard_names = self.get_wildcard_names()
-        if not wildcard_names:
+        """Generates a new template using a smart, AI-driven selection of wildcards based on a theme."""
+        # --- Step 1: Use a "planner" AI to select the most relevant wildcards ---
+        self._update_status("brainstorm_template_step", step=1, total_steps=2, message="Planning wildcard selection...")
+        
+        wildcard_list_with_desc_str = self._get_wildcards_with_descriptions_str()
+        if wildcard_list_with_desc_str == "none":
             raise ValueError("No wildcards available to generate a template.")
 
-        # Get a rich sample of wildcards with example values for better AI context.
-        # The count is high to try and include as many as possible.
-        rich_wildcard_sample_str = self._get_rich_wildcard_sample_str(count=100)
+        planner_prompt = DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT.format(
+            theme=theme,
+            wildcard_list_with_desc_str=wildcard_list_with_desc_str
+        )
+        
+        # Use a chat call for better instruction following
+        planner_messages = [{'role': 'user', 'content': planner_prompt}]
+        selected_wildcards_str = self.chat_with_model(model, planner_messages)
+        
+        # Parse the comma-separated list of wildcard names
+        selected_wildcard_names = [w.strip().replace('__', '') for w in selected_wildcards_str.split(',') if w.strip()]
+        
+        if not selected_wildcard_names:
+            raise Exception("The AI planner did not select any wildcards. Please try a different theme.")
 
-        prompt = DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT.format(
+        # --- Step 2: Use the selected wildcards to generate the final template ---
+        self._update_status("brainstorm_template_step", step=2, total_steps=2, message="Generating template...")
+        
+        workflow_context = self._get_workflow_context()
+        
+        # Build a rich sample string using ONLY the selected wildcards
+        rich_wildcard_sample_str = self._get_rich_wildcard_sample_str(wildcard_names=selected_wildcard_names)
+
+        generator_prompt = DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT.format(
             theme=theme,
             workflow_context=workflow_context,
             wildcard_list_str=rich_wildcard_sample_str
         )
 
         # Use the one-shot generation method for this task. The AI should return only the template.
-        return self.generate_for_brainstorming(model, prompt)
+        return self.generate_for_brainstorming(model, generator_prompt)
 
     def rewrite_text(self, selected_text: str, instructions: str, model: str) -> str:
         """
@@ -1071,6 +1086,174 @@ class PromptProcessor:
         except json.JSONDecodeError as e:
             # The AI failed to produce valid JSON. We can't use its response.
             raise Exception(f"The AI failed to produce valid JSON. Please try again or fix it manually. Parser error: {e}")
+
+    def ai_fix_wildcard_grammar(self, wildcard_content: str, model: str) -> str:
+        """Uses AI to fix grammatical issues in a wildcard file's choices and includes."""
+        
+        prompt = DEFAULT_AI_FIX_GRAMMAR_PROMPT.replace('{wildcard_content}', wildcard_content)
+        
+        # Use chat for better instruction following
+        messages = [{'role': 'user', 'content': prompt}]
+        raw_response = self.chat_with_model(model, messages)
+        
+        json_str = None
+        match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            start = raw_response.find('{')
+            end = raw_response.rfind('}')
+            if start != -1 and end != -1 and start < end:
+                json_str = raw_response[start:end+1]
+        if not json_str:
+            raise Exception(f"The AI did not return a recognizable JSON object. Response:\n{raw_response}")
+
+        try:
+            parsed_data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise Exception(f"The AI returned malformed JSON. Parser error: {e}\n\nRaw response snippet:\n{json_str[:500]}")
+        # --- Structural Validation ---
+        if not isinstance(parsed_data, dict):
+            raise Exception(f"The AI returned a valid JSON, but it was not the expected object structure (e.g., it might be a list). Response:\n{json_str[:500]}")
+
+        if 'choices' not in parsed_data:
+            error_guess = parsed_data.get('error', parsed_data.get('message', 'The "choices" key was missing from the response.'))
+            raise Exception(f"The AI's response was missing the required 'choices' field. AI message: {error_guess}")
+
+        if not isinstance(parsed_data['choices'], list):
+            raise Exception(f"The 'choices' field in the AI's response was not a list. Type was: {type(parsed_data['choices']).__name__}")
+
+        # --- Sanitization and Return ---
+        parsed_data['choices'] = sanitize_wildcard_choices(parsed_data.get('choices', []))
+        return json.dumps(parsed_data, indent=2)
+
+    def _ai_refactor_choices(self, primary_filename: str, primary_content: str, supporting_filename: str, supporting_content: str, model: str) -> Dict[str, Any]:
+        """Step 1 of compatibility check: Refactor choices between files using AI."""
+        prompt = DEFAULT_AI_REFACTOR_CHOICES_PROMPT.format(
+            primary_filename=primary_filename,
+            primary_content=primary_content,
+            supporting_filename=supporting_filename,
+            supporting_content=supporting_content
+        )
+        messages = [{'role': 'user', 'content': prompt}]
+        raw_response = self.chat_with_model(model, messages)
+        
+        # --- Custom Parsing Logic for this specific task ---
+        # This bypasses the standard parser's fallback which is not suitable here.
+        json_str = None
+        match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            start = raw_response.find('{')
+            end = raw_response.rfind('}')
+            if start != -1 and end != -1 and start < end:
+                json_str = raw_response[start:end+1]
+
+        if not json_str:
+            raise Exception(f"AI response did not contain a recognizable JSON object. Raw response:\n{raw_response[:500]}")
+        
+        try:
+            # The response should be a single JSON object with filenames as keys.
+            data = json.loads(json_str)
+            if primary_filename not in data or supporting_filename not in data:
+                raise KeyError("AI response missing one or both filenames as keys.")
+            return data
+        except (json.JSONDecodeError, KeyError) as e:
+            raise Exception(f"AI failed to return valid refactored JSON for both files. Error: {e}\nResponse: {json_str[:500]}")
+
+    def _ai_add_bridge_phrases(self, primary_filename: str, primary_content: str, supporting_filename: str, supporting_content: str, model: str) -> str:
+        """Step 2 of compatibility check: Add bridge phrases to the primary file."""
+        prompt = DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT.format(
+            primary_filename=primary_filename,
+            primary_content=primary_content,
+            supporting_filename=supporting_filename,
+            supporting_content=supporting_content
+        )
+        messages = [{'role': 'user', 'content': prompt}]
+        raw_response = self.chat_with_model(model, messages)
+        # This prompt should return a single JSON object for the primary file.
+        return self.ollama_client.parse_json_object_from_response(raw_response, primary_filename)
+
+    def ai_check_wildcard_compatibility(self, primary_filename: str, primary_content: str, supporting_filename: str, supporting_content: str, model: str) -> Dict[str, str]:
+        """Uses a multi-step AI process to refactor and make two wildcard files grammatically compatible."""
+        # --- Step 1: Refactor choices between files ---
+        self._update_status("compatibility_check_step", step=1, total_steps=2, message="Refactoring misplaced choices...")
+        refactored_data = self._ai_refactor_choices(primary_filename, primary_content, supporting_filename, supporting_content, model)
+
+        refactored_primary_data = refactored_data[primary_filename]
+        refactored_supporting_data = refactored_data[supporting_filename]
+
+        # --- Step 2: Add bridge phrases to the now-refactored primary file ---
+        self._update_status("compatibility_check_step", step=2, total_steps=2, message="Fixing grammar...")
+        final_primary_content_str = self._ai_add_bridge_phrases(
+            primary_filename, json.dumps(refactored_primary_data, indent=2),
+            supporting_filename, json.dumps(refactored_supporting_data, indent=2),
+            model
+        )
+
+        # --- Step 3: Sanitize and return the final state of both files ---
+        def process_file_data(filename: str, content: Any) -> str:
+            file_data = content
+            if isinstance(file_data, str):
+                try:
+                    file_data = json.loads(file_data)
+                except json.JSONDecodeError:
+                    raise Exception(f"AI returned a string for {filename} that is not valid JSON.")
+            if not isinstance(file_data, dict):
+                raise Exception(f"The content for {filename} returned by the AI was not a JSON object.")
+            if 'choices' in file_data and isinstance(file_data.get('choices'), list):
+                file_data['choices'] = sanitize_wildcard_choices(file_data['choices'])
+            return json.dumps(file_data, indent=2)
+
+        return {
+            primary_filename: process_file_data(primary_filename, final_primary_content_str),
+            supporting_filename: process_file_data(supporting_filename, refactored_supporting_data)
+        }
+
+    def ai_fix_wildcard_grammar(self, wildcard_content: str, model: str) -> str:
+        """Uses AI to fix grammatical issues in a wildcard file's choices and includes."""
+        
+        prompt = DEFAULT_AI_FIX_GRAMMAR_PROMPT.replace('{wildcard_content}', wildcard_content)
+        
+        # Use chat for better instruction following
+        messages = [{'role': 'user', 'content': prompt}]
+        raw_response = self.chat_with_model(model, messages)
+        
+        json_str = None
+        match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            start = raw_response.find('{')
+            end = raw_response.rfind('}')
+            if start != -1 and end != -1 and start < end:
+                json_str = raw_response[start:end+1]
+        if not json_str:
+            raise Exception(f"The AI did not return a recognizable JSON object. Response:\n{raw_response}")
+
+        try:
+            parsed_data = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise Exception(f"The AI returned malformed JSON. Parser error: {e}\n\nRaw response snippet:\n{json_str[:500]}")
+        # --- Structural Validation ---
+        if not isinstance(parsed_data, dict):
+            raise Exception(f"The AI returned a valid JSON, but it was not the expected object structure (e.g., it might be a list). Response:\n{json_str[:500]}")
+
+        if 'choices' not in parsed_data:
+            error_guess = parsed_data.get('error', parsed_data.get('message', 'The "choices" key was missing from the response.'))
+            raise Exception(f"The AI's response was missing the required 'choices' field. AI message: {error_guess}")
+
+        if not isinstance(parsed_data['choices'], list):
+            raise Exception(f"The 'choices' field in the AI's response was not a list. Type was: {type(parsed_data['choices']).__name__}")
+
+        # --- Sanitization and Return ---
+        parsed_data['choices'] = sanitize_wildcard_choices(parsed_data.get('choices', []))
+        return json.dumps(parsed_data, indent=2)
+
+    def ai_cleanup_prompt(self, prompt_to_clean: str, model: str) -> str:
+        """Pass-through to the Ollama client to clean up a prompt with AI."""
+        return self.ollama_client.cleanup_prompt_with_ai(prompt_to_clean, model)
 
 
     def generate_raw_prompts(self, 
@@ -1174,14 +1357,34 @@ class PromptProcessor:
         """Pass-through to the template engine's cleanup method."""
         return self.template_engine.cleanup_prompt_string(prompt)
 
-    def _get_rich_wildcard_sample_str(self, count: int = 15) -> str:
-        """Gets a string of sample wildcards with example values for AI context."""
-        wildcard_names = self.get_wildcard_names()
-        if not wildcard_names:
+    def _get_wildcards_with_descriptions_str(self) -> str:
+        """Gets a formatted string of all wildcards and their descriptions for AI context."""
+        if not self.all_wildcards_cache:
+            self._load_all_wildcards_into_cache()
+        
+        if not self.all_wildcards_cache:
             return "none"
 
-        sample_size = min(count, len(wildcard_names))
-        wildcard_sample_names = self.rng.sample(wildcard_names, sample_size)
+        parts = []
+        for wc_name, wc_data in sorted(self.all_wildcards_cache.items()):
+            description = wc_data.get('description', 'No description available.')
+            parts.append(f"- __{wc_name}__: {description}")
+        
+        return "\n".join(parts)
+
+    def _get_rich_wildcard_sample_str(self, count: int = 15, wildcard_names: Optional[List[str]] = None) -> str:
+        """Gets a string of sample wildcards with example values for AI context."""
+        all_wildcard_names = self.get_wildcard_names()
+        if not all_wildcard_names:
+            return "none"
+
+        if wildcard_names:
+            # Use the provided list of names, ensuring they exist
+            wildcard_sample_names = [name for name in wildcard_names if name in all_wildcard_names]
+        else:
+            # Fallback to random sampling if no list is provided
+            sample_size = min(count, len(all_wildcard_names))
+            wildcard_sample_names = self.rng.sample(all_wildcard_names, sample_size)
         
         rich_sample_parts = []
         for wc_name in wildcard_sample_names:

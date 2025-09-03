@@ -85,6 +85,44 @@ class _FindReplaceDialog(custom_dialogs._CustomDialog):
             }
         self.destroy()
 
+class _DesignateCompatibilityFilesDialog(custom_dialogs._CustomDialog):
+    """A dialog to designate primary and supporting files for compatibility check."""
+    def __init__(self, parent, file1: str, file2: str):
+        super().__init__(parent, "Designate Compatibility Files")
+
+        self.file1 = file1
+        self.file2 = file2
+        self.primary_file_var = tk.StringVar(value=file1)
+
+        main_frame = ttk.Frame(self, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Which file should be modified to work with the other?", wraplength=350).pack(pady=(0, 15), anchor='w')
+
+        group = ttk.LabelFrame(main_frame, text="Select the Primary File (to be modified)", padding=10)
+        group.pack(fill=tk.X)
+
+        ttk.Radiobutton(group, text=file1, variable=self.primary_file_var, value=file1).pack(anchor='w')
+        ttk.Radiobutton(group, text=file2, variable=self.primary_file_var, value=file2).pack(anchor='w', pady=(5,0))
+
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(20, 0))
+        ok_button = ttk.Button(button_frame, text="Check Compatibility", command=self._on_ok, style="Accent.TButton")
+        ok_button.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+        self.bind("<Return>", self._on_ok)
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_ok(self, event=None):
+        primary = self.primary_file_var.get()
+        supporting = self.file2 if primary == self.file1 else self.file1
+        self.result = (primary, supporting)
+        self.destroy()
+
 class _DependencyViewerWindow(custom_dialogs._CustomDialog):
     """A modal dialog to display the wildcard dependency graph."""
     def __init__(self, parent, processor: PromptProcessor, manager_window: 'WildcardManagerWindow'):
@@ -192,25 +230,22 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.parent_app = parent
         self.wildcard_list_var = tk.StringVar()
         self.initial_content = initial_content
-        self.suggestion_queue = queue.Queue()
-        self.suggestion_after_id: Optional[str] = None
-        self.refinement_queue = queue.Queue()
-        self.refinement_after_id: Optional[str] = None
+        self.model_usage_manager = self.parent_app.model_usage_manager
+        self.active_wildcard_model = self.parent_app.enhancement_model_var.get()
         self.find_unused_queue = queue.Queue()
         self.find_unused_after_id: Optional[str] = None
         self.dialog_is_open = False
         self.validation_queue = queue.Queue()
         self.validation_after_id: Optional[str] = None
-        self.fix_queue = queue.Queue()
-        self.fix_after_id: Optional[str] = None
         self.refactor_queue = queue.Queue()
         self.refactor_after_id: Optional[str] = None
+        self.fix_queue = queue.Queue()
+        self.fix_after_id: Optional[str] = None
         self.pending_value_refactors: List[Tuple[str, str, str]] = []
-        self.json_fix_queue = queue.Queue()
-        self.json_fix_after_id: Optional[str] = None
 
         self._create_widgets()
         self._populate_wildcard_list()
+        self.model_usage_manager.register_usage(self.active_wildcard_model)
 
         if initial_file:
             self.select_and_load_file(initial_file)
@@ -219,21 +254,20 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
-        if self.suggestion_after_id:
-            self.after_cancel(self.suggestion_after_id)
-        if self.refinement_after_id:
-            self.after_cancel(self.refinement_after_id)
         if self.find_unused_after_id:
             self.after_cancel(self.find_unused_after_id)
         if self.validation_after_id:
             self.after_cancel(self.validation_after_id)
-        if self.fix_after_id:
-            self.after_cancel(self.fix_after_id)
         if self.refactor_after_id:
             self.after_cancel(self.refactor_after_id)
-        if self.json_fix_after_id:
-            self.after_cancel(self.json_fix_after_id)
+        self.model_usage_manager.unregister_usage(self.active_wildcard_model)
         self.destroy()
+
+    def update_active_model(self, old_model: str, new_model: str):
+        """Updates the model used by this window and manages usage counts."""
+        self.model_usage_manager.unregister_usage(old_model)
+        self.model_usage_manager.register_usage(new_model)
+        self.active_wildcard_model = new_model
 
     def _on_editor_focus_in(self, event=None):
         """Unbinds the listbox selection event when an editor widget gains focus to prevent clearing the view."""
@@ -291,6 +325,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         ttk.Button(button_container, text="New Wildcard File", command=self._create_new_wildcard_file).pack(fill=tk.X)
         self.merge_button = ttk.Button(button_container, text="Merge Selected (2+)", command=self._merge_wildcard_files, state=tk.DISABLED)
         self.merge_button.pack(fill=tk.X, pady=(5, 0))
+        self.compatibility_button = ttk.Button(button_container, text="Check Compatibility (AI) (2)", command=self._check_compatibility_with_ai, state=tk.DISABLED)
+        self.compatibility_button.pack(fill=tk.X, pady=(5, 0))
         self.archive_button = ttk.Button(button_container, text="Archive Selected", command=self._archive_selected_wildcard, state=tk.DISABLED)
         self.archive_button.pack(fill=tk.X, pady=(5, 0))
         self.find_unused_button = ttk.Button(button_container, text="Find Unused Files", command=self._find_unused_wildcards)
@@ -345,6 +381,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         tools_menu.add_command(label="Find and Replace...", command=self._find_and_replace)
         tools_menu.add_command(label="Find Exact Duplicates", command=self._find_duplicates)
         tools_menu.add_command(label="Find Similar...", command=self._find_similar_choices)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Fix Grammar with AI...", command=self._fix_grammar_with_ai)
         tools_menu.add_separator()
         tools_menu.add_command(label="Remove All 'requires'...", command=lambda: self._remove_all_keys('requires'))
         tools_menu.add_command(label="Remove All 'includes'...", command=lambda: self._remove_all_keys('includes'))
@@ -418,6 +456,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         selected_indices = self.wildcard_listbox.curselection()
         num_selected = len(selected_indices)
         self._update_merge_button_state(num_selected)
+        self.compatibility_button.config(state=tk.NORMAL if num_selected == 2 else tk.DISABLED)
         self.archive_button.config(state=tk.NORMAL if num_selected > 0 else tk.DISABLED)
 
         if num_selected == 1:
@@ -556,42 +595,216 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
     def _run_ai_json_fix(self, broken_content: str):
         """Runs the AI JSON fixer in a background thread."""
-        loading_dialog = custom_dialogs._CustomDialog(self, "AI Fixing JSON")
-        ttk.Label(loading_dialog, text="Asking AI to fix JSON syntax...\nThis may take a moment.").pack(padx=20, pady=20)
-        loading_dialog.update_idletasks()
-        loading_dialog._center_window()
+        def task_callable(model: str):
+            return self.processor.fix_json_syntax_with_ai(broken_content, model)
 
-        def task():
-            try:
-                model = self.parent_app.enhancement_model_var.get()
-                if not model or "model" in model.lower():
-                    raise Exception("Please select a valid Ollama model in the main window.")
-                
-                fixed_json = self.processor.fix_json_syntax_with_ai(broken_content, model)
-                self.json_fix_queue.put({'success': True, 'fixed_json': fixed_json})
-            except Exception as e:
-                self.json_fix_queue.put({'success': False, 'error': str(e)})
-            finally:
-                # Ensure the loading dialog is closed from the main thread
-                loading_dialog.after(0, loading_dialog.destroy)
+        def on_success(fixed_json: str):
+            self.raw_text_editor.delete("1.0", tk.END)
+            self.raw_text_editor.insert("1.0", fixed_json)
+            custom_dialogs.show_info(self, "JSON Fixed", "The AI has corrected the JSON syntax. Please review and click 'Save Changes' again.")
 
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self._check_json_fix_queue()
+        def on_error(error_message: str):
+            custom_dialogs.show_error(self, "AI Fix Failed", f"The AI could not fix the JSON syntax:\n{error_message}")
 
-    def _check_json_fix_queue(self):
-        """Checks for results from the AI JSON fixer thread."""
+        self._run_ai_task(task_callable, on_success, on_error, "AI Fixing JSON", "Asking AI to fix JSON syntax...")
+
+    def _fix_grammar_with_ai(self):
+        """Handles the full workflow for fixing grammar with AI."""
+        if not self.selected_wildcard_file:
+            custom_dialogs.show_warning(self, "No File Selected", "Please select a wildcard file to fix.")
+            return
+
+        filename = self.selected_wildcard_file
         try:
-            result = self.json_fix_queue.get_nowait()
-            if result['success']:
-                fixed_json = result['fixed_json']
-                self.raw_text_editor.delete("1.0", tk.END)
-                self.raw_text_editor.insert("1.0", fixed_json)
-                custom_dialogs.show_info(self, "JSON Fixed", "The AI has corrected the JSON syntax. Please review and click 'Save Changes' again.")
+            # Get the current state of the editor, not necessarily what's on disk
+            is_raw_editor = self.editor_notebook.index(self.editor_notebook.select()) == 1
+            if is_raw_editor:
+                original_content = self.raw_text_editor.get("1.0", "end-1c")
             else:
-                custom_dialogs.show_error(self, "AI Fix Failed", f"The AI could not fix the JSON syntax:\n{result['error']}")
-        except queue.Empty:
-            self.json_fix_after_id = self.after(100, self._check_json_fix_queue)
+                data = self.structured_editor.get_data()
+                original_content = json.dumps(data, indent=2)
+            
+            # Quick validation
+            json.loads(original_content)
+        except Exception as e:
+            custom_dialogs.show_error(self, "Error", f"Could not get valid JSON content from the editor to fix:\n{e}")
+            return
+
+        def task_callable(model: str):
+            return self.processor.ai_fix_wildcard_grammar(original_content, model)
+
+        def on_success(fixed_content: str):
+            self._show_grammar_fix_confirmation(original_content, fixed_content, filename)
+
+        def on_error(error_message: str):
+            custom_dialogs.show_error(self, "AI Fix Error", f"The AI failed to fix the grammar:\n{error_message}")
+
+        self._run_ai_task(task_callable, on_success, on_error, "AI Fixing Grammar", f"Asking AI to fix grammar in '{filename}'...")
+
+    def _check_compatibility_with_ai(self):
+        """Handles the AI workflow for checking compatibility between two selected wildcard files."""
+        selection_indices = self.wildcard_listbox.curselection()
+        if len(selection_indices) != 2:
+            custom_dialogs.show_warning(self, "Selection Error", "Please select exactly two wildcard files to check for compatibility.")
+            return
+
+        file1 = self.wildcard_listbox.get(selection_indices[0])
+        file2 = self.wildcard_listbox.get(selection_indices[1])
+
+        dialog = _DesignateCompatibilityFilesDialog(self, file1, file2)
+        if not dialog.result:
+            return
+
+        primary_filename, supporting_filename = dialog.result
+
+        try:
+            primary_content = self.processor.load_wildcard_content(primary_filename)
+            supporting_content = self.processor.load_wildcard_content(supporting_filename)
+        except Exception as e:
+            custom_dialogs.show_error(self, "File Load Error", f"Could not load one of the selected files:\n{e}")
+            return
+
+        def task_callable(model: str):
+            return self.processor.ai_check_wildcard_compatibility(primary_filename, primary_content, supporting_filename, supporting_content, model)
+
+        def on_success(fixed_contents: Dict[str, str]):
+            fixed_primary_content = fixed_contents[primary_filename]
+            fixed_supporting_content = fixed_contents[supporting_filename]
+            self._show_compatibility_fix_confirmation(
+                primary_filename, primary_content, fixed_primary_content,
+                supporting_filename, supporting_content, fixed_supporting_content
+            )
+
+        def on_error(error_message: str):
+            custom_dialogs.show_error(self, "AI Compatibility Check Error", f"The AI failed to check compatibility:\n{error_message}")
+
+        self._run_ai_task(
+            task_callable, 
+            on_success, 
+            on_error, 
+            "AI Compatibility Check", 
+            f"Asking AI to make '{primary_filename}' compatible with '{supporting_filename}'..."
+        )
+
+    def _normalize_json_string(self, json_str: str) -> str:
+        """Loads and re-dumps a JSON string for consistent formatting and key order."""
+        try:
+            data = json.loads(json_str)
+            # sort_keys=True is crucial for a stable, semantic comparison.
+            return json.dumps(data, indent=2, sort_keys=True)
+        except json.JSONDecodeError:
+            # If it's not valid JSON (e.g., an error message), return as-is.
+            return json_str.strip()
+
+    def _show_compatibility_fix_confirmation(self, primary_filename: str, original_primary: str, fixed_primary: str, supporting_filename: str, original_supporting: str, fixed_supporting: str):
+        """Shows a two-pane diff view for the user to confirm compatibility changes."""
+        # Normalize all content strings to ensure comparison is semantic, not stylistic.
+        norm_orig_primary = self._normalize_json_string(original_primary)
+        norm_fixed_primary = self._normalize_json_string(fixed_primary)
+        norm_orig_supporting = self._normalize_json_string(original_supporting)
+        norm_fixed_supporting = self._normalize_json_string(fixed_supporting)
+
+        primary_changed = norm_orig_primary != norm_fixed_primary
+        supporting_changed = norm_orig_supporting != norm_fixed_supporting
+
+        if not primary_changed and not supporting_changed:
+            custom_dialogs.show_info(self, "AI Check Complete", "The AI returned the content without any changes.")
+            return
+
+        diff_window = custom_dialogs._CustomDialog(self, "Confirm AI Compatibility Fix")
+        diff_window.geometry("1000x700")
+
+        # Main paned window to hold the two text areas
+        main_pane = ttk.PanedWindow(diff_window, orient=tk.HORIZONTAL)
+        main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Helper to create a diff pane
+        def create_diff_pane(parent, title: str, filename: str, original_content: str, fixed_content: str):
+            frame = ttk.LabelFrame(parent, text=title, padding=5)
+            
+            diff_text = "".join(difflib.unified_diff(
+                original_content.splitlines(keepends=True), 
+                fixed_content.splitlines(keepends=True), 
+                fromfile=f"a/{os.path.basename(filename)}", 
+                tofile=f"b/{os.path.basename(filename)}"
+            ))
+            
+            diff_widget = tk.Text(frame, wrap=tk.WORD, font=self.parent_app.fixed_font)
+            diff_widget.pack(fill=tk.BOTH, expand=True)
+            diff_widget.insert("1.0", diff_text if diff_text else "No changes proposed for this file.")
+            
+            if diff_text:
+                diff_widget.tag_configure("addition", foreground="green")
+                diff_widget.tag_configure("deletion", foreground="red")
+                for i, line in enumerate(diff_text.splitlines(), 1):
+                    if line.startswith('+') and not line.startswith('+++'):
+                        diff_widget.tag_add("addition", f"{i}.0", f"{i}.end")
+                    elif line.startswith('-') and not line.startswith('---'):
+                        diff_widget.tag_add("deletion", f"{i}.0", f"{i}.end")
+            
+            diff_widget.config(state=tk.DISABLED)
+            return frame
+
+        # Create panes for both files
+        left_pane = create_diff_pane(main_pane, f"Primary: {primary_filename}", primary_filename, norm_orig_primary, norm_fixed_primary)
+        right_pane = create_diff_pane(main_pane, f"Supporting: {supporting_filename}", supporting_filename, norm_orig_supporting, norm_fixed_supporting)
+        
+        main_pane.add(left_pane, weight=1)
+        main_pane.add(right_pane, weight=1)
+        
+        # --- Buttons ---
+        button_frame = ttk.Frame(diff_window, padding=(10, 0, 10, 10))
+        button_frame.pack(fill=tk.X)
+
+        def apply_compatibility_fix():
+            try:
+                # Save the un-normalized, but AI-fixed content. This content has the
+                # standard indentation from the processor, which is what we want.
+                if primary_changed:
+                    self.processor.save_wildcard_content(primary_filename, fixed_primary)
+                if supporting_changed:
+                    self.processor.save_wildcard_content(supporting_filename, fixed_supporting)
+                
+                # Update UI
+                self.update_callback() # Refresh main app's wildcard list
+                
+                if self.selected_wildcard_file in [primary_filename, supporting_filename]:
+                    self.select_and_load_file(self.selected_wildcard_file)
+                
+                custom_dialogs.show_info(self, "Changes Applied", "The AI's compatibility fixes have been saved.")
+                diff_window.destroy()
+            except Exception as e:
+                custom_dialogs.show_error(diff_window, "Apply Error", f"Could not apply fix:\n{e}")
+
+        ttk.Button(button_frame, text="Apply Fix", command=apply_compatibility_fix, style="Accent.TButton").pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Cancel", command=diff_window.destroy).pack(side=tk.RIGHT, padx=(0, 5))
+
+    def _show_grammar_fix_confirmation(self, original_content: str, fixed_content: str, filename: str):
+        """Shows a diff view for the user to confirm the AI's proposed grammar changes."""
+        if original_content.strip() == fixed_content.strip():
+            custom_dialogs.show_info(self, "AI Fix", "The AI returned the content without any changes.")
+            return
+
+        diff = difflib.unified_diff(original_content.splitlines(keepends=True), fixed_content.splitlines(keepends=True), fromfile='original', tofile='fixed_by_ai')
+        diff_text = "".join(diff)
+
+        diff_window = custom_dialogs._CustomDialog(self, f"Confirm AI Grammar Fix for {filename}")
+        diff_window.geometry("700x500")
+        
+        def apply_grammar_fix():
+            try:
+                self.raw_text_editor.delete("1.0", tk.END)
+                self.raw_text_editor.insert("1.0", fixed_content)
+                parsed_data = json.loads(fixed_content)
+                self.structured_editor.set_data(parsed_data)
+                self.editor_notebook.select(self.structured_editor_frame)
+                self.save_button.config(state=tk.NORMAL)
+                custom_dialogs.show_info(self, "Changes Applied", "The AI's fixes have been applied to the editor.\n\nPlease review and click 'Save Changes' to persist them.")
+                diff_window.destroy()
+            except Exception as e:
+                custom_dialogs.show_error(diff_window, "Apply Error", f"Could not apply fix:\n{e}")
+
+        self._create_diff_dialog_widgets(diff_window, diff_text, apply_grammar_fix)
 
     def _create_new_wildcard_file(self):
         filename_result = None
@@ -777,71 +990,39 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     def suggest_choices_with_ai(self, current_data: Dict[str, Any]):
         """Starts the AI suggestion process in a background thread."""
         self.structured_editor.suggest_button.config(state=tk.DISABLED, text="Suggesting...")
-        current_wildcard_file = self.selected_wildcard_file
-        
-        def task():
-            try:
-                model = self.parent_app.enhancement_model_var.get()
-                if not model or "model" in model.lower():
-                    raise Exception("Please select a valid Ollama model in the main window.")
-                
-                new_choices = self.processor.suggest_wildcard_choices(current_data, model, current_wildcard_file)
-                self.suggestion_queue.put({'success': True, 'choices': new_choices})
-            except Exception as e:
-                self.suggestion_queue.put({'success': False, 'error': str(e)})
-        
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
 
-    def _check_suggestion_queue(self):
-        """Checks for AI suggestions and updates the UI."""
-        try:
-            result = self.suggestion_queue.get_nowait()
+        def task_callable(model: str):
+            return self.processor.suggest_wildcard_choices(current_data, model, self.selected_wildcard_file)
+
+        def on_success(new_choices: List[Any]):
             self.structured_editor.suggest_button.config(state=tk.NORMAL, text="Suggest Choices (AI)")
-            
-            if result['success']:
-                self.structured_editor.add_suggested_choices(result.get('choices', []))
-                custom_dialogs.show_info(self, "Suggestions Added", f"{len(result.get('choices', []))} new choices have been added to the editor.")
-            else:
-                custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating suggestions:\n{result['error']}")
-        except queue.Empty:
-            self.suggestion_after_id = self.after(100, self._check_suggestion_queue)
+            self.structured_editor.add_suggested_choices(new_choices)
+            custom_dialogs.show_info(self, "Suggestions Added", f"{len(new_choices)} new choices have been added to the editor.")
+
+        def on_error(error_message: str):
+            self.structured_editor.suggest_button.config(state=tk.NORMAL, text="Suggest Choices (AI)")
+            custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating suggestions:\n{error_message}")
+
+        self._run_ai_task(task_callable, on_success, on_error, "AI Suggestions", "Getting suggestions from AI...")
 
     def refine_choices_with_ai(self, current_data: Dict[str, Any]):
         """Starts the AI refinement process in a background thread."""
         self.structured_editor.refine_button.config(state=tk.DISABLED, text="Refining...")
-        current_wildcard_file = self.selected_wildcard_file
-        
-        def task():
-            try:
-                model = self.parent_app.enhancement_model_var.get()
-                if not model or "model" in model.lower():
-                    raise Exception("Please select a valid Ollama model in the main window.")
-                
-                refined_choices = self.processor.refine_wildcard_choices(current_data, model, current_wildcard_file)
-                self.refinement_queue.put({'success': True, 'choices': refined_choices})
-            except Exception as e:
-                self.refinement_queue.put({'success': False, 'error': str(e)})
-        
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self.refinement_after_id = self.after(100, self._check_refinement_queue)
 
-    def _check_refinement_queue(self):
-        """Checks for AI refinement results and updates the UI."""
-        try:
-            result = self.refinement_queue.get_nowait()
+        def task_callable(model: str):
+            return self.processor.refine_wildcard_choices(current_data, model, self.selected_wildcard_file)
+
+        def on_success(refined_choices: List[Any]):
             self.structured_editor.refine_button.config(state=tk.NORMAL, text="Refine Choices (AI)")
-            
-            if result['success']:
-                self.structured_editor.update_with_refined_choices(result.get('choices', []))
-                custom_dialogs.show_info(self, "Refinement Complete", "The choices have been refined by the AI.\n\nPlease review and save the file.")
-                self.save_button.config(state=tk.NORMAL)
-            else:
-                custom_dialogs.show_error(self, "Refinement Error", f"An error occurred while refining choices:\n{result['error']}")
-        except queue.Empty:
-            self.refinement_after_id = self.after(100, self._check_refinement_queue)
+            self.structured_editor.update_with_refined_choices(refined_choices)
+            custom_dialogs.show_info(self, "Refinement Complete", "The choices have been refined by the AI.\n\nPlease review and save the file.")
+            self.save_button.config(state=tk.NORMAL)
+
+        def on_error(error_message: str):
+            self.structured_editor.refine_button.config(state=tk.NORMAL, text="Refine Choices (AI)")
+            custom_dialogs.show_error(self, "Refinement Error", f"An error occurred while refining choices:\n{error_message}")
+
+        self._run_ai_task(task_callable, on_success, on_error, "AI Refinement", "Asking AI to refine choices...")
 
     def _find_duplicates(self):
         """Finds, highlights, and reports duplicate 'value' entries in the current wildcard file."""
@@ -1421,14 +1602,16 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
         def task():
             try:
-                model = self.parent_app.enhancement_model_var.get()
+                model = self.active_wildcard_model
                 if not model or "model" in model.lower():
                     raise Exception("Please select a valid Ollama model in the main window.")
                 
                 fixed_content = self.processor.fix_wildcard_error_with_ai(original_content, error_details, model)
                 self.fix_queue.put({'success': True, 'original': original_content, 'fixed': fixed_content, 'filename': filename})
             except Exception as e:
-                self.fix_queue.put({'success': False, 'error': str(e)})
+                import traceback
+                error_str = f"{e}\n\n--- TRACEBACK ---\n{traceback.format_exc()}"
+                self.fix_queue.put({'success': False, 'error': error_str})
             finally:
                 loading_dialog.after(0, loading_dialog.destroy)
 
@@ -1456,10 +1639,61 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         diff = difflib.unified_diff(original_content.splitlines(keepends=True), fixed_content.splitlines(keepends=True), fromfile='original', tofile='fixed_by_ai')
         diff_text = "".join(diff)
 
-        # This is a complex dialog, so we create it here instead of a separate class for now.
         diff_window = custom_dialogs._CustomDialog(parent_window, f"Confirm AI Fix for {filename}")
         diff_window.geometry("700x500")
-        self._create_diff_dialog_widgets(diff_window, diff_text, filename, fixed_content, parent_window)
+
+        def apply_fix():
+            """The callback function to apply the fix for a validation error."""
+            try:
+                self.processor.save_wildcard_content(filename, fixed_content)
+                custom_dialogs.show_info(parent_window, "Success", f"Successfully applied AI fix to '{filename}'.\n\nPlease re-run validation.")
+                diff_window.destroy()
+                parent_window.destroy() # Close the validation error window too
+            except Exception as e:
+                custom_dialogs.show_error(diff_window, "Save Error", f"Could not save file:\n{e}")
+
+        # Call the refactored diff widget creator with the new callback
+        self._create_diff_dialog_widgets(diff_window, diff_text, apply_fix)
+
+    def _run_ai_task(self, task_callable: Callable, on_success: Callable, on_error: Callable, loading_dialog_title: str, loading_dialog_message: str):
+        """
+        A generic helper to run a background AI task with a loading dialog and handle results.
+        """
+        model = self.active_wildcard_model
+        if not model or "model" in model.lower() or "error" in model.lower():
+            custom_dialogs.show_error(self, "Model Not Selected", "Please select a valid Ollama model in the main window before using this feature.")
+            return
+
+        loading_dialog = custom_dialogs._CustomDialog(self, loading_dialog_title)
+        ttk.Label(loading_dialog, text=loading_dialog_message).pack(padx=20, pady=20)
+        loading_dialog.update_idletasks()
+        loading_dialog._center_window()
+
+        result_queue = queue.Queue()
+
+        def task_wrapper():
+            try:
+                result = task_callable(model)
+                result_queue.put({'success': True, 'result': result})
+            except Exception as e:
+                import traceback
+                error_str = f"{e}\n\n--- TRACEBACK ---\n{traceback.format_exc()}"
+                # Print the full error to the console for easy access
+                print(f"ERROR: AI Task Failed ({loading_dialog_title})\n{error_str}", file=sys.stderr, flush=True)
+                result_queue.put({'success': False, 'error': error_str})
+            finally:
+                loading_dialog.after(0, loading_dialog.destroy)
+
+        def check_queue():
+            try:
+                output = result_queue.get_nowait()
+                (on_success(output['result']) if output['success'] else on_error(output['error']))
+            except queue.Empty:
+                self.after(100, check_queue)
+
+        thread = threading.Thread(target=task_wrapper, daemon=True)
+        thread.start()
+        check_queue()
 
     def _fix_all_missing_values(self, errors: List[Dict[str, Any]], parent_window: tk.Toplevel):
         """Attempts to automatically fix all 'missing_value' errors by adding the values to the target files."""
@@ -1522,7 +1756,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         custom_dialogs.show_info(parent_window, "Auto-Fix Complete", summary_message)
         parent_window.destroy()
 
-    def _create_diff_dialog_widgets(self, diff_window: tk.Toplevel, diff_text: str, filename: str, fixed_content: str, parent_window: tk.Toplevel):
+    def _create_diff_dialog_widgets(self, diff_window: tk.Toplevel, diff_text: str, apply_callback: Callable):
         """Creates the widgets inside the diff confirmation dialog."""
         main_frame = ttk.Frame(diff_window, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -1552,18 +1786,9 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         
         diff_widget.config(state=tk.DISABLED)
 
-        def apply_fix():
-            try:
-                self.processor.save_wildcard_content(filename, fixed_content)
-                custom_dialogs.show_info(parent_window, "Success", f"Successfully applied AI fix to '{filename}'.\n\nPlease re-run validation.")
-                diff_window.destroy()
-                parent_window.destroy() # Close the validation error window too
-            except Exception as e:
-                custom_dialogs.show_error(diff_window, "Save Error", f"Could not save file:\n{e}")
-
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=(10, 0))
-        ttk.Button(button_frame, text="Apply Fix", command=apply_fix, style="Accent.TButton").pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Apply Fix", command=apply_callback, style="Accent.TButton").pack(side=tk.RIGHT)
         ttk.Button(button_frame, text="Cancel", command=diff_window.destroy).pack(side=tk.RIGHT, padx=(0, 5))
 
     def _sort_treeview_column(self, tv, col, reverse):
