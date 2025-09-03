@@ -28,7 +28,8 @@ class TemplateEditor(ttk.Frame):
             generate_wildcard_callback, 
             brainstorm_callback,
             create_wildcard_callback,
-            edit_wildcard_callback
+            edit_wildcard_callback,
+            live_update_callback
         )
         self.text_widget.pack(fill=tk.BOTH, expand=True)
         self.text_widget.bind("<KeyRelease>", live_update_callback)

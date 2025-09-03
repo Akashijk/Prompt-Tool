@@ -31,6 +31,16 @@ def save_settings(settings: dict):
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(settings, f, indent=2)
 
+def update_and_save_paths(paths: dict):
+    """Updates path settings in the global config object and saves them to file."""
+    global config
+    settings = load_settings()
+    for key, value in paths.items():
+        settings[key] = value
+        if hasattr(config, key.upper()):
+            setattr(config, key.upper(), value)
+    save_settings(settings)
+
 _user_settings = load_settings()
 
 @dataclass
@@ -39,11 +49,10 @@ class Config:
     
     PROJECT_ROOT: str = PROJECT_ROOT
     # Base Directory paths
-    TEMPLATE_BASE_DIR: str = os.path.join(PROJECT_ROOT, 'templates')
-    WILDCARD_DIR: str = os.path.join(PROJECT_ROOT, 'wildcards')
-    WILDCARD_NSFW_DIR: str = os.path.join(WILDCARD_DIR, 'nsfw')
-    HISTORY_DIR: str = os.path.join(PROJECT_ROOT, 'history')
-    SYSTEM_PROMPT_BASE_DIR: str = os.path.join(PROJECT_ROOT, 'system_prompts')
+    TEMPLATE_BASE_DIR: str = _user_settings.get("template_base_dir", os.path.join(PROJECT_ROOT, 'templates'))
+    WILDCARD_DIR: str = _user_settings.get("wildcard_dir", os.path.join(PROJECT_ROOT, 'wildcards'))
+    HISTORY_DIR: str = _user_settings.get("history_dir", os.path.join(PROJECT_ROOT, 'history'))
+    SYSTEM_PROMPT_BASE_DIR: str = _user_settings.get("system_prompt_base_dir", os.path.join(PROJECT_ROOT, 'system_prompts'))
     
     # Default settings
     DEFAULT_NUM_PROMPTS: int = 5
@@ -60,6 +69,11 @@ class Config:
 
     # UI settings
     font_size: int = _user_settings.get("font_size", DEFAULT_FONT_SIZE)
+
+    @property
+    def WILDCARD_NSFW_DIR(self) -> str:
+        """Returns the path to the NSFW wildcard directory, derived from the base."""
+        return os.path.join(self.WILDCARD_DIR, 'nsfw')
 
     def get_template_dir(self) -> str:
         """Returns the path to the template directory for the current workflow."""

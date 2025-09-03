@@ -49,10 +49,11 @@ class MenuBar(tk.Menu):
         # --- Tools Menu ---
         tools_menu = tk.Menu(self, tearoff=0)
         tools_menu.add_command(label="Wildcard Manager", command=self.parent_app._open_wildcard_manager)
-        tools_menu.add_command(label="Ollama Server...", command=self.parent_app._change_ollama_server)
         tools_menu.add_command(label="AI Brainstorming", command=self.parent_app._open_brainstorming_window)
         tools_menu.add_command(label="System Prompt Editor", command=self.parent_app._open_system_prompt_editor)
         tools_menu.add_command(label="History Viewer", command=self.parent_app._open_history_viewer)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Settings...", command=self.parent_app._open_settings_window)
         tools_menu.add_separator()
         tools_menu.add_command(label="Clear Wildcard Cache", command=self.parent_app._clear_wildcard_cache)
         self.add_cascade(label="Tools", menu=tools_menu)

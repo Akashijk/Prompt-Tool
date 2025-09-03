@@ -21,12 +21,14 @@ from .common import Tooltip, LoadingAnimation, TextContextMenu, TemplateEditorCo
 from .history_viewer import HistoryViewerWindow
 from .review_window import ReviewAndSaveWindow
 from .system_prompt_editor import SystemPromptEditorWindow
+from .settings_window import SettingsWindow
 from .wildcard_manager import WildcardManagerWindow
 from .menu_bar import MenuBar
 from .template_editor import TemplateEditor
 from .wildcard_inserter import WildcardInserter
 from . import custom_dialogs
 from .model_usage_manager import ModelUsageManager
+from core.ollama_client import OllamaClient
 from .theme_manager import ThemeManager
 
          
@@ -79,6 +81,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.wildcard_inserter: Optional[WildcardInserter] = None
         self.menubar: Optional[MenuBar] = None
         self.wildcard_swap_menu: tk.Menu = tk.Menu(self, tearoff=0)
+        self.settings_window: Optional[SettingsWindow] = None
         self.enhancement_model_var = tk.StringVar()
         self.font_size_var = tk.IntVar(value=config.font_size)
         self.workflow_var = tk.StringVar(value=config.workflow)
@@ -377,7 +380,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         try:
             models = self.processor.get_available_models()
             if not models:
-                self.enhancement_model_var.set("No models found")
+                custom_dialogs.show_warning(
+                    self,
+                    "No Models Found",
+                    "Successfully connected to Ollama, but no models were found.\n\n"
+                    "Please pull a model using 'ollama run <model_name>' to enable AI features.")
+                self.enhancement_model_var.set("No models available")
                 return
 
             menu = self.model_dropdown["menu"]
@@ -394,8 +402,14 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.model_usage_manager.register_usage(self.main_window_model)
 
         except Exception as e:
-            custom_dialogs.show_error(self, "Model Error", f"Could not load Ollama models:\n{e}")
-            self.enhancement_model_var.set("Error loading models")
+            error_message = (
+                f"Could not connect to the Ollama server.\n\n"
+                f"All AI features (Enhancement, Brainstorming, etc.) will be disabled until the connection is restored.\n\n"
+                f"Please ensure Ollama is running and the server URL is correct in 'Tools -> Settings...'.\n\n"
+                f"Details: {e}"
+            )
+            custom_dialogs.show_error(self, "Ollama Connection Error", error_message)
+            self.enhancement_model_var.set("Error: No connection")
 
     def _switch_workflow(self):
         """Handles the logic for switching between SFW and NSFW modes."""
@@ -1251,40 +1265,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Opens the system prompt editor window."""
         SystemPromptEditorWindow(self, self.processor)
 
-    def _change_ollama_server(self):
-        """Opens a dialog to change the Ollama server URL."""
-        current_url = config.OLLAMA_BASE_URL
-        new_url = custom_dialogs.ask_string(
-            self,
-            "Ollama Server",
-            "Enter the base URL for your Ollama server (e.g., http://192.168.1.100:11434):",
-            initialvalue=current_url
-        )
-
-        if new_url and new_url.strip() and new_url.strip() != current_url:
-            new_url = new_url.strip()
-            # Test connection by trying to list models
-            try:
-                from core.ollama_client import OllamaClient
-                test_client = OllamaClient(base_url=new_url)
-                test_client.list_models() # This will raise an exception on failure
-                
-                # If successful, save and update
-                config.OLLAMA_BASE_URL = new_url
-                
-                # Save the setting to file
-                user_settings = load_settings()
-                user_settings["ollama_base_url"] = new_url
-                save_settings(user_settings)
-
-                # Re-initialize the processor's client with the new URL
-                self.processor.ollama_client = OllamaClient(base_url=new_url)
-                self._load_models() # Reload models in the GUI
-                custom_dialogs.show_info(self, "Success", f"Successfully connected to Ollama server at:\n{new_url}")
-                self.status_var.set(f"Ollama server set to {new_url}")
-            except Exception as e:
-                custom_dialogs.show_error(self, "Connection Failed", f"Could not connect to Ollama server at:\n{new_url}\n\nError: {e}")
-
     def _clear_wildcard_cache(self):
         """Clears the wildcard cache and reloads all wildcard-dependent UI components."""
         if not custom_dialogs.ask_yes_no(
@@ -1312,6 +1292,34 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.status_var.set("Wildcard cache cleared and reloaded.")
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Failed to clear wildcard cache:\n{e}")
+
+    def _open_settings_window(self):
+        """Opens the application settings window."""
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            self.settings_window.focus_force()
+        else:
+            self.settings_window = SettingsWindow(self, on_save_callback=self._on_settings_saved)
+            self.settings_window.protocol("WM_DELETE_WINDOW", self._on_settings_window_close)
+
+    def _on_settings_window_close(self):
+        if self.settings_window:
+            self.settings_window.destroy()
+            self.settings_window = None
+
+    def _on_settings_saved(self):
+        """Called when settings are saved, to reload necessary resources."""
+        # Re-initialize the processor's client with the new URL from the global config
+        # which was updated by the settings window.
+        self.processor.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL)
+        
+        # Re-initialize other parts of the processor that depend on paths
+        self.processor.initialize()
+        
+        # Reload UI components that depend on the new settings
+        self._load_templates()
+        self._populate_wildcard_lists()
+        self._load_models() # Reload models in case the server changed
 
     def _on_closing(self):
         """Handles the main window closing event to clean up resources."""

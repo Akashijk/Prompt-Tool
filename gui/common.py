@@ -70,8 +70,10 @@ class TextContextMenu:
         calls the configuration hook, and then displays the menu.
         """
         # Move cursor to click position
-        self.widget.mark_set(tk.INSERT, f"@{event.x},{event.y}")
-        
+        # Only move the cursor if there is no active selection.
+        # Right-clicking on a selection should not move the cursor.
+        if not self.widget.tag_ranges("sel"):
+            self.widget.mark_set(tk.INSERT, f"@{event.x},{event.y}")
         # This is the hook for subclasses to configure their specific menu items.
         self._configure_menu_items(event)
 
@@ -84,9 +86,6 @@ class TextContextMenu:
         Subclasses should override this method to add their own logic after
         calling super()._configure_menu_items(event).
         """
-        # Clear any existing selection to prevent unexpected behavior
-        self.widget.tag_remove("sel", "1.0", "end")
-
         # Disable/enable menu items based on state
         try:
             self.widget.selection_get()
@@ -189,13 +188,16 @@ class PromptPreviewContextMenu(TextContextMenu):
 
 class TemplateEditorContextMenu(TextContextMenu):
     """A specialized context menu for the template editor with a wildcard generator."""
-    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable, create_wildcard_callback: Callable, edit_wildcard_callback: Callable):
+    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable, create_wildcard_callback: Callable, edit_wildcard_callback: Callable, live_update_callback: Callable):
         super().__init__(widget)
         self.generate_wildcard_callback = generate_wildcard_callback
         self.brainstorm_callback = brainstorm_callback
         self.create_wildcard_callback = create_wildcard_callback
         self.edit_wildcard_callback = edit_wildcard_callback
+        self.live_update_callback = live_update_callback
         self.last_event = None
+        self.menu.add_command(label="Increase Weight (+)", command=self._increase_weight, state=tk.DISABLED)
+        self.menu.add_command(label="Decrease Weight (-)", command=self._decrease_weight, state=tk.DISABLED)
         self.menu.add_separator()
         self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
         self.menu.add_command(label="Create Wildcard from Selection...", command=self._create_wildcard, state=tk.DISABLED)
@@ -207,20 +209,37 @@ class TemplateEditorContextMenu(TextContextMenu):
         self.last_event = event
         super()._configure_menu_items(event) # Call parent to set cut/copy/paste
 
+        # Get the text to operate on first. This will be a selection or a word.
+        target = self._get_text_to_modify()
+        
+        # Enable/disable based on whether we found a target
+        can_operate = target is not None
+        self.menu.entryconfig("Increase Weight (+)", state=tk.NORMAL if can_operate else tk.DISABLED)
+        
+        # Decrease weight is only possible if the text is already weighted
+        can_decrease = False
+        if can_operate:
+            text_to_modify = target[2].strip()
+            if text_to_modify.startswith(('(', '[')):
+                can_decrease = True
+        self.menu.entryconfig("Decrease Weight (-)", state=tk.NORMAL if can_decrease else tk.DISABLED)
+
+        # Handle other menu items
         index = self.widget.index(f"@{event.x},{event.y}")
         tags = self.widget.tag_names(index)
-
         is_missing = "missing_wildcard" in tags
         is_wildcard = "any_wildcard" in tags
 
         self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL if is_missing else tk.DISABLED)
         self.menu.entryconfig("Edit Wildcard...", state=tk.NORMAL if is_wildcard and not is_missing else tk.DISABLED)
         
+        has_selection = False
         try:
             self.widget.selection_get()
-            self.menu.entryconfig("Create Wildcard from Selection...", state=tk.NORMAL)
+            has_selection = True
         except tk.TclError:
-            self.menu.entryconfig("Create Wildcard from Selection...", state=tk.DISABLED)
+            pass
+        self.menu.entryconfig("Create Wildcard from Selection...", state=tk.NORMAL if has_selection else tk.DISABLED)
         
         if self.widget.get("1.0", "end-1c").strip():
             self.menu.entryconfig("Brainstorm with AI...", state=tk.NORMAL)
@@ -229,18 +248,14 @@ class TemplateEditorContextMenu(TextContextMenu):
 
     def _get_wildcard_at_event(self) -> Optional[str]:
         """Helper to get the full wildcard tag text under the last click event."""
-        if not self.last_event:
-            return None
-        
+        if not self.last_event: return None
         index = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
-        
         # Find the tag range that contains the index
         tag_ranges = self.widget.tag_ranges("any_wildcard")
         for i in range(0, len(tag_ranges), 2):
             start, end = tag_ranges[i], tag_ranges[i+1]
             if self.widget.compare(index, ">=", start) and self.widget.compare(index, "<", end):
                 return self.widget.get(start, end)
-        
         return None
 
     def _generate_wildcard(self):
@@ -268,6 +283,122 @@ class TemplateEditorContextMenu(TextContextMenu):
                 self.create_wildcard_callback(selected_text)
         except tk.TclError:
             pass # No selection
+
+    def _get_text_to_modify(self) -> Optional[tuple[str, str, str]]:
+        """
+        Gets the text to operate on. The priority is:
+        1. Active text selection.
+        2. A full __wildcard__ tag under the cursor.
+        If a wildcard is found, it expands to include any weighting wrappers.
+        """
+        # Priority 1: Active selection
+        try:
+            start = self.widget.index("sel.first")
+            end = self.widget.index("sel.last")
+            text = self.widget.get(start, end)
+            if text.strip(): # Ensure selection is not just whitespace
+                return start, end, text
+        except tk.TclError:
+            pass # No selection
+
+        # Priority 2: Wildcard tag under cursor (and its potential wrapper)
+        if self.last_event:
+            index_at_click = self.widget.index(f"@{self.last_event.x},{self.last_event.y}")
+            tag_ranges = self.widget.tag_ranges("any_wildcard")
+            for i in range(0, len(tag_ranges), 2):
+                start, end = tag_ranges[i], tag_ranges[i+1]
+                if self.widget.compare(index_at_click, ">=", start) and self.widget.compare(index_at_click, "<", end):
+                    # Found the core wildcard tag. Now, expand outwards to find the full weighted expression.
+                    final_start = start
+                    final_end = end
+
+                    while True:
+                        char_before = self.widget.get(f"{final_start}-1c", final_start)
+                        # Look for a closing parenthesis and a number
+                        potential_end_text = self.widget.get(final_end, f"{final_end}+10c") # Get enough text
+                        match = re.match(r'\)([\d.]+)', potential_end_text)
+
+                        if char_before == '(' and match:
+                            # Found a wrapper. Expand our boundaries and loop again.
+                            final_start = self.widget.index(f"{final_start}-1c")
+                            final_end = self.widget.index(f"{final_end}+{len(match.group(0))}c")
+                        else:
+                            # No more wrappers found, break the loop.
+                            break
+                    
+                    return final_start, final_end, self.widget.get(final_start, final_end)
+            
+        return None
+
+    def _increase_weight(self):
+        target = self._get_text_to_modify()
+        if not target: return
+
+        start_index, end_index, text_to_modify = target
+        text = text_to_modify.strip()
+        new_text = text
+
+        match_weighted = re.fullmatch(r'\((.*)\)([\d.]+)$', text, re.DOTALL)
+        match_decreased = re.fullmatch(r'\[(.*)\]$', text, re.DOTALL)
+        match_simple = re.fullmatch(r'\((.*)\)$', text, re.DOTALL)
+
+        if match_weighted:
+            base, weight_str = match_weighted.groups()
+            new_weight = min(2.0, float(weight_str) + 0.1)
+            new_text = f"({base}){new_weight:.1f}"
+        elif match_decreased:
+            base = match_decreased.group(1)
+            new_text = base
+        elif match_simple:
+            base = match_simple.group(1)
+            new_text = f"({base})1.1"
+        else: # Plain text
+            base = text
+            new_text = f"({base})1.1"
+
+        self.widget.delete(start_index, end_index)
+        self.widget.insert(start_index, new_text)
+        self.live_update_callback()
+
+        # Re-select the modified text to allow for repeated operations
+        new_end_index = self.widget.index(f"{start_index} + {len(new_text)}c")
+        self.widget.tag_add("sel", start_index, new_end_index)
+
+    def _decrease_weight(self):
+        target = self._get_text_to_modify()
+        if not target: return
+
+        start_index, end_index, text_to_modify = target
+        text = text_to_modify.strip()
+        new_text = text
+
+        match_weighted = re.fullmatch(r'\((.*)\)([\d.]+)$', text, re.DOTALL)
+        match_decreased = re.fullmatch(r'\[(.*)\]$', text, re.DOTALL)
+        match_simple = re.fullmatch(r'\((.*)\)$', text, re.DOTALL)
+
+        if match_weighted:
+            base, weight_str = match_weighted.groups()
+            new_weight = float(weight_str) - 0.1
+            if new_weight <= 1.0:
+                new_text = f"({base})" # back to simple emphasis
+            else:
+                new_text = f"({base}){new_weight:.1f}"
+        elif match_simple:
+            base = match_simple.group(1)
+            new_text = base
+        elif match_decreased:
+            return # Already at minimum emphasis
+        else: # Plain text
+            base = text
+            new_text = f"[{base}]"
+
+        self.widget.delete(start_index, end_index)
+        self.widget.insert(start_index, new_text)
+        self.live_update_callback()
+
+        # Re-select the modified text to allow for repeated operations
+        new_end_index = self.widget.index(f"{start_index} + {len(new_text)}c")
+        self.widget.tag_add("sel", start_index, new_end_index)
 
 class LoadingAnimation(ttk.Frame):
     """A smooth, spinning arc loading animation widget."""

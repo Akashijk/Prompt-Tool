@@ -5,6 +5,7 @@ user-friendly alternative to raw text editing.
 
 import tkinter as tk
 import re
+import os
 import copy
 import json
 import sys
@@ -16,6 +17,36 @@ from .custom_dialogs import _CustomDialog
 if TYPE_CHECKING:
     from .wildcard_manager import WildcardManagerWindow
     from core.prompt_processor import PromptProcessor
+
+class _AutocompletePopup(tk.Toplevel):
+    """A popup window for autocomplete suggestions."""
+    def __init__(self, parent, suggestions, x, y, insert_callback):
+        super().__init__(parent)
+        self.overrideredirect(True)
+        self.wm_geometry(f"+{x}+{y}")
+        self.insert_callback = insert_callback
+
+        self.listbox = tk.Listbox(self, height=min(10, len(suggestions)), exportselection=False)
+        self.listbox.pack(fill=tk.BOTH, expand=True)
+
+        for suggestion in suggestions:
+            self.listbox.insert(tk.END, suggestion)
+        
+        if suggestions:
+            self.listbox.selection_set(0)
+
+        self.listbox.bind("<Return>", self._on_select)
+        self.listbox.bind("<Escape>", lambda e: self.destroy())
+        self.listbox.bind("<Double-Button-1>", self._on_select)
+        
+        self.listbox.focus_set()
+        self.bind("<FocusOut>", lambda e: self.destroy())
+
+    def _on_select(self, event=None):
+        selection = self.listbox.curselection()
+        if selection:
+            self.insert_callback(self.listbox.get(selection[0]))
+        self.destroy()
 
 class _AddRequirementDialog(_CustomDialog):
     """A dialog to help build a 'requires' clause."""
@@ -407,14 +438,19 @@ class WildcardEditor(ttk.Frame):
         self.refinement_callback = refinement_callback
         self.iid_to_choice_map: Dict[str, Any] = {}
         # The parent is a frame inside the WildcardManagerWindow.
+        self.autocomplete_popup: Optional[_AutocompletePopup] = None
+        self.validation_error_tag = "validation_error"
+        self.item_errors: Dict[str, List[str]] = {} # Map iid to list of error messages
+        self.validation_debounce_timer: Optional[str] = None
         # self.winfo_toplevel() will give us the WildcardManagerWindow instance, which has parent_app.
         self.validation_error_tag = "validation_error"
         self.parent_app = self.winfo_toplevel().parent_app
-        
+
         # Define colors for included items
         self.included_tag = "included"
         self.duplicate_tag = "duplicate"
         self._create_widgets()
+        self.error_tooltip = Tooltip(self.tree)
         self.update_theme() # Set initial theme-based colors
 
     def _create_widgets(self):
@@ -424,6 +460,9 @@ class WildcardEditor(ttk.Frame):
         ttk.Label(desc_frame, text="Description:").pack(side=tk.LEFT, padx=(0, 5))
         self.description_entry = ttk.Entry(desc_frame)
         self.description_entry.pack(fill=tk.X, expand=True)
+
+        self.file_error_label = ttk.Label(self, text="", foreground="red", wraplength=500)
+        self.file_error_label.pack(fill=tk.X, pady=(0, 5), padx=5)
 
         # --- Main Vertical Paned Window for a more compact layout ---
         main_pane = ttk.PanedWindow(self, orient=tk.VERTICAL)
@@ -467,6 +506,9 @@ class WildcardEditor(ttk.Frame):
         tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Double-1>", self._on_edit_item)
 
+        self.tree.bind("<Motion>", self._on_tree_motion)
+        self.tree.bind("<Leave>", self._on_tree_leave)
+
         # Add context menu
         self._create_context_menu()
         right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
@@ -482,6 +524,7 @@ class WildcardEditor(ttk.Frame):
 
         # The new text widget for includes
         self.includes_text = tk.Text(includes_frame, height=5, wrap=tk.WORD, undo=True, exportselection=False)
+        self.includes_text.bind("<KeyRelease>", self._on_includes_key_release)
         self.includes_text.pack(fill=tk.BOTH, expand=True)
 
     def _get_included_choices(self, includes: List[str]) -> Dict[str, List[str]]:
@@ -569,6 +612,8 @@ class WildcardEditor(ttk.Frame):
 
         # Update refine button state
         has_choices = bool(choices)
+
+        self._validate_all_items()
         self.refine_button.config(state=tk.NORMAL if has_choices else tk.DISABLED)
 
     def get_data(self) -> Dict[str, Any]:
@@ -641,6 +686,7 @@ class WildcardEditor(ttk.Frame):
         new_choice_obj = {'value': new_choice_str, 'weight': 1}
         item_id = self.tree.insert('', tk.END, values=(new_choice_str, '1', '', '', ''))
         self.iid_to_choice_map[item_id] = new_choice_obj
+        self._validate_item(item_id)
 
     def _delete_item(self):
         for selected_item in self.tree.selection():
@@ -680,6 +726,7 @@ class WildcardEditor(ttk.Frame):
                 self.tree.item(item_id, values=new_values)
                 updated_choice = self._get_choice_from_tree_item(item_id)
                 self.iid_to_choice_map[item_id] = updated_choice
+                self._validate_item(item_id)
         finally:
             try:
                 # Always re-bind the event to restore normal functionality if it was unbound
@@ -824,6 +871,158 @@ class WildcardEditor(ttk.Frame):
             background=validation_error_bg
         )
 
+    def _on_includes_key_release(self, event):
+        """Handle key release in the includes text widget for validation and autocomplete."""
+        self._schedule_validation()
+
+        if event.keysym in ("Up", "Down", "Return", "Escape"):
+            return
+
+        cursor_index = self.includes_text.index(tk.INSERT)
+        line_start = self.includes_text.index(f"{cursor_index} linestart")
+        text_before_cursor = self.includes_text.get(line_start, cursor_index)
+        
+        match = re.search(r'\[([a-zA-Z0-9_.-]*)$', text_before_cursor)
+        if not match:
+            if self.autocomplete_popup: self.autocomplete_popup.destroy()
+            return
+
+        prefix = match.group(1)
+        all_wildcards = self.processor.get_wildcard_names()
+        suggestions = [wc for wc in all_wildcards if wc.lower().startswith(prefix.lower())]
+
+        if suggestions: self._show_autocomplete(suggestions)
+        elif self.autocomplete_popup: self.autocomplete_popup.destroy()
+
+    def _show_autocomplete(self, suggestions):
+        if self.autocomplete_popup: self.autocomplete_popup.destroy()
+        cursor_bbox = self.includes_text.bbox(tk.INSERT)
+        if not cursor_bbox: return
+        x = self.includes_text.winfo_rootx() + cursor_bbox[0]
+        y = self.includes_text.winfo_rooty() + cursor_bbox[1] + cursor_bbox[3]
+        self.autocomplete_popup = _AutocompletePopup(self, suggestions, x, y, self._insert_completion)
+
+    def _insert_completion(self, completion):
+        cursor_index = self.includes_text.index(tk.INSERT)
+        line_start = self.includes_text.index(f"{cursor_index} linestart")
+        text_before_cursor = self.includes_text.get(line_start, cursor_index)
+        match = re.search(r'\[([a-zA-Z0-9_.-]*)$', text_before_cursor)
+        if not match: return
+        start_replace = self.includes_text.index(f"{cursor_index} - {len(match.group(1))}c")
+        self.includes_text.delete(start_replace, cursor_index)
+        self.includes_text.insert(start_replace, f"{completion}] ")
+        if self.autocomplete_popup: self.autocomplete_popup.destroy()
+
+    def _schedule_validation(self, event=None):
+        """Schedules a validation check to run after a short delay."""
+        if self.validation_debounce_timer:
+            self.after_cancel(self.validation_debounce_timer)
+        self.validation_debounce_timer = self.after(750, self._validate_all_items)
+
+    def _on_tree_motion(self, event):
+        """Shows a tooltip if the cursor is over a row with a validation error."""
+        iid = self.tree.identify_row(event.y)
+        if iid and iid in self.item_errors:
+            error_text = "\n- ".join(self.item_errors[iid])
+            self.error_tooltip.text = f"Validation Errors:\n- {error_text}"
+            self.error_tooltip.show(event)
+        else:
+            self.error_tooltip.hide()
+
+    def _on_tree_leave(self, event=None):
+        """Hides the error tooltip when the mouse leaves the treeview."""
+        self.error_tooltip.hide()
+
+    def _validate_all_items(self):
+        """Runs validation on all items in the treeview."""
+        self.item_errors.clear()
+        for iid in self.tree.get_children():
+            self._validate_item(iid)
+        
+        # Perform file-level validation like circular dependency checks
+        self.file_error_label.config(text="") # Clear previous error
+        if self.winfo_toplevel().selected_wildcard_file:
+            current_wildcard_name, _ = os.path.splitext(self.winfo_toplevel().selected_wildcard_file)
+            cycle = self.processor.check_for_circular_dependencies(current_wildcard_name, temp_node_data=self.get_data())
+            if cycle:
+                self.file_error_label.config(text=f"Circular dependency detected: {' -> '.join(cycle)}")
+
+    def _validate_item(self, iid: str):
+        """Validates a single item in the treeview for dependency errors."""
+        choice_obj = self.iid_to_choice_map.get(iid)
+        errors = []
+        all_known_wildcards = self.processor.get_wildcard_names()
+
+        # --- Check Global Includes ---
+        global_includes_text = self.includes_text.get("1.0", "end-1c").strip()
+        if global_includes_text:
+            global_includes = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', global_includes_text)
+            for wc in global_includes:
+                if wc not in all_known_wildcards:
+                    errors.append(f"Global include '{wc}' not found.")
+
+        # --- Check Choice-Specific Properties ---
+        if isinstance(choice_obj, dict):
+            # Validate choice-level includes
+            choice_includes = choice_obj.get('includes')
+            if isinstance(choice_includes, list):
+                for wc in choice_includes:
+                    if wc not in all_known_wildcards:
+                        errors.append(f"Choice include '{wc}' not found.")
+            elif isinstance(choice_includes, str):
+                found_in_str = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', choice_includes)
+                for wc in found_in_str:
+                    if wc not in all_known_wildcards:
+                        errors.append(f"Choice include '{wc}' not found.")
+
+            # Validate requires
+            rules = choice_obj.get('requires')
+            if isinstance(rules, dict):
+                self._check_rules_recursive(rules, errors)
+
+        # --- Update UI based on errors ---
+        if errors:
+            self.item_errors[iid] = sorted(list(set(errors))) # Remove duplicate error messages
+            current_tags = list(self.tree.item(iid, 'tags'))
+            if self.validation_error_tag not in current_tags:
+                current_tags.append(self.validation_error_tag)
+                self.tree.item(iid, tags=tuple(current_tags))
+        else:
+            if iid in self.item_errors:
+                del self.item_errors[iid]
+            current_tags = list(self.tree.item(iid, 'tags'))
+            if self.validation_error_tag in current_tags:
+                current_tags.remove(self.validation_error_tag)
+                self.tree.item(iid, tags=tuple(current_tags))
+
+    def _check_rules_recursive(self, rules: Dict, errors: List[str]):
+        """Recursively checks 'requires' rules for non-existent wildcards and values."""
+        all_known_wildcards = self.processor.get_wildcard_names()
+        for key, condition in rules.items():
+            if key in ['and', 'or', 'not']:
+                sub_rules = condition if isinstance(condition, list) else [condition]
+                for sub_rule in sub_rules:
+                    if isinstance(sub_rule, dict): self._check_rules_recursive(sub_rule, errors)
+            elif key != 'tags': # It's a wildcard name
+                if key not in all_known_wildcards:
+                    errors.append(f"Requires non-existent wildcard: '{key}'")
+                    continue
+
+                target_wc_options = self.processor.get_wildcard_options(key)
+                values_to_check = []
+                if isinstance(condition, str): values_to_check.append(condition)
+                elif isinstance(condition, list): values_to_check.extend(condition)
+                elif isinstance(condition, dict):
+                    if 'any' in condition and isinstance(condition['any'], list): values_to_check.extend(condition['any'])
+                    if 'not' in condition:
+                        not_val = condition['not']
+                        if isinstance(not_val, str): values_to_check.append(not_val)
+                        elif isinstance(not_val, list): values_to_check.extend(not_val)
+                
+                for v in values_to_check:
+                    if str(v) not in target_wc_options:
+                        errors.append(f"Requires value '{v}' not found in '{key}'.")
+
     def _create_context_menu(self):
         """Creates the right-click context menu for the choices treeview."""
         self.context_menu = tk.Menu(self.tree, tearoff=0)
@@ -941,6 +1140,7 @@ class WildcardEditor(ttk.Frame):
         # Insert new merged item after the selection
         new_item_id = self.tree.insert('', last_index + 1, values=new_values)
         
+        
         # Construct the object to store in the map, cleaning up empty keys
         new_choice_obj = {'value': merged_value}
         # Clean up None/empty values, but preserve weight if it is 0
@@ -951,6 +1151,7 @@ class WildcardEditor(ttk.Frame):
         if merged_includes: new_choice_obj['includes'] = merged_includes
 
         self.iid_to_choice_map[new_item_id] = new_choice_obj
+        self._validate_item(new_item_id)
 
         # --- Ask to delete originals, handling focus ---
         manager_window = self.winfo_toplevel()
@@ -1010,3 +1211,4 @@ class WildcardEditor(ttk.Frame):
             
             # Update the map with the new item's ID and its new data object
             self.iid_to_choice_map[new_item_id] = new_choice_obj
+            self._validate_item(new_item_id)

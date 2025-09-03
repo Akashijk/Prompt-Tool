@@ -280,6 +280,49 @@ class PromptProcessor:
         self._used_wildcards_cache = all_used
         return self._used_wildcards_cache
 
+    def check_for_circular_dependencies(self, start_node: str, temp_node_data: Optional[Dict] = None) -> Optional[List[str]]:
+        """
+        Checks for circular dependencies in wildcards starting from a given node.
+        Uses Depth First Search (DFS) to detect cycles.
+        Returns the path of the cycle if found, otherwise None.
+        """
+        if self.all_wildcards_cache is None:
+            self._load_all_wildcards_into_cache()
+        
+        if self.all_wildcards_cache is None: return None
+
+        # Temporarily update the cache with the live data from the editor for an accurate check
+        original_node_data = self.all_wildcards_cache.get(start_node)
+        if temp_node_data is not None:
+            self.all_wildcards_cache[start_node] = temp_node_data
+
+        try:
+            path = set()
+            visited = set()
+
+            def dfs(node: str) -> Optional[List[str]]:
+                path.add(node)
+                visited.add(node)
+
+                node_data = self.all_wildcards_cache.get(node, {})
+                dependencies = self.get_all_used_wildcards_for_single_file(node_data)
+
+                for dependency in dependencies:
+                    if dependency not in self.all_wildcards_cache: continue
+                    if dependency in path:
+                        cycle_path = list(path) + [dependency]
+                        return cycle_path[cycle_path.index(dependency):]
+                    if dependency not in visited:
+                        result = dfs(dependency)
+                        if result: return result
+                path.remove(node)
+                return None
+            return dfs(start_node)
+        finally:
+            # Restore the cache to its original state
+            if original_node_data is not None: self.all_wildcards_cache[start_node] = original_node_data
+            elif temp_node_data is not None and start_node in self.all_wildcards_cache: del self.all_wildcards_cache[start_node]
+
     def get_wildcard_dependency_graph(self) -> Dict[str, Dict[str, List[str]]]:
         """
         Builds a dependency graph for all wildcards.
