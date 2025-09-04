@@ -571,7 +571,7 @@ class TemplateEngine:
 
         return True
 
-    def _find_or_generate_choice(self, key: str, existing_choices_map: Dict[str, str], resolved_context: Dict[str, Any], force_swap: Optional[Dict[str, str]] = None) -> Tuple[Optional[Any], Optional[str]]:
+    def _find_or_generate_choice(self, key: str, existing_choices_map: Dict[str, str], resolved_context: Dict[str, Any], force_swap: Optional[Dict[str, str]] = None, force_unique: bool = False) -> Tuple[Optional[Any], Optional[str]]:
         """
         Finds an existing choice or generates a new one for a given wildcard key.
         Returns a tuple of (choice_object, choice_text).
@@ -584,14 +584,14 @@ class TemplateEngine:
             return choice_obj, choice_text
 
         # Priority 1: Check if this wildcard has already been resolved in this generation pass.
-        if key in resolved_context:
+        if not force_unique and key in resolved_context:
             choice_text = resolved_context[key]['value']
             # We need to find the original choice object to get its metadata (like includes) again.
             choice_obj = self.find_choice_object_by_value(key, choice_text)
             return choice_obj, choice_text
 
         # Priority 2: Check if we are preserving a choice from a previous generation.
-        if key in existing_choices_map:
+        if not force_unique and key in existing_choices_map:
             choice_text = existing_choices_map[key]
             choice_obj = self.find_choice_object_by_value(key, choice_text)
             
@@ -615,13 +615,50 @@ class TemplateEngine:
 
         return None, None
 
+    def _get_multiple_wildcard_choices(self, key: str, count_min: int, count_max: Optional[int], context: Dict[str, Any]) -> str:
+        """Gets multiple unique choices for a wildcard key, considering context."""
+        wildcard_data = self.wildcards.get(key)
+        if not wildcard_data or 'choices' not in wildcard_data:
+            return f"__ERROR:Wildcard '{key}' not found__"
+
+        choices = wildcard_data.get('choices', [])
+        if not choices:
+            return ""
+
+        # Filter choices based on requirements
+        valid_choices = [c for c in choices if self._check_requirements(c, context)]
+        if not valid_choices:
+            return ""
+
+        # Determine how many items to select
+        num_to_select = count_min
+        if count_max is not None and count_max > count_min:
+            num_to_select = self.rng.randint(count_min, count_max)
+        
+        # Ensure we don't try to select more items than are available
+        num_to_select = min(num_to_select, len(valid_choices))
+        if num_to_select == 0:
+            return ""
+
+        # Select unique choices
+        selected_choices_obj = self.rng.sample(valid_choices, num_to_select)
+        
+        # Extract the string value from each choice
+        selected_values = [str(c.get('value') if isinstance(c, dict) else c) for c in selected_choices_obj]
+        
+        # Join them into a single string
+        return ", ".join(selected_values)
+
     def _recursive_generate(self, template_string: str, parent_wildcard_name: Optional[str], resolved_context: Dict[str, Any], existing_choices_map: Dict[str, str], force_swap: Optional[Dict[str, str]], is_from_include: bool) -> List[PromptSegment]:
         """Recursively generates segments, correctly attributing text to its parent wildcard."""
         segments: List[PromptSegment] = []
         remaining_template = template_string
 
+        # Updated regex to handle __wildcard:N-M__ and __!wildcard__ syntax
+        wildcard_pattern = re.compile(r'__(!)?([a-zA-Z0-9_.\s-]+?)(?::(\d+)(?:-(\d+))?)?__')
+
         while '__' in remaining_template:
-            match = re.search(r'__([a-zA-Z0-9_.\s-]+?)__', remaining_template)
+            match = wildcard_pattern.search(remaining_template)
             if not match:
                 break
 
@@ -630,19 +667,34 @@ class TemplateEngine:
             if prefix:
                 segments.append(PromptSegment(text=prefix, wildcard_name=parent_wildcard_name, is_from_include=is_from_include))
 
-            key = match.group(1)
-            choice_obj, choice_text = self._find_or_generate_choice(key, existing_choices_map, resolved_context, force_swap)
+            force_unique_str, key, count_min_str, count_max_str = match.groups()
+            is_force_unique = force_unique_str == '!'
 
-            if choice_obj:
-                tags = choice_obj.get('tags', []) if isinstance(choice_obj, dict) else []
-                resolved_context[key] = {'value': choice_text, 'tags': tags}
+            if count_min_str:
+                # --- Multi-selection logic ---
+                count_min = int(count_min_str)
+                count_max = int(count_max_str) if count_max_str else None
                 
-                # Recursively process the choice's value and its includes
-                segments.extend(self._recursive_generate(choice_text, key, resolved_context, existing_choices_map, force_swap, True))
-                include_text = self._process_includes(choice_obj, self.wildcards.get(key))
-                segments.extend(self._recursive_generate(include_text, key, resolved_context, existing_choices_map, force_swap, True))
+                multi_choice_text = self._get_multiple_wildcard_choices(key, count_min, count_max, resolved_context)
+                
+                # Multi-selections are treated as a single generated text block.
+                # They don't update the context for re-use and don't process sub-wildcards within their results.
+                if multi_choice_text:
+                    segments.append(PromptSegment(text=multi_choice_text, wildcard_name=key, is_from_include=True))
             else:
-                segments.append(PromptSegment(text=match.group(0), wildcard_name=key, is_from_include=is_from_include))
+                # --- Single selection logic (existing behavior) ---
+                choice_obj, choice_text = self._find_or_generate_choice(key, existing_choices_map, resolved_context, force_swap, force_unique=is_force_unique)
+
+                if choice_obj:
+                    tags = choice_obj.get('tags', []) if isinstance(choice_obj, dict) else []
+                    resolved_context[key] = {'value': choice_text, 'tags': tags}
+                    
+                    # Recursively process the choice's value and its includes
+                    segments.extend(self._recursive_generate(choice_text, key, resolved_context, existing_choices_map, force_swap, True))
+                    include_text = self._process_includes(choice_obj, self.wildcards.get(key))
+                    segments.extend(self._recursive_generate(include_text, key, resolved_context, existing_choices_map, force_swap, True))
+                else:
+                    segments.append(PromptSegment(text=match.group(0), wildcard_name=key, is_from_include=is_from_include))
 
             remaining_template = remaining_template[match.end():]
 

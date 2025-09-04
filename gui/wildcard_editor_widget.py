@@ -52,11 +52,12 @@ class _AutocompletePopup(tk.Toplevel):
 
 class WildcardEditor(ttk.Frame):
     """A structured editor for wildcard files."""
-    def __init__(self, parent, processor: 'PromptProcessor', suggestion_callback: Optional[Callable] = None, refinement_callback: Optional[Callable] = None, **kwargs):
+    def __init__(self, parent, processor: 'PromptProcessor', suggestion_callback: Optional[Callable] = None, refinement_callback: Optional[Callable] = None, autotag_callback: Optional[Callable] = None, **kwargs):
         super().__init__(parent, **kwargs)
         self.processor = processor
         self.suggestion_callback = suggestion_callback
         self.refinement_callback = refinement_callback
+        self.autotag_callback = autotag_callback
         self.iid_to_choice_map: Dict[str, Any] = {}
         # The parent is a frame inside the WildcardManagerWindow.
         self.autocomplete_popup: Optional[_AutocompletePopup] = None
@@ -64,14 +65,16 @@ class WildcardEditor(ttk.Frame):
         self.item_errors: Dict[str, List[str]] = {} # Map iid to list of error messages
         self.validation_debounce_timer: Optional[str] = None
         # self.winfo_toplevel() will give us the WildcardManagerWindow instance, which has parent_app.
-        self.validation_error_tag = "validation_error"
         self.parent_app = self.winfo_toplevel().parent_app
+        self.inplace_edit_entry: Optional[ttk.Entry] = None
 
         # Define colors for included items
         self.included_tag = "included"
         self.duplicate_tag = "duplicate"
         self._create_widgets()
         self.error_tooltip = Tooltip(self.tree)
+        self.error_tooltip_after_id: Optional[str] = None
+        self.last_hovered_iid: Optional[str] = None
         self.update_theme() # Set initial theme-based colors
 
     def _create_widgets(self):
@@ -106,6 +109,8 @@ class WildcardEditor(ttk.Frame):
         self.suggest_button.pack(side=tk.LEFT)
         self.refine_button = ttk.Button(ai_button_frame, text="Refine Choices (AI)", command=self._on_refine_choices, state=tk.DISABLED)
         self.refine_button.pack(side=tk.LEFT, padx=(5,0))
+        self.autotag_button = ttk.Button(ai_button_frame, text="Auto-Tag All (AI)", command=self._on_auto_tag_choices, state=tk.DISABLED)
+        self.autotag_button.pack(side=tk.LEFT, padx=(5,0))
 
         tree_container = ttk.Frame(choices_frame)
         tree_container.pack(fill=tk.BOTH, expand=True)
@@ -126,7 +131,7 @@ class WildcardEditor(ttk.Frame):
         self.tree.configure(yscrollcommand=tree_scrollbar.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.bind("<Double-1>", self._on_edit_item)
+        self.tree.bind("<Double-1>", self._on_double_click_item)
 
         self.tree.bind("<Motion>", self._on_tree_motion)
         self.tree.bind("<Leave>", self._on_tree_leave)
@@ -237,6 +242,7 @@ class WildcardEditor(ttk.Frame):
 
         self._validate_all_items()
         self.refine_button.config(state=tk.NORMAL if has_choices else tk.DISABLED)
+        self.autotag_button.config(state=tk.NORMAL if has_choices else tk.DISABLED)
 
     def get_data(self) -> Dict[str, Any]:
         """Constructs the JSON data object from the UI widgets."""
@@ -302,6 +308,29 @@ class WildcardEditor(ttk.Frame):
                 choice_obj['includes'] = includes_str
         
         return choice_obj
+
+    def _get_values_tuple_from_choice(self, choice: Any) -> Tuple[str, str, str, str, str]:
+        """Converts a choice object (string or dict) into a tuple for the treeview."""
+        if isinstance(choice, str):
+            return (choice, '', '', '', '')
+        
+        if not isinstance(choice, dict):
+            return ('', '', '', '', '') # Should not happen, but safe fallback
+
+        value = choice.get('value', '')
+        weight = choice.get('weight', '')
+        tags = ", ".join(choice.get('tags', []))
+        requires_dict = choice.get('requires', {})
+        requires = json.dumps(requires_dict, separators=(',', ':')) if requires_dict else ""
+        
+        includes_val = choice.get('includes')
+        if isinstance(includes_val, list):
+            # A simple representation for lists in the treeview
+            includes_display = json.dumps(includes_val)
+        else:
+            includes_display = includes_val or ''
+            
+        return (str(value), str(weight), str(tags), str(requires), str(includes_display))
 
     def _add_item(self):
         new_choice_str = 'new value'
@@ -387,11 +416,83 @@ class WildcardEditor(ttk.Frame):
                 del self.iid_to_choice_map[selected_item]
             self.tree.delete(selected_item)
 
-    def _on_edit_item(self, event=None):
+    def _edit_cell_in_place(self, event):
+        """Handles in-place editing of a cell in the treeview."""
+        # First, destroy any existing in-place editor to prevent conflicts
+        if self.inplace_edit_entry:
+            self.inplace_edit_entry.destroy()
+            self.inplace_edit_entry = None
+
+        # Identify what was clicked
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+
+        column_id = self.tree.identify_column(event.x)
+        item_id = self.tree.identify_row(event.y)
+        if not item_id: return
+
+        # Only allow in-place editing for the 'value' and 'weight' columns
+        if column_id not in ['#1', '#2']: # 'value', 'weight'
+            self._open_full_edit_dialog(item_id)
+            return
+
+        # Get cell geometry
+        x, y, width, height = self.tree.bbox(item_id, column_id)
+
+        # Create and place the entry widget
+        self.inplace_edit_entry = ttk.Entry(self.tree, justify='left')
+        self.inplace_edit_entry.place(x=x, y=y, width=width, height=height)
+
+        # Get current value and populate the entry
+        current_value = self.tree.set(item_id, column_id)
+        self.inplace_edit_entry.insert(0, current_value)
+        self.inplace_edit_entry.select_range(0, tk.END)
+        self.inplace_edit_entry.focus_set()
+
+        # Bind events to save or cancel the edit
+        self.inplace_edit_entry.bind("<Return>", lambda e, i=item_id, c=column_id: self._save_inplace_edit(i, c))
+        self.inplace_edit_entry.bind("<FocusOut>", lambda e, i=item_id, c=column_id: self._save_inplace_edit(i, c))
+        self.inplace_edit_entry.bind("<Escape>", lambda e: self.inplace_edit_entry.destroy())
+
+    def _save_inplace_edit(self, item_id: str, column_id: str):
+        """Saves the content of the in-place editor back to the tree and data model."""
+        if not self.inplace_edit_entry:
+            return
+
+        new_value = self.inplace_edit_entry.get()
+        self.inplace_edit_entry.destroy()
+        self.inplace_edit_entry = None
+
+        # Update the treeview display
+        self.tree.set(item_id, column_id, new_value)
+
+        # Update the underlying data model
+        choice_obj = self.iid_to_choice_map.get(item_id)
+        if choice_obj:
+            column_key = self.tree.heading(column_id, "text").lower() # 'value' or 'weight'
+            if isinstance(choice_obj, dict):
+                choice_obj[column_key] = new_value
+            elif column_key == 'value': # It was a simple string
+                self.iid_to_choice_map[item_id] = new_value
+
+        self._validate_item(item_id)
+        self.winfo_toplevel().save_button.config(state=tk.NORMAL)
+
+    def _on_double_click_item(self, event):
+        """Handles a double-click event, routing it to in-place or full dialog editing."""
+        self._edit_cell_in_place(event)
+
+    def _open_full_edit_dialog_from_selection(self):
+        """Wrapper to open the full edit dialog for the current selection."""
         selection = self.tree.selection()
         if len(selection) != 1: return
-        
         item_id = selection[0]
+        self._open_full_edit_dialog(item_id)
+
+    def _open_full_edit_dialog(self, item_id: str):
+        """Opens the full, multi-field edit dialog for a given item."""
+        original_choice_obj = copy.deepcopy(self.iid_to_choice_map.get(item_id)) # Get a snapshot before editing
         original_values = self.tree.item(item_id, 'values')
         original_value_str = original_values[0] if original_values else ""
 
@@ -420,6 +521,10 @@ class WildcardEditor(ttk.Frame):
                 updated_choice = self._get_choice_from_tree_item(item_id)
                 self.iid_to_choice_map[item_id] = updated_choice
                 self._validate_item(item_id)
+
+                # After a successful edit, check if we can apply this fix to other items.
+                self._find_and_offer_mass_fix(item_id, original_choice_obj, updated_choice)
+
         finally:
             try:
                 # Always re-bind the event to restore normal functionality if it was unbound
@@ -440,6 +545,95 @@ class WildcardEditor(ttk.Frame):
         if self.refinement_callback:
             current_data = self.get_data()
             self.refinement_callback(current_data)
+
+    def _on_auto_tag_choices(self):
+        """Callback to ask the manager window to trigger AI auto-tagging."""
+        if self.autotag_callback:
+            current_data = self.get_data()
+            self.autotag_callback(current_data)
+
+    def _find_and_offer_mass_fix(self, edited_item_id: str, original_choice: Any, updated_choice: Any):
+        """
+        After an item is edited, this checks if the change can be applied to other
+        items with the same original, problematic property.
+        """
+        # Standardize to dicts for easier comparison
+        original_dict = original_choice if isinstance(original_choice, dict) else {'value': original_choice}
+        updated_dict = updated_choice if isinstance(updated_choice, dict) else {'value': updated_choice}
+
+        # Find all keys that have changed
+        all_keys = set(original_dict.keys()) | set(updated_dict.keys())
+        changed_keys = {key for key in all_keys if original_dict.get(key) != updated_dict.get(key)}
+
+        if not changed_keys:
+            return
+
+        # For now, let's focus on one change at a time to keep the UX simple.
+        key_to_fix = list(changed_keys)[0]
+        
+        original_value = original_dict.get(key_to_fix)
+        new_value = updated_dict.get(key_to_fix)
+
+        # Find other items with the exact same problematic value for the changed key
+        matches_to_fix = []
+        for iid, choice_obj in self.iid_to_choice_map.items():
+            if iid == edited_item_id: continue
+
+            current_dict = choice_obj if isinstance(choice_obj, dict) else {'value': choice_obj}
+            if current_dict.get(key_to_fix) == original_value:
+                matches_to_fix.append(iid)
+
+        if not matches_to_fix:
+            return
+
+        # Prompt the user
+        message = (
+            f"You changed the '{key_to_fix}' property.\n\n"
+            f"Original: {str(original_value)}\n"
+            f"New: {str(new_value)}\n\n"
+            f"Found {len(matches_to_fix)} other choice(s) with the same original value. "
+            f"Would you like to apply this fix to all of them?"
+        )
+        
+        if custom_dialogs.ask_yes_no(self, "Apply Fix to Similar Items?", message):
+            for iid in matches_to_fix:
+                choice_to_update = copy.deepcopy(self.iid_to_choice_map[iid])
+                if isinstance(choice_to_update, str): choice_to_update = {'value': choice_to_update}
+                
+                if new_value is None: del choice_to_update[key_to_fix]
+                else: choice_to_update[key_to_fix] = new_value
+                
+                self.iid_to_choice_map[iid] = choice_to_update if len(choice_to_update) > 1 or 'value' not in choice_to_update else choice_to_update['value']
+                self.tree.item(iid, values=self._get_values_tuple_from_choice(choice_to_update))
+                self._validate_item(iid)
+            
+            custom_dialogs.show_info(self, "Mass Fix Applied", f"Updated {len(matches_to_fix)} other choices.")
+            self.winfo_toplevel().save_button.config(state=tk.NORMAL)
+
+    def update_choice_value(self, item_id: str, new_value: str):
+        """Updates the value of a specific choice by its item ID."""
+        if item_id not in self.iid_to_choice_map:
+            return
+
+        # Update the treeview display
+        self.tree.set(item_id, 'value', new_value)
+
+        # Update the underlying data model
+        choice_obj = self.iid_to_choice_map.get(item_id)
+        if choice_obj:
+            if isinstance(choice_obj, dict):
+                choice_obj['value'] = new_value
+            else: # It was a simple string
+                self.iid_to_choice_map[item_id] = new_value
+        
+        self._validate_item(item_id)
+
+    def delete_choice_by_iid(self, item_id: str):
+        """Deletes a specific choice by its item ID."""
+        if item_id in self.iid_to_choice_map:
+            del self.iid_to_choice_map[item_id]
+        if self.tree.exists(item_id):
+            self.tree.delete(item_id)
 
     def add_suggested_choices(self, new_choices: List[Any]):
         """Adds choices suggested by the AI to the treeview."""
@@ -480,6 +674,17 @@ class WildcardEditor(ttk.Frame):
         current_data['choices'] = refined_choices
         
         # Reload the editor with the updated data
+        self.set_data(current_data)
+
+    def update_with_tagged_choices(self, tagged_choices: List[Any]):
+        """Replaces the current choices with a tagged list from the AI."""
+        if not tagged_choices:
+            return
+
+        current_data = self.get_data()
+        
+        # Replace the old choices list with the new tagged one
+        current_data['choices'] = tagged_choices
         self.set_data(current_data)
 
     def _insert_include_wildcard(self):
@@ -613,17 +818,33 @@ class WildcardEditor(ttk.Frame):
         self.validation_debounce_timer = self.after(750, self._validate_all_items)
 
     def _on_tree_motion(self, event):
-        """Shows a tooltip if the cursor is over a row with a validation error."""
+        """Schedules an error tooltip to appear after a short delay."""
+        if self.error_tooltip_after_id:
+            self.after_cancel(self.error_tooltip_after_id)
+
         iid = self.tree.identify_row(event.y)
+        
+        if iid != self.last_hovered_iid:
+            self.error_tooltip.hide()
+        
+        self.last_hovered_iid = iid
+        
+        if iid and iid in self.item_errors:
+            self.error_tooltip_after_id = self.after(500, lambda: self._display_error_tooltip(iid, event))
+
+    def _display_error_tooltip(self, iid: str, event):
+        """Fetches error content and displays the tooltip."""
         if iid and iid in self.item_errors:
             error_text = "\n- ".join(self.item_errors[iid])
             self.error_tooltip.text = f"Validation Errors:\n- {error_text}"
             self.error_tooltip.show(event)
-        else:
-            self.error_tooltip.hide()
 
     def _on_tree_leave(self, event=None):
-        """Hides the error tooltip when the mouse leaves the treeview."""
+        """Hides the error tooltip and cancels any scheduled appearance."""
+        self.last_hovered_iid = None
+        if self.error_tooltip_after_id:
+            self.after_cancel(self.error_tooltip_after_id)
+            self.error_tooltip_after_id = None
         self.error_tooltip.hide()
 
     def _validate_all_items(self):
@@ -720,7 +941,7 @@ class WildcardEditor(ttk.Frame):
     def _create_context_menu(self):
         """Creates the right-click context menu for the choices treeview."""
         self.context_menu = tk.Menu(self.tree, tearoff=0)
-        self.context_menu.add_command(label="Edit...", command=self._on_edit_item)
+        self.context_menu.add_command(label="Edit...", command=self._open_full_edit_dialog_from_selection)
         self.context_menu.add_command(label="Merge Selected Items... (2)", command=self._merge_selected_items)
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Add New Choice", command=self._add_item)

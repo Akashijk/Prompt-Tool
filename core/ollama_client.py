@@ -375,3 +375,16 @@ class OllamaClient:
         except Exception as e:
             # Catch exceptions here since this is a non-critical cleanup task
             print(f"WARNING: Could not unload model '{model}'. Error: {e}")
+
+    def interrogate_image(self, model: str, base64_image: str, prompt: str) -> str:
+        """Generates a prompt from an image using a multimodal model."""
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "images": [base64_image],
+            "stream": False
+        }
+        # Use a longer timeout for vision models as they can be slower
+        response_data = self._post_request("/api/generate", payload, config.BRAINSTORM_TIMEOUT)
+        # The response is a simple string
+        return response_data.get('response', '').strip()

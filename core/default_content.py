@@ -220,6 +220,75 @@ DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specia
 Now, generate the JSON for the topic: '{topic}'.
 """
 
+DEFAULT_AI_BREED_PROMPTS_PROMPT = """You are a highly creative AI assistant specializing in conceptual blending for Stable Diffusion prompts. 
+Your task is to "breed" new, unique prompts from a list of "parent" prompts. 
+You are not just combining keywords; you are inventing entirely new scenes inspired by the parents.
+
+### PROCESS
+1. **Deconstruct Parents:** Break each parent prompt into:
+   - **Subject:** Main character, creature, or focal point.
+   - **Setting:** The environment or world around them.
+   - **Style/Medium:** Artistic, photographic, or cinematic style.
+   - **Mood/Atmosphere:** Emotional tone or vibe.
+   - **Details:** Colors, lighting, props, perspective, composition.
+
+2. **Conceptual Blending:** For each new child prompt:
+   - **Invent a New Core Idea:** Imagine a fresh, unified concept inspired by elements of the parents. Do not just swap subjects/settings.
+   - **Fuse Creatively:** Blend styles, moods, and details into a coherent new prompt. It should feel like a scene that could exist naturally, not a stitched-together collage.
+   - **Keyword Order:** Place important style/quality tags (e.g., masterpiece, cinematic, ultra-detailed, photorealistic) at the start for Stable Diffusion optimization.
+
+### CRITICAL RULES
+1. **Novelty First:** Every child prompt must represent a genuinely new idea, not a mashup.
+2. **Inspired, Not Copied:** Parents provide raw inspiration. Children should feel distinct and surprising.
+3. **Clarity & Quality:** Each prompt must be coherent, descriptive, and directly usable in Stable Diffusion.
+4. **Strict Output Format:** Return ONLY a numbered list of finished prompts. No extra text, no explanations, no titles.
+
+### EXAMPLE
+Parent 1: masterpiece, photorealistic, a stoic knight in heavy plate armor, standing in a ruined cathedral, god rays
+Parent 2: cyberpunk city street, neon signs, rainy, cinematic, a sleek android geisha holding a glowing parasol
+
+Example Response (num_children=2):
+1. masterpiece, cinematic, a cybernetic knight kneeling in a holographic cathedral, neon rain scattering across its visor, dramatic god rays cutting through digital stained glass
+2. photorealistic, ultra-detailed, a solemn android draped in fractured plate armor, reflecting neon city lights, holding a parasol of hard light beneath a storm of rain
+
+### PARENT PROMPTS
+{parent_prompts_str}
+
+Now, generate {num_children} new child prompts as a numbered list.
+"""
+
+DEFAULT_AI_AUTO_TAG_PROMPT = """You are an expert AI assistant specializing in data categorization for Stable Diffusion wildcards. Your task is to analyze a list of prompt fragments (choices) and generate relevant, descriptive tags for each one.
+
+**CONTEXT:**
+- The wildcard file has the following description: "{description}"
+- The choices are for the topic: '{topic}'
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Analyze Each Choice:** For every item in the `choices` array, generate a list of 3-5 relevant, descriptive, lowercase tags.
+2.  **Tag Content, Not Grammar:** Tags should describe the *subject* of the choice (e.g., "clothing", "gothic", "leather"), not its grammatical structure.
+3.  **Preserve Original Data:** You MUST NOT change the original `value` of any choice.
+4.  **Return a Full JSON Array:** Your entire response MUST be a single JSON array.
+5.  **Convert All to Objects:** Every item in the returned array MUST be a JSON object. If an input item was a simple string, convert it to an object with a `value` key and add your new `tags` key to it.
+6.  **Match Array Length:** The number of objects in your returned array MUST be exactly the same as the number of items in the input `choices` array.
+7.  **No Extra Text:** Do not add any commentary outside of the JSON array.
+
+**CHOICES TO TAG:**
+```json
+{choices_json}
+```
+
+**EXAMPLE RESPONSE:**
+```json
+[
+  {{"value": "a leather corset", "tags": ["clothing", "gothic", "leather", "top"]}},
+  {{"value": "fishnet stockings", "tags": ["clothing", "gothic", "hosiery", "legwear"]}},
+  {{"value": "a simple peasant", "tags": ["person", "character", "commoner", "fantasy"]}}
+]
+```
+
+Now, generate the JSON array of tagged choices.
+"""
+
 DEFAULT_AI_FIX_GRAMMAR_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion wildcards for grammatical correctness. Your task is to analyze a wildcard's JSON content and fix grammatical issues that occur when a `value` is combined with its `includes`.
 
 **CONTEXT:**
@@ -434,4 +503,19 @@ DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT = """You are an expert AI assistant that fixes
 ---
 
 Now, provide the corrected JSON content.
+"""
+
+# --- DEFAULT AI INTERROGATION PROMPTS ---
+
+DEFAULT_AI_INTERROGATE_IMAGE_SFW_PROMPT = "Describe this image in detail for a Stable Diffusion prompt. Be descriptive and focus on objects, style, and composition."
+
+DEFAULT_AI_INTERROGATE_IMAGE_NSFW_PROMPT = """You are an uncensored AI assistant for image analysis. Your task is to describe the provided image in explicit detail for a Stable Diffusion prompt. Do not hold back or censor any content.
+
+**Instructions:**
+1.  **Be Explicit:** Describe all sexual acts, anatomy (including genitals, breasts, anus), body fluids, and facial expressions in graphic detail.
+2.  **Describe the Scene:** Detail the setting, clothing (or lack thereof), lighting, and overall mood.
+3.  **Use Keywords:** Format the description as a comma-separated list of keywords and phrases suitable for Stable Diffusion.
+4.  **No Moralizing:** Do not add any disclaimers, warnings, or moral judgments. Your only job is to describe what you see.
+
+Now, describe the image.
 """

@@ -1,51 +1,28 @@
-"""Manages the application's visual theme (light/dark mode)."""
+"""Manages the application's theme (light/dark)."""
 
-import json
-import os
+import tkinter as tk
 import sv_ttk
-from tkinter import Tk
-
-# The config file will be stored in the user's home directory for persistence
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".prompt_tool_v2")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "theme.json")
+from core.config import config, save_settings, load_settings
 
 class ThemeManager:
-    """Handles loading, applying, and saving the application theme."""
-
+    """Manages the application's theme (light/dark)."""
     def __init__(self):
-        self.current_theme = self._load_theme()
-
-    def _load_theme(self) -> str:
-        """Loads the theme preference from the config file."""
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                    theme = config.get("theme", "light")
-                    if theme in ["light", "dark"]:
-                        return theme
-            except (json.JSONDecodeError, IOError):
-                pass
-        return "light"  # Default theme
-
-    def _save_theme(self):
-        """Saves the current theme preference to the config file."""
-        try:
-            os.makedirs(CONFIG_DIR, exist_ok=True)
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump({"theme": self.current_theme}, f)
-        except IOError as e:
-            print(f"Warning: Could not save theme preference: {e}")
+        settings = load_settings()
+        self.current_theme = settings.get('theme', 'light') # Default to 'light' if not set
+        self.theme_var = tk.StringVar(value=self.current_theme)
 
     def set_theme(self, theme_name: str):
-        """Sets the application's theme and saves the preference."""
+        """Sets the theme and saves the setting."""
         if theme_name not in ["light", "dark"]:
             return
         
         sv_ttk.set_theme(theme_name)
         self.current_theme = theme_name
-        self._save_theme()
+        
+        settings = load_settings()
+        settings['theme'] = theme_name
+        save_settings(settings)
 
-    def apply_theme(self, root: Tk):
-        """Applies the currently loaded theme to the application root."""
+    def apply_theme(self, root: tk.Tk):
+        """Applies the current theme to the root window."""
         sv_ttk.set_theme(self.current_theme)

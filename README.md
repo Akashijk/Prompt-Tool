@@ -2,39 +2,51 @@
 
 A desktop application for generating and enhancing prompts for Stable Diffusion. It leverages local AI models through Ollama to provide a rich, interactive, and creative environment for prompt engineering.
 
+## ✨ Recent Feature Highlights
+
+*   **Prompt Evolver Overhaul:** The Prompt Evolver has been completely redesigned with a new UI featuring individually selectable, word-wrapping prompt cards. This makes comparing and selecting parent and child prompts a much more intuitive and readable experience.
+*   **Conceptual Prompt Breeding:** The AI for breeding prompts has been significantly upgraded. It now deconstructs parent prompts into their core concepts (subject, style, mood) and creatively blends them into novel, unique offspring, moving far beyond simple keyword mashing.
+*   **Context Menus & Better UX:** The Prompt Evolver now has right-click context menus for quick actions, and mouse wheel scrolling has been made smooth and reliable across all platforms.
+*   **Image to Prompt (Interrogator):** Generate a detailed Stable Diffusion prompt directly from an image using a local vision model (like LLaVA).
+
 ![Main Window Screenshot](assets/screenshot_main.png) <!-- Placeholder: Add a real screenshot here -->
 
 ## Key Features
 
-*   **Template-Based Generation:** Create complex prompts using simple templates and `__wildcard__` placeholders.
+*   **Template-Based Generation:** Create complex prompts using simple templates and `__wildcard__` placeholders. Supports advanced syntax like `__!wildcard__` for unique rolls and `__wildcard:N-M__` for selecting multiple items.
 *   **Live Preview & Interaction:**
     *   Instantly see a generated prompt and click on wildcard-generated text to swap it with other options from the source file.
     *   Automatically detects missing wildcards used in your template and provides clickable links to generate them on the fly.
 *   **AI-Powered Enhancement:** Use a local LLM to enhance your base prompts, adding detail, style, and quality keywords.
+*   **AI Cleanup:** With one click, use an AI to automatically fix grammar, remove redundancies, and improve the flow of a generated prompt before enhancement.
 *   **Automatic Variations:** Generate cinematic, artistic, and photorealistic variations of your enhanced prompt with a single click.
 *   **Interactive Template Editor:**
+    *   Right-click context menu to easily add or adjust prompt weighting `(like this)1.2`, de-emphasis `[like this]`, roll for unique values, or select multiple items from a wildcard.
     *   Right-click to "Brainstorm with AI" to get suggestions and refine your template in a dedicated chat window.
     *   Double-click any `__wildcard__` to immediately open it in the Wildcard Manager.
     *   Select any text and right-click to instantly turn it into a new wildcard file.
     *   Drag and drop `__wildcard__` tags to easily reorder your prompt.
-    *   Get instant visual feedback with tooltips for `requires` clauses that are out of order.
+    *   Get instant visual feedback for missing wildcards and `requires` clauses that are out of order.
 *   **Advanced AI Brainstorming:**
     *   A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine, expand, and improve them.
     *   Generate new wildcard files, templates from a concept, templates from *all* your existing wildcards, or even linked wildcard files from scratch.
     *   The AI automatically detects when a generated template or wildcard requires *new* wildcards, and provides clickable links to generate them.
     *   Select any text in the conversation and have the AI rewrite it based on your instructions ("make it more poetic", "add more technical details", etc.).
-*   **Full-Featured Wildcard Management:**
+*   **Full-Featured Wildcard Manager:** A comprehensive tool for managing your wildcard library.
     *   A powerful structured editor to easily manage complex choices with weights, tags, requirements, and includes.
     *   Choices are automatically sorted alphabetically when a file is loaded for a consistent editing experience.
     *   Advanced tools: Find & Replace, Find Similar Choices (fuzzy matching), and Find Duplicates.
     *   **Intelligent Refactoring:** When you rename a wildcard or change a choice's value, the app will offer to scan your entire project and automatically update all other wildcards that depend on it.
     *   Merge multiple wildcard files into a new one, intelligently combining their content.
     *   Scan your entire project to find unused wildcard files that can be archived or deleted.
+    *   **Dependency Graph:** View a visual graph of how wildcards depend on each other to better understand your prompt structure.
     *   **Interactive Validator:** Scan all files for errors (e.g., a `requires` clause pointing to a non-existent value). Double-click an error to jump directly to the problematic file and choice, or right-click to fix common issues automatically.
-    *   Use AI to suggest new choices for a wildcard, or to automatically add weights, tags, and other metadata to your existing choices.
+    *   **AI Assistant:** Use AI to suggest new choices, automatically add tags, refine choices with weights and requirements, fix grammar, or check for compatibility between two files.
 *   **SFW/NSFW Workflows:** Keep your SFW and NSFW content completely separate. The app dynamically switches template, wildcard, and system prompt directories.
 *   **Customizable System Prompts:** Edit the underlying instructions given to the AI for enhancement and variations to tailor its output to your needs.
-*   **History Viewer:** Browse, search, and reuse all your past enhanced prompts. Tracks which template was used for each generation and allows you to mark favorites.
+*   **History Viewer:** Browse, search, and reuse all your past enhanced prompts. Tracks which template was used for each generation, allows you to mark favorites, and even edit prompts directly in the history view.
+*   **Image Interrogator:** Generate a detailed prompt from an image using a local multimodal model (like LLaVA).
+*   **Prompt Evolver & Conceptual Breeding:** A dedicated window for "breeding" new prompts. Select two or more "parent" prompts from your history, and a more advanced AI will deconstruct their core concepts (subject, style, mood) to generate unique, creative "child" prompts. The UI has been completely overhauled with selectable, word-wrapping prompt cards for a superior user experience.
 *   **Seed Management:** Easily switch between a fixed seed for reproducible results and random seeds for variety.
 *   **Modern UI:** Features a clean, modern interface with light and dark themes and adjustable font sizes.
 *   **Resource Management:** Automatically unloads AI models from VRAM when they are no longer in use by any window, helping to manage system resources efficiently.
@@ -97,12 +109,10 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 
 1.  **Run the application:**
     ```bash
-    python main.py  # Assuming the main script is named main.py
-    ```
+    # For standard use
+    python main.py
 
-    **Verbose Mode:**
-    For debugging or to see the raw output from the AI during brainstorming tasks, you can run the application with the `--verbose` or `-v` flag:
-    ```bash
+    # For verbose mode (prints AI requests/responses to the console)
     python main.py --verbose
     ```
 2.  **Main Window Workflow:**
@@ -111,6 +121,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   **Template:** Select a template file. The content will appear in the editor.
     *   **Generate:** Click "Generate Next Preview" to see a prompt with wildcards filled in.
     *   **Interact:** In the preview pane, click on any highlighted text to see a menu of other options from that wildcard file. If your template uses a wildcard that doesn't exist, a link will appear below the preview allowing you to generate it.
+    *   **Cleanup (Optional):** Click "AI Cleanup ✨" to have an AI automatically refine the grammar and flow of the generated prompt in the preview pane.
     *   **Enhance:** When you're happy with the preview, click "Enhance This Prompt". A new window will appear showing the AI's enhanced version and any selected variations.
 
 3.  **AI Brainstorming (`Tools -> AI Brainstorming`):**
@@ -127,11 +138,22 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   Use the "Suggest Choices (AI)" button to have the AI generate new items for your list.
     *   Use the "Refine Choices (AI)" button to have the AI analyze your existing choices and add metadata like weights, tags, and requirements.
     *   Use the full suite of tools to find duplicates, merge files, or validate your entire project for errors.
+    *   Click "View Dependencies" to see a visual graph of how your wildcards are interconnected.
     *   Click "Brainstorm with AI" to send the current wildcard list to the chat window for refinement.
+
+5.  **Prompt Evolver (`Tools -> Prompt Evolver...`):**
+    *   Select two or more "parent" prompts from your entire generation history.
+    *   The AI will "breed" them, blending their core concepts, subjects, and styles to create a new generation of unique "child" prompts.
+    *   Use the generated children as new parents for further evolution, send them to the main editor, or right-click to copy, enhance, and save them to your history.
+
+6.  **Image Interrogator (`Tools -> Image Interrogator...`):**
+    *   Select an image from your computer.
+    *   Choose a vision-capable model (e.g., LLaVA).
+    *   The AI will generate a descriptive prompt based on the image content.
 
 ## Configuration
 
-*   **Ollama Server:** Change the Ollama server URL via `Tools -> Ollama Server...`. This is useful if you run Ollama on a different machine on your network.
+*   **Ollama Server & Directory Paths:** Change the Ollama server URL and the default locations for your `templates`, `wildcards`, and `history` folders via `Tools -> Settings...`.
 *   **Theme & Font:** Change the UI theme (Light/Dark) and font size under the `View` menu. Your preferences are saved automatically.
 *   **System Prompts:** Modify the core instructions given to the AI via `Tools -> System Prompt Editor`. This gives you fine-grained control over how the AI enhances prompts and creates variations.
 

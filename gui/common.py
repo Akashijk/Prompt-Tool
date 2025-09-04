@@ -204,16 +204,21 @@ class PromptPreviewContextMenu(TextContextMenu):
 
 class TemplateEditorContextMenu(TextContextMenu):
     """A specialized context menu for the template editor with a wildcard generator."""
-    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable, create_wildcard_callback: Callable, edit_wildcard_callback: Callable, live_update_callback: Callable):
+    def __init__(self, widget, generate_wildcard_callback: Callable, brainstorm_callback: Callable, create_wildcard_callback: Callable, edit_wildcard_callback: Callable, live_update_callback: Callable, toggle_roll_unique_callback: Callable, select_n_items_callback: Callable):
         super().__init__(widget)
         self.generate_wildcard_callback = generate_wildcard_callback
         self.brainstorm_callback = brainstorm_callback
         self.create_wildcard_callback = create_wildcard_callback
         self.edit_wildcard_callback = edit_wildcard_callback
         self.live_update_callback = live_update_callback
+        self.toggle_roll_unique_callback = toggle_roll_unique_callback
+        self.select_n_items_callback = select_n_items_callback
         self.last_event = None
         self.menu.add_command(label="Increase Weight (+)", command=self._increase_weight, state=tk.DISABLED)
         self.menu.add_command(label="Decrease Weight (-)", command=self._decrease_weight, state=tk.DISABLED)
+        self.menu.add_separator()
+        self.menu.add_command(label="Roll Unique Value (!)", command=self.toggle_roll_unique_callback, state=tk.DISABLED)
+        self.menu.add_command(label="Select N Items...", command=self.select_n_items_callback, state=tk.DISABLED)
         self.menu.add_separator()
         self.menu.add_command(label="Generate Missing Wildcard...", command=self._generate_wildcard, state=tk.DISABLED)
         self.menu.add_command(label="Create Wildcard from Selection...", command=self._create_wildcard, state=tk.DISABLED)
@@ -248,6 +253,26 @@ class TemplateEditorContextMenu(TextContextMenu):
 
         self.menu.entryconfig("Generate Missing Wildcard...", state=tk.NORMAL if is_missing else tk.DISABLED)
         self.menu.entryconfig("Edit Wildcard...", state=tk.NORMAL if is_wildcard and not is_missing else tk.DISABLED)
+        
+        # Dynamically update labels for advanced syntax
+        if is_wildcard:
+            wildcard_text = self._get_wildcard_at_event()
+            if wildcard_text:
+                # Regex to capture all parts
+                pattern = re.compile(r'__(!)?([a-zA-Z0-9_.\s-]+?)((?::\d+(?:-\d+)?)?)__')
+                match = pattern.fullmatch(wildcard_text)
+                if match:
+                    force_unique_str, _, multi_select_part = match.groups()
+                    
+                    self.menu.entryconfig(9, label="Roll Consistent Value (remove !)" if force_unique_str else "Roll Unique Value (!)")
+                    self.menu.entryconfig(10, label="Change/Remove N Items..." if multi_select_part else "Select N Items...")
+        else:
+            # Reset labels if not over a wildcard
+            self.menu.entryconfig(9, label="Roll Unique Value (!)")
+            self.menu.entryconfig(10, label="Select N Items...")
+
+        self.menu.entryconfig(9, state=tk.NORMAL if is_wildcard else tk.DISABLED)
+        self.menu.entryconfig(10, state=tk.NORMAL if is_wildcard else tk.DISABLED)
         
         has_selection = False
         try:

@@ -23,6 +23,8 @@ from .review_window import ReviewAndSaveWindow
 from .system_prompt_editor import SystemPromptEditorWindow
 from .settings_window import SettingsWindow
 from .wildcard_manager import WildcardManagerWindow
+from .prompt_evolver import PromptEvolverWindow
+from .image_interrogator import ImageInterrogatorWindow
 from .menu_bar import MenuBar
 from .template_editor import TemplateEditor
 from .wildcard_inserter import WildcardInserter
@@ -72,10 +74,14 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.current_structured_prompt: List[PromptSegment] = []
         self.segment_map: List[Tuple[str, str, int]] = []  # start, end, segment_index
         self.wildcard_tooltip: Optional[Tooltip] = None
+        self.wildcard_tooltip_after_id: Optional[str] = None
+        self.last_hovered_segment_index: int = -1
         self.debounce_timer: Optional[str] = None
         self.main_window_model: Optional[str] = None
         self.brainstorming_window: Optional[BrainstormingWindow] = None
         self.wildcard_manager_window: Optional[WildcardManagerWindow] = None
+        self.image_interrogator_window: Optional[ImageInterrogatorWindow] = None
+        self.prompt_evolver_window: Optional[PromptEvolverWindow] = None
         self.history_viewer_window: Optional[HistoryViewerWindow] = None
         self.loading_animation: Optional[LoadingAnimation] = None
         self.template_editor: Optional[TemplateEditor] = None
@@ -227,8 +233,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # Configure tags and bindings for the interactive prompt text
         self.prompt_text.tag_configure("wildcard", relief="raised", borderwidth=1)
-        self.prompt_text.tag_bind("wildcard", "<Enter>", self._on_wildcard_enter)
-        self.prompt_text.tag_bind("wildcard", "<Leave>", self._on_wildcard_leave)
+        self.prompt_text.tag_bind("wildcard", "<Motion>", self._schedule_wildcard_tooltip)
+        self.prompt_text.tag_bind("wildcard", "<Leave>", self._hide_wildcard_tooltip)
         self.prompt_text.tag_bind("wildcard", "<Button-1>", self._on_wildcard_click)
         self.prompt_text.tag_configure("wildcard_hover")
 
@@ -447,6 +453,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.history_viewer_window and self.history_viewer_window.winfo_exists():
             self.history_viewer_window.destroy()
             self.history_viewer_window = None
+        
+        # Also close the prompt evolver as its data is now stale
+        if self.prompt_evolver_window and self.prompt_evolver_window.winfo_exists():
+            self.prompt_evolver_window.destroy()
+            self.prompt_evolver_window = None
 
         self.status_var.set(f"Switched to {new_workflow.upper()} workflow. Select a template.")
 
@@ -588,26 +599,40 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         self.prompt_text.config(state=tk.DISABLED)
 
-    def _on_wildcard_enter(self, event):
-        """Handle mouse entering a wildcard tag."""
-        # Find the tag under the cursor
-        tag_ranges = self.prompt_text.tag_ranges("wildcard")
-        for i in range(0, len(tag_ranges), 2):
-            start, end = tag_ranges[i], tag_ranges[i+1]
-            if self.prompt_text.compare(start, "<=", "current") and self.prompt_text.compare("current", "<", end):
-                # Find which segment this corresponds to
-                for seg_start, seg_end, seg_index in self.segment_map:
-                    if self.prompt_text.compare(start, "==", seg_start):
-                        wildcard_name = self.current_structured_prompt[seg_index].wildcard_name
-                        if self.wildcard_tooltip:
-                            self.wildcard_tooltip.text = f"Source: {wildcard_name}.json"
-                            self.wildcard_tooltip.show(event)
-                        self.prompt_text.tag_add("wildcard_hover", start, end)
-                        break
+    def _schedule_wildcard_tooltip(self, event):
+        """Schedules a tooltip to appear over a wildcard segment after a delay."""
+        if self.wildcard_tooltip_after_id:
+            self.after_cancel(self.wildcard_tooltip_after_id)
+
+        # Find the segment under the cursor
+        index_at_cursor = self.prompt_text.index(f"@{event.x},{event.y}")
+        current_segment_index = -1
+        for start, end, seg_index in self.segment_map:
+            if self.prompt_text.compare(start, "<=", index_at_cursor) and self.prompt_text.compare(index_at_cursor, "<", end):
+                current_segment_index = seg_index
                 break
 
-    def _on_wildcard_leave(self, event):
-        """Handle mouse leaving a wildcard tag."""
+        if current_segment_index != self.last_hovered_segment_index:
+            self._hide_wildcard_tooltip() # Hide immediately if moving to a new segment
+
+        self.last_hovered_segment_index = current_segment_index
+
+        if current_segment_index != -1:
+            self.wildcard_tooltip_after_id = self.after(500, lambda: self._display_wildcard_tooltip(current_segment_index, event))
+
+    def _display_wildcard_tooltip(self, segment_index: int, event):
+        """Displays the tooltip for the specified wildcard segment."""
+        wildcard_name = self.current_structured_prompt[segment_index].wildcard_name
+        if self.wildcard_tooltip and wildcard_name:
+            self.wildcard_tooltip.text = f"Source: {wildcard_name}.json"
+            self.wildcard_tooltip.show(event)
+
+    def _hide_wildcard_tooltip(self, event=None):
+        """Hides the wildcard tooltip and cancels any scheduled appearance."""
+        self.last_hovered_segment_index = -1
+        if self.wildcard_tooltip_after_id:
+            self.after_cancel(self.wildcard_tooltip_after_id)
+            self.wildcard_tooltip_after_id = None
         if self.wildcard_tooltip:
             self.wildcard_tooltip.hide(event)
         self.prompt_text.tag_remove("wildcard_hover", "1.0", tk.END)
@@ -660,7 +685,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         wildcard_to_swap = segment.wildcard_name
         if not wildcard_to_swap: return
 
-        # We don't modify the segments directly anymore.
         # We tell the live update function to force this wildcard to the new value.
         self._perform_live_update(force_swap={wildcard_to_swap: new_value})
 
@@ -830,20 +854,23 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _on_select_for_enhancement(self):
         """Handles the 'Enhance This Prompt' button click."""
+        prompt_text = self._get_current_prompt_string()
+        template_name = self.current_template_file
+        self.start_enhancement_for_prompt(prompt_text, template_name)
+
+    def start_enhancement_for_prompt(self, prompt_text: str, template_name: Optional[str] = None):
+        """Handles starting an enhancement process for a given prompt string."""
         model = self.enhancement_model_var.get()
         if not model or "model" in model.lower():
             custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
             return
         
-        prompt_text = self._get_current_prompt_string()
-
         if not prompt_text:
             custom_dialogs.show_error(self, "Error", "No prompt to enhance.")
             return
 
         # Create the results window immediately
         selected_variations = self.action_bar.get_selected_variations()
-        template_name = self.current_template_file
         initial_data = {'original': prompt_text, 'variations': {}}
 
         # Set up call counters for the new batch
@@ -860,11 +887,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         def result_callback(key, data):
             result_window.result_queue.put((key, data))
 
-        # Set callbacks for the processor
-        self.processor.set_callbacks(
-            status_callback=self._update_status_bar_from_event,
-            result_callback=result_callback
-        )
+        self.processor.set_callbacks(status_callback=self._update_status_bar_from_event, result_callback=result_callback)
 
         self.action_bar.select_button.config(state=tk.DISABLED)
         self.status_var.set(f"Enhancing prompt with {model}...")
@@ -977,6 +1000,39 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.wildcard_manager_window:
             self.wildcard_manager_window.close()
             self.wildcard_manager_window = None
+
+    def _open_prompt_evolver(self):
+        """Opens the Prompt Evolver window."""
+        if self.prompt_evolver_window and self.prompt_evolver_window.winfo_exists():
+            self.prompt_evolver_window.lift()
+            self.prompt_evolver_window.focus_force()
+        else:
+            self.prompt_evolver_window = PromptEvolverWindow(self, self.processor, self.load_prompt_from_history)
+            self.prompt_evolver_window.protocol("WM_DELETE_WINDOW", self._on_prompt_evolver_close)
+
+    def _on_prompt_evolver_close(self):
+        if self.prompt_evolver_window:
+            self.prompt_evolver_window.destroy()
+            self.prompt_evolver_window = None
+
+    def _open_image_interrogator(self):
+        """Opens the image interrogator window."""
+        if self.image_interrogator_window and self.image_interrogator_window.winfo_exists():
+            self.image_interrogator_window.lift()
+            self.image_interrogator_window.focus_force()
+        else:
+            try:
+                models = self.processor.get_available_models()
+                default_model = self.enhancement_model_var.get()
+                self.image_interrogator_window = ImageInterrogatorWindow(self, self.processor, models, default_model, self.load_prompt_from_history)
+                self.image_interrogator_window.protocol("WM_DELETE_WINDOW", self._on_image_interrogator_close)
+            except Exception as e:
+                custom_dialogs.show_error(self, "Error", f"Could not open Image Interrogator:\n{e}")
+
+    def _on_image_interrogator_close(self):
+        if self.image_interrogator_window:
+            self.image_interrogator_window.destroy()
+            self.image_interrogator_window = None
 
     def _handle_wildcard_update(self, modified_file: Optional[str] = None):
         """Refreshes wildcard lists and triggers a prompt update if a relevant wildcard was modified."""

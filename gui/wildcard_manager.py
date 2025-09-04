@@ -12,10 +12,11 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 import sys
-from typing import Optional, Callable, List, Dict, Any, TYPE_CHECKING, Tuple
+from typing import Optional, Callable, List, Dict, Any, TYPE_CHECKING, Tuple, Set
 from core.prompt_processor import PromptProcessor
 from core.config import config
 from . import custom_dialogs
+from .dependency_graph_window import DependencyGraphWindow
 from .wildcard_editor_widget import WildcardEditor
 from .common import TextContextMenu, SmartWindowMixin
 
@@ -123,99 +124,97 @@ class _DesignateCompatibilityFilesDialog(custom_dialogs._CustomDialog):
         self.result = (primary, supporting)
         self.destroy()
 
-class _DependencyViewerWindow(custom_dialogs._CustomDialog):
-    """A modal dialog to display the wildcard dependency graph."""
-    def __init__(self, parent, processor: PromptProcessor, manager_window: 'WildcardManagerWindow'):
-        super().__init__(parent, "Wildcard Dependency Viewer")
-        self.processor = processor
-        self.manager_window = manager_window
-        self.graph = self.processor.get_wildcard_dependency_graph()
-        self.all_wildcards = sorted(list(self.graph.keys()))
+class _DeduplicateSimilarChoicesDialog(custom_dialogs._CustomDialog):
+    """A dialog to review and deduplicate groups of similar wildcard choices."""
+    def __init__(self, parent, editor: 'WildcardEditor', similar_groups: List[List[Dict[str, str]]]):
+        super().__init__(parent, "Deduplicate Similar Choices")
+        self.editor = editor
+        self.groups = similar_groups
+        self.changes_made = 0
 
+        # Main UI
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Search bar
-        search_frame = ttk.Frame(main_frame)
-        search_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(search_frame, text="Filter:").pack(side=tk.LEFT)
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add("write", self._filter_tree)
-        ttk.Entry(search_frame, textvariable=self.search_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Label(main_frame, text="Select a group on the left, then select one or more choices on the right to KEEP. All others in the group will be deleted.", wraplength=780).pack(pady=(0, 10))
 
-        # Treeview
-        tree_container = ttk.Frame(main_frame)
-        tree_container.pack(fill=tk.BOTH, expand=True)
-        self.tree = ttk.Treeview(tree_container, columns=('dependencies', 'dependents'), show='tree headings')
-        self.tree.heading('#0', text='Wildcard')
-        self.tree.heading('dependencies', text='Uses (Dependencies)')
-        self.tree.heading('dependents', text='Used By (Dependents)')
-        self.tree.column('dependencies', width=150, anchor='center')
-        self.tree.column('dependents', width=150, anchor='center')
+        pane = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+        pane.pack(fill=tk.BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Left pane: Groups
+        group_frame = ttk.LabelFrame(pane, text="Groups of Similar Choices", padding=5)
+        self.group_listbox = tk.Listbox(group_frame, exportselection=False)
+        self.group_listbox.pack(fill=tk.BOTH, expand=True)
+        self.group_listbox.bind("<<ListboxSelect>>", self._on_group_select)
+        pane.add(group_frame, weight=1)
 
-        self.tree.bind("<Double-1>", self._on_double_click)
+        # Right pane: Choices and actions
+        choice_frame = ttk.LabelFrame(pane, text="Choices in Selected Group (Select to Keep)", padding=5)
+        self.choice_listbox = tk.Listbox(choice_frame, exportselection=False, selectmode=tk.EXTENDED)
+        self.choice_listbox.pack(fill=tk.BOTH, expand=True)
         
-        self._populate_tree()
+        deduplicate_button = ttk.Button(choice_frame, text="Keep Selected & Remove Others", command=self._deduplicate_group, style="Accent.TButton")
+        deduplicate_button.pack(pady=(10, 0), fill=tk.X)
+        pane.add(choice_frame, weight=2)
 
-        # Close button
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=(10, 0))
-        ttk.Button(button_frame, text="Close", command=self.destroy).pack(side=tk.RIGHT)
-        
-        self.geometry("800x600")
+        # Bottom buttons
+        close_button = ttk.Button(main_frame, text="Close", command=self.destroy)
+        close_button.pack(side=tk.RIGHT, pady=(10, 0))
+
+        self._populate_groups()
+        self.geometry("800x500")
         self._center_window()
         self.wait_window(self)
 
-    def _populate_tree(self):
-        for wc_name in self.all_wildcards:
-            data = self.graph.get(wc_name, {'dependencies': [], 'dependents': []})
-            deps_count = len(data['dependencies'])
-            dependents_count = len(data['dependents'])
-            
-            parent_iid = self.tree.insert('', 'end', text=wc_name, values=(deps_count, dependents_count), open=False)
+    def _populate_groups(self):
+        self.group_listbox.delete(0, tk.END)
+        for i, group in enumerate(self.groups):
+            # Show a preview of the first item in the group
+            preview_text = group[0]['value'][:50] + '...' if len(group[0]['value']) > 50 else group[0]['value']
+            self.group_listbox.insert(tk.END, f"Group {i+1} ({len(group)} items) - e.g., \"{preview_text}\"")
 
-            if deps_count > 0:
-                uses_iid = self.tree.insert(parent_iid, 'end', text=f"Uses ({deps_count})")
-                for dep in data['dependencies']:
-                    self.tree.insert(uses_iid, 'end', text=dep)
-            
-            if dependents_count > 0:
-                used_by_iid = self.tree.insert(parent_iid, 'end', text=f"Used By ({dependents_count})")
-                for dep in data['dependents']:
-                    self.tree.insert(used_by_iid, 'end', text=dep)
-
-    def _filter_tree(self, *args):
-        search_term = self.search_var.get().lower()
-        for iid in self.tree.get_children():
-            if search_term in self.tree.item(iid, 'text').lower():
-                self.tree.move(iid, '', self.tree.index(iid)) # Make it visible
-                self.tree.item(iid, open=True if search_term else False) # Auto-expand on search
-            else:
-                self.tree.detach(iid)
-
-    def _on_double_click(self, event):
-        iid = self.tree.identify_row(event.y)
-        if not iid: return
-
-        wildcard_name = self.tree.item(iid, 'text')
+    def _on_group_select(self, event=None):
+        selection = self.group_listbox.curselection()
+        if not selection: return
         
-        # Ignore category nodes
-        if wildcard_name.startswith("Uses (") or wildcard_name.startswith("Used By ("):
+        group_index = selection[0]
+        selected_group = self.groups[group_index]
+
+        self.choice_listbox.delete(0, tk.END)
+        for item in selected_group:
+            self.choice_listbox.insert(tk.END, item['value'])
+
+    def _deduplicate_group(self):
+        group_selection = self.group_listbox.curselection()
+        choice_selection_indices = self.choice_listbox.curselection()
+
+        if not group_selection or not choice_selection_indices:
+            custom_dialogs.show_warning(self, "Selection Error", "Please select a group and at least one choice to keep.")
             return
 
-        filename_to_open = f"{wildcard_name}.json"
+        group_index = group_selection[0]
+
+        selected_group = self.groups[group_index]
+
+        # Get the items to DELETE
+        indices_to_keep = set(choice_selection_indices)
+        items_to_delete = [item for i, item in enumerate(selected_group) if i not in indices_to_keep]
         
-        if filename_to_open in self.manager_window.all_wildcard_files:
-            self.manager_window.select_and_load_file(filename_to_open)
-            self.manager_window.lift()
-            self.destroy()
-        else:
-            custom_dialogs.show_warning(self, "File Not Found", f"The wildcard file '{filename_to_open}' could not be found in the current workflow.")
+        if not items_to_delete:
+            custom_dialogs.show_info(self, "No Changes", "You have selected to keep all items in this group.")
+            return
+
+        if not custom_dialogs.ask_yes_no(self, "Confirm Deduplication", f"This will permanently REMOVE {len(items_to_delete)} choice(s) from the wildcard file.\n\nAre you sure?"):
+            return
+
+        for item in items_to_delete:
+            self.editor.delete_choice_by_iid(item['iid'])
+            self.changes_made += 1
+
+        # Remove the group from the list and repopulate
+        self.groups.pop(group_index)
+        self._populate_groups()
+        self.choice_listbox.delete(0, tk.END)
 
 class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     """A pop-up window to manage wildcard files."""
@@ -246,6 +245,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self._create_widgets()
         self._populate_wildcard_list()
         self.model_usage_manager.register_usage(self.active_wildcard_model)
+        self.update_theme() # Set initial theme-dependent colors
 
         if initial_file:
             self.select_and_load_file(initial_file)
@@ -284,7 +284,6 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
     def update_theme(self):
-        """Updates the theme for its child widgets."""
         self.structured_editor.update_theme()
 
     def _create_widgets(self):
@@ -308,8 +307,6 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.wildcard_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
-
-        # Add context menu for the file list
         self._create_file_list_context_menu()
         if sys.platform == "darwin":
             # On macOS, we bind to Button-2 (right-click) and Control-Button-1 (for trackpads/one-button mice).
@@ -345,7 +342,12 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
         # Structured Editor Tab
         self.structured_editor_frame = ttk.Frame(self.editor_notebook)
-        self.structured_editor = WildcardEditor(self.structured_editor_frame, self.processor, suggestion_callback=self.suggest_choices_with_ai, refinement_callback=self.refine_choices_with_ai)
+        self.structured_editor = WildcardEditor(
+            self.structured_editor_frame, 
+            self.processor, 
+            suggestion_callback=self.suggest_choices_with_ai, 
+            refinement_callback=self.refine_choices_with_ai,
+            autotag_callback=self.auto_tag_choices_with_ai)
         # Bind focus events to prevent the editor from clearing when interacting with its components.
         self.structured_editor.description_entry.bind("<FocusIn>", self._on_editor_focus_in)
         self.structured_editor.description_entry.bind("<FocusOut>", self._on_editor_focus_out)
@@ -577,9 +579,10 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
                 self._populate_wildcard_list()
                 self.select_and_load_file(self.selected_wildcard_file)
             else:
-                # If the name didn't change, just reload the content to ensure it's up-to-date
-                # and the structured editor reflects the raw text changes.
-                self._on_wildcard_file_select()
+                # If the name didn't change, just reload the content into the editor
+                # without triggering the full selection event, which would clear the view.
+                # This keeps the user's selection and scroll position intact.
+                self._parse_and_display_wildcard_content(content)
 
             self.update_callback(modified_file=self.selected_wildcard_file)
         except Exception as e:
@@ -895,6 +898,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         self.tools_menubutton.config(state=tk.DISABLED)
         self.structured_editor.suggest_button.config(state=tk.DISABLED)
         self.structured_editor.refine_button.config(state=tk.DISABLED)
+        self.structured_editor.autotag_button.config(state=tk.DISABLED)
         self.editor_container.config(text="No file selected")
         
         self.pending_value_refactors.clear()
@@ -1023,6 +1027,25 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_error(self, "Refinement Error", f"An error occurred while refining choices:\n{error_message}")
 
         self._run_ai_task(task_callable, on_success, on_error, "AI Refinement", "Asking AI to refine choices...")
+
+    def auto_tag_choices_with_ai(self, current_data: Dict[str, Any]):
+        """Starts the AI auto-tagging process in a background thread."""
+        self.structured_editor.autotag_button.config(state=tk.DISABLED, text="Tagging...")
+
+        def task_callable(model: str):
+            return self.processor.ai_auto_tag_choices(current_data, model, self.selected_wildcard_file)
+
+        def on_success(tagged_choices: List[Any]):
+            self.structured_editor.autotag_button.config(state=tk.NORMAL, text="Auto-Tag All (AI)")
+            self.structured_editor.update_with_tagged_choices(tagged_choices)
+            custom_dialogs.show_info(self, "Auto-Tagging Complete", "The choices have been tagged by the AI.\n\nPlease review and save the file.")
+            self.save_button.config(state=tk.NORMAL)
+
+        def on_error(error_message: str):
+            self.structured_editor.autotag_button.config(state=tk.NORMAL, text="Auto-Tag All (AI)")
+            custom_dialogs.show_error(self, "Auto-Tagging Error", f"An error occurred while auto-tagging choices:\n{error_message}")
+
+        self._run_ai_task(task_callable, on_success, on_error, "AI Auto-Tagging", "Asking AI to tag choices...")
 
     def _find_duplicates(self):
         """Finds, highlights, and reports duplicate 'value' entries in the current wildcard file."""
@@ -1198,15 +1221,19 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_info(self, "Find Similar", f"No similar choices found with a threshold of {threshold}%.")
             return
 
-        iids_to_highlight = [item['iid'] for group in similar_groups for item in group]
-        self.structured_editor.highlight_duplicates(iids_to_highlight)
-
-        message = f"Found {len(similar_groups)} group(s) of similar choices (threshold: {threshold}%).\n\nThey have been highlighted for your review. Please check them manually."
-        message += "\n\n--- Similar Groups (Preview) ---"
-        for i, group in enumerate(similar_groups[:10]):
-            message += "\n" + "\n".join([f"- \"{item['value'][:75]}\"" for item in group])
-        if len(similar_groups) > 10: message += f"\n...and {len(similar_groups) - 10} more groups."
-        custom_dialogs.show_info(self, "Similar Choices Found", message)
+        # --- NEW: Open the consolidation dialog ---
+        self.dialog_is_open = True
+        self.wildcard_listbox.unbind("<<ListboxSelect>>")
+        try:
+            deduplicate_dialog = _DeduplicateSimilarChoicesDialog(self, self.structured_editor, similar_groups)
+            changes_made = deduplicate_dialog.changes_made
+            if changes_made > 0:
+                self.save_button.config(state=tk.NORMAL)
+                custom_dialogs.show_info(self, "Deduplication Complete", f"Removed {changes_made} choice(s).\n\nPlease save the file to apply the changes.")
+        finally:
+            self.dialog_is_open = False
+            if self.winfo_exists():
+                self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
     def _find_and_replace(self):
         """Finds and replaces text across all choice values in the current file."""
@@ -1419,7 +1446,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
     def _view_dependencies(self):
         """Opens the dependency viewer window."""
-        _DependencyViewerWindow(self, self.processor, self)
+        DependencyGraphWindow(self, self.processor)
 
     def _validate_all_wildcards(self):
         """Starts the wildcard validation process in a background thread."""
@@ -1868,19 +1895,24 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.select_and_load_file(new_filename)
             
             if custom_dialogs.ask_yes_no(
-                self, 
-                "Refactor References?", 
-                f"Successfully renamed to '{new_filename}'.\n\nWould you like to scan all other wildcards and update references from '{old_basename}' to '{new_basename}'?"
+                self,
+                "Refactor References?",
+                f"Successfully renamed to '{new_filename}'.\n\nWould you like to scan all other wildcards AND templates to update references from '{old_basename}' to '{new_basename}'?"
             ):
-                def on_rename_refactor_complete(modified_count):
-                    custom_dialogs.show_info(self, "Refactor Complete", f"Updated {modified_count} file(s) that referenced '{old_basename}'.")
-                    self.update_callback() 
+                def on_refactor_complete(result_tuple):
+                    wildcards_modified, templates_modified = result_tuple
+                    custom_dialogs.show_info(
+                        self,
+                        "Refactor Complete",
+                        f"Updated {wildcards_modified} wildcard file(s) and {templates_modified} template file(s) that referenced '{old_basename}'."
+                    )
+                    self.update_callback() # Refresh main app in case templates changed
 
                 self._run_background_task(
-                    task_callable=lambda: self.processor.refactor_wildcard_references(old_basename, new_basename.strip()),
+                    task_callable=lambda: self.processor.refactor_all_references(old_basename, new_basename.strip()),
                     title="Refactoring References",
-                    message=f"Scanning for references to '{old_basename}'...",
-                    on_complete=on_rename_refactor_complete
+                    message=f"Scanning wildcards and templates for references to '{old_basename}'...",
+                    on_complete=on_refactor_complete
                 )
         except FileExistsError as e:
             custom_dialogs.show_error(self, "Rename Error", str(e))

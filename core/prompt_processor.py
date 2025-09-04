@@ -10,8 +10,8 @@ from typing import List, Dict, Any, Optional, Callable, Tuple, Set
 from .template_engine import TemplateEngine, PromptSegment
 from .history_manager import HistoryManager
 from .config import config
-from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT,
-                              DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS,
+from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT, DEFAULT_AI_BREED_PROMPTS_PROMPT,
+                              DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS, DEFAULT_AI_AUTO_TAG_PROMPT,
                               DEFAULT_BRAINSTORM_TEMPLATE_PROMPT, DEFAULT_BRAINSTORM_WILDCARD_PROMPT, DEFAULT_AI_REFACTOR_CHOICES_PROMPT,
                               DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION,
                               DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT,
@@ -176,6 +176,30 @@ class PromptProcessor:
     def get_full_history(self) -> List[Dict[str, str]]:
         """Pass-through to get the full history data."""
         return self.history_manager.load_full_history()
+
+    def get_all_history_across_workflows(self) -> List[Dict[str, str]]:
+        """Loads and returns history data from all workflows (SFW and NSFW), sorted by timestamp."""
+        
+        def load_from_path(path: str, workflow_tag: str) -> List[Dict[str, str]]:
+            history = []
+            if not os.path.exists(path):
+                return history
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line)
+                            entry['workflow_source'] = workflow_tag
+                            history.append(entry)
+                        except json.JSONDecodeError:
+                            continue # Skip corrupted lines
+            except IOError as e:
+                print(f"Warning: Could not read history file {path}: {e}")
+            return history
+
+        all_history = load_from_path(os.path.join(config.HISTORY_DIR, 'sfw', 'history.jsonl'), 'SFW') + load_from_path(os.path.join(config.HISTORY_DIR, 'nsfw', 'history.jsonl'), 'NSFW')
+        all_history.sort(key=lambda x: x.get('timestamp', '0'), reverse=True)
+        return all_history
     
     def get_available_templates(self) -> List[str]:
         """Get a fresh, sorted list of available templates."""
@@ -445,6 +469,59 @@ class PromptProcessor:
         if self.all_wildcards_cache is not None and old_basename in self.all_wildcards_cache:
             self.all_wildcards_cache[new_basename] = self.all_wildcards_cache.pop(old_basename)
         self._used_wildcards_cache = None
+        self.template_engine.wildcard_files_cache = None # Invalidate file list cache
+
+    def refactor_template_references(self, old_basename: str, new_basename: str) -> int:
+        """
+        Scans all template files and replaces references to old_basename with new_basename.
+        Returns the number of templates modified.
+        """
+        modified_files_count = 0
+        all_template_dirs = [
+            os.path.join(config.TEMPLATE_BASE_DIR, 'sfw'),
+            os.path.join(config.TEMPLATE_BASE_DIR, 'nsfw')
+        ]
+
+        for template_dir in all_template_dirs:
+            if not os.path.exists(template_dir):
+                continue
+            
+            for template_file in os.listdir(template_dir):
+                if not template_file.endswith('.txt'):
+                    continue
+                
+                filepath = os.path.join(template_dir, template_file)
+                made_change = False
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    new_content, count = re.subn(rf'__({re.escape(old_basename)})__', f'__{new_basename}__', content)
+                    
+                    if count > 0:
+                        made_change = True
+                        with open(filepath, 'w', encoding='utf-8') as f:
+                            f.write(new_content)
+                        
+                        if template_file in self.template_engine.templates:
+                            self.template_engine.templates[template_file] = new_content
+
+                except Exception as e:
+                    print(f"Error refactoring template '{filepath}': {e}")
+                
+                if made_change:
+                    modified_files_count += 1
+        
+        return modified_files_count
+
+    def refactor_all_references(self, old_basename: str, new_basename: str) -> Tuple[int, int]:
+        """
+        Orchestrates refactoring across both wildcards and templates.
+        Returns a tuple of (wildcards_modified_count, templates_modified_count).
+        """
+        wildcards_modified = self.refactor_wildcard_references(old_basename, new_basename)
+        templates_modified = self.refactor_template_references(old_basename, new_basename)
+        return wildcards_modified, templates_modified
 
     def generate_single_structured_prompt(self, template_content: str, existing_context: Optional[Dict[str, Any]] = None, force_reroll: Optional[List[str]] = None, force_swap: Optional[Dict[str, str]] = None, seed: Optional[int] = None) -> Tuple[List[PromptSegment], Dict[str, Any]]:
         """Generates a single structured prompt for GUI use, optionally reusing existing wildcard choices."""
@@ -463,7 +540,9 @@ class PromptProcessor:
         Returns a dictionary mapping problematic wildcard names to error messages.
         """
         errors = {}
-        wildcards_in_order = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', template_content)
+        # Use the full regex to find all wildcards, but only extract the name (group 2)
+        wildcard_pattern = re.compile(r'__(!)?([a-zA-Z0-9_.\s-]+?)(?::\d+(?:-\d+)?)?__')
+        wildcards_in_order = [match.group(2) for match in wildcard_pattern.finditer(template_content)]
         
         # Create a map of wildcard name to its first appearance index
         wildcard_indices = {}
@@ -1554,6 +1633,65 @@ class PromptProcessor:
         # 4. Call the AI and parse the response
         response = self.generate_for_brainstorming(model, prompt)
         return self.ollama_client.parse_json_array_from_response(response)
+
+    def ai_auto_tag_choices(self, wildcard_data: Dict[str, Any], model: str, current_wildcard_filename: Optional[str] = None) -> List[Any]:
+        """Uses AI to automatically add tags to a list of wildcard choices."""
+
+        description = wildcard_data.get('description', 'No description provided.')
+        choices = wildcard_data.get('choices', [])
+        if not choices:
+            raise ValueError("No choices found in the wildcard file to tag.")
+
+        topic = "the given theme"
+        if current_wildcard_filename:
+            topic = os.path.splitext(current_wildcard_filename)[0].replace('_', ' ')
+
+        choices_json = json.dumps(choices, indent=2)
+
+        prompt = DEFAULT_AI_AUTO_TAG_PROMPT.format(
+            description=description,
+            topic=topic,
+            choices_json=choices_json
+        )
+
+        # Use chat for better instruction following
+        messages = [{'role': 'user', 'content': prompt}]
+        raw_response = self.chat_with_model(model, messages)
+
+        # The response should be a JSON array.
+        return self.ollama_client.parse_json_array_from_response(raw_response)
+
+    def ai_interrogate_image(self, base64_image: str, model: str, prompt: str) -> str:
+        """Pass-through to the Ollama client to generate a prompt from an image."""
+        return self.ollama_client.interrogate_image(model, base64_image, prompt)
+
+    def ai_breed_prompts(self, parent_prompts: List[str], num_children: int, model: str) -> List[str]:
+        """Uses AI to 'breed' new prompts from a list of parent prompts."""
+        if len(parent_prompts) < 2:
+            raise ValueError("Breeding requires at least two parent prompts.")
+
+        parent_prompts_str = ""
+        for i, p in enumerate(parent_prompts):
+            parent_prompts_str += f"Parent {i+1}: {p}\n"
+
+        prompt = DEFAULT_AI_BREED_PROMPTS_PROMPT.format(
+            parent_prompts_str=parent_prompts_str.strip(),
+            num_children=num_children
+        )
+
+        # Use chat for better instruction following on complex tasks.
+        messages = [{'role': 'user', 'content': prompt}]
+        raw_response = self.chat_with_model(model, messages)
+
+        # Parse the numbered list response
+        child_prompts = []
+        for line in raw_response.splitlines():
+            # Remove numbered list prefix, then strip whitespace and any surrounding backticks.
+            cleaned_line = re.sub(r"^\d+\.\s*", "", line).strip().strip('`')
+            if cleaned_line:
+                child_prompts.append(cleaned_line)
+        
+        return child_prompts
 
     def suggest_chat_reply(self, messages: List[Dict[str, str]], model: str) -> str:
         """Suggests a reply for the user in a brainstorming chat."""
