@@ -5,6 +5,7 @@ import os
 import json
 import tempfile
 import uuid
+import copy
 from typing import Set, Optional, Dict, Any, List
 from .config import config
 
@@ -86,10 +87,125 @@ class HistoryManager:
                             # Move top-level image/params into the new enhanced object
                             if 'image_path' in entry: entry['enhanced']['image_path'] = entry.pop('image_path')
                             if 'generation_params' in entry: entry['enhanced']['generation_params'] = entry.pop('generation_params')
+                        
+                        # New migration for single image paths to lists
+                        if entry.get('original_image_path'):
+                            entry['original_images'] = [{
+                                'image_path': entry.pop('original_image_path'),
+                                'generation_params': entry.pop('original_generation_params', {})
+                            }]
+                        
+                        if entry.get('enhanced', {}).get('image_path'):
+                            enhanced_data = entry['enhanced']
+                            enhanced_data['images'] = [{
+                                'image_path': enhanced_data.pop('image_path'),
+                                'generation_params': enhanced_data.pop('generation_params', {})
+                            }]
+
+                        for var_data in entry.get('variations', {}).values():
+                            if var_data.get('image_path'):
+                                var_data['images'] = [{'image_path': var_data.pop('image_path'), 'generation_params': var_data.pop('generation_params', {})}]
+
                         history.append(entry)
         except Exception as e:
             print(f"Error loading full history: {e}")
         return history
+
+    def _get_all_image_paths_from_entry(self, data: Dict[str, Any]) -> Set[str]:
+        """Helper to extract all image paths from a single history entry."""
+        paths = set()
+        # Check original prompt's images
+        for img in data.get('original_images', []):
+            if img.get('image_path'): paths.add(img['image_path'])
+        # Check enhanced prompt's images
+        for img in data.get('enhanced', {}).get('images', []):
+            if img.get('image_path'): paths.add(img['image_path'])
+        # Check variations' images
+        for var_data in data.get('variations', {}).values():
+            for img in var_data.get('images', []):
+                if img.get('image_path'): paths.add(img['image_path'])
+        return paths
+
+    def garbage_collect_orphaned_images(self) -> int:
+        """
+        Scans the images directory and deletes any image files that are not
+        referenced in the history file.
+        Returns the number of orphaned files deleted.
+        """
+        history_dir = config.get_history_file_dir()
+        image_dir = os.path.join(history_dir, 'images')
+
+        if not os.path.isdir(image_dir):
+            return 0
+
+        try:
+            disk_images = {os.path.join('images', f) for f in os.listdir(image_dir) if os.path.isfile(os.path.join(image_dir, f))}
+        except OSError:
+            return 0
+
+        all_entries = self.load_full_history()
+        referenced_images = set()
+        for entry in all_entries:
+            referenced_images.update(self._get_all_image_paths_from_entry(entry))
+
+        orphaned_files = disk_images - referenced_images
+        for relative_path in orphaned_files:
+            full_path = os.path.join(history_dir, relative_path)
+            try:
+                os.remove(full_path)
+                print(f"INFO: Deleted orphaned image: {full_path}")
+            except OSError as e:
+                print(f"WARNING: Could not delete orphaned image file {relative_path}. Error: {e}")
+        
+        return len(orphaned_files)
+
+    def prune_missing_image_entries(self) -> int:
+        """
+        Scans the history file, removes references to missing image files,
+        and removes 'generated_only' entries that no longer have any images.
+        Returns the number of image references that were pruned.
+        """
+        filepath = config.get_history_file()
+        if not os.path.isfile(filepath):
+            return 0
+
+        history_dir = config.get_history_file_dir()
+        all_entries = self.load_full_history()
+        cleaned_entries = []
+        pruned_count = 0
+
+        def get_valid_images(images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            nonlocal pruned_count
+            valid_images = []
+            for img in images:
+                if 'image_path' in img and os.path.exists(os.path.join(history_dir, img['image_path'])):
+                    valid_images.append(img)
+                else:
+                    pruned_count += 1
+            return valid_images
+
+        for entry in all_entries:
+            cleaned_entry = copy.deepcopy(entry)
+            
+            if 'original_images' in cleaned_entry:
+                cleaned_entry['original_images'] = get_valid_images(cleaned_entry['original_images'])
+            if 'enhanced' in cleaned_entry and 'images' in cleaned_entry['enhanced']:
+                cleaned_entry['enhanced']['images'] = get_valid_images(cleaned_entry['enhanced']['images'])
+            if 'variations' in cleaned_entry:
+                for var_key in cleaned_entry['variations']:
+                    if 'images' in cleaned_entry['variations'][var_key]:
+                        cleaned_entry['variations'][var_key]['images'] = get_valid_images(cleaned_entry['variations'][var_key]['images'])
+            
+            if cleaned_entry.get('status') == 'generated_only' and not cleaned_entry.get('original_images'):
+                continue
+
+            cleaned_entries.append(cleaned_entry)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for entry in cleaned_entries:
+                f.write(json.dumps(entry) + '\n')
+        
+        return pruned_count
 
     def get_entry_by_id(self, entry_id: str) -> Optional[Dict[str, Any]]:
         """Finds and returns a single history entry by its unique ID."""
@@ -119,19 +235,22 @@ class HistoryManager:
         # --- Image Deletion Logic ---
         image_paths_to_delete = []
         # Check original prompt
-        if row_to_delete.get('original_image_path'):
-            image_paths_to_delete.append(row_to_delete['original_image_path'])
+        for img in row_to_delete.get('original_images', []):
+            if img.get('image_path'):
+                image_paths_to_delete.append(img['image_path'])
 
         # Check enhanced prompt
         enhanced_data = row_to_delete.get('enhanced', {})
-        if enhanced_data.get('image_path'):
-            image_paths_to_delete.append(enhanced_data['image_path'])
+        for img in enhanced_data.get('images', []):
+            if img.get('image_path'):
+                image_paths_to_delete.append(img['image_path'])
         
         # Check variations
         variations_data = row_to_delete.get('variations', {})
         for var_data in variations_data.values():
-            if var_data.get('image_path'):
-                image_paths_to_delete.append(var_data['image_path'])
+            for img in var_data.get('images', []):
+                if img.get('image_path'):
+                    image_paths_to_delete.append(img['image_path'])
 
         history_dir = config.get_history_file_dir()
         for relative_path in image_paths_to_delete:
@@ -178,19 +297,8 @@ class HistoryManager:
         if not entry_id_to_update: return False
 
         # --- NEW: Image Deletion Logic for Replaced Images ---
-        def get_all_image_paths(data: Dict[str, Any]) -> Set[str]:
-            paths = set()
-            if data.get('original_image_path'):
-                paths.add(data['original_image_path'])
-            if data.get('enhanced', {}).get('image_path'):
-                paths.add(data['enhanced']['image_path'])
-            for var_data in data.get('variations', {}).values():
-                if var_data.get('image_path'):
-                    paths.add(var_data['image_path'])
-            return paths
-
-        original_paths = get_all_image_paths(original_row)
-        updated_paths = get_all_image_paths(updated_row)
+        original_paths = self._get_all_image_paths_from_entry(original_row)
+        updated_paths = self._get_all_image_paths_from_entry(updated_row)
         paths_to_delete = original_paths - updated_paths
 
         if paths_to_delete:

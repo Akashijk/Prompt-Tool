@@ -188,6 +188,14 @@ class PromptProcessor:
         """Pass-through to get the full history data."""
         return self.history_manager.load_full_history()
 
+    def prune_missing_image_entries(self) -> int:
+        """Pass-through to prune missing image entries from the history."""
+        return self.history_manager.prune_missing_image_entries()
+
+    def garbage_collect_orphaned_images(self) -> int:
+        """Pass-through to garbage collect orphaned images."""
+        return self.history_manager.garbage_collect_orphaned_images()
+
     def get_all_history_across_workflows(self) -> List[Dict[str, str]]:
         """Loads and returns history data from all workflows (SFW and NSFW), sorted by timestamp."""
         
@@ -1624,7 +1632,7 @@ class PromptProcessor:
         # The response should be a JSON array.
         return self.ollama_client.parse_json_array_from_response(raw_response)
 
-    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str) -> bytes:
+    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float) -> bytes:
         """Generates an image with InvokeAI and returns the raw image bytes."""
         self.invokeai_client.check_server_compatibility() # This will raise a specific error if there's a problem.
 
@@ -1636,7 +1644,9 @@ class PromptProcessor:
             loras=loras,
             steps=steps,
             cfg_scale=cfg_scale,
-            scheduler=scheduler
+            scheduler=scheduler,
+            cfg_rescale_multiplier=cfg_rescale_multiplier,
+            verbose=self.verbose
         )
 
     def save_generated_image(self, image_bytes: bytes) -> str:

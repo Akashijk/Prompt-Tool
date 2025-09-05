@@ -12,7 +12,6 @@ from core.config import config
 from core.prompt_processor import PromptProcessor
 from .common import LoadingAnimation, TextContextMenu, SmartWindowMixin
 from .image_generation_dialog import ImageGenerationOptionsDialog
-from .image_preview_dialog import ImagePreviewDialog
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
@@ -39,6 +38,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         self.text_widgets: Dict[str, tk.Text] = {}
         self.sd_model_labels: Dict[str, ttk.Label] = {}
         self.loading_animations: Dict[str, LoadingAnimation] = {}
+        self.image_gen_spinners: Dict[str, LoadingAnimation] = {}
         self.image_gen_buttons: Dict[str, ttk.Button] = {}
         self.copy_buttons: Dict[str, ttk.Button] = {}
         self.regen_buttons: Dict[str, ttk.Button] = {}
@@ -130,8 +130,15 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
 
         # Add Generate Image button for prompts that can be generated (not negative)
         if prompt_key != 'negative':
-            gen_image_button = ttk.Button(button_container, text="Generate Image", command=lambda key=prompt_key: self._generate_image(key), state=tk.DISABLED)
-            gen_image_button.pack(fill=tk.X, pady=(5,0))
+            image_gen_frame = ttk.Frame(button_container)
+            image_gen_frame.pack(fill=tk.X, pady=(5,0))
+
+            image_gen_spinner = LoadingAnimation(image_gen_frame, size=20)
+            # Don't pack yet
+            self.image_gen_spinners[prompt_key] = image_gen_spinner
+
+            gen_image_button = ttk.Button(image_gen_frame, text="Generate Image", command=lambda key=prompt_key: self._generate_image(key), state=tk.DISABLED)
+            gen_image_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
             self.image_gen_buttons[prompt_key] = gen_image_button
 
         if is_loading:
@@ -160,10 +167,27 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             self.sd_model_labels[prompt_key] = model_label
 
     def _save(self):
-        """Save the result to the CSV history."""
+        """Save the result to the history, either as a new entry or by updating an existing one."""
         # Add favorite status to the data before saving
         self.result_data['favorite'] = self.is_favorite.get()
-        self.processor.save_results([self.result_data])
+
+        if self.existing_entry_id:
+            original_entry = self.processor.history_manager.get_entry_by_id(self.existing_entry_id)
+            if not original_entry:
+                # Fallback to creating a new entry if the old one is gone for some reason.
+                self.processor.history_manager.save_result(**self.result_data)
+                custom_dialogs.show_warning(self, "Save Warning", "Could not find the original history entry to update. A new entry has been created instead.")
+            else:
+                # Merge the new data into the old entry.
+                updated_entry = original_entry.copy()
+                updated_entry['enhanced'] = self.result_data.get('enhanced', {})
+                updated_entry['variations'] = self.result_data.get('variations', {})
+                updated_entry['favorite'] = self.result_data.get('favorite', False)
+                updated_entry['status'] = 'enhanced'
+                self.processor.update_history_entry(original_entry, updated_entry)
+        else:
+            self.processor.history_manager.save_result(**self.result_data)
+
         custom_dialogs.show_info(self, "Saved", "Result saved to history.")
         self.destroy()
 
@@ -213,30 +237,44 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             return # User cancelled
 
         # Disable the button
-        self.image_gen_buttons[prompt_key].config(state=tk.DISABLED, text="Generating...")
+        button = self.image_gen_buttons.get(prompt_key)
+        spinner = self.image_gen_spinners.get(prompt_key)
+        if button:
+            button.config(state=tk.DISABLED)
+        if spinner:
+            spinner.pack(side=tk.LEFT, padx=(0, 5))
+            spinner.start()
         
         def task():
-            try:
-                # Use a random seed for now
-                seed = random.randint(0, 2**32 - 1)
-                # Manually map the options from the dialog to the arguments the processor expects.
-                # This is crucial because the dialog returns 'model_key' but the processor's
-                # function signature expects 'model_name' (which it then uses as the key).
-                gen_args = {
-                    "prompt": prompt,
-                    "negative_prompt": options["negative_prompt"],
-                    "seed": seed,
-                    "model_object": options["model"],
-                    "loras": options["loras"],
-                    "steps": options["steps"],
-                    "cfg_scale": options["cfg_scale"],
-                    "scheduler": options["scheduler"],
-                }
-                # Pass the full options dict as generation_params
-                image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
-                self.image_gen_queue.put({'success': True, 'key': prompt_key, 'bytes': image_bytes, 'prompt': prompt, 'generation_params': options})
-            except Exception as e:
-                self.image_gen_queue.put({'success': False, 'key': prompt_key, 'error': str(e)})
+            generated_images = []
+            errors = []
+            total_models = len(options['models'])
+            seed_for_batch = options["seed"]
+            for i, model_object in enumerate(options['models']):
+                if button:
+                    self.after(0, lambda i=i, t=total_models: button.config(text=f"Generating ({i+1}/{t})..."))
+                try:
+                    current_gen_params = options.copy()
+                    current_gen_params['model'] = model_object
+                    del current_gen_params['models']
+                    
+                    gen_args = {
+                        "prompt": prompt,
+                        "negative_prompt": options["negative_prompt"],
+                        "seed": seed_for_batch,
+                        "model_object": model_object,
+                        "loras": options["loras"],
+                        "steps": options["steps"],
+                        "cfg_scale": options["cfg_scale"],
+                        "scheduler": options["scheduler"],
+                        "cfg_rescale_multiplier": options["cfg_rescale_multiplier"],
+                    }
+                    image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
+                    generated_images.append({'bytes': image_bytes, 'prompt': prompt, 'generation_params': current_gen_params})
+                except Exception as e:
+                    errors.append(f"Model '{model_object.get('name', 'Unknown')}': {e}")
+            
+            self.image_gen_queue.put({'success': not errors, 'key': prompt_key, 'images': generated_images, 'errors': errors})
 
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
@@ -249,33 +287,42 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         try:
             result = self.image_gen_queue.get_nowait()
             key = result['key']
+            button = self.image_gen_buttons.get(key)
+            spinner = self.image_gen_spinners.get(key)
+
+            if spinner:
+                spinner.stop()
+                spinner.pack_forget()
+            if button:
+                button.config(state=tk.NORMAL)
             
-            if result['success']:
-                # Open the preview dialog
-                preview_dialog = ImagePreviewDialog(self, result['bytes'], result['prompt'])
-                if preview_dialog.result: # User clicked "Save to History"
-                    # Save the image and get the path
-                    image_path = self.processor.save_generated_image(result['bytes'])
-                    generation_params = result.get('generation_params')
-                    
-                    # Store image path and params with the specific prompt that generated it
-                    if key == 'original':
-                        self.result_data['original_image_path'] = image_path
-                        self.result_data['original_generation_params'] = generation_params
-                    if key == 'enhanced':
-                        if 'enhanced' not in self.result_data: self.result_data['enhanced'] = {}
-                        self.result_data['enhanced']['image_path'] = image_path
-                        self.result_data['enhanced']['generation_params'] = generation_params
-                    elif key in self.result_data.get('variations', {}):
-                        self.result_data['variations'][key]['image_path'] = image_path
-                        self.result_data['variations'][key]['generation_params'] = generation_params
-                    custom_dialogs.show_info(self, "Image Saved", f"Image saved for '{key}' prompt.\n\nPath will be stored when you save to history.")
-                    self.image_gen_buttons[key].config(text="Image Saved") # Don't re-enable, it's done.
-                else: # User clicked "Discard"
-                    self.image_gen_buttons[key].config(state=tk.NORMAL, text="Generate Image") # Re-enable
-            else:
-                custom_dialogs.show_error(self, "Image Generation Error", f"Failed to generate image:\n{result['error']}")
-                self.image_gen_buttons[key].config(state=tk.NORMAL, text="Generate Image") # Re-enable on failure
+            if result.get('errors'):
+                error_str = "\n".join(result['errors'])
+                custom_dialogs.show_error(self, "Image Generation Errors", f"Some images failed to generate:\n{error_str}")
+
+            if not result.get('images'):
+                return
+
+            from .multi_image_preview_dialog import MultiImagePreviewDialog
+            preview_dialog = MultiImagePreviewDialog(self, result['images'])
+            images_to_save = preview_dialog.result
+            
+            if images_to_save: # User clicked "Save Kept Images"
+                saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
+                
+                # Store image list with the specific prompt that generated it
+                if key == 'original':
+                    self.result_data['original_images'] = saved_images_data
+                elif key == 'enhanced':
+                    if 'enhanced' not in self.result_data: self.result_data['enhanced'] = {}
+                    self.result_data['enhanced']['images'] = saved_images_data
+                elif key in self.result_data.get('variations', {}):
+                    self.result_data['variations'][key]['images'] = saved_images_data
+                
+                custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) saved for '{key}' prompt.\n\nPath(s) will be stored when you save to history.")
+                if button: button.config(text=f"Regen Image(s) ({len(saved_images_data)})")
+            else: # User clicked "Discard"
+                if button: button.config(state=tk.NORMAL, text="Generate Image") # Re-enable
         except queue.Empty:
             pass
         except tk.TclError:

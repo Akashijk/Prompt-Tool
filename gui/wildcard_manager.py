@@ -216,6 +216,93 @@ class _DeduplicateSimilarChoicesDialog(custom_dialogs._CustomDialog):
         self._populate_groups()
         self.choice_listbox.delete(0, tk.END)
 
+class _ValidationErrorsDialog(custom_dialogs._CustomDialog):
+    """A modal dialog to display wildcard validation errors interactively."""
+    def __init__(self, parent: 'WildcardManagerWindow', errors: List[Dict[str, Any]]):
+        super().__init__(parent, "Wildcard Validation Errors")
+        self.manager = parent
+        self.processor = parent.processor
+        self.errors = errors
+        self.iid_map: Dict[str, Dict[str, Any]] = {}
+
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(main_frame, text="The following issues were found. Double-click an error to jump to the file.", wraplength=780).pack(anchor='w', pady=(0, 10))
+
+        # --- Action Buttons ---
+        action_frame = ttk.Frame(main_frame)
+        action_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(action_frame, text="Attempt to Fix All Missing Values...", command=self._fix_all_missing_values, style="Accent.TButton").pack(side=tk.LEFT)
+        ttk.Button(action_frame, text="Fix Selected with AI...", command=self._fix_error_with_ai).pack(side=tk.LEFT, padx=5)
+
+        # --- Treeview for errors ---
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+        
+        columns = ('file', 'choice', 'message')
+        self.tree = ttk.Treeview(text_frame, columns=columns, show='headings')
+        self.tree.heading('file', text='File', command=lambda: self.manager._sort_treeview_column(self.tree, 'file', False))
+        self.tree.heading('choice', text='Problematic Choice', command=lambda: self.manager._sort_treeview_column(self.tree, 'choice', False))
+        self.tree.heading('message', text='Error Details', command=lambda: self.manager._sort_treeview_column(self.tree, 'message', False))
+        self.tree.column('file', width=150, stretch=False)
+        self.tree.column('choice', width=200, stretch=False)
+        self.tree.column('message', width=400)
+        
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for error in self.errors:
+            values = (error.get('source_file', ''), error.get('choice_value', ''), error.get('message', ''))
+            iid = self.tree.insert('', tk.END, values=values)
+            self.iid_map[iid] = error
+
+        self.tree.bind("<Double-1>", self._on_error_double_click)
+        right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
+        self.tree.bind(right_click_event, self._show_context_menu)
+
+        ttk.Button(main_frame, text="Close", command=self.destroy).pack(pady=(10, 0))
+        self.geometry("800x500")
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_error_double_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid: return
+        error = self.iid_map.get(iid)
+        if not error: return
+        
+        self.manager.select_and_load_file(error['source_file'])
+        self.manager.structured_editor.highlight_choice_by_value(error['choice_value'])
+        self.manager.lift() # Bring the main manager window to the front
+
+    def _show_context_menu(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid: return
+        self.tree.selection_set(iid)
+        
+        error = self.iid_map.get(iid)
+        if not error: return
+
+        context_menu = tk.Menu(self.tree, tearoff=0)
+        context_menu.add_command(label="Go to Error", command=lambda: self._on_error_double_click(event))
+        
+        details = error.get('details')
+        if details and details.get('type') == 'missing_value':
+            context_menu.add_separator()
+            label = f"Add '{details['missing_value']}' to '{details['target_wildcard']}'"
+            context_menu.add_command(label=label, command=lambda e=error: self.manager._add_missing_wildcard_value(e, self))
+        
+        context_menu.tk_popup(event.x_root, event.y_root)
+
+    def _fix_all_missing_values(self):
+        self.manager._fix_all_missing_values(self.errors, self)
+
+    def _fix_error_with_ai(self):
+        self.manager._fix_error_with_ai(self.tree, self.iid_map, self)
+
 class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     """A pop-up window to manage wildcard files."""
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor, update_callback: Callable, initial_file: Optional[str] = None, initial_content: Optional[str] = None):
@@ -1681,6 +1768,30 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
         # Call the refactored diff widget creator with the new callback
         self._create_diff_dialog_widgets(diff_window, diff_text, apply_fix)
+
+    def _add_missing_wildcard_value(self, error_data: Dict[str, Any], parent_window: tk.Toplevel):
+        """Callback to add a missing value to a target wildcard file."""
+        details = error_data.get('details')
+        if not details or details.get('type') != 'missing_value': return
+
+        target_file = details['target_wildcard']
+        missing_value = details['missing_value']
+
+        try:
+            target_data = self._load_and_parse_wildcard_file(target_file)
+            if target_data is None:
+                custom_dialogs.show_error(parent_window, "Error", f"Could not load target file '{target_file}' to add value.")
+                return
+            
+            if 'choices' not in target_data: target_data['choices'] = []
+            target_data['choices'].append(missing_value)
+
+            new_content = json.dumps(target_data, indent=2)
+            self.processor.save_wildcard_content(target_file, new_content)
+            custom_dialogs.show_info(parent_window, "Success", f"Added '{missing_value}' to '{target_file}'.\n\nPlease re-run validation.")
+            parent_window.destroy()
+        except Exception as e:
+            custom_dialogs.show_error(parent_window, "Error", f"Failed to add missing value:\n{e}")
 
     def _run_ai_task(self, task_callable: Callable, on_success: Callable, on_error: Callable, loading_dialog_title: str, loading_dialog_message: str):
         """

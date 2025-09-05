@@ -3,6 +3,7 @@
 import tkinter as tk
 from tkinter import ttk
 import queue
+import random
 import threading
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
@@ -15,6 +16,9 @@ if TYPE_CHECKING:
 
 class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixin):
     """A dialog for selecting image generation options for InvokeAI."""
+    def _randomize_seed(self):
+        self.seed_var.set(str(random.randint(0, 2**32 - 1)))
+
     def __init__(self, parent, invokeai_client: 'InvokeAIClient', initial_negative_prompt: str = ""):
         super().__init__(parent, "Image Generation Options")
         self.client = invokeai_client
@@ -33,8 +37,8 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
     def _start_model_fetch(self):
         """Starts fetching models in a background thread."""
-        self.model_combo.set("Loading models...")
-        self.model_combo.config(state=tk.DISABLED)
+        self.model_listbox.insert(tk.END, "Loading models...")
+        self.model_listbox.config(state=tk.DISABLED)
         self.lora_listbox.insert(tk.END, "Loading LoRAs...")
         self.lora_listbox.config(state=tk.DISABLED)
         self.ok_button.config(state=tk.DISABLED)
@@ -71,22 +75,24 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
     def _populate_widgets(self):
         """Populates the widgets with fetched model data."""
-        self.model_combo.config(state="readonly")
+        self.model_listbox.config(state=tk.NORMAL)
         self.lora_listbox.config(state=tk.NORMAL)
         self.ok_button.config(state=tk.NORMAL)
 
         # Handle main models - store both name and key
         main_models = self.models.get('main', [])
+        self.model_listbox.delete(0, tk.END)
         if main_models:
             # Create mapping from display name to model key
             self.model_data = {m['name']: m for m in main_models}
             main_model_names = sorted(list(self.model_data.keys()))
             
-            self.model_combo['values'] = main_model_names
-            self.model_var.set(main_model_names[0])
+            for model_name in main_model_names:
+                self.model_listbox.insert(tk.END, model_name)
+            self.model_listbox.selection_set(0) # Select the first one by default
         else:
-            self.model_var.set("No SDXL models found")
-            self.model_combo.config(state=tk.DISABLED)
+            self.model_listbox.insert(tk.END, "No SDXL models found")
+            self.model_listbox.config(state=tk.DISABLED)
 
         # Handle LoRA models - store both name and key
         self.lora_listbox.delete(0, tk.END)
@@ -104,10 +110,14 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Main Model
-        ttk.Label(main_frame, text="Main Model (SDXL):").pack(anchor='w')
-        self.model_var = tk.StringVar()
-        self.model_combo = ttk.Combobox(main_frame, textvariable=self.model_var, state="readonly")
-        self.model_combo.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(main_frame, text="Main Model (SDXL, Ctrl+Click for multiple):").pack(anchor='w')
+        model_frame = ttk.Frame(main_frame)
+        model_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        model_scrollbar = ttk.Scrollbar(model_frame, orient=tk.VERTICAL)
+        self.model_listbox = tk.Listbox(model_frame, selectmode=tk.EXTENDED, yscrollcommand=model_scrollbar.set, height=8)
+        model_scrollbar.config(command=self.model_listbox.yview)
+        model_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.model_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # LoRAs
         lora_frame = ttk.LabelFrame(main_frame, text="LoRAs (Ctrl+Click to select multiple)", padding=10)
@@ -132,18 +142,32 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         params_frame.columnconfigure(1, weight=1)
         params_frame.columnconfigure(3, weight=1)
 
-        ttk.Label(params_frame, text="Steps:").grid(row=0, column=0, sticky='w')
+        # Row 0: Seed and Steps
+        ttk.Label(params_frame, text="Seed:").grid(row=0, column=0, sticky='w', pady=2)
+        seed_frame = ttk.Frame(params_frame)
+        seed_frame.grid(row=0, column=1, sticky='ew', pady=2)
+        self.seed_var = tk.StringVar(value=str(random.randint(0, 2**32 - 1)))
+        ttk.Entry(seed_frame, textvariable=self.seed_var).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(seed_frame, text="🎲", width=3, command=self._randomize_seed).pack(side=tk.LEFT, padx=(5,0))
+
+        ttk.Label(params_frame, text="Steps:").grid(row=0, column=2, sticky='w', padx=(10, 5), pady=2)
         self.steps_var = tk.StringVar(value="30")
-        ttk.Entry(params_frame, textvariable=self.steps_var, width=8).grid(row=0, column=1, sticky='w')
+        ttk.Entry(params_frame, textvariable=self.steps_var, width=8).grid(row=0, column=3, sticky='w', pady=2)
 
-        ttk.Label(params_frame, text="CFG Scale:").grid(row=0, column=2, sticky='w', padx=(10, 0))
+        # Row 1: CFG Scale and Rescale
+        ttk.Label(params_frame, text="CFG Scale:").grid(row=1, column=0, sticky='w', pady=2)
         self.cfg_var = tk.StringVar(value="7.5")
-        ttk.Entry(params_frame, textvariable=self.cfg_var, width=8).grid(row=0, column=3, sticky='w')
+        ttk.Entry(params_frame, textvariable=self.cfg_var, width=8).grid(row=1, column=1, sticky='w', pady=2)
 
-        ttk.Label(params_frame, text="Scheduler:").grid(row=1, column=0, sticky='w', pady=(5, 0))
+        ttk.Label(params_frame, text="CFG Rescale:").grid(row=1, column=2, sticky='w', padx=(10, 5), pady=2)
+        self.cfg_rescale_var = tk.StringVar(value="0.0")
+        ttk.Entry(params_frame, textvariable=self.cfg_rescale_var, width=8).grid(row=1, column=3, sticky='w', pady=2)
+
+        # Row 2: Scheduler
+        ttk.Label(params_frame, text="Scheduler:").grid(row=2, column=0, sticky='w', pady=(5, 0))
         schedulers = ["euler", "dpmpp_2m", "dpmpp_2m_karras", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_2s_ancestral", "lms", "pndm"]
         self.scheduler_var = tk.StringVar(value="dpmpp_2m")
-        ttk.Combobox(params_frame, textvariable=self.scheduler_var, values=schedulers, state="readonly").grid(row=1, column=1, columnspan=3, sticky='ew', pady=(5,0))
+        ttk.Combobox(params_frame, textvariable=self.scheduler_var, values=schedulers, state="readonly").grid(row=2, column=1, columnspan=3, sticky='ew', pady=(5,0))
 
         # Buttons
         button_frame = ttk.Frame(main_frame)
@@ -164,12 +188,18 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             self.after_cancel(self.after_id)
             self.after_id = None
         
-        # Get selected model
-        selected_model_name = self.model_var.get()
-        selected_model_object = self.model_data.get(selected_model_name)
-        
-        if not selected_model_object:
-            custom_dialogs.show_error(self, "Invalid Input", "Please select a valid model.")
+        # Get selected models
+        selected_model_indices = self.model_listbox.curselection()
+        if not selected_model_indices:
+            custom_dialogs.show_error(self, "Invalid Input", "Please select at least one model.")
+            self.result = None
+            return
+            
+        selected_model_names = [self.model_listbox.get(i) for i in selected_model_indices]
+        selected_model_objects = [self.model_data[name] for name in selected_model_names if name in self.model_data]
+
+        if not selected_model_objects:
+            custom_dialogs.show_error(self, "Invalid Input", "Could not find data for selected models.")
             self.result = None
             return
         
@@ -189,15 +219,17 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         
         try:
             self.result = {
-                "model": selected_model_object,
+                "models": selected_model_objects,
                 "loras": selected_loras,
+                "seed": int(self.seed_var.get()),
                 "steps": int(self.steps_var.get()),
                 "cfg_scale": float(self.cfg_var.get()),
+                "cfg_rescale_multiplier": float(self.cfg_rescale_var.get()),
                 "scheduler": self.scheduler_var.get(),
                 "negative_prompt": self.neg_prompt_text.get("1.0", "end-1c").strip()
             }
         except (ValueError, TypeError) as e:
-            custom_dialogs.show_error(self, "Invalid Input", f"Please check your parameters:\n{e}")
+            custom_dialogs.show_error(self, "Invalid Input", f"Please check your parameters (Seed and Steps must be whole numbers):\n{e}")
             self.result = None
             return
 

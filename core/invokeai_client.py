@@ -4,8 +4,9 @@ import requests
 import json
 import time
 import base64
+import copy
 from typing import Dict, Any, Optional, List, Tuple
-from packaging.version import parse as parse_version
+from packaging.version import Version, parse as parse_version
 
 class IncompatibleVersionError(Exception):
     """Custom exception for incompatible InvokeAI server versions."""
@@ -17,6 +18,8 @@ class InvokeAIClient:
         self.base_url = base_url.rstrip('/')
         self.models_endpoint: Optional[str] = None
         self.base_model_param_name: str = "base_models"
+        self.server_version: Optional[Version] = None
+        self.available_vaes: Optional[List[Dict[str, Any]]] = None
 
     def is_server_running(self) -> bool:
         """Checks if the InvokeAI server is running and responsive. Does not check version."""
@@ -31,8 +34,8 @@ class InvokeAIClient:
         try:
             # Check version first
             version_str = self.get_version()
-            version = parse_version(version_str)
-            if version.major < 3:
+            self.server_version = parse_version(version_str)
+            if self.server_version.major < 3:
                 raise IncompatibleVersionError(f"Incompatible InvokeAI version. Found {version_str}, but this tool requires version 3.0.0 or higher.")
 
             # Now, find a working models endpoint by probing known paths and parameter names
@@ -53,6 +56,12 @@ class InvokeAIClient:
                             # Success! We found a working combination.
                             self.models_endpoint = endpoint
                             self.base_model_param_name = param_name
+                            # Now that we have a working endpoint, cache the VAEs
+                            try:
+                                self.available_vaes = self.get_models(model_type='vae')
+                            except Exception as e:
+                                print(f"Warning: Could not fetch VAE models: {e}")
+                                self.available_vaes = []
                             print(f"INFO: InvokeAI client configured to use endpoint '{self.models_endpoint}' with param '{self.base_model_param_name}'")
                             return
                     except requests.RequestException:
@@ -99,17 +108,84 @@ class InvokeAIClient:
         
         return models
 
-    def _build_sdxl_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str) -> Dict[str, Any]:
+    def _build_sdxl_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float) -> Dict[str, Any]:
         """
         Builds the complete node graph for a standard SDXL text-to-image generation,
         including LoRA chaining.
         Returns the complete graph dictionary.
         """
+        # --- VAE Override Logic ---
+        # By default, the VAE comes from the main model loader.
+        vae_source_node_id = "sdxl_model_loader"
+        
+        # --- VAE Override Logic ---
+        # This is a robust workaround for models that produce black images with their built-in fp16 VAE.
+        # We will try to find a VAE that is compatible with the main model's base and is not fp16.
+        compatible_vae = None
+        main_model_base = model_object.get('base')
+
+        if self.available_vaes and main_model_base:
+            # Priority 1: Look for the well-known 'fp16-fix' VAE. Its name is misleading; it's designed for stability.
+            for vae in self.available_vaes:
+                if 'sdxl-vae-fp16-fix' in vae.get('name', '').lower():
+                    compatible_vae = vae
+                    print(f"INFO: Found high-priority '{vae.get('name')}'. Overriding model's default VAE.")
+                    break
+            
+            # Priority 2: If the fix VAE isn't found, look for any other compatible VAE that is NOT fp16.
+            if not compatible_vae:
+                for vae in self.available_vaes:
+                    if vae.get('base') == main_model_base and 'fp16' not in vae.get('name', '').lower():
+                        compatible_vae = vae
+                        break
+
+        # Add a warning if no compatible VAE was found, as this can lead to black images.
+        if not compatible_vae and main_model_base == 'sdxl':
+            print("\n" + "="*80)
+            print("WARNING: No compatible FP32 VAE was found for your SDXL model.")
+            print("This can cause black or distorted images with certain models.")
+            print("SOLUTION: Download 'sdxl-vae.safetensors' and place it in your InvokeAI 'models/sdxl/vae' directory.")
+            print("="*80 + "\n")
+
+        # --- Force VAE Precision ---
+        # To robustly prevent black images, we ensure the VAE precision is set to fp32.
+        # We do this in two ways:
+        # 1. Modify the model object itself to default to fp32 VAE precision.
+        # 2. Explicitly set the vae_precision on the model loader node.
+        # This provides maximum compatibility across different InvokeAI versions.
+        model_object_copy = copy.deepcopy(model_object)
+        if 'default_settings' not in model_object_copy:
+            model_object_copy['default_settings'] = {}
+        model_object_copy['default_settings']['vae_precision'] = 'fp32'
+
+        denoise_node = {
+            "type": "denoise_latents",
+            "id": "sdxl_denoise_latents",
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "scheduler": scheduler,
+            "denoising_start": 0.0,
+            "denoising_end": 1.0,
+        }
+
+        # --- Stability Heuristics ---
+        # For diffusers models, which are known to be unstable with fp16 VAEs, we apply a
+        # CFG rescale multiplier as a fallback, even if the user sets it to 0. This often
+        # mirrors hidden behavior in web UIs that stabilizes these specific models.
+        final_rescale_multiplier = cfg_rescale_multiplier
+        if model_object.get('format') == 'diffusers' and final_rescale_multiplier == 0.0:
+            print("INFO: Applying CFG rescale multiplier for diffusers model stability.")
+            final_rescale_multiplier = 0.7
+
+        if final_rescale_multiplier > 0.0:
+            denoise_node["cfg_rescale_multiplier"] = final_rescale_multiplier
+
         nodes = {
             "sdxl_model_loader": {
                 "type": "sdxl_model_loader",
                 "id": "sdxl_model_loader",
-                "model": model_object
+                "model": model_object_copy,
+                "vae_precision": "fp32"
             },
             "positive_prompt": {
                 "type": "string", 
@@ -136,20 +212,22 @@ class InvokeAIClient:
                 "width": model_object.get("default_settings", {}).get("width", 1024),
                 "height": model_object.get("default_settings", {}).get("height", 1024),
             },
-            "sdxl_denoise_latents": {
-                "type": "denoise_latents",
-                "id": "sdxl_denoise_latents",
-                "steps": steps,
-                "cfg_scale": cfg_scale,
-                "scheduler": scheduler,
-                "denoising_start": 0.0,
-                "denoising_end": 1.0,
-            },
+            "sdxl_denoise_latents": denoise_node,
             "l2i": {
                 "type": "l2i",
                 "id": "l2i",
             },
         }
+
+        # If we found a suitable fp32 VAE, we add a vae_loader node and update the source.
+        if compatible_vae:
+            print("INFO: Found a suitable FP32 VAE. Overriding model's default VAE to prevent black images.")
+            nodes['sdxl_fp32_vae_loader'] = {
+                "type": "vae_loader",
+                "id": "sdxl_fp32_vae_loader",
+                "vae_model": compatible_vae
+            }
+            vae_source_node_id = "sdxl_fp32_vae_loader"
 
         # --- LoRA Chaining & Edge Definition ---
         # This logic determines the source for the main model pipes (UNet, CLIP),
@@ -203,8 +281,8 @@ class InvokeAIClient:
             {"source": {"node_id": "positive_conditioning", "field": "conditioning"}, "destination": {"node_id": "sdxl_denoise_latents", "field": "positive_conditioning"}},
             {"source": {"node_id": "negative_conditioning", "field": "conditioning"}, "destination": {"node_id": "sdxl_denoise_latents", "field": "negative_conditioning"}},
 
-            # Noise & VAE
-            {"source": {"node_id": "sdxl_model_loader", "field": "vae"}, "destination": {"node_id": "l2i", "field": "vae"}},
+            # VAE (now dynamically sourced) & Noise
+            {"source": {"node_id": vae_source_node_id, "field": "vae"}, "destination": {"node_id": "l2i", "field": "vae"}},
             {"source": {"node_id": "sdxl_denoise_latents", "field": "latents"}, "destination": {"node_id": "l2i", "field": "latents"}},
             {"source": {"node_id": "noise", "field": "noise"}, "destination": {"node_id": "sdxl_denoise_latents", "field": "latents"}},
         ]
@@ -213,11 +291,16 @@ class InvokeAIClient:
 
         return {"nodes": nodes, "edges": edges}
 
-    def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str) -> bytes:
+    def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, verbose: bool = False) -> bytes:
         """Generates an image using the queue API and returns the raw image bytes."""
         
-        graph = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler)
+        graph = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, cfg_rescale_multiplier)
         
+        if verbose:
+            print("\n--- VERBOSE: InvokeAI Generation Graph ---", flush=True)
+            print(json.dumps(graph, indent=2), flush=True)
+            print("----------------------------------------\n", flush=True)
+
         # Prepare the batch
         batch = {"batch": {"graph": graph, "runs": 1}}
 

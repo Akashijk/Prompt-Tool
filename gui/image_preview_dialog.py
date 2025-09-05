@@ -20,7 +20,7 @@ class ImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin):
         # Display the prompt that generated the image
         prompt_frame = ttk.LabelFrame(main_frame, text="Generated with Prompt", padding=5)
         prompt_frame.pack(fill=tk.X, pady=(0, 10))
-        prompt_label = ttk.Label(prompt_frame, text=prompt_text, wraplength=580)
+        prompt_label = ttk.Label(prompt_frame, text=prompt_text, wraplength=580, justify=tk.LEFT)
         prompt_label.pack(fill=tk.X)
 
         # Image display

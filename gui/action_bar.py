@@ -2,7 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, List, Callable, Optional
+from typing import Dict, List, Callable, Optional, TYPE_CHECKING
 from .common import Tooltip
 
 class ActionBar(ttk.Frame):
@@ -32,8 +32,16 @@ class ActionBar(ttk.Frame):
         self.save_as_template_button = ttk.Button(self, text="Save as Template", command=save_as_template_callback, state=tk.DISABLED)
         self.save_as_template_button.pack(side=tk.LEFT, padx=(5, 0))
 
-        self.generate_image_button = ttk.Button(self, text="Generate Image", command=generate_image_callback, state=tk.DISABLED)
-        self.generate_image_button.pack(side=tk.RIGHT, padx=(10, 0))
+        # Create a container for the image generation controls on the right
+        self.image_gen_frame = ttk.Frame(self)
+        self.image_gen_frame.pack(side=tk.RIGHT, padx=(10, 0))
+
+        # The spinner will be packed to the left of the button when active
+        from .common import LoadingAnimation # Local import to avoid circular dependency
+        self.image_gen_spinner = LoadingAnimation(self.image_gen_frame, size=20)
+
+        self.generate_image_button = ttk.Button(self.image_gen_frame, text="Generate Image", command=generate_image_callback, state=tk.DISABLED)
+        self.generate_image_button.pack(side=tk.LEFT)
 
     def rebuild_variations(self, variations: List[Dict[str, str]]):
         """Clears and recreates the variation checkboxes."""
