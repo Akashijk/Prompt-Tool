@@ -7,7 +7,7 @@ from .common import Tooltip
 
 class ActionBar(ttk.Frame):
     """The main action bar with Generate, Enhance, and variation selection."""
-    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, save_as_template_callback: Callable, ai_cleanup_callback: Callable, **kwargs):
+    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, save_as_template_callback: Callable, ai_cleanup_callback: Callable, generate_image_callback: Callable, **kwargs):
         super().__init__(parent, **kwargs)
 
         self.generate_button = ttk.Button(self, text="Generate Next Preview", command=generate_callback, state=tk.DISABLED)
@@ -31,6 +31,9 @@ class ActionBar(ttk.Frame):
 
         self.save_as_template_button = ttk.Button(self, text="Save as Template", command=save_as_template_callback, state=tk.DISABLED)
         self.save_as_template_button.pack(side=tk.LEFT, padx=(5, 0))
+
+        self.generate_image_button = ttk.Button(self, text="Generate Image", command=generate_image_callback, state=tk.DISABLED)
+        self.generate_image_button.pack(side=tk.RIGHT, padx=(10, 0))
 
     def rebuild_variations(self, variations: List[Dict[str, str]]):
         """Clears and recreates the variation checkboxes."""
@@ -57,7 +60,7 @@ class ActionBar(ttk.Frame):
         """Returns a list of the names of the selected variations."""
         return [key for key, var in self.variation_vars.items() if var.get()]
 
-    def set_button_states(self, generate: str, enhance: str, copy: str, save_as_template: Optional[str] = None, ai_cleanup: Optional[str] = None):
+    def set_button_states(self, generate: str, enhance: str, copy: str, save_as_template: Optional[str] = None, ai_cleanup: Optional[str] = None, generate_image: Optional[str] = None):
         self.generate_button.config(state=generate)
         self.select_button.config(state=enhance)
         self.copy_prompt_button.config(state=copy)
@@ -65,3 +68,5 @@ class ActionBar(ttk.Frame):
             self.save_as_template_button.config(state=save_as_template)
         if ai_cleanup is not None:
             self.ai_cleanup_button.config(state=ai_cleanup)
+        if generate_image is not None:
+            self.generate_image_button.config(state=generate_image)

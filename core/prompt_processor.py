@@ -5,6 +5,7 @@ import copy
 import os
 import random
 import re
+import uuid
 import threading
 from typing import List, Dict, Any, Optional, Callable, Tuple, Set
 from .template_engine import TemplateEngine, PromptSegment
@@ -20,6 +21,7 @@ from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_V
                               DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT,
                               DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT)
 from .ollama_client import OllamaClient
+from .invokeai_client import InvokeAIClient
 from .utils import sanitize_wildcard_choices
 from datetime import datetime
 
@@ -29,7 +31,8 @@ class PromptProcessor:
     def __init__(self, verbose: bool = False):
         self.template_engine = TemplateEngine()
         # Lazily import OllamaClient to avoid issues if it's not needed (e.g., in GUI)
-        self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL) 
+        self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL)
+        self.invokeai_client = InvokeAIClient(base_url=config.INVOKEAI_BASE_URL)
         self.history_manager = HistoryManager()
         self.all_wildcards_cache: Optional[Dict[str, Dict]] = None
         self.verbose = verbose
@@ -78,6 +81,8 @@ class PromptProcessor:
         os.makedirs(config.WILDCARD_NSFW_DIR, exist_ok=True)
         os.makedirs(os.path.join(config.HISTORY_DIR, 'sfw'), exist_ok=True)
         os.makedirs(os.path.join(config.HISTORY_DIR, 'nsfw'), exist_ok=True)
+        os.makedirs(os.path.join(config.HISTORY_DIR, 'sfw', 'images'), exist_ok=True)
+        os.makedirs(os.path.join(config.HISTORY_DIR, 'nsfw', 'images'), exist_ok=True)
         os.makedirs(config.SYSTEM_PROMPT_BASE_DIR, exist_ok=True)
 
         # Check for a flag file to see if we need to create defaults.
@@ -160,6 +165,12 @@ class PromptProcessor:
     def get_available_models(self) -> List[str]:
         """Get list of available Ollama models."""
         return self.ollama_client.list_models()
+    
+    def is_invokeai_connected(self) -> bool:
+        """Checks if the InvokeAI client is configured and likely connected."""
+        # The client is initialized in the GUI. If the URL in the config is empty,
+        # the client exists but won't be able to connect.
+        return self.invokeai_client is not None and config.INVOKEAI_BASE_URL != ""
     
     def get_model_recommendations(self, models: List[str]) -> List[tuple]:
         """Get recommended models with reasons."""
@@ -1290,46 +1301,6 @@ class PromptProcessor:
             supporting_filename: process_file_data(supporting_filename, refactored_supporting_data)
         }
 
-    def ai_fix_wildcard_grammar(self, wildcard_content: str, model: str) -> str:
-        """Uses AI to fix grammatical issues in a wildcard file's choices and includes."""
-        
-        prompt = DEFAULT_AI_FIX_GRAMMAR_PROMPT.replace('{wildcard_content}', wildcard_content)
-        
-        # Use chat for better instruction following
-        messages = [{'role': 'user', 'content': prompt}]
-        raw_response = self.chat_with_model(model, messages)
-        
-        json_str = None
-        match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
-        if match:
-            json_str = match.group(1)
-        else:
-            start = raw_response.find('{')
-            end = raw_response.rfind('}')
-            if start != -1 and end != -1 and start < end:
-                json_str = raw_response[start:end+1]
-        if not json_str:
-            raise Exception(f"The AI did not return a recognizable JSON object. Response:\n{raw_response}")
-
-        try:
-            parsed_data = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            raise Exception(f"The AI returned malformed JSON. Parser error: {e}\n\nRaw response snippet:\n{json_str[:500]}")
-        # --- Structural Validation ---
-        if not isinstance(parsed_data, dict):
-            raise Exception(f"The AI returned a valid JSON, but it was not the expected object structure (e.g., it might be a list). Response:\n{json_str[:500]}")
-
-        if 'choices' not in parsed_data:
-            error_guess = parsed_data.get('error', parsed_data.get('message', 'The "choices" key was missing from the response.'))
-            raise Exception(f"The AI's response was missing the required 'choices' field. AI message: {error_guess}")
-
-        if not isinstance(parsed_data['choices'], list):
-            raise Exception(f"The 'choices' field in the AI's response was not a list. Type was: {type(parsed_data['choices']).__name__}")
-
-        # --- Sanitization and Return ---
-        parsed_data['choices'] = sanitize_wildcard_choices(parsed_data.get('choices', []))
-        return json.dumps(parsed_data, indent=2)
-
     def ai_cleanup_prompt(self, prompt_to_clean: str, model: str) -> str:
         """Pass-through to the Ollama client to clean up a prompt with AI."""
         return self.ollama_client.cleanup_prompt_with_ai(prompt_to_clean, model)
@@ -1369,21 +1340,14 @@ class PromptProcessor:
             # Enhance the prompt
             self._update_status('enhancement_start', prompt_num=i+1, total_prompts=total_prompts)
             enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
-            
+
             # Send back the main enhancement result immediately
             if self.result_callback:
                 self.result_callback('enhanced', {'prompt': enhanced, 'sd_model': enhanced_sd_model})
 
-            # Now, generate the negative prompt as a separate step
-            negative_prompt = self.ollama_client.generate_negative_prompt(enhanced, model)
-            if self.result_callback:
-                self.result_callback('negative', {'prompt': negative_prompt, 'sd_model': ''})
-            
             result = {
                 'original': prompt,
-                'enhanced': enhanced,
-                'negative_prompt': negative_prompt,
-                'enhanced_sd_model': enhanced_sd_model,
+                'enhanced': {'prompt': enhanced, 'sd_model': enhanced_sd_model},
                 'variations': {},
                 'status': 'enhanced',
                 'template_name': template_name,
@@ -1414,13 +1378,12 @@ class PromptProcessor:
         
         return results
 
-    def regenerate_enhancement(self, original_prompt: str, model: str) -> Tuple[str, str, str]:
+    def regenerate_enhancement(self, original_prompt: str, model: str) -> Tuple[str, str]:
         """Regenerates just the main enhancement for a given prompt."""
         instruction = self.load_system_prompt_content('enhancement.txt')
         full_prompt = instruction + original_prompt
         enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(full_prompt, model)
-        negative = self.ollama_client.generate_negative_prompt(enhanced, model)
-        return enhanced, negative, enhanced_sd_model
+        return enhanced, enhanced_sd_model
 
     def regenerate_variation(self, base_prompt: str, base_sd_model: str, model: str, variation_type: str) -> Dict[str, str]:
         """Regenerates a single variation."""
@@ -1661,6 +1624,33 @@ class PromptProcessor:
         # The response should be a JSON array.
         return self.ollama_client.parse_json_array_from_response(raw_response)
 
+    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str) -> bytes:
+        """Generates an image with InvokeAI and returns the raw image bytes."""
+        self.invokeai_client.check_server_compatibility() # This will raise a specific error if there's a problem.
+
+        return self.invokeai_client.generate_image(
+            prompt=prompt, 
+            negative_prompt=negative_prompt, 
+            seed=seed, 
+            model_object=model_object,
+            loras=loras,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            scheduler=scheduler
+        )
+
+    def save_generated_image(self, image_bytes: bytes) -> str:
+        """Saves image bytes to the history folder and returns the relative path."""
+        # Save the image to the correct history subfolder
+        image_dir = os.path.join(config.get_history_file_dir(), 'images')
+        image_filename = f"{uuid.uuid4()}.png"
+        image_path = os.path.join(image_dir, image_filename)
+
+        with open(image_path, 'wb') as f:
+            f.write(image_bytes)
+            
+        return os.path.join('images', image_filename)
+
     def ai_interrogate_image(self, base64_image: str, model: str, prompt: str) -> str:
         """Pass-through to the Ollama client to generate a prompt from an image."""
         return self.ollama_client.interrogate_image(model, base64_image, prompt)
@@ -1712,14 +1702,10 @@ class PromptProcessor:
         )
         
         return self.generate_for_brainstorming(model, prompt)
-
-    def save_results(self, results: List[Dict[str, Any]]) -> None:
-        """Save results to CSV."""
-        self.history_manager.save_batch_results(results)
     
     def save_skipped_prompt(self, prompt: str) -> None:
         """Save a skipped prompt to prevent regeneration."""
-        self.history_manager.save_result(prompt, "", "", status="skipped")
+        self.history_manager.save_result(original_prompt=prompt, status="skipped")
     
     def cleanup_model(self, model: str) -> None:
         """Unload model to free resources."""

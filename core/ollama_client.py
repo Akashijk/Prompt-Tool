@@ -6,7 +6,7 @@ import requests
 import time
 from typing import List, Tuple, Optional, Dict, Any, Callable
 from .config import config
-from .default_content import MODEL_RECOMMENDATIONS, DEFAULT_NEGATIVE_PROMPT_GENERATION_PROMPT
+from .default_content import MODEL_RECOMMENDATIONS
 from .utils import sanitize_wildcard_choices
 
 class OllamaClient:
@@ -189,14 +189,6 @@ class OllamaClient:
         }
         response_data = self._post_request("/api/generate", payload, timeout)
         return response_data.get('response', '')
-
-    def generate_negative_prompt(self, enhanced_prompt: str, model: str) -> str:
-        """Generates a negative prompt based on an enhanced prompt."""
-        full_prompt = DEFAULT_NEGATIVE_PROMPT_GENERATION_PROMPT.format(enhanced_prompt=enhanced_prompt)
-        try:
-            return self._generate(model, full_prompt, config.DEFAULT_TIMEOUT)
-        except Exception:
-            raise
 
     def enhance_prompt(self, full_instruction_prompt: str, model: str) -> Tuple[str, str]:
         """Enhance a single prompt using the specified model."""

@@ -30,6 +30,8 @@ class ImageInterrogatorWindow(tk.Toplevel, SmartWindowMixin):
         self.image_ref: Optional[ImageTk.PhotoImage] = None
         self.interrogation_queue = queue.Queue()
         self.after_id: Optional[str] = None
+        self.model_usage_manager = self.parent_app.model_usage_manager
+        self.active_model: Optional[str] = None
 
         # --- Widgets ---
         main_frame = ttk.Frame(self, padding=10)
@@ -52,7 +54,12 @@ class ImageInterrogatorWindow(tk.Toplevel, SmartWindowMixin):
             # If the main app's model is a vision model, use it. Otherwise, default to the first available vision model.
             vision_default = default_model if default_model in vision_models else vision_models[0]
             self.model_var = tk.StringVar(value=vision_default)
-            model_menu = ttk.OptionMenu(control_frame, self.model_var, vision_default, *vision_models)
+            model_menu = ttk.OptionMenu(control_frame, self.model_var, vision_default, *vision_models, command=self._on_model_change)
+
+        # Register initial model usage
+        self.active_model = self.model_var.get()
+        self.model_usage_manager.register_usage(self.active_model)
+
         model_menu.pack(side=tk.LEFT)
 
         self.generate_button = ttk.Button(control_frame, text="Generate Prompt", command=self._generate_prompt, state=tk.DISABLED)
@@ -84,6 +91,22 @@ class ImageInterrogatorWindow(tk.Toplevel, SmartWindowMixin):
         self.send_button.pack(side=tk.RIGHT)
 
         self.smart_geometry(min_width=800, min_height=500)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def close(self):
+        """Safely close the window and unregister the model."""
+        if self.after_id:
+            self.after_cancel(self.after_id)
+            self.after_id = None
+        self.model_usage_manager.unregister_usage(self.active_model)
+        self.destroy()
+
+    def _on_model_change(self, new_model: str):
+        """Handles when the user selects a new model."""
+        old_model = self.active_model
+        self.model_usage_manager.unregister_usage(old_model)
+        self.model_usage_manager.register_usage(new_model)
+        self.active_model = new_model
 
     def _select_image(self):
         """Opens a file dialog to select an image."""

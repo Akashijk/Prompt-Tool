@@ -34,6 +34,11 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.parent_context_menu = tk.Menu(self, tearoff=0)
         self.child_context_menu = tk.Menu(self, tearoff=0)
 
+        # Model management
+        self.model_usage_manager = self.parent_app.model_usage_manager
+        self.active_model = self.parent_app.enhancement_model_var.get()
+        self.model_usage_manager.register_usage(self.active_model)
+
         self._create_widgets()
         self.refresh_data() # Initial population
         self.smart_geometry(min_width=1200, min_height=700)
@@ -61,6 +66,7 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         if self.after_id:
             self.after_cancel(self.after_id)
             self.after_id = None
+        self.model_usage_manager.unregister_usage(self.active_model)
         self.destroy()
 
     def refresh_data(self):

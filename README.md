@@ -46,6 +46,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **Customizable System Prompts:** Edit the underlying instructions given to the AI for enhancement and variations to tailor its output to your needs.
 *   **History Viewer:** Browse, search, and reuse all your past enhanced prompts. Tracks which template was used for each generation, allows you to mark favorites, and even edit prompts directly in the history view.
 *   **Image Interrogator:** Generate a detailed prompt from an image using a local multimodal model (like LLaVA).
+*   **Direct Image Generation:** Generate an image directly from an enhanced prompt using a local InvokeAI server (v3+). Select your main model, LoRAs, and other parameters for full creative control.
 *   **Prompt Evolver & Conceptual Breeding:** A dedicated window for "breeding" new prompts. Select two or more "parent" prompts from your history, and a more advanced AI will deconstruct their core concepts (subject, style, mood) to generate unique, creative "child" prompts. The UI has been completely overhauled with selectable, word-wrapping prompt cards for a superior user experience.
 *   **Seed Management:** Easily switch between a fixed seed for reproducible results and random seeds for variety.
 *   **Modern UI:** Features a clean, modern interface with light and dark themes and adjustable font sizes.
@@ -56,6 +57,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **Python 3.10+**
 *   **Ollama** installed and running on your system.
 *   At least one LLM pulled in Ollama (e.g., `qwen:7b`, `llama3:8b`). `qwen` models are highly recommended for their creative capabilities.
+*   **(Optional) InvokeAI v3.0.0+** installed and running for the "Generate Image" feature.
 *   Python libraries as listed in `requirements.txt`.
 
 ## Installation & Setup
@@ -123,6 +125,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   **Interact:** In the preview pane, click on any highlighted text to see a menu of other options from that wildcard file. If your template uses a wildcard that doesn't exist, a link will appear below the preview allowing you to generate it.
     *   **Cleanup (Optional):** Click "AI Cleanup ✨" to have an AI automatically refine the grammar and flow of the generated prompt in the preview pane.
     *   **Enhance:** When you're happy with the preview, click "Enhance This Prompt". A new window will appear showing the AI's enhanced version and any selected variations.
+    *   **Generate Image:** In the enhancement results window, click "Generate Image" next to any prompt. A dialog will appear allowing you to select your InvokeAI model, LoRAs, and other settings. The generated image path will be saved with the prompt in your history.
 
 3.  **AI Brainstorming (`Tools -> AI Brainstorming`):**
     *   Chat directly with the AI for general ideas or to generate new files from scratch.
@@ -227,6 +230,14 @@ If you see warnings about "invalid JSON" when using the Wildcard Manager, it mea
     1.  In the Wildcard Manager, the file will be loaded into the "Raw Text Editor".
     2.  You can manually fix the syntax (e.g., add a missing comma, fix quotes).
     3.  Alternatively, when you try to save, the application will offer to use an AI to attempt to fix the broken JSON for you.
+
+### "Generate Image" Fails
+
+The "Generate Image" feature requires a running instance of InvokeAI version 3.0.0 or higher.
+
+*   **Solution:**
+    1.  Ensure you have InvokeAI v3+ installed and running.
+    2.  Go to `Tools -> Settings...` and verify that the "InvokeAI Server URL" is correct (e.g., `http://127.0.0.1:9090`). The application will test the connection and version compatibility when you save.
 
 ## Contributing
 

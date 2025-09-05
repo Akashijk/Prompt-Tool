@@ -409,20 +409,6 @@ DEFAULT_AI_CLEANUP_PROMPT = """You are an expert AI assistant specializing in re
 **CLEANED-UP PROMPT:**
 """
 
-
-
-DEFAULT_NEGATIVE_PROMPT_GENERATION_PROMPT = """You are an expert AI assistant for Stable Diffusion. Your task is to generate a concise and effective negative prompt based on the provided main prompt.
-
-**MAIN PROMPT:**
-{enhanced_prompt}
-
-**INSTRUCTIONS:**
-1.  Analyze the main prompt to understand its subject and style.
-2.  Generate a standard negative prompt that prevents common image artifacts (e.g., "ugly, deformed, disfigured, poor details, bad anatomy, worst quality, low quality, extra limbs, extra fingers, blurry").
-3.  If the main prompt is photorealistic, add negative terms like "cartoon, 3d, (deformed iris, deformed pupils)".
-4.  Return ONLY the comma-separated negative prompt text. Do not include any other commentary, labels, or explanations.
-"""
-
 DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION = """
 
 **LINKED WILDCARD CONTEXT:**

@@ -31,14 +31,16 @@ def save_settings(settings: dict):
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(settings, f, indent=2)
 
-def update_and_save_paths(paths: dict):
-    """Updates path settings in the global config object and saves them to file."""
+def update_and_save_settings(settings_dict: dict):
+    """Updates settings in the global config object and saves them to file."""
     global config
     settings = load_settings()
-    for key, value in paths.items():
+    for key, value in settings_dict.items():
         settings[key] = value
-        if hasattr(config, key.upper()):
-            setattr(config, key.upper(), value)
+        # Convert to uppercase for dataclass attribute name
+        config_attr = key.upper()
+        if hasattr(config, config_attr):
+            setattr(config, config_attr, value)
     save_settings(settings)
 
 _user_settings = load_settings()
@@ -63,6 +65,10 @@ class Config:
     
     # Ollama settings
     OLLAMA_BASE_URL: str = _user_settings.get("ollama_base_url", "http://localhost:11434")
+
+    # InvokeAI settings
+    INVOKEAI_BASE_URL: str = _user_settings.get("invokeai_base_url", "http://127.0.0.1:9090")
+    DEFAULT_NEGATIVE_PROMPT: str = _user_settings.get("default_negative_prompt", "ugly, deformed, bad quality, cartoon, 3d, disfigured, bad anatomy")
     
     # Workflow setting
     workflow: str = _user_settings.get("workflow", "sfw")
@@ -87,9 +93,13 @@ class Config:
         """Returns the path to the variations directory for the current workflow."""
         return os.path.join(self.get_system_prompt_dir(), 'variations')
 
+    def get_history_file_dir(self) -> str:
+        """Returns the path to the history directory for the current workflow."""
+        return os.path.join(self.HISTORY_DIR, self.workflow)
+
     def get_history_file(self) -> str:
         """Returns the path to the history file for the current workflow."""
-        workflow_history_dir = os.path.join(self.HISTORY_DIR, self.workflow)
+        workflow_history_dir = self.get_history_file_dir()
         return os.path.join(workflow_history_dir, 'history.jsonl')
 
 # Global config instance

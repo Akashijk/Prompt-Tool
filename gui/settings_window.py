@@ -4,8 +4,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from typing import TYPE_CHECKING
 
-from core.config import config, update_and_save_paths
-from .common import SmartWindowMixin, Tooltip
+from core.config import config, update_and_save_settings
+from .common import SmartWindowMixin, Tooltip, TextContextMenu
 from . import custom_dialogs
 
 if TYPE_CHECKING:
@@ -27,6 +27,8 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
             "history_dir": tk.StringVar(value=config.HISTORY_DIR),
             "system_prompt_base_dir": tk.StringVar(value=config.SYSTEM_PROMPT_BASE_DIR),
             "ollama_base_url": tk.StringVar(value=config.OLLAMA_BASE_URL),
+            "invokeai_base_url": tk.StringVar(value=config.INVOKEAI_BASE_URL),
+            "default_negative_prompt": tk.StringVar(value=config.DEFAULT_NEGATIVE_PROMPT),
         }
 
         self._create_widgets()
@@ -57,17 +59,31 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
 
         # --- Connection Settings ---
         conn_group = ttk.LabelFrame(main_frame, text="Connection Settings", padding=10)
-        conn_group.grid(row=1, column=0, columnspan=3, sticky='ew')
+        conn_group.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(0, 15))
         conn_group.columnconfigure(1, weight=1)
 
         ttk.Label(conn_group, text="Ollama Server URL:").grid(row=0, column=0, sticky='w', padx=(0, 10), pady=5)
         ollama_entry = ttk.Entry(conn_group, textvariable=self.setting_vars["ollama_base_url"], width=60)
         ollama_entry.grid(row=0, column=1, sticky='ew', pady=5)
-        Tooltip(ollama_entry, "The base URL for your Ollama server (e.g., http://192.168.1.100:11434)")
+        Tooltip(ollama_entry, "The base URL for your Ollama server (e.g., http://127.0.0.1:11434)")
+
+        ttk.Label(conn_group, text="InvokeAI Server URL:").grid(row=1, column=0, sticky='w', padx=(0, 10), pady=5)
+        invokeai_entry = ttk.Entry(conn_group, textvariable=self.setting_vars["invokeai_base_url"], width=60)
+        invokeai_entry.grid(row=1, column=1, sticky='ew', pady=5)
+        Tooltip(invokeai_entry, "The base URL for your InvokeAI server (e.g., http://127.0.0.1:9090)")
+
+        # --- Default Negative Prompt ---
+        neg_prompt_group = ttk.LabelFrame(main_frame, text="Default Negative Prompt", padding=10)
+        neg_prompt_group.grid(row=2, column=0, columnspan=3, sticky='ew')
+        neg_prompt_group.columnconfigure(0, weight=1)
+        self.neg_prompt_text = tk.Text(neg_prompt_group, height=3, wrap=tk.WORD, undo=True, exportselection=False)
+        self.neg_prompt_text.grid(row=0, column=0, sticky='ew')
+        self.neg_prompt_text.insert("1.0", self.setting_vars["default_negative_prompt"].get())
+        TextContextMenu(self.neg_prompt_text)
 
         # --- Buttons ---
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=2, column=0, columnspan=3, sticky='e', pady=(20, 0))
+        button_frame.grid(row=3, column=0, columnspan=3, sticky='e', pady=(20, 0))
 
         save_button = ttk.Button(button_frame, text="Save and Reload", command=self._on_save, style="Accent.TButton")
         save_button.pack(side=tk.RIGHT, padx=(5, 0))
@@ -87,7 +103,10 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
 
     def _on_save(self):
         """Validates, saves the new settings, and triggers the callback."""
-        new_settings = {key: var.get().strip() for key, var in self.setting_vars.items()}
+        # First, get the text from the widget into the stringvar
+        self.setting_vars["default_negative_prompt"].set(self.neg_prompt_text.get("1.0", "end-1c").strip())
+        
+        new_settings = {key: var.get() for key, var in self.setting_vars.items()}
         
         # --- Test Ollama connection if URL changed ---
         new_url = new_settings.get("ollama_base_url", "")
@@ -101,8 +120,26 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
                 custom_dialogs.show_error(self, "Connection Failed", f"Could not connect to Ollama server at:\n{new_url}\n\nError: {e}\n\nSettings not saved.")
                 return # Abort save
         
+        # --- Test InvokeAI connection if URL changed ---
+        new_invokeai_url = new_settings.get("invokeai_base_url", "")
+        if new_invokeai_url and new_invokeai_url != config.INVOKEAI_BASE_URL:
+            try:
+                from core.invokeai_client import InvokeAIClient, IncompatibleVersionError
+                test_client = InvokeAIClient(base_url=new_invokeai_url)
+                test_client.check_server_compatibility()
+                custom_dialogs.show_info(self, "Success", f"Successfully connected to InvokeAI server at:\n{new_invokeai_url}")
+            except IncompatibleVersionError as e:
+                custom_dialogs.show_error(self, "Incompatible Version", f"{e}\n\nPlease update InvokeAI or use a compatible version.\n\nSettings not saved.")
+                return # Abort save
+            except ConnectionError as e:
+                custom_dialogs.show_error(self, "Connection Failed", f"{e}\n\nSettings not saved.")
+                return # Abort save
+            except Exception as e:
+                custom_dialogs.show_error(self, "Connection Failed", f"An unexpected error occurred:\n{e}\n\nSettings not saved.")
+                return # Abort save
+
         # Update the config file and the live config object
-        update_and_save_paths(new_settings)
+        update_and_save_settings(new_settings)
 
         # Trigger the main app to reload its resources
         self.on_save_callback()

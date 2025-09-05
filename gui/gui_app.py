@@ -96,6 +96,10 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.ai_cleanup_queue = queue.Queue()
         self.ai_cleanup_after_id: Optional[str] = None
         self.missing_wildcards_container: Optional[ttk.Frame] = None
+        self.enhancement_windows: List[EnhancementResultWindow] = []
+        self.main_image_gen_queue = queue.Queue()
+        self.last_saved_entry_id_from_preview: Optional[str] = None
+        self.main_image_gen_after_id: Optional[str] = None
 
         # Create widgets
         self._create_widgets()
@@ -115,6 +119,26 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # After creating all widgets, set smart geometry
         self.smart_geometry(min_width=900, min_height=700)
+
+    def destroy(self):
+        """
+        Overrides the default destroy method to prevent the clipboard from being
+        cleared on some platforms (Linux/macOS) when the app closes.
+        """
+        try:
+            # This is a workaround. By appending the current clipboard content to itself
+            # and then immediately processing events with update_idletasks, we can
+            # encourage the window manager to take ownership of the clipboard
+            # content before the application window is destroyed.
+            self.clipboard_append(self.clipboard_get())
+            self.update_idletasks()
+        except tk.TclError:
+            # This will happen if the clipboard is empty or contains non-string data.
+            # In this case, there's nothing to preserve, so we can ignore it.
+            pass
+        
+        # Now, call the original destroy method from the parent class.
+        super().destroy()
 
     def _initialize_fonts(self):
         """Initializes named fonts for the application."""
@@ -259,7 +283,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             enhance_callback=self._on_select_for_enhancement,
             copy_callback=self._copy_generated_prompt,
             save_as_template_callback=self._save_preview_as_template,
-            ai_cleanup_callback=self._ai_cleanup_prompt
+            ai_cleanup_callback=self._ai_cleanup_prompt,
+            generate_image_callback=self._generate_image_from_preview
         )
         self._update_action_bar_variations()
 
@@ -468,6 +493,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.current_structured_prompt = []
         self.template_editor.clear()
         self.template_editor.set_label("Template Content") # This line is duplicated, but it's fine.
+        self.last_saved_entry_id_from_preview = None
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.config(state=tk.DISABLED)
@@ -528,6 +554,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.prompt_text.insert(tk.END, f"Template '{template_name}' loaded. Click 'Generate Next Preview' to start.")
         self.prompt_text.config(state=tk.DISABLED)
         self.current_structured_prompt = []
+        self.last_saved_entry_id_from_preview = None
         self.status_var.set(f"Loaded template: {template_name}")
 
     def _generate_preview(self):
@@ -556,6 +583,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         )
         self.last_generation_result = {'segments': segments, 'context': context}
         self.current_structured_prompt = segments # Keep this for UI rendering
+        self.last_saved_entry_id_from_preview = None
         self._update_prompt_preview()
 
     def _update_prompt_preview(self):
@@ -568,7 +596,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             enhance=tk.NORMAL if is_prompt_available else tk.DISABLED, 
             copy=tk.NORMAL if is_prompt_available else tk.DISABLED, 
             save_as_template=tk.NORMAL if is_prompt_available else tk.DISABLED,
-            ai_cleanup=tk.NORMAL if is_prompt_available else tk.DISABLED
+            ai_cleanup=tk.NORMAL if is_prompt_available else tk.DISABLED,
+            generate_image=tk.NORMAL if is_prompt_available and self.processor.is_invokeai_connected() else tk.DISABLED
         )
 
     def _display_structured_prompt(self):
@@ -856,9 +885,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Handles the 'Enhance This Prompt' button click."""
         prompt_text = self._get_current_prompt_string()
         template_name = self.current_template_file
-        self.start_enhancement_for_prompt(prompt_text, template_name)
+        existing_entry_id = self.last_saved_entry_id_from_preview
+        self.start_enhancement_for_prompt(prompt_text, template_name, existing_entry_id=existing_entry_id)
+        self.last_saved_entry_id_from_preview = None # Consume the ID so it's not reused
 
-    def start_enhancement_for_prompt(self, prompt_text: str, template_name: Optional[str] = None):
+    def start_enhancement_for_prompt(self, prompt_text: str, template_name: Optional[str] = None, existing_entry_id: Optional[str] = None):
         """Handles starting an enhancement process for a given prompt string."""
         model = self.enhancement_model_var.get()
         if not model or "model" in model.lower():
@@ -881,7 +912,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.loading_animation.start()
 
         self.enhancement_cancellation_event = threading.Event()
-        result_window = EnhancementResultWindow(self, initial_data, self.processor, model, selected_variations, self._cancel_enhancement_batch, self.report_api_call_finished)
+        result_window = EnhancementResultWindow(self, initial_data, self.processor, model, selected_variations, self._cancel_enhancement_batch, self.report_api_call_finished, existing_entry_id=existing_entry_id)
+        self.enhancement_windows.append(result_window)
 
         # Define a thread-safe callback to update the results window
         def result_callback(key, data):
@@ -976,6 +1008,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.active_api_calls == 0:
             self.loading_animation.stop()
 
+    def report_enhancement_window_closed(self, window: EnhancementResultWindow):
+        """Callback for when an enhancement window is closed."""
+        if window in self.enhancement_windows:
+            self.enhancement_windows.remove(window)
+
     def _cancel_enhancement_batch(self):
         """Sets the cancellation event for the current enhancement batch."""
         if self.enhancement_cancellation_event and not self.enhancement_cancellation_event.is_set():
@@ -1012,7 +1049,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _on_prompt_evolver_close(self):
         if self.prompt_evolver_window:
-            self.prompt_evolver_window.destroy()
+            self.prompt_evolver_window.close()
             self.prompt_evolver_window = None
 
     def _open_image_interrogator(self):
@@ -1031,7 +1068,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _on_image_interrogator_close(self):
         if self.image_interrogator_window:
-            self.image_interrogator_window.destroy()
+            self.image_interrogator_window.close()
             self.image_interrogator_window = None
 
     def _handle_wildcard_update(self, modified_file: Optional[str] = None):
@@ -1172,6 +1209,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.current_template_file = None
         self.current_template_content = None
         self.current_structured_prompt = []
+        self.last_saved_entry_id_from_preview = None
         self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
         self.action_bar.generate_button.config(state=tk.DISABLED) # Can't generate from a non-template
         self.prompt_text.config(state=tk.NORMAL)
@@ -1211,6 +1249,69 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
         self.ai_cleanup_after_id = self.after(100, self._check_ai_cleanup_queue)
+
+    def _generate_image_from_preview(self):
+        """Generates an image from the current prompt preview."""
+        prompt = self._get_current_prompt_string()
+        if not prompt:
+            custom_dialogs.show_error(self, "Error", "No prompt in preview to generate an image from.")
+            return
+
+        try:
+            from .image_generation_dialog import ImageGenerationOptionsDialog
+            dialog = ImageGenerationOptionsDialog(self, self.processor.invokeai_client, initial_negative_prompt=config.DEFAULT_NEGATIVE_PROMPT)
+            options = dialog.result
+        except Exception as e:
+            custom_dialogs.show_error(self, "Error", f"Could not open image generation options:\n{e}")
+            return
+
+        if not options:
+            return # User cancelled
+
+        self.action_bar.generate_image_button.config(state=tk.DISABLED, text="Generating...")
+
+        def task():
+            try:
+                seed = random.randint(0, 2**32 - 1)
+                gen_args = {
+                    "prompt": prompt,
+                    "negative_prompt": options["negative_prompt"],
+                    "seed": seed,
+                    "model_object": options["model"],
+                    "loras": options["loras"],
+                    "steps": options["steps"],
+                    "cfg_scale": options["cfg_scale"],
+                    "scheduler": options["scheduler"],
+                }
+                image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
+                self.main_image_gen_queue.put({'success': True, 'bytes': image_bytes, 'prompt': prompt, 'generation_params': options})
+            except Exception as e:
+                self.main_image_gen_queue.put({'success': False, 'error': str(e)})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.main_image_gen_after_id = self.after(100, self._check_main_image_gen_queue)
+
+    def _check_main_image_gen_queue(self):
+        """Checks for image generation results from the main window."""
+        try:
+            result = self.main_image_gen_queue.get_nowait()
+            self.action_bar.generate_image_button.config(state=tk.NORMAL, text="Generate Image")
+
+            if result['success']:
+                from .image_preview_dialog import ImagePreviewDialog
+                preview_dialog = ImagePreviewDialog(self, result['bytes'], result['prompt'])
+                if preview_dialog.result: # User clicked "Save to History"
+                    image_path = self.processor.save_generated_image(result['bytes'])
+                    entry = {'original_prompt': result['prompt'], 'status': 'generated_only', 'original_image_path': image_path, 'original_generation_params': result.get('generation_params'), 'template_name': self.current_template_file}
+                    saved_entry = self.processor.history_manager.save_result(**entry)
+                    if saved_entry:
+                        self.last_saved_entry_id_from_preview = saved_entry.get('id')
+                    custom_dialogs.show_info(self, "Image Saved", "Image and prompt saved to history.")
+            else:
+                custom_dialogs.show_error(self, "Image Generation Error", f"Failed to generate image:\n{result['error']}")
+        except queue.Empty:
+            self.main_image_gen_after_id = self.after(100, self._check_main_image_gen_queue)
 
     def _check_ai_cleanup_queue(self):
         """Checks for results from the AI cleanup thread."""
@@ -1461,6 +1562,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Re-initialize the processor's client with the new URL from the global config
         # which was updated by the settings window.
         self.processor.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL)
+        self.processor.invokeai_client = self.processor.invokeai_client.__class__(base_url=config.INVOKEAI_BASE_URL)
         
         # Re-initialize other parts of the processor that depend on paths
         self.processor.initialize()
@@ -1479,6 +1581,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.wildcard_manager_window.close()
         if self.brainstorming_window and self.brainstorming_window.winfo_exists():
             self.brainstorming_window.close()
+        for window in list(self.enhancement_windows):
+            if window.winfo_exists():
+                window.close()
         active_models_on_exit = self.model_usage_manager.get_active_models()
         if active_models_on_exit:
             print(f"Unloading all active models: {', '.join(active_models_on_exit)}...")
@@ -1489,6 +1594,10 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.after_cancel(self.debounce_timer)
         if self.ai_cleanup_after_id:
             self.after_cancel(self.ai_cleanup_after_id)
+        if self.main_image_gen_after_id:
+            self.after_cancel(self.main_image_gen_after_id)
+        if self.last_saved_entry_id_from_preview:
+            self.last_saved_entry_id_from_preview = None
         self.destroy()
 
     def _show_missing_wildcard_menu(self, event, wildcard_name: str):
