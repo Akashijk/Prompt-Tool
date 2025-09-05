@@ -38,6 +38,7 @@ class PromptProcessor:
         self.verbose = verbose
         self.rng = random.Random()
         self._used_wildcards_cache: Optional[Set[str]] = None
+        self.available_variations_map: Dict[str, str] = {}
         
         # Callback functions for UI updates (optional)
         self.status_callback: Optional[Callable] = None
@@ -64,6 +65,8 @@ class PromptProcessor:
 
         self._update_status("Loading templates...")
         self.template_engine.list_templates(config.get_template_dir())
+        
+        self.available_variations_map = {v['key']: v['name'] for v in self.get_available_variations()}
         
         self._update_status("Ready")
     
@@ -153,6 +156,7 @@ class PromptProcessor:
         self.template_engine.load_wildcards(self._get_wildcard_load_order())
         self._used_wildcards_cache = None
         self._load_all_wildcards_into_cache()
+        self.available_variations_map = {v['key']: v['name'] for v in self.get_available_variations()}
         self._update_status("Ready")
 
     def clear_wildcard_cache_and_reload(self) -> bool:
@@ -1632,7 +1636,7 @@ class PromptProcessor:
         # The response should be a JSON array.
         return self.ollama_client.parse_json_array_from_response(raw_response)
 
-    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float) -> bytes:
+    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool) -> bytes:
         """Generates an image with InvokeAI and returns the raw image bytes."""
         self.invokeai_client.check_server_compatibility() # This will raise a specific error if there's a problem.
 
@@ -1646,6 +1650,7 @@ class PromptProcessor:
             cfg_scale=cfg_scale,
             scheduler=scheduler,
             cfg_rescale_multiplier=cfg_rescale_multiplier,
+            save_to_gallery=save_to_gallery,
             verbose=self.verbose
         )
 
@@ -1720,3 +1725,57 @@ class PromptProcessor:
     def cleanup_model(self, model: str) -> None:
         """Unload model to free resources."""
         self.ollama_client.unload_model(model)
+
+    def get_all_favorite_images(self) -> List[Dict[str, Any]]:
+        """
+        Scans the entire history and returns a list of all images marked as favorite.
+        """
+        all_history = self.history_manager.load_full_history()
+        favorite_images = []
+
+        for entry in all_history:
+            history_id = entry.get('id')
+
+            def process_image_list(images: List[Dict[str, Any]], prompt_type: str, prompt: str):
+                if not images:
+                    return
+                for img_data in images:
+                    if img_data.get('is_favorite'):
+                        fav_item = {
+                            'history_id': history_id,
+                            'prompt_type': prompt_type,
+                            'prompt': prompt,
+                            'image_path': img_data.get('image_path'),
+                            'generation_params': img_data.get('generation_params', {})
+                        }
+                        favorite_images.append(fav_item)
+
+            # Check original images
+            process_image_list(
+                entry.get('original_images', []),
+                'original',
+                entry.get('original_prompt', '')
+            )
+
+            # Check enhanced images
+            enhanced_data = entry.get('enhanced', {})
+            if enhanced_data:
+                process_image_list(
+                    enhanced_data.get('images', []),
+                    'enhanced',
+                    enhanced_data.get('prompt', '')
+                )
+
+            # Check variation images
+            variations_data = entry.get('variations', {})
+            if variations_data:
+                for var_key, var_data in variations_data.items():
+                    # Use the friendly name for the prompt type if available
+                    friendly_name = self.available_variations_map.get(var_key, var_key)
+                    process_image_list(
+                        var_data.get('images', []),
+                        friendly_name,
+                        var_data.get('prompt', '')
+                    )
+        
+        return favorite_images

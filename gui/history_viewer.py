@@ -38,6 +38,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.selected_item_frame: Optional[ttk.Frame] = None
         self.selected_row_data: Optional[Dict[str, Any]] = None
 
+        self.image_favorite_var = tk.BooleanVar()
         self.show_favorites_only_var = tk.BooleanVar(value=False)
         self.details_notebook: Optional[ttk.Notebook] = None
         self.filter_debounce_timer: Optional[str] = None
@@ -48,17 +49,16 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.image_tooltip_after_id: Optional[str] = None
         self.current_images: List[Dict[str, Any]] = []
         self.current_image_index: int = 0
-        self.image_gen_queue = queue.Queue()
         self.image_gen_after_id: Optional[str] = None
         self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
         self.context_menu = tk.Menu(self, tearoff=0)
+        self.image_context_menu = tk.Menu(self, tearoff=0)
 
         self._create_styles()
         self._create_widgets()
         self.load_and_display_history()
 
         self.smart_geometry(min_width=1200, min_height=800)
-        self.image_gen_after_id = self.after(100, self._check_image_gen_queue)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
     def close(self):
@@ -164,11 +164,17 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.image_tooltip = Tooltip(self.image_label)
         self.image_label.bind("<Enter>", self._schedule_image_tooltip)
         self.image_label.bind("<Leave>", self._hide_image_tooltip)
+        right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
+        self.image_label.bind(right_click_event, self._show_image_context_menu)
 
         # Create the pagination widgets inside their frame. They will be managed later.
         self.prev_button = ttk.Button(self.pagination_frame, text="< Prev", command=self._prev_image)
 
         self.image_info_label = ttk.Label(self.pagination_frame, text="", anchor=tk.CENTER)
+
+        self.favorite_image_button = ttk.Checkbutton(self.pagination_frame, text="⭐", variable=self.image_favorite_var, command=self._toggle_image_favorite, style='Switch.TCheckbutton')
+        Tooltip(self.favorite_image_button, "Add this image to your Favorites collection.")
+
 
         self.next_button = ttk.Button(self.pagination_frame, text="Next >", command=self._next_image)
 
@@ -413,7 +419,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             return
 
         self.current_images = images
-        self.current_image_index = 0
+
+        # Find the cover image, if one exists in this group
+        cover_image_index = -1
+        for i, img_data in enumerate(self.current_images):
+            if img_data.get('is_cover_image'):
+                cover_image_index = i
+                break
+        self.current_image_index = cover_image_index if cover_image_index != -1 else 0
         
         # Always forget everything first for a clean slate
         self.prev_button.pack_forget()
@@ -426,6 +439,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             self.next_button.pack(side=tk.RIGHT, padx=5)
         
         # The info label should always be visible if there are images.
+        self.favorite_image_button.pack(side=tk.RIGHT, padx=5)
         self.image_info_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
             
         self._show_current_image()
@@ -459,6 +473,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             # Update pagination info
             gen_params = image_data.get('generation_params', {})
             model_name = gen_params.get('model', {}).get('name', 'Unknown Model')
+            is_fav = image_data.get('is_favorite', False)
+            self.image_favorite_var.set(is_fav)
+
             info_text = f"({self.current_image_index + 1}/{len(self.current_images)}) Model: {model_name}"
             self.image_info_label.config(text=info_text)
             
@@ -510,6 +527,111 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         if self.image_tooltip:
             self.image_tooltip.hide(event)
 
+    def _show_image_context_menu(self, event):
+        """Shows a context menu for the image preview."""
+        if not self.current_images:
+            return
+
+        image_data = self.current_images[self.current_image_index]
+        gen_params = image_data.get('generation_params', {})
+        seed = gen_params.get('seed')
+
+        self.image_context_menu.delete(0, tk.END)
+        
+        copy_seed_state = tk.NORMAL if seed is not None else tk.DISABLED
+        self.image_context_menu.add_command(
+            label="Copy Seed", 
+            command=lambda s=seed: self._copy_seed_to_clipboard(s),
+            state=copy_seed_state
+        )
+
+        is_current_cover = image_data.get('is_cover_image', False)
+        if is_current_cover:
+            self.image_context_menu.add_command(
+                label="Remove as Cover Image",
+                command=lambda: self._set_as_cover_image(remove=True)
+            )
+        else:
+            self.image_context_menu.add_command(
+                label="Set as Cover Image", 
+                command=lambda: self._set_as_cover_image(remove=False)
+            )
+
+        self.image_context_menu.tk_popup(event.x_root, event.y_root)
+
+    def _copy_seed_to_clipboard(self, seed: Optional[int]):
+        """Copies the provided seed to the clipboard."""
+        if seed is not None:
+            self.clipboard_clear()
+            self.clipboard_append(str(seed))
+
+    def _set_as_cover_image(self, remove: bool = False):
+        """Sets the currently viewed image as the cover image for its group."""
+        if not self.selected_row_data or not self.current_images:
+            return
+
+        try:
+            selected_tab_id = self.details_notebook.select()
+            selected_tab_widget = self.details_notebook.nametowidget(selected_tab_id)
+        except tk.TclError:
+            return
+
+        current_tab_key = next((key for key, tab_info in self.detail_tabs.items() if tab_info['frame'] == selected_tab_widget), None)
+        if not current_tab_key: return
+
+        updated_row = copy.deepcopy(self.selected_row_data)
+        target_obj, image_list_key = self._get_target_object_for_images(updated_row, current_tab_key)
+        if not target_obj or not image_list_key: return
+        image_list = target_obj.get(image_list_key, [])
+        if not image_list: return
+
+        # Clear all existing cover image flags in this list
+        for img in image_list:
+            img['is_cover_image'] = False
+        
+        if not remove:
+            image_list[self.current_image_index]['is_cover_image'] = True
+
+        self._save_and_refresh_row(updated_row, "Cover image updated.")
+
+    def _toggle_image_favorite(self):
+        """Toggles the favorite status for the currently viewed image within its group."""
+        if not self.selected_row_data or not self.current_images:
+            return
+
+        # Get the key for the current tab ('original', 'enhanced', 'cinematic', etc.)
+        try:
+            selected_tab_id = self.details_notebook.select()
+            selected_tab_widget = self.details_notebook.nametowidget(selected_tab_id)
+        except tk.TclError:
+            return
+        
+        current_tab_key = next((key for key, tab_info in self.detail_tabs.items() if tab_info['frame'] == selected_tab_widget), None)
+        if not current_tab_key: return
+
+        updated_row = copy.deepcopy(self.selected_row_data)
+        target_obj, image_list_key = self._get_target_object_for_images(updated_row, current_tab_key)
+        if not target_obj or not image_list_key: return
+        image_list = target_obj.get(image_list_key, [])
+        if not image_list or self.current_image_index >= len(image_list): return
+
+        new_favorite_status = self.image_favorite_var.get()
+        
+        # Just toggle the flag for the current image
+        image_list[self.current_image_index]['is_favorite'] = new_favorite_status
+
+        self._save_and_refresh_row(updated_row, "Favorite status updated.")
+
+    def _save_and_refresh_row(self, updated_row: Dict[str, Any], success_message: str):
+        """Saves the updated row data and refreshes the UI state."""
+        success = self.processor.update_history_entry(self.selected_row_data, updated_row)
+        if success:
+            self.selected_row_data = updated_row
+            custom_dialogs.show_info(self, "Success", success_message)
+        else:
+            custom_dialogs.show_error(self, "Error", "Failed to update favorite status in history.")
+            self.image_favorite_var.set(not new_favorite_status)
+
     def _generate_image_from_history(self, key: str):
         """Starts the image generation process for a prompt from the history."""
         if not self.selected_row_data: return
@@ -541,141 +663,35 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_error(self, "Error", "No prompt available to generate an image.")
             return
 
-        try:
-            from .image_generation_dialog import ImageGenerationOptionsDialog
-            dialog = ImageGenerationOptionsDialog(self, self.processor.invokeai_client, initial_negative_prompt=negative_prompt)
-            options = dialog.result
-        except Exception as e:
-            custom_dialogs.show_error(self, "Error", f"Could not open image generation options:\n{e}")
-            return
-
-        if not options:
-            return # User cancelled
-
-        # Disable the button
-        button = self.detail_tabs.get(key, {}).get('generate_image_button')
-        spinner = self.detail_tabs.get(key, {}).get('image_gen_spinner')
-        if button:
-            button.config(state=tk.DISABLED)
-        if spinner:
-            spinner.pack(side=tk.LEFT, padx=(0, 5))
-            spinner.start()
-        
-        def task():
-            generated_images = []
-            errors = []
-            total_models = len(options['models'])
-            seed_for_batch = options["seed"]
-            for i, model_object in enumerate(options['models']):
-                if button:
-                    self.after(0, lambda i=i, t=total_models: button.config(text=f"Generating ({i+1}/{t})..."))
-                try:
-                    # Create a unique set of generation_params for this specific image
-                    current_gen_params = options.copy()
-                    current_gen_params['model'] = model_object
-                    del current_gen_params['models']
-                    
-                    gen_args = {
-                        "prompt": prompt,
-                        "negative_prompt": options["negative_prompt"],
-                        "seed": seed_for_batch,
-                        "model_object": model_object,
-                        "loras": options["loras"],
-                        "steps": options["steps"],
-                        "cfg_scale": options["cfg_scale"],
-                        "scheduler": options["scheduler"],
-                        "cfg_rescale_multiplier": options["cfg_rescale_multiplier"],
-                    }
-                    image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
-                    generated_images.append({'bytes': image_bytes, 'prompt': prompt, 'generation_params': current_gen_params})
-                except Exception as e:
-                    errors.append(f"Model '{model_object.get('name', 'Unknown')}': {e}")
-            
-            self.image_gen_queue.put({'success': not errors, 'key': key, 'images': generated_images, 'errors': errors})
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-
-    def _check_image_gen_queue(self):
-        """Checks for image generation results and updates the UI."""
-        if not self.winfo_exists():
-            return
-
-        try:
-            result = self.image_gen_queue.get_nowait()
-            key = result['key']
-            button = self.detail_tabs.get(key, {}).get('generate_image_button')
-            spinner = self.detail_tabs.get(key, {}).get('image_gen_spinner')
-
-            if spinner:
-                spinner.stop()
-                spinner.pack_forget()
-            if button:
-                button.config(state=tk.NORMAL)
-            
-            # Handle errors that occurred during generation
-            if result.get('errors'):
-                error_str = "\n".join(result['errors'])
-                custom_dialogs.show_error(self, "Image Generation Errors", f"Some images failed to generate:\n{error_str}")
-
-            # If no images were successful at all, just re-enable the button and stop.
-            if not result.get('images'):
-                return
-
-            # Open the preview dialog
-            from .multi_image_preview_dialog import MultiImagePreviewDialog
-            preview_dialog = MultiImagePreviewDialog(self, result['images'])
-            images_to_save = preview_dialog.result
-            
-            # Get the currently selected row to update it. This is needed for both saving and discarding.
+        def on_success(images_to_save: List[Dict[str, Any]]):
+            """Callback to handle updating the history entry with new images."""
             if not self.selected_row_data: return
             original_row = self.selected_row_data
-            if not original_row: return
+            updated_row = copy.deepcopy(original_row)
+            target_obj, image_list_key = self._get_target_object_for_images(updated_row, key)
 
-            if images_to_save:  # User clicked "Save Kept Images"
-                updated_row = copy.deepcopy(original_row)
-                target_obj, image_list_key = self._get_target_object_for_images(updated_row, key)
+            if target_obj is None:
+                custom_dialogs.show_error(self, "Internal Error", "Could not determine where to save image data.")
+                return
 
-                if target_obj is None:
-                    custom_dialogs.show_error(self, "Internal Error", "Could not determine where to save image data.")
-                    if button: button.config(state=tk.NORMAL, text="Regen")
-                    return
+            final_images = self._build_final_image_list(target_obj, image_list_key, images_to_save)
+            target_obj[image_list_key] = final_images
+            
+            success = self.processor.update_history_entry(original_row, updated_row)
+            if success:
+                button = self.detail_tabs.get(key, {}).get('generate_image_button')
+                self._update_ui_after_save(original_row['id'], updated_row, button, final_images)
+                custom_dialogs.show_info(self, "Image Saved", f"Image saved and history updated for '{key}' prompt.")
+            else:
+                custom_dialogs.show_error(self, "History Update Error", "Could not update the history file with the new image path.")
 
-                final_images = self._build_final_image_list(target_obj, image_list_key, images_to_save)
-                target_obj[image_list_key] = final_images
-                
-                # Save the updated history entry
-                success = self.processor.update_history_entry(original_row, updated_row)
-                if success:
-                    self._update_ui_after_save(original_row['id'], updated_row, button, final_images)
-                    custom_dialogs.show_info(self, "Image Saved", f"Image saved and history updated for '{key}' prompt.")
-                else:
-                    custom_dialogs.show_error(self, "History Update Error", "Could not update the history file with the new image path.")
-                    if button:
-                        button.config(state=tk.NORMAL, text="Regenerate Image(s)")
-            else: # User clicked "Discard"
-                # Revert button to its pre-generation state
-                if button:
-                    original_images = original_row.get('original_images', []) if key == 'original' else \
-                                      original_row.get('enhanced', {}).get('images', []) if key == 'enhanced' else \
-                                      original_row.get('variations', {}).get(key, {}).get('images', [])
-                    if original_images:
-                        button.config(text=f"Regen ({len(original_images)})", state=tk.NORMAL)
-                    else:
-                        button.config(text="Generate Image", state=tk.NORMAL)
-        
-        except queue.Empty:
-            pass
-        except tk.TclError:
-            # This can happen if the window is destroyed while the queue is being processed.
-            # We can safely ignore it and stop the loop.
-            return
-        finally:
-            try:
-                if self.winfo_exists():
-                    self.image_gen_after_id = self.after(100, self._check_image_gen_queue)
-            except tk.TclError:
-                pass # Window was destroyed, do nothing.
+        button = self.detail_tabs.get(key, {}).get('generate_image_button')
+        self.parent_app._start_image_generation_workflow(
+            parent_window=self,
+            prompt=prompt, initial_dialog_params={'negative_prompt': negative_prompt},
+            button_to_manage=button, spinner_to_manage=self.detail_tabs.get(key, {}).get('image_gen_spinner'),
+            on_success_callback=on_success
+        )
 
     def _get_target_object_for_images(self, data_row: Dict[str, Any], key: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Finds the correct dictionary and key within a history entry to store an image list."""
@@ -795,6 +811,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.current_images = []
         self.current_image_index = 0
         self.image_info_label.config(text="") # Clear the text instead of hiding the widget
+        self.favorite_image_button.pack_forget()
 
     def _prune_history(self):
         """Starts the process of pruning missing image entries from the history file."""

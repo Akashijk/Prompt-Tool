@@ -9,7 +9,7 @@ import re
 import random
 import sys
 import queue
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Callable
 from tkinter import ttk
 from core.prompt_processor import PromptProcessor
 from core.template_engine import PromptSegment
@@ -20,6 +20,7 @@ from .action_bar import ActionBar
 from .common import Tooltip, LoadingAnimation, TextContextMenu, TemplateEditorContextMenu, SmartWindowMixin, PromptPreviewContextMenu
 from .history_viewer import HistoryViewerWindow
 from .review_window import ReviewAndSaveWindow
+from .favorite_images_viewer import FavoriteImagesViewer
 from .system_prompt_editor import SystemPromptEditorWindow
 from .settings_window import SettingsWindow
 from .wildcard_manager import WildcardManagerWindow
@@ -83,6 +84,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.image_interrogator_window: Optional[ImageInterrogatorWindow] = None
         self.prompt_evolver_window: Optional[PromptEvolverWindow] = None
         self.history_viewer_window: Optional[HistoryViewerWindow] = None
+        self.favorite_images_viewer_window: Optional[FavoriteImagesViewer] = None
         self.loading_animation: Optional[LoadingAnimation] = None
         self.template_editor: Optional[TemplateEditor] = None
         self.wildcard_inserter: Optional[WildcardInserter] = None
@@ -97,9 +99,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.ai_cleanup_after_id: Optional[str] = None
         self.missing_wildcards_container: Optional[ttk.Frame] = None
         self.enhancement_windows: List[EnhancementResultWindow] = []
-        self.main_image_gen_queue = queue.Queue()
         self.last_saved_entry_id_from_preview: Optional[str] = None
-        self.main_image_gen_after_id: Optional[str] = None
 
         # Create widgets
         self._create_widgets()
@@ -1202,6 +1202,20 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.history_viewer_window.close()
             self.history_viewer_window = None
 
+    def _open_favorite_images_viewer(self):
+        """Opens the favorite images viewer window."""
+        if self.favorite_images_viewer_window and self.favorite_images_viewer_window.winfo_exists():
+            self.favorite_images_viewer_window.lift()
+            self.favorite_images_viewer_window.focus_force()
+        else:
+            self.favorite_images_viewer_window = FavoriteImagesViewer(self, self.processor)
+            self.favorite_images_viewer_window.protocol("WM_DELETE_WINDOW", self._on_favorite_images_viewer_close)
+
+    def _on_favorite_images_viewer_close(self):
+        if self.favorite_images_viewer_window:
+            self.favorite_images_viewer_window.close()
+            self.favorite_images_viewer_window = None
+
     def load_prompt_from_history(self, prompt_text: str):
         """Loads a prompt from the history viewer into the main UI for re-enhancement."""
         # Clear template-related state and UI
@@ -1250,94 +1264,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         thread.start()
         self.ai_cleanup_after_id = self.after(100, self._check_ai_cleanup_queue)
 
-    def _generate_image_from_preview(self):
-        """Generates an image from the current prompt preview."""
-        prompt = self._get_current_prompt_string()
-        if not prompt:
-            custom_dialogs.show_error(self, "Error", "No prompt in preview to generate an image from.")
-            return
-
-        try:
-            from .image_generation_dialog import ImageGenerationOptionsDialog
-            dialog = ImageGenerationOptionsDialog(self, self.processor.invokeai_client, initial_negative_prompt=config.DEFAULT_NEGATIVE_PROMPT)
-            options = dialog.result
-        except Exception as e:
-            custom_dialogs.show_error(self, "Error", f"Could not open image generation options:\n{e}")
-            return
-
-        if not options:
-            return # User cancelled
-
-        self.action_bar.generate_image_button.config(state=tk.DISABLED)
-        self.action_bar.image_gen_spinner.pack(side=tk.LEFT, padx=(0, 5))
-        self.action_bar.image_gen_spinner.start()
-
-        def task():
-            generated_images = []
-            errors = []
-            total_models = len(options['models'])
-            seed_for_batch = options["seed"]
-            for i, model_object in enumerate(options['models']):
-                self.after(0, lambda i=i, t=total_models: self.action_bar.generate_image_button.config(text=f"Generating ({i+1}/{t})..."))
-                try:
-                    current_gen_params = options.copy()
-                    current_gen_params['model'] = model_object
-                    del current_gen_params['models']
-                    
-                    gen_args = {
-                        "prompt": prompt,
-                        "negative_prompt": options["negative_prompt"],
-                        "seed": seed_for_batch,
-                        "model_object": model_object,
-                        "loras": options["loras"],
-                        "steps": options["steps"],
-                        "cfg_scale": options["cfg_scale"],
-                        "scheduler": options["scheduler"],
-                        "cfg_rescale_multiplier": options["cfg_rescale_multiplier"],
-                    }
-                    image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
-                    generated_images.append({'bytes': image_bytes, 'prompt': prompt, 'generation_params': current_gen_params})
-                except Exception as e:
-                    errors.append(f"Model '{model_object.get('name', 'Unknown')}': {e}")
-            
-            self.main_image_gen_queue.put({'success': not errors, 'images': generated_images, 'errors': errors})
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self.main_image_gen_after_id = self.after(100, self._check_main_image_gen_queue)
-
-    def _check_main_image_gen_queue(self):
-        """Checks for image generation results from the main window."""
-        try:
-            result = self.main_image_gen_queue.get_nowait()
-            self.action_bar.image_gen_spinner.stop()
-            self.action_bar.image_gen_spinner.pack_forget()
-            self.action_bar.generate_image_button.config(state=tk.NORMAL)
-
-            if result.get('errors'):
-                error_str = "\n".join(result['errors'])
-                custom_dialogs.show_error(self, "Image Generation Errors", f"Some images failed to generate:\n{error_str}")
-
-            if result.get('images'):
-                from .multi_image_preview_dialog import MultiImagePreviewDialog
-                preview_dialog = MultiImagePreviewDialog(self, result['images'])
-                images_to_save = preview_dialog.result
-
-                if images_to_save: # User clicked "Save Kept Images" and some were kept
-                    saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
-                    entry = {'original_prompt': images_to_save[0]['prompt'], 'status': 'generated_only', 'original_images': saved_images_data, 'template_name': self.current_template_file}
-                    saved_entry = self.processor.history_manager.save_result(**entry)
-                    if saved_entry:
-                        self.last_saved_entry_id_from_preview = saved_entry.get('id')
-                    custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) and prompt saved to history.")
-            elif not result.get('errors'):
-                custom_dialogs.show_error(self, "Image Generation Error", "Failed to generate image(s).")
-        except queue.Empty:
-            pass
-        finally:
-            if self.winfo_exists():
-                self.main_image_gen_after_id = self.after(100, self._check_main_image_gen_queue)
-
     def _check_ai_cleanup_queue(self):
         """Checks for results from the AI cleanup thread."""
         try:
@@ -1368,6 +1294,99 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 self.status_var.set("AI cleanup failed.")
         except queue.Empty:
             self.ai_cleanup_after_id = self.after(100, self._check_ai_cleanup_queue)
+
+    def _generate_image_from_preview(self):
+        """Generates an image from the current prompt preview using the consolidated workflow."""
+        prompt = self._get_current_prompt_string()
+        if not prompt:
+            custom_dialogs.show_error(self, "Error", "No prompt in preview to generate an image from.")
+            return
+
+        def on_success(images_to_save: List[Dict[str, Any]]):
+            """Callback to handle saving a new history entry."""
+            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
+            entry = {'original_prompt': images_to_save[0]['prompt'], 'status': 'generated_only', 'original_images': saved_images_data, 'template_name': self.current_template_file}
+            saved_entry = self.processor.history_manager.save_result(**entry)
+            if saved_entry:
+                self.last_saved_entry_id_from_preview = saved_entry.get('id')
+            custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) and prompt saved to history.")
+
+        self._start_image_generation_workflow(
+            parent_window=self,
+            prompt=prompt,
+            initial_dialog_params={'negative_prompt': config.DEFAULT_NEGATIVE_PROMPT},
+            button_to_manage=self.action_bar.generate_image_button,
+            spinner_to_manage=self.action_bar.image_gen_spinner,
+            on_success_callback=on_success
+        )
+
+    def _start_image_generation_workflow(self, parent_window: tk.Widget, prompt: str, initial_dialog_params: Dict[str, Any], button_to_manage: ttk.Button, spinner_to_manage: Optional[LoadingAnimation], on_success_callback: Optional[Callable[[List[Dict[str, Any]]], None]]):
+        """A centralized method to handle the entire image generation process."""
+        try:
+            from .image_generation_dialog import ImageGenerationOptionsDialog
+            dialog = ImageGenerationOptionsDialog(parent_window, self.processor.invokeai_client, initial_params=initial_dialog_params)
+            options = dialog.result
+        except Exception as e:
+            custom_dialogs.show_error(self, "Error", f"Could not open image generation options:\n{e}")
+            return
+
+        if not options:
+            return # User cancelled
+
+        original_button_text = button_to_manage.cget("text")
+        button_to_manage.config(state=tk.DISABLED)
+        if spinner_to_manage:
+            spinner_to_manage.pack(side=tk.LEFT, padx=(0, 5))
+            spinner_to_manage.start()
+
+        def task():
+            generated_images = []
+            errors = []
+            total_models = len(options['models'])
+            seed_for_batch = options["seed"]
+            for i, model_object in enumerate(options['models']):
+                self.after(0, lambda i=i, t=total_models: button_to_manage.config(text=f"Generating ({i+1}/{t})..."))
+                try:
+                    current_gen_params = options.copy()
+                    current_gen_params['model'] = model_object
+                    del current_gen_params['models']
+                    
+                    gen_args = {
+                        "prompt": prompt, "negative_prompt": options["negative_prompt"], "seed": seed_for_batch,
+                        "model_object": model_object, "loras": options["loras"], "steps": options["steps"],
+                        "cfg_scale": options["cfg_scale"], "scheduler": options["scheduler"],
+                        "cfg_rescale_multiplier": options["cfg_rescale_multiplier"], "save_to_gallery": options["save_to_gallery"],
+                    }
+                    image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
+                    generated_images.append({'bytes': image_bytes, 'prompt': prompt, 'generation_params': current_gen_params})
+                except Exception as e:
+                    errors.append(f"Model '{model_object.get('name', 'Unknown')}': {e}")
+            
+            self.after(0, self._handle_generation_result, generated_images, errors, button_to_manage, spinner_to_manage, on_success_callback, original_button_text)
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+
+    def _handle_generation_result(self, generated_images: List[Dict[str, Any]], errors: List[str], button_to_manage: ttk.Button, spinner_to_manage: Optional[LoadingAnimation], on_success_callback: Optional[Callable[[List[Dict[str, Any]]], None]], original_button_text: str):
+        """Handles the result of the image generation task in the main thread."""
+        if spinner_to_manage:
+            spinner_to_manage.stop()
+            spinner_to_manage.pack_forget()
+        button_to_manage.config(state=tk.NORMAL, text=original_button_text)
+
+        if errors:
+            error_str = "\n".join(errors)
+            custom_dialogs.show_error(self, "Image Generation Errors", f"Some images failed to generate:\n{error_str}")
+
+        if generated_images:
+            from .multi_image_preview_dialog import MultiImagePreviewDialog
+            preview_dialog = MultiImagePreviewDialog(self, generated_images)
+            images_to_save = preview_dialog.result
+            if images_to_save and on_success_callback:
+                on_success_callback(images_to_save)
+        elif not errors:
+            custom_dialogs.show_error(self, "Image Generation Error", "Failed to generate image(s).")
+
     def _brainstorm_with_template(self):
         """Sends the current template content to the brainstorming window."""
         if not self.template_editor: return
@@ -1619,8 +1638,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.after_cancel(self.debounce_timer)
         if self.ai_cleanup_after_id:
             self.after_cancel(self.ai_cleanup_after_id)
-        if self.main_image_gen_after_id:
-            self.after_cancel(self.main_image_gen_after_id)
         if self.last_saved_entry_id_from_preview:
             self.last_saved_entry_id_from_preview = None
         self.destroy()

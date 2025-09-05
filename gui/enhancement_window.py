@@ -43,9 +43,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         self.copy_buttons: Dict[str, ttk.Button] = {}
         self.regen_buttons: Dict[str, ttk.Button] = {}
         self.save_button: Optional[ttk.Button] = None
-        self.regen_queue: queue.Queue = queue.Queue()
         self.result_queue: queue.Queue = queue.Queue()
-        self.image_gen_queue: queue.Queue = queue.Queue()
         self.result_queue_after_id: Optional[str] = None
         self.regen_queue_after_id: Optional[str] = None
         self.image_gen_after_id: Optional[str] = None
@@ -75,7 +73,6 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         ttk.Button(button_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
 
         self.result_queue_after_id = self.after(100, self._check_result_queue)
-        self.image_gen_after_id = self.after(100, self._check_image_gen_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Call smart geometry after creating widgets
@@ -89,9 +86,6 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         if self.regen_queue_after_id:
             self.after_cancel(self.regen_queue_after_id)
             self.regen_queue_after_id = None
-        if self.image_gen_after_id:
-            self.after_cancel(self.image_gen_after_id)
-            self.image_gen_after_id = None
 
         # Only trigger the cancellation logic if there are still active API calls.
         if self.parent_app.active_api_calls > 0:
@@ -225,113 +219,31 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_error(self, "Error", "No prompt available to generate an image.")
             return
 
-        # --- NEW: Open options dialog ---
-        try:
-            dialog = ImageGenerationOptionsDialog(self, self.processor.invokeai_client, initial_negative_prompt=negative_prompt)
-            options = dialog.result
-        except Exception as e:
-            custom_dialogs.show_error(self, "Error", f"Could not open image generation options:\n{e}")
-            return
+        def on_success(images_to_save: List[Dict[str, Any]]):
+            """Callback to handle saving image data to the result_data object."""
+            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
+            
+            if prompt_key == 'original':
+                self.result_data['original_images'] = saved_images_data
+            elif prompt_key == 'enhanced':
+                if 'enhanced' not in self.result_data: self.result_data['enhanced'] = {}
+                self.result_data['enhanced']['images'] = saved_images_data
+            elif prompt_key in self.result_data.get('variations', {}):
+                self.result_data['variations'][prompt_key]['images'] = saved_images_data
+            
+            custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) saved for '{prompt_key}' prompt.\n\nPath(s) will be stored when you save to history.")
+            button = self.image_gen_buttons.get(prompt_key)
+            if button: button.config(text=f"Regen Image(s) ({len(saved_images_data)})")
 
-        if not options:
-            return # User cancelled
-
-        # Disable the button
         button = self.image_gen_buttons.get(prompt_key)
-        spinner = self.image_gen_spinners.get(prompt_key)
-        if button:
-            button.config(state=tk.DISABLED)
-        if spinner:
-            spinner.pack(side=tk.LEFT, padx=(0, 5))
-            spinner.start()
-        
-        def task():
-            generated_images = []
-            errors = []
-            total_models = len(options['models'])
-            seed_for_batch = options["seed"]
-            for i, model_object in enumerate(options['models']):
-                if button:
-                    self.after(0, lambda i=i, t=total_models: button.config(text=f"Generating ({i+1}/{t})..."))
-                try:
-                    current_gen_params = options.copy()
-                    current_gen_params['model'] = model_object
-                    del current_gen_params['models']
-                    
-                    gen_args = {
-                        "prompt": prompt,
-                        "negative_prompt": options["negative_prompt"],
-                        "seed": seed_for_batch,
-                        "model_object": model_object,
-                        "loras": options["loras"],
-                        "steps": options["steps"],
-                        "cfg_scale": options["cfg_scale"],
-                        "scheduler": options["scheduler"],
-                        "cfg_rescale_multiplier": options["cfg_rescale_multiplier"],
-                    }
-                    image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
-                    generated_images.append({'bytes': image_bytes, 'prompt': prompt, 'generation_params': current_gen_params})
-                except Exception as e:
-                    errors.append(f"Model '{model_object.get('name', 'Unknown')}': {e}")
-            
-            self.image_gen_queue.put({'success': not errors, 'key': prompt_key, 'images': generated_images, 'errors': errors})
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-
-    def _check_image_gen_queue(self):
-        """Checks for image generation results and updates the UI."""
-        if not self.winfo_exists():
-            return
-
-        try:
-            result = self.image_gen_queue.get_nowait()
-            key = result['key']
-            button = self.image_gen_buttons.get(key)
-            spinner = self.image_gen_spinners.get(key)
-
-            if spinner:
-                spinner.stop()
-                spinner.pack_forget()
-            if button:
-                button.config(state=tk.NORMAL)
-            
-            if result.get('errors'):
-                error_str = "\n".join(result['errors'])
-                custom_dialogs.show_error(self, "Image Generation Errors", f"Some images failed to generate:\n{error_str}")
-
-            if not result.get('images'):
-                return
-
-            from .multi_image_preview_dialog import MultiImagePreviewDialog
-            preview_dialog = MultiImagePreviewDialog(self, result['images'])
-            images_to_save = preview_dialog.result
-            
-            if images_to_save: # User clicked "Save Kept Images"
-                saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
-                
-                # Store image list with the specific prompt that generated it
-                if key == 'original':
-                    self.result_data['original_images'] = saved_images_data
-                elif key == 'enhanced':
-                    if 'enhanced' not in self.result_data: self.result_data['enhanced'] = {}
-                    self.result_data['enhanced']['images'] = saved_images_data
-                elif key in self.result_data.get('variations', {}):
-                    self.result_data['variations'][key]['images'] = saved_images_data
-                
-                custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) saved for '{key}' prompt.\n\nPath(s) will be stored when you save to history.")
-                if button: button.config(text=f"Regen Image(s) ({len(saved_images_data)})")
-            else: # User clicked "Discard"
-                if button: button.config(state=tk.NORMAL, text="Generate Image") # Re-enable
-        except queue.Empty:
-            pass
-        except tk.TclError:
-            # This can happen if the window is destroyed while the queue is being processed.
-            # We can safely ignore it and stop the loop.
-            return
-        finally:
-            if self.winfo_exists():
-                self.image_gen_after_id = self.after(100, self._check_image_gen_queue)
+        self.parent_app._start_image_generation_workflow(
+            parent_window=self,
+            prompt=prompt,
+            initial_dialog_params={'negative_prompt': negative_prompt},
+            button_to_manage=button,
+            spinner_to_manage=self.image_gen_spinners.get(prompt_key),
+            on_success_callback=on_success
+        )
 
     def _regenerate_all(self):
         """Starts the regeneration process for all prompts in the window."""
@@ -356,6 +268,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         # Hide regen button and show spinner
         self.regen_buttons[prompt_key].pack_forget()
         self.loading_animations[prompt_key].pack(fill=tk.X, pady=(5,0))
+        self.regen_queue = queue.Queue()
         self.loading_animations[prompt_key].start()
         
         text_widget = self.text_widgets[prompt_key]

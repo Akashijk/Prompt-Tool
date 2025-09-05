@@ -48,6 +48,7 @@ class MenuBar(tk.Menu):
         tools_menu.add_separator()
         tools_menu.add_command(label="Image Interrogator...", command=self.parent_app._open_image_interrogator)
         tools_menu.add_command(label="Prompt Evolver...", command=self.parent_app._open_prompt_evolver)
+        tools_menu.add_command(label="Favorite Images Viewer...", command=self.parent_app._open_favorite_images_viewer)
         tools_menu.add_separator()
         tools_menu.add_command(label="System Prompt Editor...", command=self.parent_app._open_system_prompt_editor)
         tools_menu.add_command(label="Settings...", command=self.parent_app._open_settings_window)

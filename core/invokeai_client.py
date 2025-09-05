@@ -108,7 +108,7 @@ class InvokeAIClient:
         
         return models
 
-    def _build_sdxl_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float) -> Dict[str, Any]:
+    def _build_sdxl_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool) -> Dict[str, Any]:
         """
         Builds the complete node graph for a standard SDXL text-to-image generation,
         including LoRA chaining.
@@ -216,12 +216,17 @@ class InvokeAIClient:
             "l2i": {
                 "type": "l2i",
                 "id": "l2i",
+                "is_intermediate": True, # The l2i node's output is always temporary; saving is handled by the save_image node.
+            },
+            "save_image": {
+                "id": "save_image",
+                "type": "save_image",
+                "is_intermediate": not save_to_gallery,
             },
         }
 
         # If we found a suitable fp32 VAE, we add a vae_loader node and update the source.
         if compatible_vae:
-            print("INFO: Found a suitable FP32 VAE. Overriding model's default VAE to prevent black images.")
             nodes['sdxl_fp32_vae_loader'] = {
                 "type": "vae_loader",
                 "id": "sdxl_fp32_vae_loader",
@@ -285,16 +290,17 @@ class InvokeAIClient:
             {"source": {"node_id": vae_source_node_id, "field": "vae"}, "destination": {"node_id": "l2i", "field": "vae"}},
             {"source": {"node_id": "sdxl_denoise_latents", "field": "latents"}, "destination": {"node_id": "l2i", "field": "latents"}},
             {"source": {"node_id": "noise", "field": "noise"}, "destination": {"node_id": "sdxl_denoise_latents", "field": "latents"}},
+            {"source": {"node_id": "l2i", "field": "image"}, "destination": {"node_id": "save_image", "field": "image"}},
         ]
 
         edges.extend(lora_edges)
 
         return {"nodes": nodes, "edges": edges}
 
-    def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, verbose: bool = False) -> bytes:
+    def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False) -> bytes:
         """Generates an image using the queue API and returns the raw image bytes."""
         
-        graph = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, cfg_rescale_multiplier)
+        graph = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, cfg_rescale_multiplier, save_to_gallery)
         
         if verbose:
             print("\n--- VERBOSE: InvokeAI Generation Graph ---", flush=True)
@@ -348,15 +354,16 @@ class InvokeAIClient:
                     if not session_data:
                         raise KeyError("'session' object not found in completed status response")
 
-                    # The final image is the output of the 'l2i' node. We need to find its execution ID.
+                    # The final image is always the output of the 'save_image' node.
+                    # Its 'is_intermediate' flag controls whether it's saved to the gallery.
                     # The mapping from our original graph node ID to the execution graph node ID
-                    l2i_node_id = session_data['source_prepared_mapping']['l2i'][0]
+                    target_node_id = session_data['source_prepared_mapping']['save_image'][0]
                     # The actual results from the execution
                     results = session_data.get("results")
                     if not results: raise KeyError("'results' key missing from session data")
-                    # The output of the l2i node
-                    output_node = results.get(l2i_node_id)
-                    if not output_node: raise KeyError(f"l2i node output (id: {l2i_node_id}) not found in results")
+                    # The output of the target node
+                    output_node = results.get(target_node_id)
+                    if not output_node: raise KeyError(f"Node output for 'save_image' (id: {target_node_id}) not found in results")
                 except (KeyError, IndexError) as e:
                     # Re-raise with a more informative message and the full response for debugging.
                     raise Exception(f"Could not parse final image from InvokeAI response. Error: {e}\nResponse was: {json.dumps(output_data, indent=2)}") from e
@@ -371,7 +378,19 @@ class InvokeAIClient:
                 response.raise_for_status()
                 return response.content
             elif status_data.get("status") in ["failed", "canceled"]:
-                error_msg = status_data.get("error", "Unknown error")
+                # Try to find a more detailed error message within the session results
+                error_msg = "Unknown error"
+                try:
+                    session_data = status_data.get("session", {})
+                    results = session_data.get("results", {})
+                    for node_output in results.values():
+                        if node_output.get("type") == "execution_error":
+                            # Found a detailed error, use it instead.
+                            error_msg = node_output.get("error", error_msg)
+                            break # Stop after finding the first error
+                except Exception:
+                    error_msg = status_data.get("error", "Unknown error") # Fallback
+
                 print(f"Full status data: {json.dumps(status_data, indent=2)}")
                 raise Exception(f"Image generation failed with status: {status_data['status']}. Error: {error_msg}")
 

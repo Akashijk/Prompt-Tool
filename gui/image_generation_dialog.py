@@ -7,7 +7,7 @@ import random
 import threading
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
-from .common import SmartWindowMixin
+from .common import SmartWindowMixin, Tooltip
 from . import custom_dialogs
 from .common import TextContextMenu
 
@@ -19,13 +19,14 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
     def _randomize_seed(self):
         self.seed_var.set(str(random.randint(0, 2**32 - 1)))
 
-    def __init__(self, parent, invokeai_client: 'InvokeAIClient', initial_negative_prompt: str = ""):
+    def __init__(self, parent, invokeai_client: 'InvokeAIClient', initial_params: Optional[Dict[str, Any]] = None):
         super().__init__(parent, "Image Generation Options")
         self.client = invokeai_client
         self.models: Dict[str, List[Dict[str, Any]]] = {}
         self.model_data: Dict[str, Dict[str, Any]] = {}  # name -> full model object
         self.lora_data: Dict[str, Dict[str, Any]] = {}   # name -> full lora object
-        self.initial_negative_prompt = initial_negative_prompt
+        self.initial_params = initial_params or {}
+        self.save_to_gallery_var = tk.BooleanVar(value=False)
         self.model_queue = queue.Queue()
         self.after_id: Optional[str] = None
 
@@ -89,7 +90,13 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             
             for model_name in main_model_names:
                 self.model_listbox.insert(tk.END, model_name)
-            self.model_listbox.selection_set(0) # Select the first one by default
+            
+            # Pre-select a model if provided
+            initial_model_name = self.initial_params.get('model', {}).get('name')
+            if initial_model_name and initial_model_name in main_model_names:
+                self.model_listbox.selection_set(main_model_names.index(initial_model_name))
+            else:
+                self.model_listbox.selection_set(0) # Select the first one by default
         else:
             self.model_listbox.insert(tk.END, "No SDXL models found")
             self.model_listbox.config(state=tk.DISABLED)
@@ -102,6 +109,13 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             self.lora_data = {m['name']: m for m in lora_models}
             for lora_name in sorted(self.lora_data.keys()):
                 self.lora_listbox.insert(tk.END, lora_name)
+            
+            # Pre-select LoRAs if provided
+            initial_loras = self.initial_params.get('loras', [])
+            initial_lora_names = {l['lora_object']['name'] for l in initial_loras}
+            for i, lora_name in enumerate(sorted(self.lora_data.keys())):
+                if lora_name in initial_lora_names:
+                    self.lora_listbox.selection_set(i)
         else:
             self.lora_listbox.insert(tk.END, "No LoRAs found")
 
@@ -133,7 +147,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         neg_prompt_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         self.neg_prompt_text = tk.Text(neg_prompt_frame, height=4, wrap=tk.WORD, undo=True, exportselection=False)
         self.neg_prompt_text.pack(fill=tk.BOTH, expand=True)
-        self.neg_prompt_text.insert("1.0", self.initial_negative_prompt)
+        self.neg_prompt_text.insert("1.0", self.initial_params.get('negative_prompt', ''))
         TextContextMenu(self.neg_prompt_text)
 
         # Other parameters
@@ -146,28 +160,37 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         ttk.Label(params_frame, text="Seed:").grid(row=0, column=0, sticky='w', pady=2)
         seed_frame = ttk.Frame(params_frame)
         seed_frame.grid(row=0, column=1, sticky='ew', pady=2)
-        self.seed_var = tk.StringVar(value=str(random.randint(0, 2**32 - 1)))
+        self.seed_var = tk.StringVar(value=str(self.initial_params.get('seed', random.randint(0, 2**32 - 1))))
         ttk.Entry(seed_frame, textvariable=self.seed_var).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(seed_frame, text="🎲", width=3, command=self._randomize_seed).pack(side=tk.LEFT, padx=(5,0))
 
         ttk.Label(params_frame, text="Steps:").grid(row=0, column=2, sticky='w', padx=(10, 5), pady=2)
-        self.steps_var = tk.StringVar(value="30")
+        self.steps_var = tk.StringVar(value=str(self.initial_params.get('steps', 30)))
         ttk.Entry(params_frame, textvariable=self.steps_var, width=8).grid(row=0, column=3, sticky='w', pady=2)
 
         # Row 1: CFG Scale and Rescale
         ttk.Label(params_frame, text="CFG Scale:").grid(row=1, column=0, sticky='w', pady=2)
-        self.cfg_var = tk.StringVar(value="7.5")
+        self.cfg_var = tk.StringVar(value=str(self.initial_params.get('cfg_scale', 7.5)))
         ttk.Entry(params_frame, textvariable=self.cfg_var, width=8).grid(row=1, column=1, sticky='w', pady=2)
 
         ttk.Label(params_frame, text="CFG Rescale:").grid(row=1, column=2, sticky='w', padx=(10, 5), pady=2)
-        self.cfg_rescale_var = tk.StringVar(value="0.0")
+        self.cfg_rescale_var = tk.StringVar(value=str(self.initial_params.get('cfg_rescale_multiplier', 0.0)))
         ttk.Entry(params_frame, textvariable=self.cfg_rescale_var, width=8).grid(row=1, column=3, sticky='w', pady=2)
 
         # Row 2: Scheduler
         ttk.Label(params_frame, text="Scheduler:").grid(row=2, column=0, sticky='w', pady=(5, 0))
         schedulers = ["euler", "dpmpp_2m", "dpmpp_2m_karras", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_2s_ancestral", "lms", "pndm"]
-        self.scheduler_var = tk.StringVar(value="dpmpp_2m")
+        self.scheduler_var = tk.StringVar(value=self.initial_params.get('scheduler', 'dpmpp_2m'))
         ttk.Combobox(params_frame, textvariable=self.scheduler_var, values=schedulers, state="readonly").grid(row=2, column=1, columnspan=3, sticky='ew', pady=(5,0))
+
+        # New options frame
+        options_frame = ttk.Frame(main_frame)
+        options_frame.pack(fill=tk.X, pady=(15, 0), anchor='w')
+        self.save_check = ttk.Checkbutton(options_frame, text="Save image to InvokeAI gallery", variable=self.save_to_gallery_var)
+        self.save_check.pack(side=tk.LEFT)
+        save_tooltip = Tooltip(self.save_check, "If checked, the generated image will be saved permanently in the InvokeAI gallery.\nIf unchecked, it will be temporary and eventually deleted by InvokeAI.")
+        self.save_check.bind("<Enter>", save_tooltip.show)
+        self.save_check.bind("<Leave>", save_tooltip.hide)
 
         # Buttons
         button_frame = ttk.Frame(main_frame)
@@ -226,6 +249,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 "cfg_scale": float(self.cfg_var.get()),
                 "cfg_rescale_multiplier": float(self.cfg_rescale_var.get()),
                 "scheduler": self.scheduler_var.get(),
+                "save_to_gallery": self.save_to_gallery_var.get(),
                 "negative_prompt": self.neg_prompt_text.get("1.0", "end-1c").strip()
             }
         except (ValueError, TypeError) as e:
