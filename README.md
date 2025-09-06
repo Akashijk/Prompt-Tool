@@ -52,12 +52,13 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   View generated images with pagination and full generation parameters.
     *   Mark entries and individual images as favorites.
     *   Set cover images for history entries for easier browsing.
+    *   Saves multiple image generations for the same prompt instead of overwriting, allowing for easy comparison.
     *   Regenerate images or prompts directly from history.
     *   Edit prompts directly in the history view.
 *   **Direct Image Generation (InvokeAI):** Generate an image directly from any prompt using a local InvokeAI server (v3+). Select your main model, LoRAs, and other parameters for full creative control.
 *   **Seed Management:** Easily switch between a fixed seed for reproducible results and random seeds for variety.
 *   **Modern UI:** Features a clean, modern interface with light and dark themes and adjustable font sizes.
-*   **Resource Management:** Automatically unloads AI models from VRAM when they are no longer in use by any window, helping to manage system resources efficiently.
+*   **Resource Management:** Automatically unloads AI models from VRAM when they are no longer active. This includes unloading Ollama models and clearing the InvokeAI model cache to free up GPU memory after image generation.
 
 ## Requirements
 
@@ -244,6 +245,14 @@ The "Generate Image" feature requires a running instance of InvokeAI version 3.0
 *   **Solution:**
     1.  Ensure you have InvokeAI v3+ installed and running.
     2.  Go to `Tools -> Settings...` and verify that the "InvokeAI Server URL" is correct (e.g., `http://127.0.0.1:9090`). The application will test the connection and version compatibility when you save.
+
+### Black or Distorted Images (InvokeAI)
+
+Some SDXL models can produce black or garbled images if they are used with a lower-precision (fp16) VAE.
+
+*   **Solution:**
+    1.  The tool automatically tries to prevent this by finding a compatible high-precision (fp32) VAE on your system.
+    2.  For the best results, ensure you have the standard `sdxl-vae.safetensors` file in your InvokeAI `models/sdxl/vae/` directory. The tool will prioritize using this VAE for maximum compatibility and image quality.
 
 ## Contributing
 

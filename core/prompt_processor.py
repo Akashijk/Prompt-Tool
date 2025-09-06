@@ -1642,11 +1642,11 @@ class PromptProcessor:
         # The response should be a JSON array.
         return self.ollama_client.parse_json_array_from_response(raw_response)
 
-    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool) -> bytes:
+    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> bytes:
         """Generates an image with InvokeAI and returns the raw image bytes."""
         self.invokeai_client.check_server_compatibility() # This will raise a specific error if there's a problem.
 
-        return self.invokeai_client.generate_image(
+        return self.invokeai_client.generate_image( # type: ignore
             prompt=prompt, 
             negative_prompt=negative_prompt, 
             seed=seed, 
@@ -1657,7 +1657,8 @@ class PromptProcessor:
             scheduler=scheduler,
             cfg_rescale_multiplier=cfg_rescale_multiplier,
             save_to_gallery=save_to_gallery,
-            verbose=self.verbose
+            verbose=self.verbose,
+            cancellation_event=cancellation_event
         )
 
     def save_generated_image(self, image_bytes: bytes) -> str:
@@ -1675,6 +1676,18 @@ class PromptProcessor:
     def ai_interrogate_image(self, base64_image: str, model: str, prompt: str) -> str:
         """Pass-through to the Ollama client to generate a prompt from an image."""
         return self.ollama_client.interrogate_image(model, base64_image, prompt)
+
+    def clear_invokeai_cache_async(self):
+        """Clears the InvokeAI model cache in a background thread to avoid UI lag."""
+        if not self.is_invokeai_connected():
+            return
+
+        def task():
+            # The empty_model_cache method already handles its own exceptions and printing.
+            self.invokeai_client.empty_model_cache()
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
 
     def ai_breed_prompts(self, parent_prompts: List[str], num_children: int, model: str) -> List[str]:
         """Uses AI to 'breed' new prompts from a list of parent prompts."""

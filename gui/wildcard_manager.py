@@ -339,6 +339,23 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
 
         self.smart_geometry(min_width=800, min_height=600)
 
+        # Add platform-specific bindings for listbox multi-select on macOS,
+        # as the default behavior for Command-click can be buggy.
+        if sys.platform == "darwin":
+            self.wildcard_listbox.bind('<Command-Button-1>', self._on_cmd_click)
+
+    def _on_cmd_click(self, event):
+        """Handles Command-Click on macOS for disjoint selection."""
+        index = self.wildcard_listbox.nearest(event.y)
+        if index != -1:
+            if self.wildcard_listbox.selection_includes(index):
+                self.wildcard_listbox.selection_clear(index)
+            else:
+                self.wildcard_listbox.selection_set(index)
+                self.wildcard_listbox.selection_anchor(index)
+        self.wildcard_listbox.event_generate("<<ListboxSelect>>")
+        return "break"
+
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.find_unused_after_id:
@@ -349,26 +366,6 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.after_cancel(self.refactor_after_id)
         self.model_usage_manager.unregister_usage(self.active_wildcard_model)
         self.destroy()
-
-    def update_active_model(self, old_model: str, new_model: str):
-        """Updates the model used by this window and manages usage counts."""
-        self.model_usage_manager.unregister_usage(old_model)
-        self.model_usage_manager.register_usage(new_model)
-        self.active_wildcard_model = new_model
-
-    def _on_editor_focus_in(self, event=None):
-        """Unbinds the listbox selection event when an editor widget gains focus to prevent clearing the view."""
-        self.wildcard_listbox.unbind("<<ListboxSelect>>")
-
-    def _on_editor_focus_out(self, event=None):
-        """Re-binds the listbox selection event when an editor widget loses focus."""
-        # Do not re-bind if a modal dialog is expected to be open.
-        if self.dialog_is_open:
-            return
-
-        # Check if the window still exists before trying to bind.
-        if self.winfo_exists():
-            self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
 
     def update_theme(self):
         self.structured_editor.update_theme()
@@ -389,7 +386,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         list_scroll_frame = ttk.Frame(list_frame)
         list_scroll_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_scroll_frame, orient=tk.VERTICAL)
-        self.wildcard_listbox = tk.Listbox(list_scroll_frame, font=self.parent_app.default_font, yscrollcommand=scrollbar.set, listvariable=self.wildcard_list_var, selectmode=tk.EXTENDED)
+        self.wildcard_listbox = tk.Listbox(list_scroll_frame, font=self.parent_app.default_font, yscrollcommand=scrollbar.set, listvariable=self.wildcard_list_var, selectmode=tk.EXTENDED, exportselection=False)
         scrollbar.config(command=self.wildcard_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.wildcard_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -434,23 +431,14 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.processor, 
             suggestion_callback=self.suggest_choices_with_ai, 
             refinement_callback=self.refine_choices_with_ai,
-            autotag_callback=self.auto_tag_choices_with_ai)
-        # Bind focus events to prevent the editor from clearing when interacting with its components.
-        self.structured_editor.description_entry.bind("<FocusIn>", self._on_editor_focus_in)
-        self.structured_editor.description_entry.bind("<FocusOut>", self._on_editor_focus_out)
-        self.structured_editor.tree.bind("<FocusIn>", self._on_editor_focus_in)
-        self.structured_editor.tree.bind("<FocusOut>", self._on_editor_focus_out)
-        self.structured_editor.includes_text.bind("<FocusIn>", self._on_editor_focus_in)
-        self.structured_editor.includes_text.bind("<FocusOut>", self._on_editor_focus_out)
+            autotag_callback=self.auto_tag_choices_with_ai
+        )
         self.structured_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.editor_notebook.add(self.structured_editor_frame, text="Structured Editor")
 
         # Raw Text Editor Tab
         self.raw_text_frame = ttk.Frame(self.editor_notebook)
         self.raw_text_editor = tk.Text(self.raw_text_frame, wrap=tk.WORD, font=self.parent_app.fixed_font, undo=True, exportselection=False)
-        # Also bind focus events to the raw text editor.
-        self.raw_text_editor.bind("<FocusIn>", self._on_editor_focus_in)
-        self.raw_text_editor.bind("<FocusOut>", self._on_editor_focus_out)
         TextContextMenu(self.raw_text_editor)
         self.raw_text_editor.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.editor_notebook.add(self.raw_text_frame, text="Raw Text Editor")
@@ -544,6 +532,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
     def _on_wildcard_file_select(self, event=None):
         selected_indices = self.wildcard_listbox.curselection()
         num_selected = len(selected_indices)
+
         self._update_merge_button_state(num_selected)
         self.compatibility_button.config(state=tk.NORMAL if num_selected == 2 else tk.DISABLED)
         self.archive_button.config(state=tk.NORMAL if num_selected > 0 else tk.DISABLED)
@@ -883,16 +872,19 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         
         def apply_grammar_fix():
             try:
-                self.raw_text_editor.delete("1.0", tk.END)
-                self.raw_text_editor.insert("1.0", fixed_content)
-                parsed_data = json.loads(fixed_content)
-                self.structured_editor.set_data(parsed_data)
-                self.editor_notebook.select(self.structured_editor_frame)
-                self.save_button.config(state=tk.NORMAL)
-                custom_dialogs.show_info(self, "Changes Applied", "The AI's fixes have been applied to the editor.\n\nPlease review and click 'Save Changes' to persist them.")
+                # Directly save the content to the file.
+                self.processor.save_wildcard_content(filename, fixed_content)
+
+                # If the fixed file is the one currently being edited, reload its content.
+                if self.selected_wildcard_file == filename:
+                    self._parse_and_display_wildcard_content(fixed_content)
+
+                # Notify the main app that a wildcard has changed.
+                self.update_callback(modified_file=filename)
+                custom_dialogs.show_info(self, "Changes Saved", f"The AI's grammar fixes have been saved to '{filename}'.")
                 diff_window.destroy()
             except Exception as e:
-                custom_dialogs.show_error(diff_window, "Apply Error", f"Could not apply fix:\n{e}")
+                custom_dialogs.show_error(diff_window, "Apply Error", f"Could not apply and save fix:\n{e}")
 
         self._create_diff_dialog_widgets(diff_window, diff_text, apply_grammar_fix)
 
@@ -2065,7 +2057,41 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
             self.processor.save_wildcard_content(new_filename, new_content, is_nsfw_only=is_nsfw_only)
             custom_dialogs.show_info(self, "Success", f"Successfully merged {len(original_files)} files into '{new_filename}'.")
 
-            if custom_dialogs.ask_yes_no(self, "Archive Originals?", f"Would you like to archive the {len(original_files)} original files?\n- " + "\n- ".join(original_files)):
+            should_archive = custom_dialogs.ask_yes_no(self, "Archive Originals?", f"Would you like to archive the {len(original_files)} original files?\n- " + "\n- ".join(original_files))
+
+            # --- Refactor references ---
+            # Ask to refactor regardless of archiving, as the user might want to keep the originals but still update references.
+            if custom_dialogs.ask_yes_no(
+                self,
+                "Refactor References?",
+                f"Successfully created '{new_filename}'.\n\nWould you like to scan all other wildcards AND templates to update references from the original {len(basenames)} files to the new merged file?"
+            ):
+                def refactor_all_merged_references():
+                    total_wildcards_modified = 0
+                    total_templates_modified = 0
+                    new_basename = new_filename_base.strip()
+                    for old_basename in basenames:
+                        # Don't try to refactor a file into itself if the new name happens to be one of the old names.
+                        if old_basename == new_basename:
+                            continue
+                        wildcards_modified, templates_modified = self.processor.refactor_all_references(old_basename, new_basename)
+                        total_wildcards_modified += wildcards_modified
+                        total_templates_modified += templates_modified
+                    return (total_wildcards_modified, total_templates_modified)
+
+                def on_refactor_complete(result_tuple):
+                    wildcards_modified, templates_modified = result_tuple
+                    custom_dialogs.show_info(self, "Refactor Complete", f"Updated {wildcards_modified} wildcard file(s) and {templates_modified} template file(s) that referenced the original merged files.")
+                    self.update_callback() # Refresh main app in case templates changed
+
+                self._run_background_task(
+                    task_callable=refactor_all_merged_references,
+                    title="Refactoring References",
+                    message=f"Scanning for references to {len(basenames)} original files...",
+                    on_complete=on_refactor_complete
+                )
+
+            if should_archive:
                 for file_name in original_files:
                     self.processor.archive_wildcard(file_name)
 

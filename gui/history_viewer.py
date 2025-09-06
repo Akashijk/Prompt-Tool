@@ -35,6 +35,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.history_canvas: Optional[tk.Canvas] = None
         self.history_container: Optional[ttk.Frame] = None
         self.history_widgets: List[Dict[str, Any]] = [] # Stores {'frame': widget, 'label': widget, 'data': row_data}
+        self.history_load_queue = queue.Queue()
+        self.history_load_after_id: Optional[str] = None
+        self.history_loading_animation: Optional[LoadingAnimation] = None
         self.selected_widget_info: Optional[Dict[str, Any]] = None
         self.selected_row_data: Optional[Dict[str, Any]] = None
 
@@ -56,6 +59,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.current_image_index: int = 0
         self.regen_prompt_queue = queue.Queue()
         self.regen_prompt_after_id: Optional[str] = None
+        self.image_gen_queue = queue.Queue()
+        self.image_gen_after_id: Optional[str] = None
+        self.regen_image_spinner: Optional[LoadingAnimation] = None
         self.image_gen_after_id: Optional[str] = None
         self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
         self.context_menu = tk.Menu(self, tearoff=0)
@@ -72,6 +78,12 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
+        if self.history_load_after_id:
+            self.after_cancel(self.history_load_after_id)
+            self.history_load_after_id = None
+        if self.image_gen_after_id:
+            self.after_cancel(self.image_gen_after_id)
+            self.image_gen_after_id = None
         if self.image_gen_after_id:
             self.after_cancel(self.image_gen_after_id)
             self.image_gen_after_id = None
@@ -140,6 +152,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         list_frame = ttk.Frame(h_pane, padding=5)
         h_pane.add(list_frame, weight=2) # Give it less weight as it's narrower now
 
+        self.history_loading_animation = LoadingAnimation(list_frame, size=32)
+
         # --- NEW: Create Canvas instead of Treeview ---
         self.history_canvas = tk.Canvas(list_frame, borderwidth=0, highlightthickness=0)
         history_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.history_canvas.yview)
@@ -203,9 +217,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.favorite_image_button = ttk.Checkbutton(self.pagination_frame, text="⭐", variable=self.image_favorite_var, command=self._toggle_image_favorite, style='Switch.TCheckbutton')
         Tooltip(self.favorite_image_button, "Add this image to your Favorites collection.")
 
-        self.regen_image_button = ttk.Button(self.pagination_frame, text="Regen Image", command=self._regenerate_current_image)
+        self.regen_frame = ttk.Frame(self.pagination_frame)
+        self.regen_image_spinner = LoadingAnimation(self.regen_frame, size=20)
+        self.regen_image_button = ttk.Button(self.regen_frame, text="Regen Image", command=self._regenerate_current_image)
+        self.regen_image_button.pack(side=tk.LEFT)
         Tooltip(self.regen_image_button, "Regenerate this image with a new seed.")
-
 
         self.next_button = ttk.Button(self.pagination_frame, text="Next >", command=self._next_image)
 
@@ -232,60 +248,100 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         if not hasattr(self, 'pagination_frame') or not self.pagination_frame.winfo_exists():
             return
 
-        # Forget all widgets to regrid them
-        for widget in self.pagination_frame.winfo_children():
-            widget.grid_forget()
-
         if not self.current_images:
+            # If there are no images, hide all controls.
+            for widget in self.pagination_frame.winfo_children():
+                widget.grid_remove()
             return
 
         width = self.pagination_frame.winfo_width()
         threshold = 450
 
+        # Ensure the main controls are visible before configuring them
+        self.image_info_label.grid()
+        self.favorite_image_button.grid()
+        self.regen_frame.grid()
+
         if width < threshold:
             # Vertical layout
             self.pagination_frame.columnconfigure(0, weight=1)
             self.pagination_frame.columnconfigure(1, weight=1)
-            self.pagination_frame.columnconfigure(2, weight=0) # reset
-            self.pagination_frame.columnconfigure(3, weight=0) # reset
-            self.pagination_frame.columnconfigure(4, weight=0) # reset
+
+            # Set wraplength for vertical layout to prevent window expansion
+            if self.image_info_label.winfo_exists():
+                self.image_info_label.config(wraplength=width - 20)
 
             if len(self.current_images) > 1:
                 self.prev_button.grid(row=0, column=0, sticky='ew', padx=(0, 5))
                 self.next_button.grid(row=0, column=1, sticky='ew')
+            else:
+                self.prev_button.grid_remove()
+                self.next_button.grid_remove()
             
-            self.image_info_label.grid(row=1, column=0, columnspan=2, sticky='ew', pady=5)
-
-            self.favorite_image_button.grid(row=2, column=0, sticky='ew', padx=(0, 5))
-            self.regen_image_button.grid(row=2, column=1, sticky='ew')
+            self.image_info_label.grid_configure(row=1, column=0, columnspan=2, sticky='ew', pady=5)
+            self.favorite_image_button.grid_configure(row=2, column=0, sticky='ew', padx=(0, 5))
+            self.regen_frame.grid_configure(row=2, column=1, sticky='ew')
         else:
             # Horizontal layout
             self.pagination_frame.columnconfigure(0, weight=0)
             self.pagination_frame.columnconfigure(1, weight=1) # The label
-            self.pagination_frame.columnconfigure(2, weight=0)
-            self.pagination_frame.columnconfigure(3, weight=0)
-            self.pagination_frame.columnconfigure(4, weight=0)
 
-            col = 0
-            if len(self.current_images) > 1:
-                self.prev_button.grid(row=0, column=col, sticky='w')
-                col += 1
+            # Set wraplength for horizontal layout
+            if self.image_info_label.winfo_exists():
+                prev_w = self.prev_button.winfo_reqwidth() if len(self.current_images) > 1 else 0
+                next_w = self.next_button.winfo_reqwidth() if len(self.current_images) > 1 else 0
+                regen_w = self.regen_image_button.winfo_reqwidth()
+                fav_w = self.favorite_image_button.winfo_reqwidth()
+                # Calculate available width for the label, with padding
+                available_width = width - (prev_w + next_w + regen_w + fav_w + 40)
+                self.image_info_label.config(wraplength=max(100, available_width))
             
-            self.image_info_label.grid(row=0, column=col, sticky='ew', padx=5)
-            col += 1
-
-            self.regen_image_button.grid(row=0, column=col, sticky='e')
-            col += 1
-            self.favorite_image_button.grid(row=0, column=col, sticky='e', padx=5)
-            col += 1
-
             if len(self.current_images) > 1:
-                self.next_button.grid(row=0, column=col, sticky='e')
+                self.prev_button.grid(row=0, column=0, sticky='w')
+                self.next_button.grid(row=0, column=4, sticky='e')
+            else:
+                self.prev_button.grid_remove()
+                self.next_button.grid_remove()
+            
+            self.image_info_label.grid_configure(row=0, column=1, sticky='ew', padx=5)
+            self.regen_frame.grid_configure(row=0, column=2, sticky='e')
+            self.favorite_image_button.grid_configure(row=0, column=3, sticky='e', padx=5)
 
     def load_and_display_history(self):
         """Loads data from the history file and populates the list."""
-        self.all_history_data = self.processor.get_full_history()
-        self._populate_history_list(self.all_history_data)
+        # Clear existing list before loading
+        for widget_info in self.history_widgets:
+            widget_info['frame'].destroy()
+        self.history_widgets.clear()
+        
+        self.history_loading_animation.pack(pady=50)
+        self.history_loading_animation.start()
+
+        def task():
+            try:
+                history_data = self.processor.get_full_history()
+                self.history_load_queue.put({'success': True, 'data': history_data})
+            except Exception as e:
+                self.history_load_queue.put({'success': False, 'error': str(e)})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.history_load_after_id = self.after(100, self._check_history_load_queue)
+
+    def _check_history_load_queue(self):
+        """Checks for loaded history data and populates the view."""
+        try:
+            result = self.history_load_queue.get_nowait()
+            self.history_loading_animation.stop()
+            self.history_loading_animation.pack_forget()
+
+            if result['success']:
+                self.all_history_data = result['data']
+                self._populate_history_list(self.all_history_data)
+            else:
+                custom_dialogs.show_error(self, "Error Loading History", result['error'])
+        except queue.Empty:
+            self.history_load_after_id = self.after(100, self._check_history_load_queue)
 
     def _populate_history_list(self, data: List[Dict[str, str]]):
         """Clears and fills the history list with the given data."""
@@ -596,7 +652,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             is_fav = image_data.get('is_favorite', False)
             self.image_favorite_var.set(is_fav)
 
-            info_text = f"({self.current_image_index + 1}/{len(self.current_images)}) Model: {model_name}"
+            # --- NEW: Display LoRAs ---
+            lora_info = gen_params.get('loras', [])
+            lora_display_text = ""
+            if lora_info:
+                lora_names = [f"{l['lora_object']['name']} (w: {l['weight']})" for l in lora_info]
+                lora_display_text = " | LoRAs: " + ", ".join(lora_names)
+
+            info_text = f"({self.current_image_index + 1}/{len(self.current_images)}) Model: {model_name}{lora_display_text}"
             self.image_info_label.config(text=info_text)
             
             # Update tooltip with all params
@@ -848,8 +911,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         if self.processor.update_history_entry(original_row, updated_row):
             self._update_ui_after_image_delete(updated_row)
 
-    def _regenerate_current_image(self):
-        """Opens the image generation dialog pre-filled with the current image's parameters."""
+    def _regenerate_current_image(self): # noqa: C901
+        """Regenerates the current image asynchronously with a new seed."""
         if not self.current_images or not self.selected_row_data:
             return
 
@@ -873,15 +936,61 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_error(self, "Error", "Could not determine the prompt for this image.")
             return
 
-        def on_success(new_images_to_save: List[Dict[str, Any]]):
-            if not self.selected_row_data: return
-            if not new_images_to_save: return
+        # --- Start of async logic ---
+        self.regen_image_button.config(state=tk.DISABLED)
+        self.regen_image_spinner.pack(side=tk.LEFT)
+        self.regen_image_spinner.start()
 
-            # Save all the new images and get their paths
-            final_image_objects = []
-            for img_data in new_images_to_save:
-                saved_image_path = self.processor.save_generated_image(img_data['bytes'])
-                final_image_objects.append({'image_path': saved_image_path, 'generation_params': img_data.get('generation_params')})
+        # Create a copy of params and set a new seed
+        new_gen_params = copy.deepcopy(gen_params)
+        new_gen_params['seed'] = random.randint(0, 2**32 - 1)
+
+        def task():
+            try:
+                gen_args = {
+                    "prompt": prompt,
+                    "negative_prompt": new_gen_params.get("negative_prompt", ""),
+                    "seed": new_gen_params.get("seed"),
+                    "model_object": new_gen_params.get("model"),
+                    "loras": new_gen_params.get("loras", []),
+                    "steps": new_gen_params.get("steps"),
+                    "cfg_scale": new_gen_params.get("cfg_scale"),
+                    "scheduler": new_gen_params.get("scheduler"),
+                    "cfg_rescale_multiplier": new_gen_params.get("cfg_rescale_multiplier"),
+                    "save_to_gallery": new_gen_params.get("save_to_gallery", False),
+                }
+                image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
+                result_data = {'bytes': image_bytes, 'prompt': prompt, 'generation_params': new_gen_params}
+                self.image_gen_queue.put({'success': True, 'data': result_data, 'tab_key': current_tab_key})
+            except Exception as e:
+                self.image_gen_queue.put({'success': False, 'error': str(e)})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.image_gen_after_id = self.after(100, self._check_image_gen_queue)
+
+    def _check_image_gen_queue(self):
+        """Checks for regenerated images and updates the UI."""
+        try:
+            result = self.image_gen_queue.get_nowait()
+            
+            self.regen_image_spinner.stop()
+            self.regen_image_spinner.pack_forget()
+            self.regen_image_button.config(state=tk.NORMAL)
+
+            if not result['success']:
+                custom_dialogs.show_error(self, "Image Regeneration Error", result['error'])
+                return
+
+            # --- This is the on_success logic from the old method ---
+            new_image_data = result['data']
+            current_tab_key = result['tab_key']
+
+            if not self.selected_row_data: return
+            
+            # Save the new image and get its path
+            saved_image_path = self.processor.save_generated_image(new_image_data['bytes'])
+            final_image_object = {'image_path': saved_image_path, 'generation_params': new_image_data.get('generation_params')}
 
             original_row = self.selected_row_data
             updated_row = copy.deepcopy(original_row)
@@ -890,27 +999,27 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
             if image_list_key not in target_obj: target_obj[image_list_key] = []
             
-            # Append the new images to the existing list
-            target_obj[image_list_key].extend(final_image_objects)
+            # Append the new image to the existing list
+            target_obj[image_list_key].append(final_image_object)
             
             if self.processor.update_history_entry(original_row, updated_row):
                 self.selected_row_data = updated_row
                 self.current_images = target_obj[image_list_key]
-                self.current_image_index = len(self.current_images) - 1 # Go to the last new image
+                self.current_image_index = len(self.current_images) - 1 # Go to the new image
                 self._show_current_image()
-                custom_dialogs.show_info(self, "Success", f"{len(final_image_objects)} image(s) regenerated and added to the set.")
+                custom_dialogs.show_info(self, "Success", "Image regenerated and added to the set.")
             else:
-                custom_dialogs.show_error(self, "History Update Error", "Could not update the history file with the new images.")
+                custom_dialogs.show_error(self, "History Update Error", "Could not update the history file with the new image.")
+            
+            # After the UI is updated, clear the model cache.
+            if self.processor.is_invokeai_connected():
+                self.processor.clear_invokeai_cache_async()
 
-        # The key change is here: call the main workflow with the existing gen_params
-        self.parent_app._start_image_generation_workflow(
-            parent_window=self,
-            prompt=prompt,
-            initial_dialog_params=gen_params, # Pass the full params
-            button_to_manage=self.regen_image_button,
-            spinner_to_manage=None, # No spinner for this button
-            on_success_callback=on_success
-        )
+        except queue.Empty:
+            pass
+        finally:
+            if self.winfo_exists():
+                self.image_gen_after_id = self.after(100, self._check_image_gen_queue)
 
     def _generate_image_from_history(self, key: str):
         """Starts the image generation process for a prompt from the history."""
@@ -986,27 +1095,19 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
     def _build_final_image_list(self, target_obj: Dict[str, Any], image_list_key: str, new_images_to_save: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Builds a new list of images, handling replacements and additions."""
-        existing_images = target_obj.get(image_list_key, [])
-        if not isinstance(existing_images, list):
-            existing_images = []
+        # Start with a copy of the existing images.
+        final_images = target_obj.get(image_list_key, [])
+        if not isinstance(final_images, list):
+            final_images = []
+        else:
+            final_images = copy.deepcopy(final_images)
 
-        new_images_by_model = {
-            img.get('generation_params', {}).get('model', {}).get('name'): img
-            for img in new_images_to_save
-        }
-
-        final_images = []
-        for old_img in existing_images:
-            old_model_name = old_img.get('generation_params', {}).get('model', {}).get('name')
-            if old_model_name not in new_images_by_model:
-                final_images.append(old_img)
-
+        # Append the new images.
         for new_image_data in new_images_to_save:
             image_path = self.processor.save_generated_image(new_image_data['bytes'])
             generation_params = new_image_data.get('generation_params')
             final_images.append({'image_path': image_path, 'generation_params': generation_params})
         
-        final_images.sort(key=lambda img: img.get('generation_params', {}).get('model', {}).get('name', ''))
         return final_images
 
     def _update_ui_after_save(self, entry_id: str, updated_row: Dict[str, Any], button: Optional[ttk.Button], final_images: List[Dict[str, Any]]):
@@ -1097,9 +1198,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.image_ref = None
         self.current_images = []
         self.current_image_index = 0
-        self.image_info_label.config(text="") # Clear the text instead of hiding the widget
-        self.favorite_image_button.pack_forget()
-        self.regen_image_button.pack_forget()
+        self.image_info_label.config(text="")
+        # Trigger a reflow which will see current_images is empty and hide the controls.
+        self._reflow_pagination_controls()
 
     def _update_prompt_from_ai(self, data: Dict[str, Any]):
         """Updates the UI and history data after a successful AI regeneration."""

@@ -82,25 +82,28 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         if not hasattr(self, 'button_frame') or not self.button_frame.winfo_exists():
             return
 
-        for widget in self.button_frame.winfo_children():
-            widget.grid_forget()
+        # Ensure all buttons are managed by grid before configuring them
+        self.save_button.grid()
+        self.regen_all_button.grid()
+        self.favorite_button.grid()
+        self.close_button.grid()
 
         width = self.button_frame.winfo_width()
         threshold = 500
 
         if width < threshold:
             self.button_frame.columnconfigure(0, weight=1)
-            self.save_button.grid(row=0, column=0, sticky='ew', pady=(0, 5))
-            self.regen_all_button.grid(row=1, column=0, sticky='ew', pady=(0, 5))
-            self.favorite_button.grid(row=2, column=0, sticky='ew', pady=(0, 5))
-            self.close_button.grid(row=3, column=0, sticky='ew')
+            self.save_button.grid_configure(row=0, column=0, columnspan=4, sticky='ew', pady=(0, 5), padx=0)
+            self.regen_all_button.grid_configure(row=1, column=0, columnspan=4, sticky='ew', pady=(0, 5), padx=0)
+            self.favorite_button.grid_configure(row=2, column=0, columnspan=4, sticky='ew', pady=(0, 5), padx=0)
+            self.close_button.grid_configure(row=3, column=0, columnspan=4, sticky='ew', pady=0, padx=0)
         else:
             self.button_frame.columnconfigure(0, weight=1)
             self.button_frame.columnconfigure(1, weight=1)
-            self.save_button.grid(row=0, column=0, sticky='ew', padx=(0, 5))
-            self.regen_all_button.grid(row=0, column=1, sticky='ew', padx=(0, 5))
-            self.favorite_button.grid(row=0, column=2, sticky='e', padx=(0, 10))
-            self.close_button.grid(row=0, column=3, sticky='e')
+            self.save_button.grid_configure(row=0, column=0, columnspan=1, sticky='ew', padx=(0, 5), pady=0)
+            self.regen_all_button.grid_configure(row=0, column=1, columnspan=1, sticky='ew', padx=(0, 5), pady=0)
+            self.favorite_button.grid_configure(row=0, column=2, columnspan=1, sticky='e', padx=(0, 10), pady=0)
+            self.close_button.grid_configure(row=0, column=3, columnspan=1, sticky='e', pady=0, padx=0)
 
     def _on_close(self):
         # Cancel pending after jobs to prevent memory leaks

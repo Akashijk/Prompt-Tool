@@ -11,7 +11,7 @@ history/**
 wildcards/**
 system_prompts/**
 tests/**
-
+tools/**
 # Include exceptions for initial setup
 #!templates/
 #!wildcards/

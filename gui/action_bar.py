@@ -47,8 +47,15 @@ class ActionBar(ttk.Frame):
         if not self.winfo_exists():
             return
 
-        for widget in self.winfo_children():
-            widget.grid_forget()
+        # Ensure all widgets are managed by grid before configuring them
+        self.generate_button.grid()
+        self.enhance_template_button.grid()
+        self.ai_cleanup_button.grid()
+        self.select_button.grid()
+        self.variations_frame.grid()
+        self.copy_prompt_button.grid()
+        self.save_as_template_button.grid()
+        self.image_gen_frame.grid()
 
         width = self.winfo_width()
         threshold = 950 # A reasonable threshold for when to switch to vertical layout
@@ -60,32 +67,32 @@ class ActionBar(ttk.Frame):
             for i in range(2, 9): self.columnconfigure(i, weight=0) # Reset others
 
             # Group 1: Core prompt actions
-            self.generate_button.grid(row=0, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
-            self.select_button.grid(row=0, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
+            self.generate_button.grid_configure(row=0, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
+            self.select_button.grid_configure(row=0, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
             # Group 2: AI Tools
-            self.enhance_template_button.grid(row=1, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
-            self.ai_cleanup_button.grid(row=1, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
+            self.enhance_template_button.grid_configure(row=1, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
+            self.ai_cleanup_button.grid_configure(row=1, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
             # Group 3: Variations (full width)
-            self.variations_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(5, 5))
+            self.variations_frame.grid_configure(row=2, column=0, columnspan=2, sticky='ew', pady=(5, 5))
             # Group 4: Utility actions
-            self.copy_prompt_button.grid(row=3, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
-            self.save_as_template_button.grid(row=3, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
+            self.copy_prompt_button.grid_configure(row=3, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
+            self.save_as_template_button.grid_configure(row=3, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
             # Group 5: Final image generation (full width)
-            self.image_gen_frame.grid(row=4, column=0, columnspan=2, sticky='ew', pady=(5, 0))
+            self.image_gen_frame.grid_configure(row=4, column=0, columnspan=2, sticky='ew', pady=(5, 0))
         else:
             # Horizontal layout
             for i in range(9): self.columnconfigure(i, weight=0) # Reset all
             self.columnconfigure(7, weight=1) # Spacer column
 
-            self.generate_button.grid(row=0, column=0, sticky='w', padx=(0, 5))
-            self.enhance_template_button.grid(row=0, column=1, sticky='w', padx=(0, 5))
-            self.ai_cleanup_button.grid(row=0, column=2, sticky='w', padx=(0, 5))
-            self.select_button.grid(row=0, column=3, sticky='w')
-            self.variations_frame.grid(row=0, column=4, sticky='w', padx=(10, 0))
-            self.copy_prompt_button.grid(row=0, column=5, sticky='w', padx=(10, 0))
-            self.save_as_template_button.grid(row=0, column=6, sticky='w', padx=(5, 0))
+            self.generate_button.grid_configure(row=0, column=0, columnspan=1, sticky='w', padx=(0, 5), pady=0)
+            self.enhance_template_button.grid_configure(row=0, column=1, columnspan=1, sticky='w', padx=(0, 5), pady=0)
+            self.ai_cleanup_button.grid_configure(row=0, column=2, columnspan=1, sticky='w', padx=(0, 5), pady=0)
+            self.select_button.grid_configure(row=0, column=3, columnspan=1, sticky='w', pady=0)
+            self.variations_frame.grid_configure(row=0, column=4, columnspan=1, sticky='w', padx=(10, 0), pady=0)
+            self.copy_prompt_button.grid_configure(row=0, column=5, columnspan=1, sticky='w', padx=(10, 0), pady=0)
+            self.save_as_template_button.grid_configure(row=0, column=6, columnspan=1, sticky='w', padx=(5, 0), pady=0)
             # Column 7 is the expanding spacer
-            self.image_gen_frame.grid(row=0, column=8, sticky='e', padx=(10, 0))
+            self.image_gen_frame.grid_configure(row=0, column=8, columnspan=1, sticky='e', padx=(10, 0), pady=0)
 
     def rebuild_variations(self, variations: List[Dict[str, str]]):
         """Clears and recreates the variation checkboxes."""

@@ -59,7 +59,7 @@ class VerticalSpinbox(ttk.Frame):
         self.down_button.pack(side=tk.TOP, fill=tk.Y, expand=True)
 
         # Bind mouse wheel for increment/decrement
-        for widget in [self.entry, self.up_button, self.down_button, button_frame, self]:
+        for widget in [self.entry, self.up_button, self.down_button]:
             widget.bind("<MouseWheel>", self._on_mouse_wheel) # For Windows and macOS
             widget.bind("<Button-4>", self._on_mouse_wheel)   # For Linux scroll up
             widget.bind("<Button-5>", self._on_mouse_wheel)   # For Linux scroll down
@@ -103,16 +103,18 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
         self.lora_canvas.yview_scroll(delta, "units")
 
-    def __init__(self, parent, invokeai_client: 'InvokeAIClient', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False):
+    def __init__(self, parent, invokeai_client: 'InvokeAIClient', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None):
         super().__init__(parent, "Image Generation Options")
         self.client = invokeai_client
         self.models: Dict[str, List[Dict[str, Any]]] = {}
         self.model_data: Dict[str, Dict[str, Any]] = {}  # name -> full model object
         self.lora_data: Dict[str, Dict[str, Any]] = {}   # name -> full lora object
         self.is_editing = is_editing
+        self.disabled_models = disabled_models or []
         self.initial_params = initial_params or {}
         self.model_vars: Dict[str, tk.BooleanVar] = {}
         self.lora_vars: Dict[str, tk.BooleanVar] = {}
+        self.lora_weight_vars: Dict[str, tk.StringVar] = {}
         self.save_to_gallery_var = tk.BooleanVar(value=False)
         self.model_queue = queue.Queue()
         self.after_id: Optional[str] = None
@@ -127,8 +129,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         if not hasattr(self, 'button_frame') or not self.button_frame.winfo_exists():
             return
 
-        self.ok_button.grid_forget()
-        self.cancel_button.grid_forget()
+        # Ensure all widgets are managed by grid before configuring them
+        self.ok_button.grid()
+        self.cancel_button.grid()
 
         width = self.button_frame.winfo_width()
         req_w = self.ok_button.winfo_reqwidth() + self.cancel_button.winfo_reqwidth() + 20
@@ -138,15 +141,15 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             self.button_frame.columnconfigure(0, weight=1, minsize=0)
             self.button_frame.columnconfigure(1, weight=0)
             self.button_frame.columnconfigure(2, weight=0)
-            self.ok_button.grid(row=0, column=0, columnspan=3, sticky='ew', pady=(0, 5))
-            self.cancel_button.grid(row=1, column=0, columnspan=3, sticky='ew')
+            self.ok_button.grid_configure(row=0, column=0, columnspan=3, sticky='ew', pady=(0, 5), padx=0)
+            self.cancel_button.grid_configure(row=1, column=0, columnspan=3, sticky='ew', pady=0, padx=0)
         else:
             # Horizontal
             self.button_frame.columnconfigure(0, weight=1)
             self.button_frame.columnconfigure(1, weight=0)
             self.button_frame.columnconfigure(2, weight=0)
-            self.cancel_button.grid(row=0, column=1, sticky='e')
-            self.ok_button.grid(row=0, column=2, sticky='e', padx=(5, 0))
+            self.cancel_button.grid_configure(row=0, column=1, columnspan=1, sticky='e', pady=0, padx=0)
+            self.ok_button.grid_configure(row=0, column=2, columnspan=1, sticky='e', pady=0, padx=(5, 0))
 
     def _start_model_fetch(self):
         """Starts fetching models in a background thread."""
@@ -213,6 +216,11 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                     var.set(True)
                 
                 cb = ttk.Checkbutton(self.model_container, text=model_name, variable=var)
+                
+                if model_name in self.disabled_models:
+                    cb.config(state=tk.DISABLED)
+                    Tooltip(cb, "This model is already in the current generation batch.")
+
                 cb.pack(anchor='w', fill='x')
                 cb.bind("<MouseWheel>", self._on_model_mouse_wheel)
                 self.model_vars[model_name] = var
@@ -225,17 +233,29 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             # Create mapping from display name to model key
             self.lora_data = {m['name']: m for m in lora_models}
             initial_loras = self.initial_params.get('loras', [])
-            initial_lora_names = {l['lora_object']['name'] for l in initial_loras}
+            # Create a map for easy lookup of initial weights
+            initial_lora_weights = {l['lora_object']['name']: l['weight'] for l in initial_loras}
 
-            for lora_name in sorted(self.lora_data.keys()):
+            for lora_name in sorted(self.lora_data.keys(), key=str.lower):
+                lora_frame = ttk.Frame(self.lora_container)
+                lora_frame.pack(fill='x', expand=True, pady=1)
+                lora_frame.bind("<MouseWheel>", self._on_lora_mouse_wheel)
+
                 var = tk.BooleanVar()
-                if lora_name in initial_lora_names:
+                if lora_name in initial_lora_weights:
                     var.set(True)
                 
-                cb = ttk.Checkbutton(self.lora_container, text=lora_name, variable=var)
-                cb.pack(anchor='w', fill='x')
+                cb = ttk.Checkbutton(lora_frame, text=lora_name, variable=var)
+                cb.pack(side='left', fill='x', expand=True)
                 cb.bind("<MouseWheel>", self._on_lora_mouse_wheel)
                 self.lora_vars[lora_name] = var
+
+                # Add weight spinbox
+                # Default LoRA weight is 0.75 if not otherwise specified.
+                weight_var = tk.StringVar(value=str(initial_lora_weights.get(lora_name, 0.75)))
+                spinbox = VerticalSpinbox(lora_frame, from_=-1.0, to=2.0, increment=0.05, textvariable=weight_var, width=4)
+                spinbox.pack(side='right')
+                self.lora_weight_vars[lora_name] = weight_var
         else:
             ttk.Label(self.lora_container, text="No LoRAs found").pack()
 
@@ -390,10 +410,13 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             for lora_name in selected_lora_names:
                 lora_object = self.lora_data.get(lora_name)
                 if lora_object:
-                    # LoRA needs a weight. Let's default to 0.75 for now.
+                    try:
+                        weight = float(self.lora_weight_vars[lora_name].get())
+                    except (ValueError, KeyError):
+                        weight = 0.75 # Fallback to default weight if something goes wrong.
                     selected_loras.append({
                         'lora_object': lora_object,
-                        'weight': 0.75
+                        'weight': weight
                     })
         
         try:

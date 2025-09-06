@@ -1438,6 +1438,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 button_to_manage.config(state=tk.NORMAL, text=original_button_text)
             if images_to_save and on_success_callback:
                 on_success_callback(images_to_save)
+            if self.processor.is_invokeai_connected():
+                # Clear the cache in the background to avoid UI lag.
+                self.processor.clear_invokeai_cache_async()
 
         self.generation_total_jobs = len(generation_jobs)
         self.generation_completed_jobs = 0
@@ -1753,6 +1756,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             for model in active_models_on_exit:
                 self.processor.cleanup_model(model)
             print("Cleanup complete.")
+        if self.processor.is_invokeai_connected():
+            print("INFO: Clearing InvokeAI model cache on exit (async)...")
+            self.processor.clear_invokeai_cache_async()
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
         if self.ai_cleanup_after_id:

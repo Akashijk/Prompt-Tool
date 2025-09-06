@@ -333,11 +333,41 @@ class WildcardEditor(ttk.Frame):
         return (str(value), str(weight), str(tags), str(requires), str(includes_display))
 
     def _add_item(self):
-        new_choice_str = 'new value'
-        new_choice_obj = {'value': new_choice_str, 'weight': 1}
-        item_id = self.tree.insert('', tk.END, values=(new_choice_str, '1', '', '', ''))
-        self.iid_to_choice_map[item_id] = new_choice_obj
-        self._validate_item(item_id)
+        """Opens a dialog to add a new choice, then inserts it into the tree."""
+        initial_values = ('', '1', '', '', '') # Start with an empty value and default weight
+        manager_window = self.winfo_toplevel()
+        is_in_manager = hasattr(manager_window, 'wildcard_listbox')
+
+        if is_in_manager:
+            manager_window.dialog_is_open = True
+            manager_window.wildcard_listbox.unbind("<<ListboxSelect>>")
+
+        try:
+            dialog = custom_dialogs.EditChoiceDialog(self, "Add New Choice", initial_values, self.processor)
+            if dialog.result:
+                new_values = dialog.result
+                
+                # Don't add if the value is empty
+                if not new_values[0].strip():
+                    return
+
+                item_id = self.tree.insert('', tk.END, values=new_values)
+                new_choice_obj = self._get_choice_from_tree_item(item_id)
+                self.iid_to_choice_map[item_id] = new_choice_obj
+                self._validate_item(item_id)
+
+                self.tree.see(item_id)
+                self.tree.selection_set(item_id)
+
+                if hasattr(manager_window, 'save_button'):
+                    manager_window.save_button.config(state=tk.NORMAL)
+        finally:
+            try:
+                if is_in_manager and manager_window.winfo_exists():
+                    manager_window.dialog_is_open = False
+                    manager_window.wildcard_listbox.bind("<<ListboxSelect>>", manager_window._on_wildcard_file_select)
+            except tk.TclError:
+                pass # Window was likely destroyed.
 
     def _mass_edit_choices(self):
         """Opens a dialog to mass-edit choice values as plain text."""
