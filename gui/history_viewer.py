@@ -43,6 +43,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.show_favorites_only_var = tk.BooleanVar(value=False)
         self.details_notebook: Optional[ttk.Notebook] = None
         self.filter_debounce_timer: Optional[str] = None
+        self.thumbnail_queue = queue.Queue()
+        self.thumbnail_after_id: Optional[str] = None
         self.detail_tabs: Dict[str, Dict[str, Any]] = {}
         self.original_edit_content: Optional[str] = None
         self.image_ref: Optional[ImageTk.PhotoImage] = None
@@ -50,6 +52,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.image_tooltip_after_id: Optional[str] = None
         self.current_images: List[Dict[str, Any]] = []
         self._resize_debounce_id: Optional[str] = None
+        self._pagination_reflow_id: Optional[str] = None
         self.current_image_index: int = 0
         self.regen_prompt_queue = queue.Queue()
         self.regen_prompt_after_id: Optional[str] = None
@@ -63,6 +66,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.load_and_display_history()
 
         self.smart_geometry(min_width=1200, min_height=800)
+        self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
         self.regen_prompt_after_id = self.after(100, self._check_regen_prompt_queue)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -74,6 +78,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         if self._resize_debounce_id:
             self.after_cancel(self._resize_debounce_id)
             self._resize_debounce_id = None
+        if self.thumbnail_after_id:
+            self.after_cancel(self.thumbnail_after_id)
+            self.thumbnail_after_id = None
         if self.regen_prompt_after_id:
             self.after_cancel(self.regen_prompt_after_id)
             self.regen_prompt_after_id = None
@@ -174,7 +181,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         # Create a frame for pagination controls at the bottom of the image frame and pack it first.
         self.pagination_frame = ttk.Frame(image_frame)
         self.pagination_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
-        self.pagination_frame.bind("<Configure>", lambda e: self._reflow_pagination_controls())
+        self.pagination_frame.bind("<Configure>", lambda e: self._schedule_pagination_reflow())
 
         # Create a container for the image itself to center it
         image_container = ttk.Frame(image_frame)
@@ -209,6 +216,12 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.details_notebook = ttk.Notebook(details_frame)
         self.details_notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self.details_notebook.pack(fill=tk.BOTH, expand=True)
+
+    def _schedule_pagination_reflow(self):
+        """Schedules a reflow of pagination controls to avoid excessive updates during resize."""
+        if self._pagination_reflow_id:
+            self.after_cancel(self._pagination_reflow_id)
+        self._pagination_reflow_id = self.after(100, self._reflow_pagination_controls)
 
         # Create the static tabs that are always present.
         # Variation tabs will be created dynamically as needed.
@@ -1121,24 +1134,45 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         
         self._save_and_refresh_row(updated_row, f"'{self.detail_tabs[key]['title']}' prompt has been regenerated.")
 
-    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str):
-        """Loads a thumbnail for the history list, handling potential errors."""
+    def _check_thumbnail_queue(self):
+        """Checks for loaded thumbnails and updates the UI."""
+        try:
+            while not self.thumbnail_queue.empty():
+                label_widget, image_data = self.thumbnail_queue.get_nowait()
+                if label_widget.winfo_exists():
+                    if isinstance(image_data, Image.Image):
+                        img_ref = ImageTk.PhotoImage(image_data)
+                        label_widget.config(image=img_ref, text="")
+                        label_widget.image = img_ref  # Keep a reference
+                    else: # It's an error string
+                        label_widget.config(text=image_data, image='')
+        except queue.Empty:
+            pass
+        finally:
+            if self.winfo_exists():
+                self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
+
+    def _load_history_thumbnail_worker(self, label_widget: ttk.Label, image_path: str):
+        """Worker thread to load and resize a thumbnail."""
         try:
             full_path = os.path.join(config.get_history_file_dir(), image_path)
             if not os.path.exists(full_path):
-                label_widget.config(text="Not\nFound")
+                self.thumbnail_queue.put((label_widget, "Not\nFound"))
                 return
 
             img = Image.open(full_path)
             img.thumbnail((96, 96))
-            img_ref = ImageTk.PhotoImage(img)
-            label_widget.config(image=img_ref)
-            label_widget.image = img_ref  # Keep a reference
+            self.thumbnail_queue.put((label_widget, img))
         except Exception as e:
-            label_widget.config(text="Load\nError")
             # Don't print to console unless verbose, as this can be noisy if many images are missing.
             if self.processor.verbose:
                 print(f"Error loading history thumbnail {image_path}: {e}")
+            self.thumbnail_queue.put((label_widget, "Load\nError"))
+
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str):
+        """Starts a background thread to load a thumbnail for the history list."""
+        thread = threading.Thread(target=self._load_history_thumbnail_worker, args=(label_widget, image_path), daemon=True)
+        thread.start()
 
     def _on_image_container_resize(self, event=None):
         """Handles resizing of the image container to re-thumbnail the image."""
@@ -1252,8 +1286,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 if widget_to_remove:
                     widget_to_remove['frame'].destroy()
                     self.history_widgets.remove(widget_to_remove)
-                    if self.selected_item_frame == widget_to_remove['frame']:
-                        self.selected_item_frame = None
+                    if self.selected_widget_info == widget_to_remove:
+                        self.selected_widget_info = None
                         self.selected_row_data = None
 
                 self.all_history_data = [row for row in self.all_history_data if row.get('id') != full_row_data.get('id')]
@@ -1267,41 +1301,30 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         """Toggles the favorite status of the selected item."""
         if not self.selected_row_data: return
         original_row = self.selected_row_data
-        if not original_row: return
 
-        # Create a copy to modify
-        updated_row = original_row.copy()
-        current_status = updated_row.get('favorite', False)
-        updated_row['favorite'] = not current_status
+        updated_row = copy.deepcopy(original_row)
+        updated_row['favorite'] = not updated_row.get('favorite', False)
 
-        # Update the CSV file
         success = self.processor.update_history_entry(original_row, updated_row)
         if success:
-            # Update the in-memory data for the main history list
+            # Update the master data list
+            row_id = original_row.get('id')
             for i, row in enumerate(self.all_history_data):
-                if row.get('id') == original_row.get('id'):
+                if row.get('id') == row_id:
                     self.all_history_data[i] = updated_row
                     break
             
-            # Find the corresponding widget and update its data and appearance
-            is_fav = updated_row.get('favorite')
-            found_widget_info = None
-            for widget_info in self.history_widgets:
-                if widget_info['data'].get('id') == original_row.get('id'):
-                    found_widget_info = widget_info
-                    # CRITICAL: Update the data object within the widget info itself
-                    widget_info['data'] = updated_row
-                    
-                    new_style = "Favorite.HistoryPrompt.TLabel" if is_fav else "HistoryPrompt.TLabel"
-                    widget_info['label'].config(style=new_style)
-                    # If the favorites filter is on, the item might need to be hidden
-                    if self.show_favorites_only_var.get() and not is_fav:
-                        widget_info['frame'].pack_forget()
-                    break
-            
-            # After updating the list item, refresh the details pane to reflect the change.
-            if found_widget_info:
-                self._on_item_select(found_widget_info)
+            # Find the widget associated with this data
+            widget_info = next((w for w in self.history_widgets if w['data'].get('id') == row_id), None)
+            if widget_info:
+                # Update the widget's internal data reference
+                widget_info['data'] = updated_row
+                
+                # Re-apply filters to handle visibility
+                self._apply_filters()
+                
+                # Re-select the item to update its style and the details pane.
+                self._on_item_select(widget_info)
         else:
             custom_dialogs.show_error(self, "Error", "Failed to update favorite status.")
 

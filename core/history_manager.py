@@ -1,6 +1,5 @@
 """History file operations for prompt history."""
 
-import csv
 import os
 import json
 import tempfile
@@ -16,61 +15,9 @@ class HistoryManager:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
     
-    def _migrate_from_csv(self, csv_path: str, jsonl_path: str):
-        """Migrates data from the old CSV format to the new JSONL format."""
-        if self.verbose:
-            print(f"INFO: Migrating history from {csv_path} to {jsonl_path}...")
-        history = []
-        try:
-            with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    variations = {}
-                    for var_type in ['cinematic', 'artistic', 'photorealistic']:
-                        if row.get(f'{var_type}_variation'):
-                            variations[var_type] = {
-                                'prompt': row.get(f'{var_type}_variation', ''),
-                                'negative_prompt': '', # Old format didn't have this
-                                'sd_model': row.get(f'{var_type}_sd_model')
-                            }
-                    
-                    new_entry = {
-                        'id': str(uuid.uuid4()),
-                        'original_prompt': row.get('original_prompt'),
-                        'status': row.get('status'),
-                        'enhanced': {
-                            'prompt': row.get('enhanced_prompt', ''),
-                            'sd_model': row.get('enhanced_sd_model', '')
-                        },
-                        'favorite': row.get('favorite') == '1',
-                        'variations': variations,
-                        'template_name': None  # Old format didn't have this
-                    }
-                    history.append(new_entry)
-            
-            with open(jsonl_path, 'w', encoding='utf-8') as jsonl_file:
-                for entry in history:
-                    jsonl_file.write(json.dumps(entry) + '\n')
-            
-            # Archive the old CSV file
-            archive_dir = os.path.join(os.path.dirname(csv_path), 'archive')
-            os.makedirs(archive_dir, exist_ok=True)
-            os.rename(csv_path, os.path.join(archive_dir, os.path.basename(csv_path)))
-            if self.verbose:
-                print("INFO: Migration successful. Old CSV history has been archived.")
-            return history
-        except Exception as e:
-            print(f"ERROR: Failed to migrate history file. Error: {e}")
-            return []
-
     def load_full_history(self) -> List[Dict[str, str]]:
         """Load the entire prompt history from the JSONL file, migrating from CSV if needed."""
         jsonl_path = config.get_history_file()
-        
-        # Check for and run migration if the new file doesn't exist but the old one does
-        csv_path = os.path.join(os.path.dirname(jsonl_path), 'generated_prompts.csv')
-        if not os.path.exists(jsonl_path) and os.path.exists(csv_path):
-            return self._migrate_from_csv(csv_path, jsonl_path)
 
         history = []
         if not os.path.isfile(jsonl_path):

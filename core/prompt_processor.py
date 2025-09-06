@@ -689,30 +689,8 @@ class PromptProcessor:
                         refactor_requires_recursive(choice['requires'])
 
             if made_change:
-                # Save the modified file
-                try:
-                    # Find the correct directory to save to
-                    filename_to_save = f"{wc_name}.json"
-                    save_dir = None
-                    # This needs to check all possible directories to find where the file lives.
-                    # The mode-agnostic cache doesn't store the file's original workflow.
-                    all_possible_dirs = [config.WILDCARD_NSFW_DIR, config.WILDCARD_DIR]
-                    for directory in all_possible_dirs:
-                        if os.path.exists(os.path.join(directory, filename_to_save)):
-                            save_dir = directory
-                            break
-                    
-                    if save_dir:
-                        self.template_engine.save_wildcard_content(filename_to_save, json.dumps(modified_data, indent=2), save_dir)
-                        modified_files_count += 1
-                        # Update the cache with the modified data
-                        if self.all_wildcards_cache:
-                            self.all_wildcards_cache[wc_name] = modified_data
-                    else:
-                        print(f"Warning: Could not find original path for wildcard '{wc_name}' during refactor. Skipping save.")
-
-                except Exception as e:
-                    print(f"Error saving refactored wildcard '{wc_name}': {e}")
+                if self._save_refactored_wildcard(wc_name, modified_data):
+                    modified_files_count += 1
         
         return modified_files_count
 
@@ -772,27 +750,40 @@ class PromptProcessor:
                         refactor_value_recursive(choice['requires'])
 
             if made_change:
-                try:
-                    filename_to_save = f"{wc_name}.json"
-                    save_dir = None
-                    all_possible_dirs = [config.WILDCARD_NSFW_DIR, config.WILDCARD_DIR]
-                    for directory in all_possible_dirs:
-                        if os.path.exists(os.path.join(directory, filename_to_save)):
-                            save_dir = directory
-                            break
-                    
-                    if save_dir:
-                        self.template_engine.save_wildcard_content(filename_to_save, json.dumps(modified_data, indent=2), save_dir)
-                        modified_files_count += 1
-                        if self.all_wildcards_cache:
-                            self.all_wildcards_cache[wc_name] = modified_data
-                    else:
-                        print(f"Warning: Could not find original path for wildcard '{wc_name}' during value refactor. Skipping save.")
-                except Exception as e:
-                    print(f"Error saving refactored wildcard '{wc_name}': {e}")
+                if self._save_refactored_wildcard(wc_name, modified_data):
+                    modified_files_count += 1
 
         return modified_files_count
     
+    def _save_refactored_wildcard(self, wc_name: str, modified_data: Dict[str, Any]) -> bool:
+        """
+        Helper to find the correct path for a wildcard and save its modified data.
+        Returns True on success, False on failure.
+        """
+        try:
+            filename_to_save = f"{wc_name}.json"
+            save_dir = None
+            # This needs to check all possible directories to find where the file lives.
+            # The mode-agnostic cache doesn't store the file's original workflow.
+            all_possible_dirs = [config.WILDCARD_NSFW_DIR, config.WILDCARD_DIR]
+            for directory in all_possible_dirs:
+                if os.path.exists(os.path.join(directory, filename_to_save)):
+                    save_dir = directory
+                    break
+            
+            if save_dir:
+                self.template_engine.save_wildcard_content(filename_to_save, json.dumps(modified_data, indent=2), save_dir)
+                # Update the cache with the modified data
+                if self.all_wildcards_cache:
+                    self.all_wildcards_cache[wc_name] = modified_data
+                return True
+            else:
+                print(f"Warning: Could not find original path for wildcard '{wc_name}' during refactor. Skipping save.")
+                return False
+        except Exception as e:
+            print(f"Error saving refactored wildcard '{wc_name}': {e}")
+            return False
+
     def validate_all_wildcards(self) -> List[Dict[str, Any]]:
         """
         Scans all wildcards and validates 'requires' clauses to ensure that
@@ -1340,10 +1331,10 @@ class PromptProcessor:
         total_prompts = len(prompts)
         
         enhancement_instruction = self.load_system_prompt_content('enhancement.txt')
-
+        
+        # Create a new list of valid, selected variations to avoid modifying the original argument
         available_variations = {v['key']: v for v in self.get_available_variations()}
-        if selected_variations:
-            selected_variations = [v for v in selected_variations if v in available_variations]
+        valid_selected_variations = [v for v in (selected_variations or []) if v in available_variations]
         
         for i, prompt in enumerate(prompts):
             if cancellation_event and cancellation_event.is_set():
@@ -1367,8 +1358,8 @@ class PromptProcessor:
             }
             
             # Create variations if requested
-            if selected_variations:
-                for var_type in selected_variations:
+            if valid_selected_variations:
+                for var_type in valid_selected_variations:
                     if cancellation_event and cancellation_event.is_set():
                         break # break inner loop
 

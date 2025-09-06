@@ -30,6 +30,8 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.load_prompt_callback = load_prompt_callback
         self.history_data: List[Dict[str, str]] = []
         self.generation_queue = queue.Queue()
+        self.thumbnail_queue = queue.Queue()
+        self.thumbnail_after_id: Optional[str] = None
         self.child_image_gen_spinners: Dict[str, 'LoadingAnimation'] = {}
         self.parent_widgets: List[Dict[str, Any]] = [] # To hold {'label': widget, 'prompt': text, 'selected': bool}
         self.child_widgets: List[Dict[str, Any]] = [] # To hold {'label': widget, 'prompt': text, 'selected': bool}
@@ -46,6 +48,7 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self._create_widgets()
         self.refresh_data() # Initial population
         self.smart_geometry(min_width=1200, min_height=700)
+        self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
 
         # Define a custom style for selected labels
         style = ttk.Style()
@@ -82,6 +85,9 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         if self.after_id:
             self.after_cancel(self.after_id)
             self.after_id = None
+        if self.thumbnail_after_id:
+            self.after_cancel(self.thumbnail_after_id)
+            self.thumbnail_after_id = None
         self.model_usage_manager.unregister_usage(self.active_model)
         self.destroy()
 
@@ -273,27 +279,46 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
                 widget.bind("<Double-1>", lambda e, history_item=item: self._add_history_item_to_parents(history_item))
                 widget.bind("<MouseWheel>", self._on_history_mouse_wheel)
                 widget.bind(right_click_event, lambda e, item=item: self._show_history_context_menu(e, item))
+    
+    def _check_thumbnail_queue(self):
+        """Checks for loaded thumbnails and updates the UI."""
+        try:
+            while not self.thumbnail_queue.empty():
+                label_widget, image_data = self.thumbnail_queue.get_nowait()
+                if label_widget.winfo_exists():
+                    if isinstance(image_data, Image.Image):
+                        img_ref = ImageTk.PhotoImage(image_data)
+                        label_widget.config(image=img_ref, text="")
+                        label_widget.image = img_ref  # Keep a reference
+                    else: # It's an error string
+                        label_widget.config(text=image_data, image='')
+        except queue.Empty:
+            pass
+        finally:
+            if self.winfo_exists():
+                self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
 
-    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
-        """Loads a thumbnail for the history list, handling potential errors."""
+    def _load_history_thumbnail_worker(self, label_widget: ttk.Label, image_path: str, workflow: str):
+        """Worker thread to load and resize a thumbnail."""
         try:
             # Temporarily set config to get the correct path
             original_workflow = config.workflow
             config.workflow = workflow.lower()
             full_path = os.path.join(config.get_history_file_dir(), image_path)
             config.workflow = original_workflow # Restore it immediately
-
             if not os.path.exists(full_path):
-                label_widget.config(text="Not\nFound")
+                self.thumbnail_queue.put((label_widget, "Not\nFound"))
                 return
-
             img = Image.open(full_path)
             img.thumbnail((96, 96))
-            img_ref = ImageTk.PhotoImage(img)
-            label_widget.config(image=img_ref, text="")
-            label_widget.image = img_ref  # Keep a reference
+            self.thumbnail_queue.put((label_widget, img))
         except Exception:
-            label_widget.config(text="Load\nError")
+            self.thumbnail_queue.put((label_widget, "Load\nError"))
+
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
+        """Starts a background thread to load a thumbnail for the history list."""
+        thread = threading.Thread(target=self._load_history_thumbnail_worker, args=(label_widget, image_path, workflow), daemon=True)
+        thread.start()
 
     def _add_parent_widget(self, prompt_text: str):
         """Helper to create and add a new parent widget."""
@@ -424,12 +449,8 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
             custom_dialogs.show_warning(self, "No Selection", "Please click on one or more child prompts to select them.")
             return
 
-        # Clear children
-        for widget_info in self.child_widgets:
-            widget_info['label'].destroy()
-        self.child_widgets.clear()
-        # Clear and repopulate parents
         self._clear_and_repopulate_parents(selected_prompts)
+        self._clear_children()
 
     def _send_to_editor(self):
         selected_prompts = [info['prompt'] for info in self.child_widgets if info['selected']]
@@ -530,6 +551,12 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         if prompt_to_load:
             self.load_prompt_callback(prompt_to_load)
             self.destroy()
+
+    def _clear_children(self):
+        """Clears all child prompt widgets."""
+        for widget_info in self.child_widgets:
+            widget_info['frame'].destroy()
+        self.child_widgets.clear()
 
     def _clear_and_repopulate_parents(self, new_parents: List[str]):
         """Clears all current parent widgets and adds new ones from a list of prompts."""

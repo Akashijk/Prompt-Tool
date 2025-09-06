@@ -1417,7 +1417,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
                 is_dict = isinstance(choice, dict)
                 original_value = choice.get('value') if is_dict else choice
                 
-                if not isinstance(original_value, str):
+                if not isinstance(original_value, str): # Ensure we only try to replace on strings
                     updated_choices.append(choice)
                     continue
 
@@ -1555,139 +1555,16 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin):
         try:
             result = self.validation_queue.get_nowait()
             self.validate_button.config(state=tk.NORMAL, text="Validate All Files")
-
             if result['success']:
                 errors = result['errors']
                 if not errors:
-                    # This is a dialog, so it needs focus protection
-                    self.wildcard_listbox.unbind("<<ListboxSelect>>")
-                    self.dialog_is_open = True
-                    try:
-                        custom_dialogs.show_info(self, "Validation Complete", "No validation errors found in 'requires' clauses.")
-                    finally:
-                        self.dialog_is_open = False
-                        if self.winfo_exists():
-                            self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+                    custom_dialogs.show_info(self, "Validation Complete", "No validation errors found in 'requires' clauses.")
                 else:
-                    self.wildcard_listbox.unbind("<<ListboxSelect>>")
-                    self.dialog_is_open = True
-                    try:
-                        self._show_validation_errors(errors)
-                    finally:
-                        self.dialog_is_open = False
-                        if self.winfo_exists():
-                            self.wildcard_listbox.bind("<<ListboxSelect>>", self._on_wildcard_file_select)
+                    _ValidationErrorsDialog(self, errors)
             else:
                 custom_dialogs.show_error(self, "Error", f"An error occurred during validation:\n{result['error']}")
         except queue.Empty:
             self.validation_after_id = self.after(100, self._check_validation_queue)
-
-    def _show_validation_errors(self, errors: List[Dict[str, Any]]):
-        """Displays validation errors in an interactive Toplevel window."""
-        error_window = tk.Toplevel(self)
-        error_window.title("Wildcard Validation Errors")
-        error_window.transient(self)
-        error_window.grab_set()
-        error_window.geometry("800x500")
-
-        main_frame = ttk.Frame(error_window, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(main_frame, text="The following issues were found. Double-click an error to jump to the file.", wraplength=780).pack(anchor='w', pady=(0, 10))
-
-        # --- Action Buttons ---
-        action_frame = ttk.Frame(main_frame)
-        action_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Button(action_frame, text="Attempt to Fix All Missing Values...", command=lambda: self._fix_all_missing_values(errors, error_window), style="Accent.TButton").pack(side=tk.LEFT)
-        ttk.Button(action_frame, text="Fix Selected with AI...", command=lambda: self._fix_error_with_ai(tree, iid_map, error_window)).pack(side=tk.LEFT, padx=5)
-
-        # --- Treeview for errors ---
-        text_frame = ttk.Frame(main_frame)
-        text_frame.pack(fill=tk.BOTH, expand=True)
-        
-        columns = ('file', 'choice', 'message')
-        tree = ttk.Treeview(text_frame, columns=columns, show='headings')
-        tree.heading('file', text='File', command=lambda: self._sort_treeview_column(tree, 'file', False))
-        tree.heading('choice', text='Problematic Choice', command=lambda: self._sort_treeview_column(tree, 'choice', False))
-        tree.heading('message', text='Error Details', command=lambda: self._sort_treeview_column(tree, 'message', False))
-        tree.column('file', width=150, stretch=False)
-        tree.column('choice', width=200, stretch=False)
-        tree.column('message', width=400)
-        
-        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        iid_map = {}
-        for error in errors:
-            values = (error.get('source_file', ''), error.get('choice_value', ''), error.get('message', ''))
-            iid = tree.insert('', tk.END, values=values)
-            iid_map[iid] = error
-
-        def _on_error_double_click(event):
-            iid = tree.identify_row(event.y)
-            if not iid: return
-            error = iid_map.get(iid)
-            if not error: return
-            
-            self.select_and_load_file(error['source_file'])
-            self.structured_editor.highlight_choice_by_value(error['choice_value'])
-            self.lift() # Bring the main manager window to the front
-
-        def _add_missing_wildcard_value(error_data: Dict[str, Any]):
-            details = error_data.get('details')
-            if not details or details.get('type') != 'missing_value': return
-
-            target_file = details['target_wildcard']
-            missing_value = details['missing_value']
-
-            try:
-                # Load the target file's content
-                target_data = self._load_and_parse_wildcard_file(target_file)
-                if target_data is None:
-                    custom_dialogs.show_error(error_window, "Error", f"Could not load target file '{target_file}' to add value.")
-                    return
-                
-                # Add the new choice
-                if 'choices' not in target_data:
-                    target_data['choices'] = []
-                target_data['choices'].append(missing_value)
-
-                # Save the modified file
-                new_content = json.dumps(target_data, indent=2)
-                self.processor.save_wildcard_content(target_file, new_content)
-
-                custom_dialogs.show_info(error_window, "Success", f"Added '{missing_value}' to '{target_file}'.\n\nPlease re-run validation.")
-                error_window.destroy() # Close the error window as it's now stale
-            except Exception as e:
-                custom_dialogs.show_error(error_window, "Error", f"Failed to add missing value:\n{e}")
-
-        context_menu = tk.Menu(tree, tearoff=0)
-        def _show_context_menu(event):
-            iid = tree.identify_row(event.y)
-            if not iid: return
-            tree.selection_set(iid)
-            
-            error = iid_map.get(iid)
-            if not error: return
-
-            context_menu.delete(0, tk.END)
-            context_menu.add_command(label="Go to Error", command=lambda: _on_error_double_click(event))
-            
-            details = error.get('details')
-            if details and details.get('type') == 'missing_value':
-                context_menu.add_separator()
-                label = f"Add '{details['missing_value']}' to '{details['target_wildcard']}'"
-                context_menu.add_command(label=label, command=lambda e=error: _add_missing_wildcard_value(e))
-            
-            context_menu.tk_popup(event.x_root, event.y_root)
-
-        tree.bind("<Double-1>", _on_error_double_click)
-        right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
-        tree.bind(right_click_event, _show_context_menu)
-
-        ttk.Button(main_frame, text="Close", command=error_window.destroy).pack(pady=(10, 0))
         
     def _fix_error_with_ai(self, error_tree: ttk.Treeview, iid_map: Dict[str, Any], parent_window: tk.Toplevel):
         """Handles the full workflow for fixing a selected error with AI."""
