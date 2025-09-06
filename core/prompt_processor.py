@@ -16,7 +16,7 @@ from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_V
                               DEFAULT_BRAINSTORM_TEMPLATE_PROMPT, DEFAULT_BRAINSTORM_WILDCARD_PROMPT, DEFAULT_AI_REFACTOR_CHOICES_PROMPT,
                               DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION,
                               DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT,
-                              DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT,
+                              DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT, DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT,
                               DEFAULT_BRAINSTORM_REWRITE_PROMPT, DEFAULT_AI_FIX_GRAMMAR_PROMPT, DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT, DEFAULT_AI_CLEANUP_PROMPT,
                               DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT,
                               DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT)
@@ -445,7 +445,8 @@ class PromptProcessor:
                 if os.path.exists(path_to_check):
                     try:
                         os.remove(path_to_check)
-                        print(f"INFO: Migrated and removed old wildcard file: {path_to_check}")
+                        if self.verbose:
+                            print(f"INFO: Migrated and removed old wildcard file: {path_to_check}")
                     except OSError as e:
                         print(f"WARNING: Could not remove old .txt wildcard file during migration: {e}")
                     break
@@ -1338,8 +1339,8 @@ class PromptProcessor:
         results = []
         total_prompts = len(prompts)
         
-        # Load all available variations once for the batch
         enhancement_instruction = self.load_system_prompt_content('enhancement.txt')
+
         available_variations = {v['key']: v for v in self.get_available_variations()}
         if selected_variations:
             selected_variations = [v for v in selected_variations if v in available_variations]
@@ -1410,6 +1411,20 @@ class PromptProcessor:
     def cleanup_prompt_string(self, prompt: str) -> str:
         """Pass-through to the template engine's cleanup method."""
         return self.template_engine.cleanup_prompt_string(prompt)
+
+    def suggest_template_additions(self, prompt_text: str, model: str) -> str:
+        """Uses AI to suggest additions to an existing prompt template."""
+        
+        wildcard_list_str = self._get_wildcards_with_descriptions_str()
+
+        prompt = DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT.format(
+            prompt_text=prompt_text,
+            wildcard_list_str=wildcard_list_str
+        )
+        
+        # Use the one-shot generation method for this task.
+        # The AI should return only the enhanced template text.
+        return self.generate_for_brainstorming(model, prompt)
 
     def _get_wildcards_with_descriptions_str(self) -> str:
         """Gets a formatted string of all wildcards and their descriptions for AI context."""

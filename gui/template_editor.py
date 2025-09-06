@@ -14,6 +14,7 @@ class TemplateEditor(ttk.Frame):
         self.app_instance = app_instance
         
         self.frame = ttk.LabelFrame(self, text="Template Content", padding=5)
+        self.last_cursor_pos = "1.0" # Default
         self.text_widget = tk.Text(self.frame, wrap=tk.WORD, font=self.app_instance.fixed_font, undo=True, exportselection=False)
         self.text_widget.tag_configure("any_wildcard")
         self.text_widget.tag_configure("missing_wildcard")
@@ -23,6 +24,7 @@ class TemplateEditor(ttk.Frame):
         self.ordering_error_tooltip = Tooltip(self.text_widget)
         self.ordering_error_tooltip_after_id: Optional[str] = None
         self.last_hovered_error_range: Optional[Tuple[str, str]] = None
+        self.live_update_callback = live_update_callback
         self.ordering_errors: Dict[str, str] = {}
         self.dragged_text = ""
         self.context_menu = TemplateEditorContextMenu(
@@ -31,12 +33,14 @@ class TemplateEditor(ttk.Frame):
             brainstorm_callback,
             create_wildcard_callback,
             edit_wildcard_callback,
-            live_update_callback,
+            self._on_key_or_click,
             toggle_roll_unique_callback=self._toggle_roll_unique,
             select_n_items_callback=self._select_n_items
         )
         self.text_widget.pack(fill=tk.BOTH, expand=True)
-        self.text_widget.bind("<KeyRelease>", live_update_callback)
+        self.text_widget.bind("<KeyRelease>", self._on_key_or_click)
+        self.text_widget.bind("<FocusOut>", self._on_key_or_click)
+        self.text_widget.bind("<ButtonRelease-1>", self._on_key_or_click)
         self.text_widget.bind("<Double-Button-1>", double_click_callback)
         # Drag and drop bindings for wildcard tags
         self.text_widget.tag_bind("any_wildcard", "<ButtonPress-1>", self._on_drag_start)
@@ -48,6 +52,12 @@ class TemplateEditor(ttk.Frame):
         self.text_widget.tag_bind("ordering_error", "<Leave>", self._on_ordering_error_leave)
         
         self.frame.pack(fill=tk.BOTH, expand=True)
+
+    def _on_key_or_click(self, event=None):
+        """Update last cursor position and trigger live update."""
+        self.last_cursor_pos = self.text_widget.index(tk.INSERT)
+        if self.live_update_callback:
+            self.live_update_callback(event)
 
     def get_content(self) -> str:
         return self.text_widget.get("1.0", "end-1c")
@@ -103,7 +113,7 @@ class TemplateEditor(ttk.Frame):
                 return
 
             # Priority 2: Overwrite wildcard tag under cursor if no selection
-            cursor_index = self.text_widget.index(tk.INSERT)
+            cursor_index = self.last_cursor_pos
             ranges = self.text_widget.tag_ranges("any_wildcard")
             for i in range(0, len(ranges), 2):
                 start, end = ranges[i], ranges[i+1]
@@ -114,10 +124,10 @@ class TemplateEditor(ttk.Frame):
                     return # Exit after replacing
             
             # Fallback: Insert at cursor
-            self.text_widget.insert(tk.INSERT, tag_to_insert)
+            self.text_widget.insert(self.last_cursor_pos, tag_to_insert)
         except tk.TclError:
             # Fallback for edge cases, e.g., if selection is gone
-            self.text_widget.insert(tk.INSERT, tag_to_insert)
+            self.text_widget.insert(self.last_cursor_pos, tag_to_insert)
 
         self.text_widget.focus_set()
 

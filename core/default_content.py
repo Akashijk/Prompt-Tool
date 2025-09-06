@@ -71,7 +71,7 @@ DEFAULT_SFW_VARIATIONS = {
     "photorealistic": {
         "name": "Photorealistic",
         "description": "Re-writes the prompt to include technical photography details, realistic lighting, and high-quality descriptors.",
-        "prompt": "Transform this Stable Diffusion prompt into a PHOTOREALISTIC version with technical photography details, realistic lighting, and high-quality descriptors. Focus on camera settings and professional photography.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this Stable Diffusion prompt into a PHOTOREALISTIC version with technical photography details, realistic lighting, and high-quality descriptors. Focus on professional photography.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic content]\n\n**Original prompt to transform:**\n"
     }
 }
 
@@ -438,6 +438,27 @@ DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT = """You are an expert conten
 ]
 
 Now, generate the JSON array of new choices.
+"""
+
+DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to take a user's prompt template and enhance it by adding more detail, style, and creative wildcards.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Preserve Core Concepts:** Do not remove or fundamentally change the core subject of the template.
+2.  **Integrate Wildcards:** Analyze the 'AVAILABLE WILDCARDS' list. Intelligently integrate relevant existing wildcards to add variety and detail.
+3.  **Add Descriptive Keywords:** Weave in new descriptive keywords for lighting, style, quality, composition, etc.
+4.  **Maintain Structure:** The output must be a single, comma-separated paragraph suitable for a Stable Diffusion template.
+5.  **Return ONLY the Template:** Return only the full, enhanced template text. Do not include any other commentary, labels, or explanations.
+
+**EXAMPLE:**
+- If the template is `a portrait of a __character_class__`, a good enhancement would be `masterpiece, best quality, cinematic lighting, a portrait of a __character_class__, __hair_style__, wearing __fantasy_armor__, in a __fantasy_forest__, detailed face, sharp focus`.
+
+**AVAILABLE WILDCARDS FOR CONTEXT:**
+{wildcard_list_str}
+
+**ORIGINAL TEMPLATE TO ENHANCE:**
+{prompt_text}
+
+**ENHANCED TEMPLATE:**
 """
 
 DEFAULT_BRAINSTORM_REWRITE_PROMPT = """You are an AI assistant. Your task is to rewrite the following text based on the user's instruction.

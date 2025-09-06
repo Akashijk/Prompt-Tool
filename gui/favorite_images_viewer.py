@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk
+import sys
 import os
 import queue
 import threading
@@ -35,6 +36,11 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
         self.smart_geometry(min_width=1000, min_height=700)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
+    def _on_mouse_wheel(self, event):
+        """Handles mouse wheel scrolling for the list."""
+        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
+        self.canvas.yview_scroll(delta, "units")
+
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.after_id:
@@ -66,6 +72,9 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
 
         self.container.bind("<Configure>", on_frame_configure)
         self.canvas.bind("<Configure>", on_canvas_configure)
+        # Add mouse wheel scrolling
+        self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
+        self.container.bind("<MouseWheel>", self._on_mouse_wheel)
 
     def _start_loading_favorites(self):
         """Shows loading indicator and starts fetching data in a thread."""
@@ -110,6 +119,7 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
         for fav_data in favorites_data:
             item_frame = ttk.Frame(self.container, style="HistoryItem.TFrame", relief="groove", borderwidth=1, padding=10)
             item_frame.pack(fill=tk.X, pady=5, padx=5)
+            item_frame.bind("<MouseWheel>", self._on_mouse_wheel)
 
             # Image
             img_label = ttk.Label(item_frame, anchor=tk.CENTER)
@@ -119,6 +129,7 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
             # Info and actions
             info_frame = ttk.Frame(item_frame)
             info_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            info_frame.bind("<MouseWheel>", self._on_mouse_wheel)
 
             prompt_label = ttk.Label(info_frame, text=f"Prompt ({fav_data.get('prompt_type', 'N/A')}):", font=self.parent_app.small_font)
             prompt_label.pack(anchor='w')
@@ -126,6 +137,7 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
             prompt_text.insert("1.0", fav_data.get('prompt', ''))
             prompt_text.config(state=tk.DISABLED)
             prompt_text.pack(fill=tk.X, expand=True, pady=(0, 5))
+            prompt_text.bind("<MouseWheel>", self._on_mouse_wheel)
             TextContextMenu(prompt_text)
 
             # Generation parameters
@@ -134,11 +146,13 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
             seed = gen_params.get('seed', 'N/A')
             params_str = f"Model: {model_name} | Seed: {seed}"
             params_label = ttk.Label(info_frame, text=params_str, font=self.parent_app.small_font)
+            params_label.bind("<MouseWheel>", self._on_mouse_wheel)
             params_label.pack(anchor='w')
             Tooltip(params_label, json.dumps(gen_params, indent=2))
 
             # Action buttons
             button_frame = ttk.Frame(info_frame)
+            button_frame.bind("<MouseWheel>", self._on_mouse_wheel)
             button_frame.pack(fill=tk.X, pady=(10, 0))
             
             unfav_button = ttk.Button(button_frame, text="Unfavorite", command=lambda d=fav_data, f=item_frame: self._unfavorite_image(d, f))

@@ -35,10 +35,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.history_canvas: Optional[tk.Canvas] = None
         self.history_container: Optional[ttk.Frame] = None
         self.history_widgets: List[Dict[str, Any]] = [] # Stores {'frame': widget, 'label': widget, 'data': row_data}
-        self.selected_item_frame: Optional[ttk.Frame] = None
+        self.selected_widget_info: Optional[Dict[str, Any]] = None
         self.selected_row_data: Optional[Dict[str, Any]] = None
 
         self.image_favorite_var = tk.BooleanVar()
+        self.current_pil_image: Optional[Image.Image] = None
         self.show_favorites_only_var = tk.BooleanVar(value=False)
         self.details_notebook: Optional[ttk.Notebook] = None
         self.filter_debounce_timer: Optional[str] = None
@@ -48,7 +49,10 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.image_tooltip: Optional[Tooltip] = None
         self.image_tooltip_after_id: Optional[str] = None
         self.current_images: List[Dict[str, Any]] = []
+        self._resize_debounce_id: Optional[str] = None
         self.current_image_index: int = 0
+        self.regen_prompt_queue = queue.Queue()
+        self.regen_prompt_after_id: Optional[str] = None
         self.image_gen_after_id: Optional[str] = None
         self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
         self.context_menu = tk.Menu(self, tearoff=0)
@@ -59,6 +63,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.load_and_display_history()
 
         self.smart_geometry(min_width=1200, min_height=800)
+        self.regen_prompt_after_id = self.after(100, self._check_regen_prompt_queue)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
     def close(self):
@@ -66,7 +71,18 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         if self.image_gen_after_id:
             self.after_cancel(self.image_gen_after_id)
             self.image_gen_after_id = None
+        if self._resize_debounce_id:
+            self.after_cancel(self._resize_debounce_id)
+            self._resize_debounce_id = None
+        if self.regen_prompt_after_id:
+            self.after_cancel(self.regen_prompt_after_id)
+            self.regen_prompt_after_id = None
         self.destroy()
+
+    def _on_history_mouse_wheel(self, event):
+        """Handles mouse wheel scrolling for the history list."""
+        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
+        self.history_canvas.yview_scroll(delta, "units")
 
     def _create_styles(self):
         """Creates custom ttk styles for the history list."""
@@ -139,6 +155,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         self.history_container.bind("<Configure>", on_history_frame_configure)
         self.history_canvas.bind("<Configure>", on_history_canvas_configure)
+        # Add mouse wheel scrolling
+        self.history_canvas.bind("<MouseWheel>", self._on_history_mouse_wheel)
+        self.history_container.bind("<MouseWheel>", self._on_history_mouse_wheel)
 
         # --- Right Pane (for details and image) ---
         right_pane = ttk.Frame(h_pane, padding=5)
@@ -155,12 +174,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         # Create a frame for pagination controls at the bottom of the image frame and pack it first.
         self.pagination_frame = ttk.Frame(image_frame)
         self.pagination_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
+        self.pagination_frame.bind("<Configure>", lambda e: self._reflow_pagination_controls())
 
         # Create a container for the image itself to center it
         image_container = ttk.Frame(image_frame)
         image_container.pack(fill=tk.BOTH, expand=True)
         self.image_label = ttk.Label(image_container, text="No image generated for this entry.", anchor=tk.CENTER)
         self.image_label.pack(fill=tk.BOTH, expand=True)
+        image_container.bind("<Configure>", self._on_image_container_resize)
         self.image_tooltip = Tooltip(self.image_label)
         self.image_label.bind("<Enter>", self._schedule_image_tooltip)
         self.image_label.bind("<Leave>", self._hide_image_tooltip)
@@ -174,6 +195,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         self.favorite_image_button = ttk.Checkbutton(self.pagination_frame, text="⭐", variable=self.image_favorite_var, command=self._toggle_image_favorite, style='Switch.TCheckbutton')
         Tooltip(self.favorite_image_button, "Add this image to your Favorites collection.")
+
+        self.regen_image_button = ttk.Button(self.pagination_frame, text="Regen Image", command=self._regenerate_current_image)
+        Tooltip(self.regen_image_button, "Regenerate this image with a new seed.")
 
 
         self.next_button = ttk.Button(self.pagination_frame, text="Next >", command=self._next_image)
@@ -191,6 +215,60 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self._create_detail_tab('original', 'Original')
         self._create_detail_tab('enhanced', 'Enhanced')
 
+    def _reflow_pagination_controls(self, event=None):
+        if not hasattr(self, 'pagination_frame') or not self.pagination_frame.winfo_exists():
+            return
+
+        # Forget all widgets to regrid them
+        for widget in self.pagination_frame.winfo_children():
+            widget.grid_forget()
+
+        if not self.current_images:
+            return
+
+        width = self.pagination_frame.winfo_width()
+        threshold = 450
+
+        if width < threshold:
+            # Vertical layout
+            self.pagination_frame.columnconfigure(0, weight=1)
+            self.pagination_frame.columnconfigure(1, weight=1)
+            self.pagination_frame.columnconfigure(2, weight=0) # reset
+            self.pagination_frame.columnconfigure(3, weight=0) # reset
+            self.pagination_frame.columnconfigure(4, weight=0) # reset
+
+            if len(self.current_images) > 1:
+                self.prev_button.grid(row=0, column=0, sticky='ew', padx=(0, 5))
+                self.next_button.grid(row=0, column=1, sticky='ew')
+            
+            self.image_info_label.grid(row=1, column=0, columnspan=2, sticky='ew', pady=5)
+
+            self.favorite_image_button.grid(row=2, column=0, sticky='ew', padx=(0, 5))
+            self.regen_image_button.grid(row=2, column=1, sticky='ew')
+        else:
+            # Horizontal layout
+            self.pagination_frame.columnconfigure(0, weight=0)
+            self.pagination_frame.columnconfigure(1, weight=1) # The label
+            self.pagination_frame.columnconfigure(2, weight=0)
+            self.pagination_frame.columnconfigure(3, weight=0)
+            self.pagination_frame.columnconfigure(4, weight=0)
+
+            col = 0
+            if len(self.current_images) > 1:
+                self.prev_button.grid(row=0, column=col, sticky='w')
+                col += 1
+            
+            self.image_info_label.grid(row=0, column=col, sticky='ew', padx=5)
+            col += 1
+
+            self.regen_image_button.grid(row=0, column=col, sticky='e')
+            col += 1
+            self.favorite_image_button.grid(row=0, column=col, sticky='e', padx=5)
+            col += 1
+
+            if len(self.current_images) > 1:
+                self.next_button.grid(row=0, column=col, sticky='e')
+
     def load_and_display_history(self):
         """Loads data from the history file and populates the list."""
         self.all_history_data = self.processor.get_full_history()
@@ -204,12 +282,33 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         for widget_info in self.history_widgets:
             widget_info['frame'].destroy()
         self.history_widgets.clear()
-        self.selected_item_frame = None
+        self.selected_widget_info = None
         self.selected_row_data = None
 
         current_width = self.history_canvas.winfo_width()
 
         for row in data:
+            # --- Find the cover image for the thumbnail ---
+            cover_image_path = None
+            image_lists_to_check = []
+            if row.get('original_images'): image_lists_to_check.append(row['original_images'])
+            if row.get('enhanced', {}).get('images'): image_lists_to_check.append(row['enhanced']['images'])
+            for var_data in row.get('variations', {}).values():
+                if var_data.get('images'): image_lists_to_check.append(var_data['images'])
+
+            for img_list in image_lists_to_check:
+                for img_data in img_list:
+                    if img_data.get('is_cover_image'):
+                        cover_image_path = img_data.get('image_path')
+                        break
+                if cover_image_path: break
+            
+            # Fallback to the first image of any kind if no cover is set
+            if not cover_image_path and image_lists_to_check:
+                first_list = image_lists_to_check[0]
+                if first_list:
+                    cover_image_path = first_list[0].get('image_path')
+
             original_prompt = row.get('original_prompt', 'No original prompt found.')
             is_fav = row.get('favorite', False)
 
@@ -217,23 +316,41 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             item_frame = ttk.Frame(self.history_container, style="HistoryItem.TFrame", relief="groove", borderwidth=1)
             item_frame.pack(fill=tk.X, pady=2, padx=2)
 
-            # Create and pack the main prompt label
+            # --- Thumbnail Label (Left) ---
+            thumb_label = ttk.Label(item_frame, text="🖼️", width=12, anchor=tk.CENTER)
+            thumb_label.pack(side=tk.LEFT, padx=5, pady=5)
+            if cover_image_path:
+                self._load_history_thumbnail(thumb_label, cover_image_path)
+
+            # --- Text Info (Right) ---
+            text_frame = ttk.Frame(item_frame, style="HistoryItem.TFrame") # Match style for seamless selection color
+            text_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
             label_style = "Favorite.HistoryPrompt.TLabel" if is_fav else "HistoryPrompt.TLabel"
-            prompt_label = ttk.Label(item_frame, text=original_prompt, style=label_style, wraplength=current_width - 20, anchor="w", justify="left")
-            prompt_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+            prompt_label = ttk.Label(text_frame, text=original_prompt, style=label_style, wraplength=current_width - 150, anchor="nw", justify="left")
+            prompt_label.pack(fill=tk.X, expand=True, padx=5, pady=(5,0))
+
+            # Add date/template info
+            timestamp = row.get('timestamp', 'Unknown date')
+            template_name = row.get('template_name')
+            info_text = f"Date: {timestamp.split('T')[0]}"
+            if template_name:
+                info_text += f" | Template: {os.path.basename(template_name)}"
+            info_label = ttk.Label(text_frame, text=info_text, style="SFW.History.TLabel") # Use a muted style
+            info_label.pack(fill=tk.X, expand=True, padx=5, pady=(0,5))
 
             # Store widget and data together
-            widget_info = {'frame': item_frame, 'label': prompt_label, 'data': row}
+            widget_info = {'frame': item_frame, 'label': prompt_label, 'data': row, 'thumb_label': thumb_label, 'text_frame': text_frame}
             self.history_widgets.append(widget_info)
 
             # Bind events to the frame and its labels
             right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
-            for widget in [item_frame, prompt_label]:
+            for widget in [item_frame, thumb_label, text_frame, prompt_label, info_label]:
                 widget.bind("<Button-1>", lambda e, info=widget_info: self._on_item_select(info))
                 widget.bind("<Double-1>", lambda e, info=widget_info: self._load_to_main_window())
                 widget.bind(right_click_event, lambda e, info=widget_info: self._show_context_menu(e, info))
-                # Make mousewheel work on the labels too
-                widget.bind("<MouseWheel>", lambda e: self.history_canvas.yview_scroll(-1 * (e.delta if sys.platform == 'darwin' else e.delta // 120), "units"))
+                # Make mousewheel work on the labels too, using the dedicated method for consistency.
+                widget.bind("<MouseWheel>", self._on_history_mouse_wheel)
 
     def _apply_filters(self):
         """Shows or hides list items based on the current filter criteria."""
@@ -267,12 +384,16 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         # --- Visual Selection Highlighting ---
         # Deselect the previously selected frame
-        if self.selected_item_frame and self.selected_item_frame.winfo_exists():
-            self.selected_item_frame.config(style="HistoryItem.TFrame")
+        if self.selected_widget_info and self.selected_widget_info['frame'].winfo_exists():
+            self.selected_widget_info['frame'].config(style="HistoryItem.TFrame")
+            if 'text_frame' in self.selected_widget_info:
+                self.selected_widget_info['text_frame'].config(style="HistoryItem.TFrame")
         
         # Select the new frame
-        self.selected_item_frame = selected_widget_info['frame']
-        self.selected_item_frame.config(style="Selected.HistoryItem.TFrame")
+        self.selected_widget_info = selected_widget_info
+        self.selected_widget_info['frame'].config(style="Selected.HistoryItem.TFrame")
+        if 'text_frame' in self.selected_widget_info:
+            self.selected_widget_info['text_frame'].config(style="Selected.HistoryItem.TFrame")
         
         # Store the data for other methods to use (delete, favorite, etc.)
         self.selected_row_data = selected_widget_info['data']
@@ -428,20 +549,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 break
         self.current_image_index = cover_image_index if cover_image_index != -1 else 0
         
-        # Always forget everything first for a clean slate
-        self.prev_button.pack_forget()
-        self.next_button.pack_forget()
-        self.image_info_label.pack_forget()
-
-        # Pack controls. The info label will fill the space between the buttons.
-        if len(self.current_images) > 1:
-            self.prev_button.pack(side=tk.LEFT, padx=5)
-            self.next_button.pack(side=tk.RIGHT, padx=5)
-        
-        # The info label should always be visible if there are images.
-        self.favorite_image_button.pack(side=tk.RIGHT, padx=5)
-        self.image_info_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-            
+        self._reflow_pagination_controls()
         self._show_current_image()
 
     def _show_current_image(self):
@@ -463,12 +571,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             if not os.path.exists(full_path):
                 self.image_label.config(text=f"Image not found:\n{relative_image_path}", image='')
                 self.image_ref = None # Clear the reference
+                self.current_pil_image = None
                 return
 
-            img = Image.open(full_path)
-            img.thumbnail((400, 400)) # Resize for display
-            self.image_ref = ImageTk.PhotoImage(img)
-            self.image_label.config(image=self.image_ref, text="")
+            self.current_pil_image = Image.open(full_path)
+            self._update_image_display()
             
             # Update pagination info
             gen_params = image_data.get('generation_params', {})
@@ -499,6 +606,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         except Exception as e:
             self.image_label.config(text=f"Error loading image:\n{e}", image='')
             self.image_ref = None
+            self.current_pil_image = None
 
     def _next_image(self):
         if self.current_image_index < len(self.current_images) - 1:
@@ -556,6 +664,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 label="Set as Cover Image", 
                 command=lambda: self._set_as_cover_image(remove=False)
             )
+
+        self.image_context_menu.add_separator()
+        self.image_context_menu.add_command(label="Delete Image", command=self._delete_current_image)
 
         self.image_context_menu.tk_popup(event.x_root, event.y_root)
 
@@ -631,6 +742,162 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         else:
             custom_dialogs.show_error(self, "Error", "Failed to update favorite status in history.")
             self.image_favorite_var.set(not new_favorite_status)
+
+    def _regenerate_prompt_with_ai(self, key: str):
+        """Regenerates a single prompt (enhanced or variation) using the AI."""
+        if not self.selected_row_data: return
+
+        model = self.parent_app.enhancement_model_var.get()
+        if not model or "model" in model.lower():
+            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model in the main window.")
+            return
+
+        button = self.detail_tabs.get(key, {}).get('regen_ai_button')
+        if button:
+            button.config(state=tk.DISABLED, text="Regening...")
+
+        def task():
+            try:
+                if key == 'enhanced':
+                    original_prompt = self.selected_row_data.get('original_prompt', '')
+                    if not original_prompt: raise ValueError("Original prompt not found for re-enhancement.")
+                    new_prompt, new_sd_model = self.processor.regenerate_enhancement(original_prompt, model)
+                    result = {'key': key, 'prompt': new_prompt, 'sd_model': new_sd_model}
+                else: # It's a variation
+                    enhanced_prompt = self.selected_row_data.get('enhanced', {}).get('prompt', '')
+                    enhanced_sd_model = self.selected_row_data.get('enhanced', {}).get('sd_model', '')
+                    if not enhanced_prompt: raise ValueError("Enhanced prompt not found to generate variation from.")
+                    variation_result = self.processor.regenerate_variation(enhanced_prompt, enhanced_sd_model, model, key)
+                    result = {'key': key, 'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
+                
+                self.regen_prompt_queue.put({'success': True, 'result': result})
+            except Exception as e:
+                self.regen_prompt_queue.put({'success': False, 'error': str(e), 'key': key})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+
+    def _check_regen_prompt_queue(self):
+        """Checks for AI prompt regeneration results and updates the UI."""
+        try:
+            result = self.regen_prompt_queue.get_nowait()
+            key = result.get('key')
+            
+            button = self.detail_tabs.get(key, {}).get('regen_ai_button')
+            if button:
+                button.config(state=tk.NORMAL, text="Regen Prompt")
+
+            if not result['success']:
+                custom_dialogs.show_error(self, "Regeneration Error", result['error'])
+                return
+            
+            self._update_prompt_from_ai(result['result'])
+        except queue.Empty:
+            pass
+        finally:
+            if self.winfo_exists():
+                self.regen_prompt_after_id = self.after(100, self._check_regen_prompt_queue)
+
+    def _delete_current_image(self):
+        """Deletes the currently viewed image from disk and history."""
+        if not self.current_images or not self.selected_row_data:
+            return
+
+        image_data = self.current_images[self.current_image_index]
+        image_path = image_data.get('image_path')
+        if not image_path:
+            custom_dialogs.show_error(self, "Error", "Cannot delete image: path not found.")
+            return
+
+        if not custom_dialogs.ask_yes_no(self, "Confirm Delete", f"Are you sure you want to permanently delete this image?\n\n{os.path.basename(image_path)}\n\nThis action cannot be undone."):
+            return
+
+        try:
+            selected_tab_id = self.details_notebook.select()
+            selected_tab_widget = self.details_notebook.nametowidget(selected_tab_id)
+        except tk.TclError:
+            return
+        
+        current_tab_key = next((key for key, tab_info in self.detail_tabs.items() if tab_info['frame'] == selected_tab_widget), None)
+        if not current_tab_key: return
+
+        original_row = self.selected_row_data
+        updated_row = copy.deepcopy(original_row)
+        target_obj, image_list_key = self._get_target_object_for_images(updated_row, current_tab_key)
+        if not target_obj or not image_list_key: return
+        
+        image_list = target_obj.get(image_list_key, [])
+        if not image_list or self.current_image_index >= len(image_list): return
+
+        del image_list[self.current_image_index]
+
+        # The update_history_entry method in the processor will handle deleting the file from disk
+        if self.processor.update_history_entry(original_row, updated_row):
+            self._update_ui_after_image_delete(updated_row)
+
+    def _regenerate_current_image(self):
+        """Opens the image generation dialog pre-filled with the current image's parameters."""
+        if not self.current_images or not self.selected_row_data:
+            return
+
+        image_data = self.current_images[self.current_image_index]
+        gen_params = image_data.get('generation_params')
+        if not gen_params:
+            custom_dialogs.show_error(self, "Error", "No generation parameters found for this image.")
+            return
+
+        try:
+            selected_tab_id = self.details_notebook.select()
+            selected_tab_widget = self.details_notebook.nametowidget(selected_tab_id)
+        except tk.TclError:
+            return
+
+        current_tab_key = next((key for key, tab_info in self.detail_tabs.items() if tab_info['frame'] == selected_tab_widget), None)
+        if not current_tab_key: return
+
+        prompt = self._get_prompt_for_key(current_tab_key)
+        if not prompt:
+            custom_dialogs.show_error(self, "Error", "Could not determine the prompt for this image.")
+            return
+
+        def on_success(new_images_to_save: List[Dict[str, Any]]):
+            if not self.selected_row_data: return
+            if not new_images_to_save: return
+
+            # Save all the new images and get their paths
+            final_image_objects = []
+            for img_data in new_images_to_save:
+                saved_image_path = self.processor.save_generated_image(img_data['bytes'])
+                final_image_objects.append({'image_path': saved_image_path, 'generation_params': img_data.get('generation_params')})
+
+            original_row = self.selected_row_data
+            updated_row = copy.deepcopy(original_row)
+            target_obj, image_list_key = self._get_target_object_for_images(updated_row, current_tab_key)
+            if target_obj is None or image_list_key is None: return
+
+            if image_list_key not in target_obj: target_obj[image_list_key] = []
+            
+            # Append the new images to the existing list
+            target_obj[image_list_key].extend(final_image_objects)
+            
+            if self.processor.update_history_entry(original_row, updated_row):
+                self.selected_row_data = updated_row
+                self.current_images = target_obj[image_list_key]
+                self.current_image_index = len(self.current_images) - 1 # Go to the last new image
+                self._show_current_image()
+                custom_dialogs.show_info(self, "Success", f"{len(final_image_objects)} image(s) regenerated and added to the set.")
+            else:
+                custom_dialogs.show_error(self, "History Update Error", "Could not update the history file with the new images.")
+
+        # The key change is here: call the main workflow with the existing gen_params
+        self.parent_app._start_image_generation_workflow(
+            parent_window=self,
+            prompt=prompt,
+            initial_dialog_params=gen_params, # Pass the full params
+            button_to_manage=self.regen_image_button,
+            spinner_to_manage=None, # No spinner for this button
+            on_success_callback=on_success
+        )
 
     def _generate_image_from_history(self, key: str):
         """Starts the image generation process for a prompt from the history."""
@@ -789,6 +1056,12 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             self.detail_tabs[key].update({'edit_button': edit_button, 'update_button': update_button, 'cancel_button': cancel_button})
             edit_button.pack(side=tk.LEFT)
 
+        # Add a "Regen (AI)" button for relevant tabs
+        if key != 'original':
+            regen_ai_button = ttk.Button(button_container, text="Regen Prompt", command=lambda k=key: self._regenerate_prompt_with_ai(k))
+            regen_ai_button.pack(side=tk.LEFT, padx=(5,0))
+            self.detail_tabs[key]['regen_ai_button'] = regen_ai_button
+
         # Add a "Generate Image" button placeholder for relevant tabs
         if key not in ['negative', 'params']:
             gen_image_frame = ttk.Frame(button_container)
@@ -807,11 +1080,117 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self._hide_image_tooltip()
         self.image_label.config(image='', text="No image generated for this entry.")
         self.image_tooltip.text = ""
+        self.current_pil_image = None
         self.image_ref = None
         self.current_images = []
         self.current_image_index = 0
         self.image_info_label.config(text="") # Clear the text instead of hiding the widget
         self.favorite_image_button.pack_forget()
+        self.regen_image_button.pack_forget()
+
+    def _update_prompt_from_ai(self, data: Dict[str, Any]):
+        """Updates the UI and history data after a successful AI regeneration."""
+        key = data['key']
+        new_prompt = data['prompt']
+        new_sd_model = data['sd_model']
+
+        # Update the text widget
+        text_widget = self.detail_tabs[key]['text']
+        text_widget.config(state=tk.NORMAL)
+        text_widget.delete("1.0", tk.END)
+        text_widget.insert("1.0", new_prompt)
+        text_widget.config(state=tk.DISABLED)
+
+        # Update the model label
+        model_label = self.detail_tabs[key]['model_label']
+        model_label.config(text=f"Recommended Model: {new_sd_model}")
+
+        # Update the underlying history data
+        original_row = self.selected_row_data
+        updated_row = copy.deepcopy(original_row)
+
+        if key == 'enhanced':
+            if 'enhanced' not in updated_row: updated_row['enhanced'] = {}
+            updated_row['enhanced']['prompt'] = new_prompt
+            updated_row['enhanced']['sd_model'] = new_sd_model
+        else: # Variation
+            if 'variations' not in updated_row: updated_row['variations'] = {}
+            if key not in updated_row['variations']: updated_row['variations'][key] = {}
+            updated_row['variations'][key]['prompt'] = new_prompt
+            updated_row['variations'][key]['sd_model'] = new_sd_model
+        
+        self._save_and_refresh_row(updated_row, f"'{self.detail_tabs[key]['title']}' prompt has been regenerated.")
+
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str):
+        """Loads a thumbnail for the history list, handling potential errors."""
+        try:
+            full_path = os.path.join(config.get_history_file_dir(), image_path)
+            if not os.path.exists(full_path):
+                label_widget.config(text="Not\nFound")
+                return
+
+            img = Image.open(full_path)
+            img.thumbnail((96, 96))
+            img_ref = ImageTk.PhotoImage(img)
+            label_widget.config(image=img_ref)
+            label_widget.image = img_ref  # Keep a reference
+        except Exception as e:
+            label_widget.config(text="Load\nError")
+            # Don't print to console unless verbose, as this can be noisy if many images are missing.
+            if self.processor.verbose:
+                print(f"Error loading history thumbnail {image_path}: {e}")
+
+    def _on_image_container_resize(self, event=None):
+        """Handles resizing of the image container to re-thumbnail the image."""
+        if self._resize_debounce_id:
+            self.after_cancel(self._resize_debounce_id)
+        self._resize_debounce_id = self.after(100, self._update_image_display)
+
+    def _update_image_display(self):
+        """Renders the current PIL image into the image_label, fitting the container."""
+        if not self.current_pil_image or not self.image_label.winfo_exists():
+            return
+
+        container = self.image_label.master
+        # Subtract a small padding to avoid scrollbars appearing due to rounding errors
+        container_w = container.winfo_width() - 4
+        container_h = container.winfo_height() - 4
+
+        if container_w <= 1 or container_h <= 1:
+            return # Widget not yet rendered
+
+        img_copy = self.current_pil_image.copy()
+        img_copy.thumbnail((container_w, container_h), Image.Resampling.LANCZOS)
+        
+        self.image_ref = ImageTk.PhotoImage(img_copy)
+        self.image_label.config(image=self.image_ref, text="")
+
+    def _update_ui_after_image_delete(self, updated_row: Dict[str, Any]):
+        """Updates the UI after an image has been successfully deleted."""
+        self.selected_row_data = updated_row
+        self.current_images.pop(self.current_image_index)
+
+        # Adjust the index to prevent out-of-bounds error
+        if self.current_image_index >= len(self.current_images):
+            self.current_image_index = len(self.current_images) - 1
+
+        if not self.current_images:
+            self._clear_image_preview()
+        else:
+            self._show_current_image()
+        
+        custom_dialogs.show_info(self, "Success", "Image deleted successfully.")
+
+    def _get_prompt_for_key(self, key: str) -> Optional[str]:
+        """Helper to get the prompt text for a given tab key."""
+        if not self.selected_row_data: return None
+        
+        if key == 'original':
+            return self.selected_row_data.get('original_prompt')
+        elif key == 'enhanced':
+            return self.selected_row_data.get('enhanced', {}).get('prompt')
+        else: # variation
+            return self.selected_row_data.get('variations', {}).get(key, {}).get('prompt')
 
     def _prune_history(self):
         """Starts the process of pruning missing image entries from the history file."""

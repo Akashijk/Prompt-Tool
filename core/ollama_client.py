@@ -12,8 +12,9 @@ from .utils import sanitize_wildcard_choices
 class OllamaClient:
     """Handles all Ollama model interactions."""
     
-    def __init__(self, base_url: str = "http://localhost:11434"):
+    def __init__(self, base_url: str = "http://localhost:11434", verbose: bool = False):
         self.base_url = base_url
+        self.verbose = verbose
         self._is_running_cache: Optional[bool] = None
         self._last_check_time: float = 0
         self._cache_duration: int = 5  # Cache for 5 seconds
@@ -235,11 +236,12 @@ class OllamaClient:
                 parsed_array = json.loads(json_str)
                 return sanitize_wildcard_choices(parsed_array)
             except (json.JSONDecodeError, Exception) as e:
-                print(f"Warning: Could not parse JSON array, falling back to text parsing. Error: {e}")
+                if self.verbose:
+                    print(f"Warning: Could not parse JSON array, falling back to text parsing. Error: {e}")
                 # Fall through to text-based parsing below
 
         # Fallback: If JSON parsing fails, use a more robust text-based parsing.
-        print("INFO: Falling back to plain text list parsing for AI response.")
+        if self.verbose: print("INFO: Falling back to plain text list parsing for AI response.")
         
         # Define conversational filler prefixes to ignore. Checking for prefixes is safer than 'in'.
         ignore_prefixes = [
@@ -309,7 +311,8 @@ class OllamaClient:
 
         # Fallback: If JSON parsing fails or it's not a dict, treat as a plain list.
         # This reuses the robust list parsing logic from the array parser.
-        print("INFO: Falling back to plain text list parsing for wildcard object.")
+        if self.verbose:
+            print("INFO: Falling back to plain text list parsing for wildcard object.")
         choices = self.parse_json_array_from_response(response)
 
         fallback_data = {
@@ -363,7 +366,8 @@ class OllamaClient:
         }
         try:
             self._post_request("/api/generate", payload, 10)
-            print(f"INFO: Successfully unloaded model '{model}'.")
+            if self.verbose:
+                print(f"INFO: Successfully unloaded model '{model}'.")
         except Exception as e:
             # Catch exceptions here since this is a non-critical cleanup task
             print(f"WARNING: Could not unload model '{model}'. Error: {e}")

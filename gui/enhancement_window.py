@@ -5,7 +5,7 @@ from tkinter import ttk
 import random
 import threading
 import queue
-from typing import List, Optional, Dict, Callable, TYPE_CHECKING
+from typing import List, Optional, Dict, Callable, TYPE_CHECKING, Any
 
 from . import custom_dialogs
 from core.config import config
@@ -62,21 +62,45 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
                 self._create_text_area(variations_frame, var_type, var_type.capitalize(), "Generating...", sd_model="Generating...", height=4, is_loading=True)
 
         # --- Action Buttons ---
-        button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
-        button_frame.pack(fill=tk.X)
-        self.save_button = ttk.Button(button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
-        self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        self.regen_all_button = ttk.Button(button_frame, text="Regenerate All", command=self._regenerate_all, state=tk.DISABLED)
-        self.regen_all_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
-        self.favorite_button = ttk.Checkbutton(button_frame, text="Favorite ⭐", variable=self.is_favorite, style='Switch.TCheckbutton')
-        self.favorite_button.pack(side=tk.LEFT, padx=10)
-        ttk.Button(button_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT)
+        self.button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
+        self.button_frame.pack(fill=tk.X)
+        self.save_button = ttk.Button(self.button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
+        self.regen_all_button = ttk.Button(self.button_frame, text="Regenerate All", command=self._regenerate_all, state=tk.DISABLED)
+        self.favorite_button = ttk.Checkbutton(self.button_frame, text="Favorite ⭐", variable=self.is_favorite, style='Switch.TCheckbutton')
+        self.close_button = ttk.Button(self.button_frame, text="Close", command=self._on_close)
+
+        self.button_frame.bind("<Configure>", self._reflow_buttons)
+        self.after(10, self._reflow_buttons)
 
         self.result_queue_after_id = self.after(100, self._check_result_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Call smart geometry after creating widgets
         self.smart_geometry(min_width=700, min_height=750)
+
+    def _reflow_buttons(self, event=None):
+        if not hasattr(self, 'button_frame') or not self.button_frame.winfo_exists():
+            return
+
+        for widget in self.button_frame.winfo_children():
+            widget.grid_forget()
+
+        width = self.button_frame.winfo_width()
+        threshold = 500
+
+        if width < threshold:
+            self.button_frame.columnconfigure(0, weight=1)
+            self.save_button.grid(row=0, column=0, sticky='ew', pady=(0, 5))
+            self.regen_all_button.grid(row=1, column=0, sticky='ew', pady=(0, 5))
+            self.favorite_button.grid(row=2, column=0, sticky='ew', pady=(0, 5))
+            self.close_button.grid(row=3, column=0, sticky='ew')
+        else:
+            self.button_frame.columnconfigure(0, weight=1)
+            self.button_frame.columnconfigure(1, weight=1)
+            self.save_button.grid(row=0, column=0, sticky='ew', padx=(0, 5))
+            self.regen_all_button.grid(row=0, column=1, sticky='ew', padx=(0, 5))
+            self.favorite_button.grid(row=0, column=2, sticky='e', padx=(0, 10))
+            self.close_button.grid(row=0, column=3, sticky='e')
 
     def _on_close(self):
         # Cancel pending after jobs to prevent memory leaks

@@ -8,6 +8,8 @@ from tkinter import ttk
 import sys
 import json
 import copy
+import difflib
+import re
 import os
 from typing import TYPE_CHECKING, Callable, Tuple, Any
 from .common import Tooltip, TextContextMenu
@@ -169,6 +171,61 @@ def show_warning(parent, title, message):
 def show_error(parent, title, message):
     # In a real app, you might add an error icon here
     _CopyableErrorDialog(parent, title, message)
+
+class _DiffConfirmationDialog(_CustomDialog):
+    """A dialog to show a side-by-side diff of text changes and ask for confirmation."""
+    def __init__(self, parent, title: str, original_text: str, new_text: str):
+        super().__init__(parent, title)
+        self.result = False # Default to not applying changes
+
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="The AI has proposed the following changes. Review the diff and click 'Apply' to accept.", wraplength=780).pack(anchor='w', pady=(0, 10))
+
+        # --- Diff View Pane ---
+        diff_frame = ttk.LabelFrame(main_frame, text="Proposed Enhancement (Additions Highlighted in Green)", padding=5)
+        diff_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        font_to_use = parent.fixed_font if hasattr(parent, 'fixed_font') else parent.parent_app.fixed_font
+        diff_text_widget = tk.Text(diff_frame, wrap=tk.WORD, font=font_to_use, state=tk.DISABLED)
+        diff_text_widget.pack(fill=tk.BOTH, expand=True)
+
+        # --- Buttons ---
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        apply_button = ttk.Button(button_frame, text="Apply Changes", command=self._on_ok, style="Accent.TButton")
+        apply_button.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+        # --- Calculate and display diff ---
+        diff_text_widget.config(state=tk.NORMAL)
+        diff_text_widget.tag_configure("addition", foreground="green", font=(font_to_use.cget("family"), font_to_use.cget("size"), "bold"))
+        
+        # Tokenize by splitting on commas and whitespace, but keeping them for reconstruction.
+        # This provides a much more granular and accurate diff than a character-by-character comparison.
+        original_tokens = re.split(r'([,\s]+)', original_text)
+        new_tokens = re.split(r'([,\s]+)', new_text)
+
+        sm = difflib.SequenceMatcher(None, original_tokens, new_tokens, autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            # Join the tokens for the current segment to insert them.
+            segment_text = "".join(new_tokens[j1:j2])
+            if tag == 'equal':
+                diff_text_widget.insert(tk.END, segment_text)
+            elif tag == 'insert' or tag == 'replace':
+                diff_text_widget.insert(tk.END, segment_text, ("addition",))
+        
+        diff_text_widget.config(state=tk.DISABLED)
+
+        self.geometry("900x600")
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_ok(self, event=None):
+        self.result = True
+        self.destroy()
 
 class MassEditContextMenu(TextContextMenu):
     """A context menu for the mass edit dialog with a 'send to' function."""

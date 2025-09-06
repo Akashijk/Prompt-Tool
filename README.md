@@ -1,25 +1,27 @@
 # Prompt Tool GUI
 
-A desktop application for generating and enhancing prompts for Stable Diffusion. It leverages local AI models through Ollama to provide a rich, interactive, and creative environment for prompt engineering.
+A desktop application for generating and enhancing prompts for Stable Diffusion. It leverages local AI models through Ollama to provide a rich, interactive, and creative environment for prompt engineering, from initial idea to final image generation.
 
-## ✨ Recent Feature Highlights
+## ✨ Feature Highlights
 
-*   **Prompt Evolver Overhaul:** The Prompt Evolver has been completely redesigned with a new UI featuring individually selectable, word-wrapping prompt cards. This makes comparing and selecting parent and child prompts a much more intuitive and readable experience.
-*   **Conceptual Prompt Breeding:** The AI for breeding prompts has been significantly upgraded. It now deconstructs parent prompts into their core concepts (subject, style, mood) and creatively blends them into novel, unique offspring, moving far beyond simple keyword mashing.
-*   **Context Menus & Better UX:** The Prompt Evolver now has right-click context menus for quick actions, and mouse wheel scrolling has been made smooth and reliable across all platforms.
-*   **Image to Prompt (Interrogator):** Generate a detailed Stable Diffusion prompt directly from an image using a local vision model (like LLaVA).
+*   **Prompt Evolver & Conceptual Breeding:** A dedicated window for "breeding" new prompts. Select two or more "parent" prompts, and an advanced AI will deconstruct their core concepts (subject, style, mood) to generate unique, creative "child" prompts. The UI features selectable, word-wrapping prompt cards for a superior user experience.
+*   **Full-Featured Wildcard Manager:** A comprehensive tool for managing your wildcard library with a structured editor, AI-powered suggestions and refinement, intelligent refactoring, dependency graphs, and an interactive validator to find and fix errors.
+*   **Advanced AI Brainstorming:** A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine them, or generate new content from scratch, including linked wildcards and templates based on your entire library.
+*   **Direct Image Generation & History:** Generate images directly from any prompt using a local InvokeAI server. All generations, prompts, and images are saved to a detailed, searchable history viewer with favoriting and image management.
+*   **Image to Prompt (Interrogator):** Generate a detailed Stable Diffusion prompt directly from an image using a local vision model (e.g., LLaVA).
 
-![Main Window Screenshot](assets/screenshot_main.png) <!-- Placeholder: Add a real screenshot here -->
+![Main Window Screenshot](assets/screenshot_main.png)
 
 ## Key Features
 
 *   **Template-Based Generation:** Create complex prompts using simple templates and `__wildcard__` placeholders. Supports advanced syntax like `__!wildcard__` for unique rolls and `__wildcard:N-M__` for selecting multiple items.
 *   **Live Preview & Interaction:**
     *   Instantly see a generated prompt and click on wildcard-generated text to swap it with other options from the source file.
-    *   Automatically detects missing wildcards used in your template and provides clickable links to generate them on the fly.
-*   **AI-Powered Enhancement:** Use a local LLM to enhance your base prompts, adding detail, style, and quality keywords.
-*   **AI Cleanup:** With one click, use an AI to automatically fix grammar, remove redundancies, and improve the flow of a generated prompt before enhancement.
-*   **Automatic Variations:** Generate cinematic, artistic, and photorealistic variations of your enhanced prompt with a single click.
+    *   Automatically detects missing wildcards in your template and provides clickable links to generate them on the fly.
+*   **AI-Powered Enhancement & Variations:**
+    *   Use a local LLM to enhance your base prompts, adding detail, style, and quality keywords.
+    *   With one click, use an AI to automatically fix grammar, remove redundancies, and improve the flow of a generated prompt.
+    *   Generate cinematic, artistic, and photorealistic variations of your enhanced prompt.
 *   **Interactive Template Editor:**
     *   Right-click context menu to easily add or adjust prompt weighting `(like this)1.2`, de-emphasis `[like this]`, roll for unique values, or select multiple items from a wildcard.
     *   Right-click to "Brainstorm with AI" to get suggestions and refine your template in a dedicated chat window.
@@ -28,7 +30,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   Drag and drop `__wildcard__` tags to easily reorder your prompt.
     *   Get instant visual feedback for missing wildcards and `requires` clauses that are out of order.
 *   **Advanced AI Brainstorming:**
-    *   A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine, expand, and improve them.
+    *   A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine them.
     *   Generate new wildcard files, templates from a concept, templates from *all* your existing wildcards, or even linked wildcard files from scratch.
     *   The AI automatically detects when a generated template or wildcard requires *new* wildcards, and provides clickable links to generate them.
     *   Select any text in the conversation and have the AI rewrite it based on your instructions ("make it more poetic", "add more technical details", etc.).
@@ -41,13 +43,18 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   Scan your entire project to find unused wildcard files that can be archived or deleted.
     *   **Dependency Graph:** View a visual graph of how wildcards depend on each other to better understand your prompt structure.
     *   **Interactive Validator:** Scan all files for errors (e.g., a `requires` clause pointing to a non-existent value). Double-click an error to jump directly to the problematic file and choice, or right-click to fix common issues automatically.
-    *   **AI Assistant:** Use AI to suggest new choices, automatically add tags, refine choices with weights and requirements, fix grammar, or check for compatibility between two files.
+    *   **AI Assistant:** Use AI to suggest new choices, automatically add tags, refine choices with metadata, fix grammar, or check for compatibility between two files.
 *   **SFW/NSFW Workflows:** Keep your SFW and NSFW content completely separate. The app dynamically switches template, wildcard, and system prompt directories.
 *   **Customizable System Prompts:** Edit the underlying instructions given to the AI for enhancement and variations to tailor its output to your needs.
-*   **History Viewer:** Browse, search, and reuse all your past enhanced prompts. Tracks which template was used for each generation, allows you to mark favorites, and even edit prompts directly in the history view.
-*   **Image Interrogator:** Generate a detailed prompt from an image using a local multimodal model (like LLaVA).
-*   **Direct Image Generation:** Generate an image directly from an enhanced prompt using a local InvokeAI server (v3+). Select your main model, LoRAs, and other parameters for full creative control.
-*   **Prompt Evolver & Conceptual Breeding:** A dedicated window for "breeding" new prompts. Select two or more "parent" prompts from your history, and a more advanced AI will deconstruct their core concepts (subject, style, mood) to generate unique, creative "child" prompts. The UI has been completely overhauled with selectable, word-wrapping prompt cards for a superior user experience.
+*   **Comprehensive History Viewer:**
+    *   Browse, search, and reuse all your past enhanced prompts.
+    *   Tracks which template was used for each generation.
+    *   View generated images with pagination and full generation parameters.
+    *   Mark entries and individual images as favorites.
+    *   Set cover images for history entries for easier browsing.
+    *   Regenerate images or prompts directly from history.
+    *   Edit prompts directly in the history view.
+*   **Direct Image Generation (InvokeAI):** Generate an image directly from any prompt using a local InvokeAI server (v3+). Select your main model, LoRAs, and other parameters for full creative control.
 *   **Seed Management:** Easily switch between a fixed seed for reproducible results and random seeds for variety.
 *   **Modern UI:** Features a clean, modern interface with light and dark themes and adjustable font sizes.
 *   **Resource Management:** Automatically unloads AI models from VRAM when they are no longer in use by any window, helping to manage system resources efficiently.
@@ -123,23 +130,22 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   **Template:** Select a template file. The content will appear in the editor.
     *   **Generate:** Click "Generate Next Preview" to see a prompt with wildcards filled in.
     *   **Interact:** In the preview pane, click on any highlighted text to see a menu of other options from that wildcard file. If your template uses a wildcard that doesn't exist, a link will appear below the preview allowing you to generate it.
-    *   **Cleanup (Optional):** Click "AI Cleanup ✨" to have an AI automatically refine the grammar and flow of the generated prompt in the preview pane.
+    *   **Cleanup (Optional):** Click "AI Cleanup ✨" to have an AI refine the grammar and flow of the generated prompt in the preview pane.
     *   **Enhance:** When you're happy with the preview, click "Enhance This Prompt". A new window will appear showing the AI's enhanced version and any selected variations.
-    *   **Generate Image:** In the enhancement results window, click "Generate Image" next to any prompt. A dialog will appear allowing you to select your InvokeAI model, LoRAs, and other settings. The generated image path will be saved with the prompt in your history.
+    *   **Generate Image:** From the main window or the enhancement results window, click "Generate Image". A dialog will appear allowing you to select your InvokeAI model, LoRAs, and other settings. The generated image and its parameters will be saved to your history.
 
 3.  **AI Brainstorming (`Tools -> AI Brainstorming`):**
     *   Chat directly with the AI for general ideas or to generate new files from scratch.
     *   Load an existing wildcard or template (via the Wildcard Manager or Template Editor context menu) to have a focused, context-aware conversation about improving it.
     *   Use the "Generate..." buttons to have the AI create new content, including templates from a concept or from all of your existing wildcards.
-    *   When the AI generates content that uses a new, non-existent wildcard, it will appear as a clickable link in the chat history, allowing you to generate it instantly.
+    *   When the AI generates content that uses a new, non-existent wildcard, it will appear as a clickable link in the chat, allowing you to generate it instantly.
     *   Right-click on text in the conversation to "Rewrite Selection with AI...".
 
 4.  **Wildcard Manager (`Tools -> Wildcard Manager`):**
     *   View all wildcard files for the current workflow.
     *   Select a file to view and edit its contents.
     *   Use the structured editor to manage complex choices, or switch to the raw text editor for direct JSON editing.
-    *   Use the "Suggest Choices (AI)" button to have the AI generate new items for your list.
-    *   Use the "Refine Choices (AI)" button to have the AI analyze your existing choices and add metadata like weights, tags, and requirements.
+    *   Use the AI assistant buttons to suggest new choices, refine existing ones with metadata, or automatically add tags.
     *   Use the full suite of tools to find duplicates, merge files, or validate your entire project for errors.
     *   Click "View Dependencies" to see a visual graph of how your wildcards are interconnected.
     *   Click "Brainstorm with AI" to send the current wildcard list to the chat window for refinement.
@@ -147,7 +153,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 5.  **Prompt Evolver (`Tools -> Prompt Evolver...`):**
     *   Select two or more "parent" prompts from your entire generation history.
     *   The AI will "breed" them, blending their core concepts, subjects, and styles to create a new generation of unique "child" prompts.
-    *   Use the generated children as new parents for further evolution, send them to the main editor, or right-click to copy, enhance, and save them to your history.
+    *   Use the generated children as new parents for further evolution, send them to the main editor, or right-click to copy, enhance, generate an image, or save them to your history.
 
 6.  **Image Interrogator (`Tools -> Image Interrogator...`):**
     *   Select an image from your computer.

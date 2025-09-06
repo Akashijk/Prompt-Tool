@@ -1,13 +1,16 @@
 """A window for 'breeding' new prompts from existing ones in the history."""
 
 import tkinter as tk
+import os
 import tkinter.font as tkfont
 import sys
 from tkinter import ttk
 import re
 import queue
 import threading
+import copy
 from typing import Optional, List, Callable, TYPE_CHECKING, Dict, Any
+from PIL import Image, ImageTk
 
 from .common import SmartWindowMixin
 from core.config import config
@@ -27,6 +30,7 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.load_prompt_callback = load_prompt_callback
         self.history_data: List[Dict[str, str]] = []
         self.generation_queue = queue.Queue()
+        self.child_image_gen_spinners: Dict[str, 'LoadingAnimation'] = {}
         self.parent_widgets: List[Dict[str, Any]] = [] # To hold {'label': widget, 'prompt': text, 'selected': bool}
         self.child_widgets: List[Dict[str, Any]] = [] # To hold {'label': widget, 'prompt': text, 'selected': bool}
         self.after_id: Optional[str] = None
@@ -61,6 +65,18 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         style.configure("Favorite.History.TLabel", font=tkfont.Font(family="Helvetica", size=config.font_size, weight="bold"), foreground=favorite_color)
         style.configure("Prompt.History.TLabel")
 
+    def _on_history_mouse_wheel(self, event):
+        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
+        self.history_canvas.yview_scroll(delta, "units")
+
+    def _on_parents_mouse_wheel(self, event):
+        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
+        self.parents_canvas.yview_scroll(delta, "units")
+
+    def _on_children_mouse_wheel(self, event):
+        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
+        self.children_canvas.yview_scroll(delta, "units")
+
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.after_id:
@@ -71,8 +87,13 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
 
     def refresh_data(self):
         """Reloads history data and repopulates the listbox."""
-        self.history_data = self.processor.get_all_history_across_workflows()
+        all_history = self.processor.get_all_history_across_workflows()
+        if self.parent_app.workflow_var.get() == 'sfw':
+            self.history_data = [item for item in all_history if item.get('workflow_source') == 'SFW']
+        else: # nsfw mode shows both
+            self.history_data = all_history
         self._populate_history_list()
+        self.update_idletasks() # Ensure canvas is ready before configuring scroll region
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)
@@ -105,18 +126,17 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
 
         self.history_container.bind("<Configure>", on_history_frame_configure)
         self.history_canvas.bind("<Configure>", on_history_canvas_configure)
-        self.history_canvas.bind("<MouseWheel>", lambda e: self.history_canvas.yview_scroll(-1 * (e.delta if sys.platform == 'darwin' else e.delta // 120), "units"))
+        self.history_canvas.bind("<MouseWheel>", self._on_history_mouse_wheel)
+        self.history_container.bind("<MouseWheel>", self._on_history_mouse_wheel)
         h_pane.add(history_frame, weight=2)
 
         # Right pane: Evolution Area
         evolution_frame = ttk.Frame(h_pane)
         h_pane.add(evolution_frame, weight=3)
 
-        # Vertical pane for parents and children
-        v_pane = ttk.PanedWindow(evolution_frame, orient=tk.VERTICAL)
-
         # Parents Area
-        parents_frame = ttk.LabelFrame(v_pane, text="Parent Prompts (Click to select, press Delete to remove)", padding=5)
+        parents_frame = ttk.LabelFrame(evolution_frame, text="Parent Prompts (Click to select, press Delete to remove)", padding=5)
+        parents_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 5))
         self.parents_canvas = tk.Canvas(parents_frame, borderwidth=0)
         parents_scrollbar = ttk.Scrollbar(parents_frame, orient="vertical", command=self.parents_canvas.yview)
         self.parents_container = ttk.Frame(self.parents_canvas)
@@ -124,6 +144,10 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         parents_scrollbar.pack(side="right", fill="y")
         self.parents_canvas.pack(side="left", fill="both", expand=True)
         parents_canvas_frame = self.parents_canvas.create_window((0, 0), window=self.parents_container, anchor="nw")
+
+        # --- Controls (now in the middle) ---
+        control_frame = ttk.Frame(evolution_frame, padding=(0, 5, 0, 5))
+        control_frame.pack(side=tk.TOP, fill=tk.X)
 
         def on_parents_frame_configure(event):
             self.parents_canvas.configure(scrollregion=self.parents_canvas.bbox("all"))
@@ -135,15 +159,16 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
 
         self.parents_container.bind("<Configure>", on_parents_frame_configure)
         self.parents_canvas.bind("<Configure>", on_parents_canvas_configure)
-        self.parents_canvas.bind("<MouseWheel>", lambda e: self.parents_canvas.yview_scroll(-1 * (e.delta if sys.platform == 'darwin' else e.delta // 120), "units"))
+        self.parents_canvas.bind("<MouseWheel>", self._on_parents_mouse_wheel)
+        self.parents_container.bind("<MouseWheel>", self._on_parents_mouse_wheel)
         # Bind delete key to the canvas. It must have focus to receive the event.
         self.parents_canvas.bind("<FocusIn>", lambda e: self.parents_canvas.focus_set())
         self.parents_canvas.bind("<Delete>", self._remove_selected_parents)
         self.parents_canvas.bind("<BackSpace>", self._remove_selected_parents)
-        v_pane.add(parents_frame, weight=1)
 
         # Children Area
-        children_frame = ttk.LabelFrame(v_pane, text="Child Prompts (Generated, click to select)", padding=5)
+        children_frame = ttk.LabelFrame(evolution_frame, text="Child Prompts (Generated, click to select)", padding=5)
+        children_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(5, 0))
         
         # Create a canvas and a scrollbar for a scrollable list of labels
         self.children_canvas = tk.Canvas(children_frame, borderwidth=0)
@@ -166,19 +191,18 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.children_container.bind("<Configure>", on_frame_configure)
         self.children_canvas.bind("<Configure>", on_canvas_configure)
 
-        # Bind mousewheel scrolling for convenience
-        self.children_canvas.bind("<MouseWheel>", lambda e: self.children_canvas.yview_scroll(-1 * (e.delta if sys.platform == 'darwin' else e.delta // 120), "units"))
+        self.children_canvas.bind("<MouseWheel>", self._on_children_mouse_wheel)
+        self.children_container.bind("<MouseWheel>", self._on_children_mouse_wheel)
 
-        v_pane.add(children_frame, weight=2)
+        # --- Breed Button and Spinner ---
+        breed_frame = ttk.Frame(control_frame)
+        breed_frame.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        
+        from .common import LoadingAnimation # Local import
+        self.breed_spinner = LoadingAnimation(breed_frame, size=20)
+        # Don't pack spinner yet
 
-        # --- Controls ---
-        control_frame = ttk.Frame(evolution_frame, padding=(0, 10, 0, 0))
-        control_frame.pack(side=tk.BOTTOM, fill=tk.X)
-
-        # Pack the main content pane *after* the controls to make it fill the remaining space
-        v_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-        self.breed_button = ttk.Button(control_frame, text="Breed Prompts", command=self._breed_prompts, style="Accent.TButton")
+        self.breed_button = ttk.Button(breed_frame, text="Breed Prompts", command=self._breed_prompts, style="Accent.TButton")
         self.breed_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         self.use_as_parents_button = ttk.Button(control_frame, text="Use Selected Children as New Parents", command=self._use_children_as_parents)
@@ -198,8 +222,29 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         current_width = self.history_canvas.winfo_width()
 
         for i, item in enumerate(self.history_data):
-            prompt_text = item.get('enhanced_prompt', item.get('original_prompt', ''))
+            prompt_text = item.get('enhanced', {}).get('prompt') or item.get('original_prompt', '')
             if not prompt_text: continue # Skip empty history entries
+
+            # --- Find the cover image for the thumbnail ---
+            cover_image_path = None
+            image_lists_to_check = []
+            if item.get('original_images'): image_lists_to_check.append(item['original_images'])
+            if item.get('enhanced', {}).get('images'): image_lists_to_check.append(item['enhanced']['images'])
+            for var_data in item.get('variations', {}).values():
+                if var_data.get('images'): image_lists_to_check.append(var_data['images'])
+
+            for img_list in image_lists_to_check:
+                for img_data in img_list:
+                    if img_data.get('is_cover_image'):
+                        cover_image_path = img_data.get('image_path')
+                        break
+                if cover_image_path: break
+            
+            # Fallback to the first image of any kind if no cover is set
+            if not cover_image_path and image_lists_to_check:
+                first_list = image_lists_to_check[0]
+                if first_list:
+                    cover_image_path = first_list[0].get('image_path')
 
             workflow_tag = item.get('workflow_source', 'N/A')
             is_favorite = item.get('favorite', False)
@@ -208,12 +253,16 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
             item_frame = ttk.Frame(self.history_container, style="History.TFrame", relief="groove", borderwidth=1, padding=5)
             item_frame.pack(fill=tk.X, pady=2, padx=2)
 
+            thumb_label = ttk.Label(item_frame, text="🖼️", width=12, anchor=tk.CENTER)
+            thumb_label.pack(side=tk.LEFT, padx=5, pady=5)
+            if cover_image_path:
+                self._load_history_thumbnail(thumb_label, cover_image_path, workflow_tag)
+
             # Create and pack the prefix label
             prefix_style = "SFW.History.TLabel" if workflow_tag == "SFW" else "NSFW.History.TLabel"
             prefix_label = ttk.Label(item_frame, text=f"[{workflow_tag}] ", style=prefix_style)
             prefix_label.pack(side=tk.LEFT)
 
-            # Create and pack the main prompt label
             prompt_style = "Favorite.History.TLabel" if is_favorite else "Prompt.History.TLabel"
             prompt_label = ttk.Label(item_frame, text=prompt_text, style=prompt_style, wraplength=current_width - 60)
             prompt_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -221,9 +270,30 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
             # Bind events to the frame and its labels
             right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
             for widget in [item_frame, prefix_label, prompt_label]:
-                widget.bind("<Double-1>", lambda e, history_item=item: self._add_selected_to_parents(history_item))
-                widget.bind("<MouseWheel>", lambda e: self.history_canvas.yview_scroll(-1 * (e.delta if sys.platform == 'darwin' else e.delta // 120), "units"))
+                widget.bind("<Double-1>", lambda e, history_item=item: self._add_history_item_to_parents(history_item))
+                widget.bind("<MouseWheel>", self._on_history_mouse_wheel)
                 widget.bind(right_click_event, lambda e, item=item: self._show_history_context_menu(e, item))
+
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
+        """Loads a thumbnail for the history list, handling potential errors."""
+        try:
+            # Temporarily set config to get the correct path
+            original_workflow = config.workflow
+            config.workflow = workflow.lower()
+            full_path = os.path.join(config.get_history_file_dir(), image_path)
+            config.workflow = original_workflow # Restore it immediately
+
+            if not os.path.exists(full_path):
+                label_widget.config(text="Not\nFound")
+                return
+
+            img = Image.open(full_path)
+            img.thumbnail((96, 96))
+            img_ref = ImageTk.PhotoImage(img)
+            label_widget.config(image=img_ref, text="")
+            label_widget.image = img_ref  # Keep a reference
+        except Exception:
+            label_widget.config(text="Load\nError")
 
     def _add_parent_widget(self, prompt_text: str):
         """Helper to create and add a new parent widget."""
@@ -237,11 +307,11 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.parent_widgets.append(widget_info)
         right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
         label.bind("<Button-1>", lambda e, info=widget_info: self._toggle_parent_selection(info))
-        label.bind("<MouseWheel>", lambda e: self.parents_canvas.yview_scroll(-1 * (e.delta if sys.platform == 'darwin' else e.delta // 120), "units"))
+        label.bind("<MouseWheel>", self._on_parents_mouse_wheel)
         label.bind(right_click_event, lambda e, info=widget_info: self._show_parent_context_menu(e, info))
 
-    def _add_selected_to_parents(self, history_item: Dict[str, Any]):
-        full_prompt = history_item.get('enhanced_prompt', history_item.get('original_prompt', ''))
+    def _add_history_item_to_parents(self, history_item: Dict[str, Any]):
+        full_prompt = history_item.get('enhanced', {}).get('prompt') or history_item.get('original_prompt', '')
         if full_prompt:
             self._add_parent_widget(full_prompt)
 
@@ -276,7 +346,10 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         if not num_children or not num_children.isdigit() or int(num_children) == 0:
             return
 
-        self.breed_button.config(state=tk.DISABLED, text="Breeding...")
+        self.breed_button.config(state=tk.DISABLED)
+        self.breed_spinner.pack(side=tk.LEFT, padx=(0, 5))
+        self.breed_spinner.start()
+
         # Clear old widgets and add a placeholder
         for widget_info in self.child_widgets:
             widget_info['label'].destroy()
@@ -307,7 +380,9 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
     def _check_queue(self):
         try:
             result = self.generation_queue.get_nowait()
-            self.breed_button.config(state=tk.NORMAL, text="Breed Prompts")
+            self.breed_button.config(state=tk.NORMAL)
+            self.breed_spinner.stop()
+            self.breed_spinner.pack_forget()
             
             # Clear placeholder/old content
             for widget_info in self.child_widgets:
@@ -320,13 +395,18 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
                 # The -15 is a buffer for scrollbar and padding.
                 current_width = self.children_canvas.winfo_width()
                 for prompt in prompts:
-                    label = ttk.Label(self.children_container, text=prompt, style="Grooved.TLabel", wraplength=current_width - 15)
-                    label.pack(fill=tk.X, pady=2, padx=2)
-                    widget_info = {'label': label, 'prompt': prompt, 'selected': False}
+                    item_frame = ttk.Frame(self.children_container)
+                    item_frame.pack(fill=tk.X, pady=2, padx=2)
+
+                    label = ttk.Label(item_frame, text=prompt, style="Grooved.TLabel", wraplength=current_width - 15)
+                    label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+                    widget_info = {'frame': item_frame, 'label': label, 'prompt': prompt, 'selected': False}
                     self.child_widgets.append(widget_info)
                     right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
                     label.bind("<Button-1>", lambda e, info=widget_info: self._toggle_child_selection(info))
-                    label.bind("<MouseWheel>", lambda e: self.children_canvas.yview_scroll(-1 * (e.delta if sys.platform == 'darwin' else e.delta // 120), "units"))
+                    label.bind("<MouseWheel>", self._on_children_mouse_wheel)
+                    item_frame.bind("<MouseWheel>", self._on_children_mouse_wheel)
                     label.bind(right_click_event, lambda e, info=widget_info: self._show_child_context_menu(e, info))
             else:
                 error_msg = f"The AI failed to generate child prompts:\n{result['error']}"
@@ -363,12 +443,12 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
 
     def _show_history_context_menu(self, event, history_item):
         self.history_context_menu.delete(0, tk.END)
-        self.history_context_menu.add_command(label="Copy Prompt", command=lambda: self._copy_history_prompt(history_item))
-        self.history_context_menu.add_command(label="Add as Parent", command=lambda: self._add_selected_to_parents(history_item))
+        self.history_context_menu.add_command(label="Copy Enhanced/Original Prompt", command=lambda: self._copy_history_prompt(history_item))
+        self.history_context_menu.add_command(label="Add as Parent", command=lambda: self._add_history_item_to_parents(history_item))
         self.history_context_menu.tk_popup(event.x_root, event.y_root)
 
     def _copy_history_prompt(self, history_item):
-        prompt = history_item.get('enhanced_prompt', history_item.get('original_prompt', ''))
+        prompt = history_item.get('enhanced', {}).get('prompt') or history_item.get('original_prompt', '')
         if prompt:
             self.clipboard_clear()
             self.clipboard_append(prompt)
@@ -394,6 +474,7 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.child_context_menu.add_command(label="Copy Prompt", command=lambda: self._copy_child_prompt(widget_info))
         self.child_context_menu.add_command(label="Add as Parent", command=lambda: self._add_child_to_parents(widget_info))
         self.child_context_menu.add_separator()
+        self.child_context_menu.add_command(label="Generate Image...", command=lambda: self._generate_image_for_child_from_menu(widget_info))
         self.child_context_menu.add_command(label="Enhance and Save...", command=lambda: self._enhance_child_prompt(widget_info))
         self.child_context_menu.add_command(label="Send to Main Editor", command=lambda: self._send_child_to_editor(widget_info))
         self.child_context_menu.tk_popup(event.x_root, event.y_root)
@@ -408,6 +489,34 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         prompt = widget_info.get('prompt')
         if prompt:
             self._add_parent_widget(prompt)
+
+    def _generate_image_for_child_from_menu(self, widget_info: Dict[str, Any]):
+        """Starts the image generation workflow for a child prompt from the context menu."""
+        prompt = widget_info.get('prompt')
+        if not prompt:
+            return
+
+        def on_success(images_to_save: List[Dict[str, Any]]):
+            if not images_to_save: return
+            
+            # Use the current app workflow for saving.
+            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
+            
+            entry = {
+                'original_prompt': images_to_save[0]['prompt'],
+                'status': 'generated_only',
+                'original_images': saved_images_data,
+                'template_name': "Evolved from Prompt Evolver"
+            }
+            self.processor.history_manager.save_result(**entry)
+            custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) and prompt saved to history.")
+            # After saving, refresh the history list in the evolver
+            self.refresh_data()
+
+        self.parent_app._start_image_generation_workflow(
+            parent_window=self, prompt=prompt, initial_dialog_params={'negative_prompt': config.DEFAULT_NEGATIVE_PROMPT},
+            button_to_manage=None, spinner_to_manage=None, on_success_callback=on_success
+        )
 
     def _enhance_child_prompt(self, widget_info):
         """Sends a child prompt to the main app's enhancement workflow."""

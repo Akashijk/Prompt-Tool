@@ -14,8 +14,9 @@ class IncompatibleVersionError(Exception):
 
 class InvokeAIClient:
     """Handles all InvokeAI model interactions."""
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, verbose: bool = False):
         self.base_url = base_url.rstrip('/')
+        self.verbose = verbose
         self.models_endpoint: Optional[str] = None
         self.base_model_param_name: str = "base_models"
         self.server_version: Optional[Version] = None
@@ -62,7 +63,8 @@ class InvokeAIClient:
                             except Exception as e:
                                 print(f"Warning: Could not fetch VAE models: {e}")
                                 self.available_vaes = []
-                            print(f"INFO: InvokeAI client configured to use endpoint '{self.models_endpoint}' with param '{self.base_model_param_name}'")
+                            if self.verbose:
+                                print(f"INFO: InvokeAI client configured to use endpoint '{self.models_endpoint}' with param '{self.base_model_param_name}'")
                             return
                     except requests.RequestException:
                         continue # Try next combination
@@ -129,7 +131,8 @@ class InvokeAIClient:
             for vae in self.available_vaes:
                 if 'sdxl-vae-fp16-fix' in vae.get('name', '').lower():
                     compatible_vae = vae
-                    print(f"INFO: Found high-priority '{vae.get('name')}'. Overriding model's default VAE.")
+                    if self.verbose:
+                        print(f"INFO: Found high-priority '{vae.get('name')}'. Overriding model's default VAE.")
                     break
             
             # Priority 2: If the fix VAE isn't found, look for any other compatible VAE that is NOT fp16.
@@ -174,7 +177,8 @@ class InvokeAIClient:
         # mirrors hidden behavior in web UIs that stabilizes these specific models.
         final_rescale_multiplier = cfg_rescale_multiplier
         if model_object.get('format') == 'diffusers' and final_rescale_multiplier == 0.0:
-            print("INFO: Applying CFG rescale multiplier for diffusers model stability.")
+            if self.verbose:
+                print("INFO: Applying CFG rescale multiplier for diffusers model stability.")
             final_rescale_multiplier = 0.7
 
         if final_rescale_multiplier > 0.0:
@@ -391,7 +395,8 @@ class InvokeAIClient:
                 except Exception:
                     error_msg = status_data.get("error", "Unknown error") # Fallback
 
-                print(f"Full status data: {json.dumps(status_data, indent=2)}")
+                if self.verbose:
+                    print(f"Full status data: {json.dumps(status_data, indent=2)}")
                 raise Exception(f"Image generation failed with status: {status_data['status']}. Error: {error_msg}")
 
             time.sleep(1)

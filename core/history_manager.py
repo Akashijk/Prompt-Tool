@@ -6,18 +6,20 @@ import json
 import tempfile
 import uuid
 import copy
+from datetime import datetime
 from typing import Set, Optional, Dict, Any, List
 from .config import config
 
 class HistoryManager:
     """Handles history file operations using the JSONL format."""
     
-    def __init__(self):
-        pass # No filepath state needed; it will be determined on-the-fly.
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
     
     def _migrate_from_csv(self, csv_path: str, jsonl_path: str):
         """Migrates data from the old CSV format to the new JSONL format."""
-        print(f"INFO: Migrating history from {csv_path} to {jsonl_path}...")
+        if self.verbose:
+            print(f"INFO: Migrating history from {csv_path} to {jsonl_path}...")
         history = []
         try:
             with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
@@ -54,7 +56,8 @@ class HistoryManager:
             archive_dir = os.path.join(os.path.dirname(csv_path), 'archive')
             os.makedirs(archive_dir, exist_ok=True)
             os.rename(csv_path, os.path.join(archive_dir, os.path.basename(csv_path)))
-            print("INFO: Migration successful. Old CSV history has been archived.")
+            if self.verbose:
+                print("INFO: Migration successful. Old CSV history has been archived.")
             return history
         except Exception as e:
             print(f"ERROR: Failed to migrate history file. Error: {e}")
@@ -153,7 +156,8 @@ class HistoryManager:
             full_path = os.path.join(history_dir, relative_path)
             try:
                 os.remove(full_path)
-                print(f"INFO: Deleted orphaned image: {full_path}")
+                if self.verbose:
+                    print(f"INFO: Deleted orphaned image: {full_path}")
             except OSError as e:
                 print(f"WARNING: Could not delete orphaned image file {relative_path}. Error: {e}")
         
@@ -258,7 +262,8 @@ class HistoryManager:
                 full_path = os.path.join(history_dir, relative_path)
                 if os.path.exists(full_path):
                     os.remove(full_path)
-                    print(f"INFO: Deleted associated image: {full_path}")
+                    if self.verbose:
+                        print(f"INFO: Deleted associated image: {full_path}")
             except Exception as e:
                 # Log the error but don't stop the history entry deletion
                 print(f"WARNING: Could not delete image file {relative_path}. Error: {e}")
@@ -296,6 +301,9 @@ class HistoryManager:
         entry_id_to_update = original_row.get('id')
         if not entry_id_to_update: return False
 
+        # --- NEW: Always update the timestamp on any modification ---
+        updated_row['timestamp'] = datetime.now().isoformat()
+
         # --- NEW: Image Deletion Logic for Replaced Images ---
         original_paths = self._get_all_image_paths_from_entry(original_row)
         updated_paths = self._get_all_image_paths_from_entry(updated_row)
@@ -308,7 +316,8 @@ class HistoryManager:
                     full_path = os.path.join(history_dir, relative_path)
                     if os.path.exists(full_path):
                         os.remove(full_path)
-                        print(f"INFO: Deleted replaced image: {full_path}")
+                        if self.verbose:
+                            print(f"INFO: Deleted replaced image: {full_path}")
                 except Exception as e:
                     print(f"WARNING: Could not delete replaced image file {relative_path}. Error: {e}")
 
@@ -353,6 +362,7 @@ class HistoryManager:
         result_data.setdefault('variations', {})
         result_data.setdefault('favorite', False)
         result_data.setdefault('template_name', None)
+        result_data.setdefault('timestamp', datetime.now().isoformat())
 
         try:
             with open(filepath, 'a', encoding='utf-8') as f:
