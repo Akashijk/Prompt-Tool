@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Callable, TYPE_CHECKING, Any
 from . import custom_dialogs
 from core.config import config
 from core.prompt_processor import PromptProcessor
-from .common import LoadingAnimation, TextContextMenu, SmartWindowMixin
+from .common import LoadingAnimation, TextContextMenu, SmartWindowMixin, ScrollableFrame
 from .image_generation_dialog import ImageGenerationOptionsDialog
 
 if TYPE_CHECKING:
@@ -33,6 +33,8 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         self.is_favorite = tk.BooleanVar(value=False)
         self.existing_entry_id = existing_entry_id
         self.selected_variations = selected_variations
+        self.model_usage_manager = self.parent_app.model_usage_manager
+        self.model_usage_manager.register_usage(self.model)
 
         # UI element storage
         self.text_widgets: Dict[str, tk.Text] = {}
@@ -51,61 +53,47 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Create all text areas with placeholder content for dynamic fields
-        self._create_text_area(main_frame, 'original', "Original Prompt", self.result_data['original'], height=3, has_regen=False, is_loading=False)
-        self._create_text_area(main_frame, 'enhanced', "Enhanced Prompt", "Generating...", sd_model="Generating...", height=6, is_loading=True)
+        # --- NEW: Use grid layout for robustness ---
+        main_frame.rowconfigure(0, weight=1) # The scrollable area gets all the extra space
+        main_frame.columnconfigure(0, weight=1)
+
+        # --- Action Buttons ---
+        self.button_frame = ttk.Frame(main_frame) # Padding is handled by grid's pady
+        self.button_frame.grid(row=1, column=0, sticky='ew', pady=(10, 0))
+
+        # --- Button Layout (using pack for simplicity and robustness) ---
+        self.save_button = ttk.Button(self.button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
+        self.regen_all_button = ttk.Button(self.button_frame, text="Regenerate All", command=self._regenerate_all, state=tk.DISABLED)
+        self.favorite_button = ttk.Checkbutton(self.button_frame, text="Favorite ⭐", variable=self.is_favorite, style='Switch.TCheckbutton')
+        self.close_button = ttk.Button(self.button_frame, text="Close", command=self.close)
+
+        self.close_button.pack(side=tk.RIGHT, padx=(5, 0))
+        self.favorite_button.pack(side=tk.RIGHT)
+        self.save_button.pack(side=tk.LEFT, padx=(0, 5))
+        self.regen_all_button.pack(side=tk.LEFT)
+
+        # --- Scrollable container for prompts (this is the main expanding area) ---
+        scrollable_prompts_container = ScrollableFrame(main_frame)
+        scrollable_prompts_container.grid(row=0, column=0, sticky='nsew')
+        prompts_parent_frame = scrollable_prompts_container.scrollable_frame
+
+        # Create all text areas with placeholder content for dynamic fields, inside the scrollable frame
+        self._create_text_area(prompts_parent_frame, 'original', "Original Prompt", self.result_data['original'], height=3, has_regen=False, is_loading=False)
+        self._create_text_area(prompts_parent_frame, 'enhanced', "Enhanced Prompt", "Generating...", sd_model="Generating...", height=6, is_loading=True)
 
         if self.selected_variations:
-            variations_frame = ttk.LabelFrame(main_frame, text="Variations", padding="10")
+            variations_frame = ttk.LabelFrame(prompts_parent_frame, text="Variations", padding="10")
             variations_frame.pack(fill=tk.BOTH, expand=True, pady=5)
             for var_type in self.selected_variations:
                 self._create_text_area(variations_frame, var_type, var_type.capitalize(), "Generating...", sd_model="Generating...", height=4, is_loading=True)
 
-        # --- Action Buttons ---
-        self.button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
-        self.button_frame.pack(fill=tk.X)
-        self.save_button = ttk.Button(self.button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
-        self.regen_all_button = ttk.Button(self.button_frame, text="Regenerate All", command=self._regenerate_all, state=tk.DISABLED)
-        self.favorite_button = ttk.Checkbutton(self.button_frame, text="Favorite ⭐", variable=self.is_favorite, style='Switch.TCheckbutton')
-        self.close_button = ttk.Button(self.button_frame, text="Close", command=self._on_close)
-
-        self.button_frame.bind("<Configure>", self._reflow_buttons)
-        self.after(10, self._reflow_buttons)
-
         self.result_queue_after_id = self.after(100, self._check_result_queue)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.protocol("WM_DELETE_WINDOW", self.close)
 
         # Call smart geometry after creating widgets
         self.smart_geometry(min_width=700, min_height=750)
 
-    def _reflow_buttons(self, event=None):
-        if not hasattr(self, 'button_frame') or not self.button_frame.winfo_exists():
-            return
-
-        # Ensure all buttons are managed by grid before configuring them
-        self.save_button.grid()
-        self.regen_all_button.grid()
-        self.favorite_button.grid()
-        self.close_button.grid()
-
-        width = self.button_frame.winfo_width()
-        threshold = 500
-
-        if width < threshold:
-            self.button_frame.columnconfigure(0, weight=1)
-            self.save_button.grid_configure(row=0, column=0, columnspan=4, sticky='ew', pady=(0, 5), padx=0)
-            self.regen_all_button.grid_configure(row=1, column=0, columnspan=4, sticky='ew', pady=(0, 5), padx=0)
-            self.favorite_button.grid_configure(row=2, column=0, columnspan=4, sticky='ew', pady=(0, 5), padx=0)
-            self.close_button.grid_configure(row=3, column=0, columnspan=4, sticky='ew', pady=0, padx=0)
-        else:
-            self.button_frame.columnconfigure(0, weight=1)
-            self.button_frame.columnconfigure(1, weight=1)
-            self.save_button.grid_configure(row=0, column=0, columnspan=1, sticky='ew', padx=(0, 5), pady=0)
-            self.regen_all_button.grid_configure(row=0, column=1, columnspan=1, sticky='ew', padx=(0, 5), pady=0)
-            self.favorite_button.grid_configure(row=0, column=2, columnspan=1, sticky='e', padx=(0, 10), pady=0)
-            self.close_button.grid_configure(row=0, column=3, columnspan=1, sticky='e', pady=0, padx=0)
-
-    def _on_close(self):
+    def close(self):
         # Cancel pending after jobs to prevent memory leaks
         if self.result_queue_after_id:
             self.after_cancel(self.result_queue_after_id)
@@ -117,6 +105,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         # Only trigger the cancellation logic if there are still active API calls.
         if self.parent_app.active_api_calls > 0:
             self.cancel_callback()
+        self.model_usage_manager.unregister_usage(self.model)
         self.parent_app.report_enhancement_window_closed(self)
         self.destroy()
     
@@ -124,18 +113,22 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         frame = ttk.LabelFrame(parent, text=title, padding="5")
         frame.pack(fill=tk.X, pady=5)
         
-        # Frame to hold text and copy button
+        # Frame to hold text and buttons
         text_frame = ttk.Frame(frame)
         text_frame.pack(fill=tk.X, expand=True)
 
-        # Scrollbar and Text widget
-        scroll_text_frame = ttk.Frame(text_frame)
-        scroll_text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar = ttk.Scrollbar(scroll_text_frame, orient=tk.VERTICAL)
-        text_widget = tk.Text(scroll_text_frame, wrap=tk.WORD, height=height, font=self.parent_app.default_font, yscrollcommand=scrollbar.set)
-        scrollbar.config(command=text_widget.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Use grid layout for robustness
+        text_frame.columnconfigure(0, weight=1) # Text area gets all the space
+        text_frame.columnconfigure(1, weight=0) # Scrollbar is fixed width
+        text_frame.columnconfigure(2, weight=0) # Button container is fixed width
+
+        # Text widget and its scrollbar
+        text_widget = tk.Text(text_frame, wrap=tk.WORD, height=height, font=self.parent_app.default_font)
+        scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text_widget.yview)
+        text_widget.config(yscrollcommand=scrollbar.set)
+        text_widget.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
+
         text_widget.insert("1.0", content)
         text_widget.config(state=tk.DISABLED)
         self.text_widgets[prompt_key] = text_widget
@@ -143,7 +136,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         
         # Button container
         button_container = ttk.Frame(text_frame)
-        button_container.pack(side=tk.LEFT, padx=(5, 0), anchor='n')
+        button_container.grid(row=0, column=2, sticky='n', padx=(5, 0))
         
         copy_button = ttk.Button(button_container, text="Copy", command=lambda key=prompt_key: self._copy_current_prompt(key))
         copy_button.pack(fill=tk.X)
@@ -158,7 +151,9 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             # Don't pack yet
             self.image_gen_spinners[prompt_key] = image_gen_spinner
 
-            gen_image_button = ttk.Button(image_gen_frame, text="Generate Image", command=lambda key=prompt_key: self._generate_image(key), state=tk.DISABLED)
+            # The button should be enabled if the content is already loaded (i.e., not in a loading state).
+            button_state = tk.DISABLED if is_loading else tk.NORMAL
+            gen_image_button = ttk.Button(image_gen_frame, text="Generate Image", command=lambda key=prompt_key: self._generate_image(key), state=button_state)
             gen_image_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
             self.image_gen_buttons[prompt_key] = gen_image_button
 
@@ -317,10 +312,15 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
                 )
                 result = {'key': prompt_key, 'prompt': new_prompt, 'sd_model': new_sd_model}
             else: # It's a variation
-                base_prompt = self.result_data.get('enhanced', {}).get('prompt', '')
-                base_sd_model = self.result_data.get('enhanced', {}).get('sd_model', '')
+                # Use the ENHANCED prompt as the base for regenerating a variation for better context.
+                base_prompt_for_variation = self.result_data.get('enhanced', {}).get('prompt')
+                # Fallback to original prompt if enhanced isn't available yet.
+                if not base_prompt_for_variation:
+                    base_prompt_for_variation = self.result_data.get('original', '')
+                original_prompt_for_context = self.result_data.get('original', '')
+                if not base_prompt_for_variation: raise ValueError("Base prompt not found to generate variation from.")
                 variation_result = self.processor.regenerate_variation(
-                    base_prompt, base_sd_model, self.model, prompt_key
+                    base_prompt_for_variation, "", self.model, prompt_key, original_prompt_context=original_prompt_for_context
                 )
                 result = {'key': prompt_key, 'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
             self.regen_queue.put(result)

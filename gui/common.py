@@ -2,9 +2,15 @@
 
 import tkinter as tk
 from tkinter import ttk
+from PIL import Image, ImageTk
+import difflib
 import sys
+import os
 import re
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict, Any, List
+import queue
+import threading
+from . import custom_dialogs
 
 class Tooltip:
     """A simple tooltip for tkinter widgets."""
@@ -546,3 +552,178 @@ class SmartWindowMixin:
         if event.widget == self:
             # Update widget layouts if needed
             self.update_idletasks()
+
+class ScrollableFrame(ttk.Frame):
+    """
+    A reusable frame that contains a scrollable area.
+    Widgets should be packed into the `self.scrollable_frame` attribute.
+    """
+    def __init__(self, parent, scroll_callback: Optional[Callable] = None, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        self.scroll_callback = scroll_callback
+
+        # Create the canvas and scrollbar
+        self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self._on_scroll)
+        
+        # This is the frame that will hold the content and be scrolled
+        self.scrollable_frame = ttk.Frame(self.canvas)
+
+        # Bind the frame's size to the canvas's scroll region
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        # Create a window in the canvas that holds the frame
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        # Bind the canvas resizing to update the window width
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # Pack the widgets
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Bind mouse wheel scrolling to the canvas and the frame
+        for widget in [self.canvas, self.scrollable_frame]:
+            widget.bind("<MouseWheel>", self._on_mouse_wheel)
+
+    def _on_canvas_configure(self, event):
+        """Updates the width of the frame inside the canvas to match the canvas width."""
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_scroll(self, *args):
+        self.canvas.yview(*args)
+        if self.scroll_callback:
+            self.scroll_callback()
+
+    def _on_mouse_wheel(self, event):
+        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
+        self.canvas.yview_scroll(delta, "units")
+        if self.scroll_callback:
+            self.scroll_callback()
+
+class DiffViewer(ttk.Frame):
+    """A reusable widget for displaying text diffs with highlighting."""
+    def __init__(self, parent, font, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.font = font
+        self.text_widget = tk.Text(self, wrap=tk.WORD, font=self.font, state=tk.DISABLED, exportselection=False)
+        scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.text_widget.yview)
+        self.text_widget.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.text_widget.tag_configure("addition", foreground="green")
+        self.text_widget.tag_configure("deletion", foreground="red")
+
+    def set_diff_text(self, diff_text: str):
+        """Sets the text in the widget and applies highlighting."""
+        self.text_widget.config(state=tk.NORMAL)
+        self.text_widget.delete("1.0", tk.END)
+        self.text_widget.insert("1.0", diff_text)
+        
+        for i, line in enumerate(diff_text.splitlines(), 1):
+            if line.startswith('+') and not line.startswith('+++'):
+                self.text_widget.tag_add("addition", f"{i}.0", f"{i}.end")
+            elif line.startswith('-') and not line.startswith('---'):
+                self.text_widget.tag_add("deletion", f"{i}.0", f"{i}.end")
+        
+        self.text_widget.config(state=tk.DISABLED)
+
+    def set_diff_from_texts(self, original_text: str, new_text: str, fromfile: str = 'original', tofile: str = 'new'):
+        """Calculates a diff between two texts and displays it."""
+        diff_text = "".join(difflib.unified_diff(original_text.splitlines(keepends=True), new_text.splitlines(keepends=True), fromfile=fromfile, tofile=tofile))
+        self.set_diff_text(diff_text if diff_text else "No changes proposed.")
+
+class ImagePreviewMixin:
+    """A mixin class to provide hover-to-preview functionality for images."""
+    def __init__(self, *args, **kwargs):
+        # This assumes it's mixed into a tk.Widget class
+        super().__init__(*args, **kwargs)
+        self.preview_window: Optional[tk.Toplevel] = None
+        self.preview_show_id: Optional[str] = None
+        self.preview_hide_id: Optional[str] = None
+        self.preview_image_ref: Optional[ImageTk.PhotoImage] = None
+
+    def _get_preview_image(self, widget_info: Dict[str, Any]) -> Optional[Image.Image]:
+        """
+        Abstract method to be implemented by the inheriting class.
+        Should return a PIL.Image.Image object for the preview, or None.
+        """
+        raise NotImplementedError("_get_preview_image must be implemented by the inheriting class.")
+
+    def _cancel_scheduled_hide(self, event=None):
+        """Cancels any pending hide operation. Called when mouse enters thumbnail or preview."""
+        if self.preview_hide_id:
+            self.after_cancel(self.preview_hide_id)
+            self.preview_hide_id = None
+
+    def _schedule_preview(self, widget_info: Dict[str, Any]):
+        """Schedules the preview window to appear after a delay."""
+        self._cancel_scheduled_hide()
+        if self.preview_show_id:
+            self.after_cancel(self.preview_show_id)
+        self.preview_show_id = self.after(750, lambda: self._show_preview(widget_info))
+
+    def _schedule_hide(self, event=None):
+        """Schedules the preview to be hidden after a short delay, allowing the cursor to move into it."""
+        if self.preview_show_id:
+            self.after_cancel(self.preview_show_id)
+            self.preview_show_id = None
+        if not self.preview_hide_id:
+            self.preview_hide_id = self.after(100, self._hide_preview)
+
+    def _hide_preview(self):
+        """Performs the actual destruction of the preview window."""
+        if self.preview_window:
+            self.preview_window.destroy()
+            self.preview_window = None
+        self.preview_hide_id = None
+
+    def _show_preview(self, widget_info: Dict[str, Any]):
+        """Creates and displays the full-size image preview window."""
+        self._cancel_scheduled_hide()
+        if self.preview_show_id: self.after_cancel(self.preview_show_id)
+        if self.preview_window: self.preview_window.destroy()
+
+        pil_image = self._get_preview_image(widget_info)
+        if not pil_image: return
+
+        self.preview_window = tk.Toplevel(self)
+        self.preview_window.wm_overrideredirect(True)
+        self.preview_window.wm_attributes("-topmost", True)
+
+        screen_width, screen_height = self.winfo_screenwidth(), self.winfo_screenheight()
+        img_copy = pil_image.copy()
+        img_copy.thumbnail((screen_width - 100, screen_height - 100), Image.Resampling.LANCZOS)
+        self.preview_image_ref = ImageTk.PhotoImage(img_copy)
+        
+        preview_label = ttk.Label(self.preview_window, image=self.preview_image_ref, borderwidth=2, relief="solid")
+        preview_label.pack()
+        for widget in [self.preview_window, preview_label]:
+            widget.bind("<Enter>", lambda e: self._cancel_scheduled_hide())
+            widget.bind("<Leave>", lambda e: self._schedule_hide())
+
+        x = (screen_width // 2) - (img_copy.width // 2)
+        y = (screen_height // 2) - (img_copy.height // 2)
+        self.preview_window.wm_geometry(f"+{x}+{y}")
+
+    def close_preview_on_destroy(self):
+        """Call this in the main window's close/destroy method."""
+        if self.preview_show_id: self.after_cancel(self.preview_show_id)
+        if self.preview_hide_id: self.after_cancel(self.preview_hide_id)
+        if self.preview_window: self.preview_window.destroy()
+
+class AutocompleteCombobox(ttk.Combobox):
+    """
+    A standard, read-only dropdown combobox.
+    The custom autocomplete implementation has been reverted for stability.
+    """
+    def __init__(self, parent, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        # Set to readonly to behave like a simple dropdown list, preventing typing.
+        self.config(state="readonly")

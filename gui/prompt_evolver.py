@@ -12,7 +12,7 @@ import copy
 from typing import Optional, List, Callable, TYPE_CHECKING, Dict, Any
 from PIL import Image, ImageTk
 
-from .common import SmartWindowMixin
+from .common import SmartWindowMixin, ImagePreviewMixin, ScrollableFrame
 from core.config import config
 from . import custom_dialogs
 
@@ -20,18 +20,22 @@ if TYPE_CHECKING:
     from .gui_app import GUIApp
     from core.prompt_processor import PromptProcessor
 
-class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
+class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
     """A window for 'breeding' new prompts from existing ones."""
     def __init__(self, parent: 'GUIApp', processor: 'PromptProcessor', load_prompt_callback: Callable):
         super().__init__(parent)
+        ImagePreviewMixin.__init__(self)
         self.title("Prompt Evolver")
         self.parent_app = parent
         self.processor = processor
         self.load_prompt_callback = load_prompt_callback
         self.history_data: List[Dict[str, str]] = []
+        self.BATCH_SIZE = 50
+        self.current_offset = 0
         self.generation_queue = queue.Queue()
+        self.history_widgets: List[Dict[str, Any]] = [] # This will store widget references and data
         self.thumbnail_queue = queue.Queue()
-        self.thumbnail_after_id: Optional[str] = None
+        self.cancellation_event = threading.Event()
         self.child_image_gen_spinners: Dict[str, 'LoadingAnimation'] = {}
         self.parent_widgets: List[Dict[str, Any]] = [] # To hold {'label': widget, 'prompt': text, 'selected': bool}
         self.child_widgets: List[Dict[str, Any]] = [] # To hold {'label': widget, 'prompt': text, 'selected': bool}
@@ -39,6 +43,7 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.history_context_menu = tk.Menu(self, tearoff=0)
         self.parent_context_menu = tk.Menu(self, tearoff=0)
         self.child_context_menu = tk.Menu(self, tearoff=0)
+        self.thumbnail_after_id: Optional[str] = None
 
         # Model management
         self.model_usage_manager = self.parent_app.model_usage_manager
@@ -48,7 +53,6 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self._create_widgets()
         self.refresh_data() # Initial population
         self.smart_geometry(min_width=1200, min_height=700)
-        self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
 
         # Define a custom style for selected labels
         style = ttk.Style()
@@ -68,38 +72,35 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         style.configure("Favorite.History.TLabel", font=tkfont.Font(family="Helvetica", size=config.font_size, weight="bold"), foreground=favorite_color)
         style.configure("Prompt.History.TLabel")
 
-    def _on_history_mouse_wheel(self, event):
-        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
-        self.history_canvas.yview_scroll(delta, "units")
-
-    def _on_parents_mouse_wheel(self, event):
-        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
-        self.parents_canvas.yview_scroll(delta, "units")
-
-    def _on_children_mouse_wheel(self, event):
-        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
-        self.children_canvas.yview_scroll(delta, "units")
-
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.after_id:
             self.after_cancel(self.after_id)
             self.after_id = None
-        if self.thumbnail_after_id:
-            self.after_cancel(self.thumbnail_after_id)
-            self.thumbnail_after_id = None
+        self.close_preview_on_destroy()
+        self.cancellation_event.set()
         self.model_usage_manager.unregister_usage(self.active_model)
         self.destroy()
 
     def refresh_data(self):
         """Reloads history data and repopulates the listbox."""
+        self._clear_history_list()
         all_history = self.processor.get_all_history_across_workflows()
         if self.parent_app.workflow_var.get() == 'sfw':
             self.history_data = [item for item in all_history if item.get('workflow_source') == 'SFW']
-        else: # nsfw mode shows both
-            self.history_data = all_history
-        self._populate_history_list()
+        else: # nsfw mode shows only nsfw
+            self.history_data = [item for item in all_history if item.get('workflow_source') == 'NSFW']
+        self._load_next_history_batch()
         self.update_idletasks() # Ensure canvas is ready before configuring scroll region
+
+    def _clear_history_list(self):
+        """Clears the list and resets pagination state."""
+        for widget_info in self.history_widgets:
+            widget_info['frame'].destroy()
+        self.history_widgets.clear()
+        self.current_offset = 0
+        self.history_data = []
+        self.load_more_button.pack_forget()
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)
@@ -111,29 +112,22 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
 
         # Left pane: History
         history_frame = ttk.LabelFrame(h_pane, text="Prompt History (Double-click to add as parent)", padding=5)
-        self.history_canvas = tk.Canvas(history_frame, borderwidth=0)
-        history_scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=self.history_canvas.yview)
-        self.history_container = ttk.Frame(self.history_canvas)
-        self.history_canvas.configure(yscrollcommand=history_scrollbar.set)
-        history_scrollbar.pack(side="right", fill="y")
-        self.history_canvas.pack(side="left", fill="both", expand=True)
-        history_canvas_frame = self.history_canvas.create_window((0, 0), window=self.history_container, anchor="nw")
+        self.history_scroll_view = ScrollableFrame(history_frame, scroll_callback=self._update_visible_thumbnails)
+        self.history_scroll_view.pack(fill=tk.BOTH, expand=True)
+        self.history_canvas = self.history_scroll_view.canvas
+        self.history_container = self.history_scroll_view.scrollable_frame
 
-        def on_history_frame_configure(event):
-            self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all"))
+        self.load_more_button = ttk.Button(history_frame, text="Load More", command=self._load_next_history_batch, style="Accent.TButton")
+        self.load_more_button.pack(side=tk.BOTTOM, fill=tk.X, pady=(5,0))
 
         def on_history_canvas_configure(event):
-            self.history_canvas.itemconfig(history_canvas_frame, width=event.width)
             for child in self.history_container.winfo_children():
                 # The prompt label is the one that expands to fill the space.
                 for label in child.winfo_children():
                     if isinstance(label, ttk.Label) and label.pack_info().get('expand'):
                         label.configure(wraplength=event.width - 60)
 
-        self.history_container.bind("<Configure>", on_history_frame_configure)
         self.history_canvas.bind("<Configure>", on_history_canvas_configure)
-        self.history_canvas.bind("<MouseWheel>", self._on_history_mouse_wheel)
-        self.history_container.bind("<MouseWheel>", self._on_history_mouse_wheel)
         h_pane.add(history_frame, weight=2)
 
         # Right pane: Evolution Area
@@ -143,30 +137,20 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         # Parents Area
         parents_frame = ttk.LabelFrame(evolution_frame, text="Parent Prompts (Click to select, press Delete to remove)", padding=5)
         parents_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 5))
-        self.parents_canvas = tk.Canvas(parents_frame, borderwidth=0)
-        parents_scrollbar = ttk.Scrollbar(parents_frame, orient="vertical", command=self.parents_canvas.yview)
-        self.parents_container = ttk.Frame(self.parents_canvas)
-        self.parents_canvas.configure(yscrollcommand=parents_scrollbar.set)
-        parents_scrollbar.pack(side="right", fill="y")
-        self.parents_canvas.pack(side="left", fill="both", expand=True)
-        parents_canvas_frame = self.parents_canvas.create_window((0, 0), window=self.parents_container, anchor="nw")
+        self.parents_scroll_view = ScrollableFrame(parents_frame)
+        self.parents_scroll_view.pack(fill=tk.BOTH, expand=True)
+        self.parents_canvas = self.parents_scroll_view.canvas
+        self.parents_container = self.parents_scroll_view.scrollable_frame
 
         # --- Controls (now in the middle) ---
         control_frame = ttk.Frame(evolution_frame, padding=(0, 5, 0, 5))
         control_frame.pack(side=tk.TOP, fill=tk.X)
 
-        def on_parents_frame_configure(event):
-            self.parents_canvas.configure(scrollregion=self.parents_canvas.bbox("all"))
-
         def on_parents_canvas_configure(event):
-            self.parents_canvas.itemconfig(parents_canvas_frame, width=event.width)
             for widget_info in self.parent_widgets:
                 widget_info['label'].configure(wraplength=event.width - 15)
 
-        self.parents_container.bind("<Configure>", on_parents_frame_configure)
         self.parents_canvas.bind("<Configure>", on_parents_canvas_configure)
-        self.parents_canvas.bind("<MouseWheel>", self._on_parents_mouse_wheel)
-        self.parents_container.bind("<MouseWheel>", self._on_parents_mouse_wheel)
         # Bind delete key to the canvas. It must have focus to receive the event.
         self.parents_canvas.bind("<FocusIn>", lambda e: self.parents_canvas.focus_set())
         self.parents_canvas.bind("<Delete>", self._remove_selected_parents)
@@ -175,30 +159,16 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         # Children Area
         children_frame = ttk.LabelFrame(evolution_frame, text="Child Prompts (Generated, click to select)", padding=5)
         children_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(5, 0))
-        
-        # Create a canvas and a scrollbar for a scrollable list of labels
-        self.children_canvas = tk.Canvas(children_frame, borderwidth=0)
-        scrollbar = ttk.Scrollbar(children_frame, orient="vertical", command=self.children_canvas.yview)
-        self.children_container = ttk.Frame(self.children_canvas)
-
-        self.children_canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        self.children_canvas.pack(side="left", fill="both", expand=True)
-        canvas_frame = self.children_canvas.create_window((0, 0), window=self.children_container, anchor="nw")
-
-        def on_frame_configure(event):
-            self.children_canvas.configure(scrollregion=self.children_canvas.bbox("all"))
+        self.children_scroll_view = ScrollableFrame(children_frame)
+        self.children_scroll_view.pack(fill=tk.BOTH, expand=True)
+        self.children_canvas = self.children_scroll_view.canvas
+        self.children_container = self.children_scroll_view.scrollable_frame
 
         def on_canvas_configure(event):
-            self.children_canvas.itemconfig(canvas_frame, width=event.width)
             for widget_info in self.child_widgets:
                 widget_info['label'].configure(wraplength=event.width - 15)
 
-        self.children_container.bind("<Configure>", on_frame_configure)
         self.children_canvas.bind("<Configure>", on_canvas_configure)
-
-        self.children_canvas.bind("<MouseWheel>", self._on_children_mouse_wheel)
-        self.children_container.bind("<MouseWheel>", self._on_children_mouse_wheel)
 
         # --- Breed Button and Spinner ---
         breed_frame = ttk.Frame(control_frame)
@@ -217,17 +187,92 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.send_to_editor_button = ttk.Button(control_frame, text="Send Selected Child to Main Editor", command=self._send_to_editor)
         self.send_to_editor_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
-    def _populate_history_list(self):
-        for widget in self.history_container.winfo_children():
-            widget.destroy()
+    def _update_visible_thumbnails(self):
+        """Loads thumbnails only for the items currently visible in the history list."""
+        if not self.history_canvas or not self.history_container.winfo_exists():
+            return
 
-        if not self.history_data:
+        try:
+            canvas_top = self.history_canvas.canvasy(0)
+            canvas_bottom = self.history_canvas.canvasy(self.history_canvas.winfo_height())
+        except tk.TclError:
+            return
+
+        for widget_info in self.history_widgets:
+            if widget_info.get('thumbnail_loaded'): continue
+
+            frame = widget_info['frame']
+            if not frame.winfo_exists(): continue
+            
+            widget_top = frame.winfo_y()
+            widget_bottom = widget_top + frame.winfo_reqheight()
+            
+            if not (widget_bottom < canvas_top or widget_top > canvas_bottom):
+                widget_info['thumbnail_loaded'] = True
+                image_path = widget_info.get('cover_image_path')
+                label_widget = widget_info.get('thumb_label')
+
+                workflow = widget_info.get('workflow_tag')
+                if image_path and workflow and label_widget:
+                    self._load_history_thumbnail(label_widget, image_path, workflow)
+
+    def _check_thumbnail_queue(self):
+        """Checks for loaded thumbnails and updates the UI."""
+        try:
+            label_widget, image_data = self.thumbnail_queue.get_nowait()
+            if label_widget.winfo_exists():
+                img_ref = ImageTk.PhotoImage(image_data)
+                label_widget.config(image=img_ref, text="")
+                label_widget.image = img_ref  # Keep a reference
+        except queue.Empty:
+            pass
+        finally:
+            if self.winfo_exists():
+                self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
+
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
+        """Starts a background thread to load a thumbnail for the history list."""
+        def task():
+            try:
+                # Manually construct the path to avoid modifying global config from a thread.
+                base_history_dir = config.HISTORY_DIR
+                workflow_sub_dir = workflow.lower()
+                workflow_history_dir = os.path.join(base_history_dir, workflow_sub_dir)
+                full_path = os.path.join(workflow_history_dir, image_path)
+
+                if not os.path.exists(full_path): return # Silently fail if not found
+
+                with Image.open(full_path) as img:
+                    img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                    self.thumbnail_queue.put((label_widget, img.copy()))
+            except Exception as e:
+                if self.processor.verbose: print(f"Error getting history thumbnail {image_path}: {e}")
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _load_next_history_batch(self):
+        """Loads the next batch of history items into the view."""
+        if self.current_offset >= len(self.history_data):
+            self.load_more_button.pack_forget()
+            return
+
+        start = self.current_offset
+        end = min(self.current_offset + self.BATCH_SIZE, len(self.history_data))
+        batch_data = self.history_data[start:end]
+        
+        self._populate_history_list(batch_data)
+        self.current_offset = end
+
+    def _populate_history_list(self, data_batch: List[Dict[str, Any]]):
+        """Appends a batch of history items to the list view."""
+        if not data_batch:
             ttk.Label(self.history_container, text="No prompt history found.", padding=10).pack()
             return
         
+        self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
         current_width = self.history_canvas.winfo_width()
 
-        for i, item in enumerate(self.history_data):
+        for i, item in enumerate(data_batch):
             prompt_text = item.get('enhanced', {}).get('prompt') or item.get('original_prompt', '')
             if not prompt_text: continue # Skip empty history entries
 
@@ -248,9 +293,10 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
             
             # Fallback to the first image of any kind if no cover is set
             if not cover_image_path and image_lists_to_check:
-                first_list = image_lists_to_check[0]
-                if first_list:
-                    cover_image_path = first_list[0].get('image_path')
+                for img_list in image_lists_to_check:
+                    if img_list: # Find the first non-empty image list
+                        cover_image_path = img_list[0].get('image_path')
+                        break # Stop after finding the first one
 
             workflow_tag = item.get('workflow_source', 'N/A')
             is_favorite = item.get('favorite', False)
@@ -261,8 +307,6 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
 
             thumb_label = ttk.Label(item_frame, text="🖼️", width=12, anchor=tk.CENTER)
             thumb_label.pack(side=tk.LEFT, padx=5, pady=5)
-            if cover_image_path:
-                self._load_history_thumbnail(thumb_label, cover_image_path, workflow_tag)
 
             # Create and pack the prefix label
             prefix_style = "SFW.History.TLabel" if workflow_tag == "SFW" else "NSFW.History.TLabel"
@@ -273,52 +317,43 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
             prompt_label = ttk.Label(item_frame, text=prompt_text, style=prompt_style, wraplength=current_width - 60)
             prompt_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+            widget_info = {
+                'frame': item_frame,
+                'thumb_label': thumb_label,
+                'cover_image_path': cover_image_path,
+                'workflow_tag': workflow_tag,
+                'thumbnail_loaded': False
+            }
+            self.history_widgets.append(widget_info)
+
+            # Bind preview events
+            thumb_label.bind("<Enter>", lambda e, info=widget_info: self._schedule_preview(info))
+            thumb_label.bind("<Leave>", lambda e: self._schedule_hide())
+
             # Bind events to the frame and its labels
             right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
             for widget in [item_frame, prefix_label, prompt_label]:
                 widget.bind("<Double-1>", lambda e, history_item=item: self._add_history_item_to_parents(history_item))
-                widget.bind("<MouseWheel>", self._on_history_mouse_wheel)
+                widget.bind("<MouseWheel>", self.history_scroll_view._on_mouse_wheel)
                 widget.bind(right_click_event, lambda e, item=item: self._show_history_context_menu(e, item))
+        self.after(100, self._update_visible_thumbnails)
     
-    def _check_thumbnail_queue(self):
-        """Checks for loaded thumbnails and updates the UI."""
-        try:
-            while not self.thumbnail_queue.empty():
-                label_widget, image_data = self.thumbnail_queue.get_nowait()
-                if label_widget.winfo_exists():
-                    if isinstance(image_data, Image.Image):
-                        img_ref = ImageTk.PhotoImage(image_data)
-                        label_widget.config(image=img_ref, text="")
-                        label_widget.image = img_ref  # Keep a reference
-                    else: # It's an error string
-                        label_widget.config(text=image_data, image='')
-        except queue.Empty:
-            pass
-        finally:
-            if self.winfo_exists():
-                self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
+    def _get_preview_image(self, widget_info: Dict[str, Any]) -> Optional[Image.Image]:
+        """Implementation of the abstract method from ImagePreviewMixin."""
+        relative_image_path = widget_info.get('cover_image_path')
+        if not relative_image_path: return None
 
-    def _load_history_thumbnail_worker(self, label_widget: ttk.Label, image_path: str, workflow: str):
-        """Worker thread to load and resize a thumbnail."""
         try:
-            # Temporarily set config to get the correct path
+            workflow = widget_info.get('workflow_tag', 'sfw')
             original_workflow = config.workflow
             config.workflow = workflow.lower()
-            full_path = os.path.join(config.get_history_file_dir(), image_path)
-            config.workflow = original_workflow # Restore it immediately
-            if not os.path.exists(full_path):
-                self.thumbnail_queue.put((label_widget, "Not\nFound"))
-                return
-            img = Image.open(full_path)
-            img.thumbnail((96, 96))
-            self.thumbnail_queue.put((label_widget, img))
-        except Exception:
-            self.thumbnail_queue.put((label_widget, "Load\nError"))
-
-    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
-        """Starts a background thread to load a thumbnail for the history list."""
-        thread = threading.Thread(target=self._load_history_thumbnail_worker, args=(label_widget, image_path, workflow), daemon=True)
-        thread.start()
+            full_path = os.path.join(config.get_history_file_dir(), relative_image_path)
+            config.workflow = original_workflow # Restore immediately
+            if not os.path.exists(full_path): return None
+            return Image.open(full_path)
+        except Exception as e:
+            print(f"Error loading full image for preview: {e}")
+            return None
 
     def _add_parent_widget(self, prompt_text: str):
         """Helper to create and add a new parent widget."""
@@ -332,7 +367,7 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         self.parent_widgets.append(widget_info)
         right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
         label.bind("<Button-1>", lambda e, info=widget_info: self._toggle_parent_selection(info))
-        label.bind("<MouseWheel>", self._on_parents_mouse_wheel)
+        label.bind("<MouseWheel>", self.parents_scroll_view._on_mouse_wheel)
         label.bind(right_click_event, lambda e, info=widget_info: self._show_parent_context_menu(e, info))
 
     def _add_history_item_to_parents(self, history_item: Dict[str, Any]):
@@ -430,8 +465,8 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
                     self.child_widgets.append(widget_info)
                     right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
                     label.bind("<Button-1>", lambda e, info=widget_info: self._toggle_child_selection(info))
-                    label.bind("<MouseWheel>", self._on_children_mouse_wheel)
-                    item_frame.bind("<MouseWheel>", self._on_children_mouse_wheel)
+                    label.bind("<MouseWheel>", self.children_scroll_view._on_mouse_wheel)
+                    item_frame.bind("<MouseWheel>", self.children_scroll_view._on_mouse_wheel)
                     label.bind(right_click_event, lambda e, info=widget_info: self._show_child_context_menu(e, info))
             else:
                 error_msg = f"The AI failed to generate child prompts:\n{result['error']}"
@@ -568,3 +603,76 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin):
         # Add new parent widgets
         for prompt in new_parents:
             self._add_parent_widget(prompt)
+
+    def _cancel_scheduled_hide(self):
+        """Cancels any pending hide operation. Called when mouse enters thumbnail or preview."""
+        if self.preview_hide_id:
+            self.after_cancel(self.preview_hide_id)
+            self.preview_hide_id = None
+
+    def _schedule_preview(self, widget_info):
+        """Schedules the preview window to appear after a delay."""
+        self._cancel_scheduled_hide()
+
+        if not widget_info.get('cover_image_path'):
+            return
+            
+        if self.preview_show_id:
+            self.after_cancel(self.preview_show_id)
+        self.preview_show_id = self.after(750, lambda: self._show_preview(widget_info))
+
+    def _schedule_hide(self, event=None):
+        """Schedules the preview to be hidden after a short delay, allowing the cursor to move into it."""
+        if self.preview_show_id:
+            self.after_cancel(self.preview_show_id)
+            self.preview_show_id = None
+        
+        if not self.preview_hide_id:
+            self.preview_hide_id = self.after(100, self._hide_preview)
+
+    def _hide_preview(self):
+        """Performs the actual destruction of the preview window."""
+        if self.preview_window:
+            self.preview_window.destroy()
+            self.preview_window = None
+        self.preview_hide_id = None
+
+    def _show_preview(self, widget_info):
+        """Creates and displays the full-size image preview window."""
+        self._cancel_scheduled_hide()
+        if self.preview_show_id: self.after_cancel(self.preview_show_id)
+        if self.preview_window: self.preview_window.destroy()
+
+        relative_image_path = widget_info.get('cover_image_path')
+        if not relative_image_path: return
+
+        try:
+            workflow = widget_info.get('workflow_tag', 'sfw')
+            original_workflow = config.workflow
+            config.workflow = workflow.lower()
+            full_path = os.path.join(config.get_history_file_dir(), relative_image_path)
+            config.workflow = original_workflow # Restore immediately
+            if not os.path.exists(full_path): return
+            pil_image = Image.open(full_path)
+        except Exception as e:
+            print(f"Error loading full image for preview: {e}")
+            return
+
+        self.preview_window = tk.Toplevel(self)
+        self.preview_window.wm_overrideredirect(True)
+        self.preview_window.wm_attributes("-topmost", True)
+
+        screen_width, screen_height = self.winfo_screenwidth(), self.winfo_screenheight()
+        img_copy = pil_image.copy()
+        img_copy.thumbnail((screen_width - 100, screen_height - 100), Image.Resampling.LANCZOS)
+        self.preview_image_ref = ImageTk.PhotoImage(img_copy)
+        
+        preview_label = ttk.Label(self.preview_window, image=self.preview_image_ref, borderwidth=2, relief="solid")
+        preview_label.pack()
+        for widget in [self.preview_window, preview_label]:
+            widget.bind("<Enter>", lambda e: self._cancel_scheduled_hide())
+            widget.bind("<Leave>", lambda e: self._schedule_hide())
+
+        x = (screen_width // 2) - (img_copy.width // 2)
+        y = (screen_height // 2) - (img_copy.height // 2)
+        self.preview_window.wm_geometry(f"+{x}+{y}")

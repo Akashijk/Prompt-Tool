@@ -182,6 +182,15 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         
         self.destroy()
 
+    def _on_model_var_change(self, *args):
+        """Handles when the user selects a new model in the dropdown."""
+        new_model = self.model_var.get()
+        old_model = self.active_brainstorm_model
+        if new_model and new_model != old_model:
+            self.model_usage_manager.unregister_usage(old_model)
+            self.model_usage_manager.register_usage(new_model)
+            self.active_brainstorm_model = new_model
+
     def _log_verbose_error(self, context: str, e: Exception):
         """Logs an error to the console if verbose mode is enabled."""
         if self.processor.verbose:

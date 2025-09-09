@@ -370,62 +370,6 @@ class TemplateEngine:
         
         # Pass the context to the rule checker. An empty context is valid.
         return self._check_rules(rules, context or {})
-
-    def generate_prompt(self, template: str, wildcards: Optional[Dict[str, Dict]] = None, seed: Optional[int] = None) -> str:
-        """
-        Generate a prompt by substituting wildcards in template, respecting context.
-        This non-structured version is suitable for CLI or backend use.
-        """
-        if wildcards is None:
-            wildcards = self.wildcards
-        
-        if seed is None:
-            seed = random.randint(0, 2**32 - 1)
-        self.current_seed = seed
-        self.rng.seed(self.current_seed)
-        
-        output_prompt = ""
-        remaining_template = template
-        resolved_context: Dict[str, Any] = {} # Can now hold strings or lists of tags
-
-        # This iterative approach ensures that wildcards are resolved in order,
-        # allowing context from earlier wildcards to influence later ones.
-        while '__' in remaining_template:
-            start_pos = remaining_template.find('__')
-            end_pos = remaining_template.find('__', start_pos + 2)
-
-            if end_pos == -1:
-                break # No closing __, treat rest as static
-
-            # Add the static text before the wildcard
-            output_prompt += remaining_template[:start_pos]
-
-            key = remaining_template[start_pos+2:end_pos]
-
-            # If a wildcard is used multiple times, reuse its resolved value.
-            if key in resolved_context:
-                choice_val = resolved_context[key]['value']
-                output_prompt += choice_val
-            else:
-                wildcard_data = self.wildcards.get(key)
-                choice_obj = self._get_wildcard_choice_object(key, resolved_context)
-                if choice_obj:
-                    choice = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
-                    tags = choice_obj.get('tags', []) if isinstance(choice_obj, dict) else []
-                    resolved_context[key] = {'value': choice, 'tags': tags} # Update context to prevent recursion
-                    include_text_to_inject = self._process_includes(choice_obj, wildcard_data)
-                    # Prepend the choice and its includes to the remaining template for recursive processing
-                    remaining_template = choice + include_text_to_inject + remaining_template[end_pos+2:]
-                    continue # Restart the loop with the new template string
-                else:
-                    output_prompt += f"__{key}__"
-            
-            remaining_template = remaining_template[end_pos+2:]
-
-        output_prompt += remaining_template
-        
-        return self.cleanup_prompt_string(output_prompt)
-
     def _get_wildcard_choice_object(self, key: str, context: Dict[str, Any] = None) -> Optional[Any]:
         """Gets a random choice for a wildcard key, considering context."""
         wildcard_data = self.wildcards.get(key)

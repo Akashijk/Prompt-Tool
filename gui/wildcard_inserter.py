@@ -3,17 +3,19 @@
 import os
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable, List, Optional, TYPE_CHECKING
+from typing import Callable, List, Optional, TYPE_CHECKING, Dict, Any
+from PIL import Image, ImageTk
 
-from .common import Tooltip
+from .common import Tooltip, ImagePreviewMixin
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
-class WildcardInserter(ttk.Frame):
+class WildcardInserter(ttk.Frame, ImagePreviewMixin):
     """The wildcard inserter listbox and its frame."""
     def __init__(self, parent, app_instance: 'GUIApp', insert_callback: Callable, manage_callback: Callable, **kwargs):
         super().__init__(parent, **kwargs)
+        ImagePreviewMixin.__init__(self)
         self.app_instance = app_instance
         
         frame = ttk.LabelFrame(self, text="Insert Wildcard", padding=5)
@@ -47,6 +49,16 @@ class WildcardInserter(ttk.Frame):
         if not selected_indices:
             return None
         return self.listbox.get(selected_indices[0])
+
+    def _get_preview_image(self, widget_info: Dict[str, Any]) -> Optional[Image.Image]:
+        """
+        Implementation of the abstract method from ImagePreviewMixin.
+        Currently a placeholder as wildcards don't directly link to single images.
+        This could be extended if a wildcard format for image paths is introduced.
+        """
+        # To fully implement this, you would need a way to associate a wildcard name
+        # with a representative image path. For now, it does nothing.
+        return None
 
     def _display_tooltip_content(self, index, event):
         """Fetches content and displays the tooltip. This is called after a delay."""

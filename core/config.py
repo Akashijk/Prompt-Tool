@@ -14,6 +14,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".prompt_tool_v2")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
 WILDCARD_CACHE_FILE = os.path.join(CONFIG_DIR, "wildcards.cache.json")
+CACHE_DIR = os.path.join(CONFIG_DIR, "cache")
 
 def load_settings() -> dict:
     """Loads user settings from the config file."""
@@ -55,9 +56,9 @@ class Config:
     WILDCARD_DIR: str = _user_settings.get("wildcard_dir", os.path.join(PROJECT_ROOT, 'wildcards'))
     HISTORY_DIR: str = _user_settings.get("history_dir", os.path.join(PROJECT_ROOT, 'history'))
     SYSTEM_PROMPT_BASE_DIR: str = _user_settings.get("system_prompt_base_dir", os.path.join(PROJECT_ROOT, 'system_prompts'))
+    CACHE_DIR: str = CACHE_DIR
     
     # Default settings
-    DEFAULT_NUM_PROMPTS: int = 5
     DEFAULT_FONT_SIZE: int = 11
     DEFAULT_TIMEOUT: int = 45
     BRAINSTORM_TIMEOUT: int = 90

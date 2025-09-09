@@ -220,12 +220,13 @@ class InvokeAIClient:
             "l2i": {
                 "type": "l2i",
                 "id": "l2i",
-                "is_intermediate": True, # The l2i node's output is always temporary; saving is handled by the save_image node.
+                "is_intermediate": True,
             },
             "save_image": {
                 "id": "save_image",
                 "type": "save_image",
                 "is_intermediate": not save_to_gallery,
+                "use_cache": False,
             },
         }
 
@@ -322,7 +323,7 @@ class InvokeAIClient:
                 print("INFO: Successfully requested model cache to be emptied.")
             return True
         except requests.RequestException as e:
-            print(f"ERROR: Failed to send request to empty model cache: {e}")
+            print(f"ERROR: Failed to send request to empty model cache: {e}") # type: ignore
             return False
 
     def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> bytes:

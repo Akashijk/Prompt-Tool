@@ -224,90 +224,6 @@ class TemplateEditor(ttk.Frame):
         if current_hover_range:
             self.ordering_error_tooltip_after_id = self.after(500, lambda: self._display_ordering_error_tooltip(current_hover_range, event))
 
-    def _get_wildcard_indices_at_event(self) -> Optional[Tuple[str, str]]:
-        """Helper to get the start and end indices of a wildcard tag under the last click event."""
-        if not self.context_menu.last_event: return None
-        index = self.text_widget.index(f"@{self.context_menu.last_event.x},{self.context_menu.last_event.y}")
-        tag_ranges = self.text_widget.tag_ranges("any_wildcard")
-        for i in range(0, len(tag_ranges), 2):
-            start, end = tag_ranges[i], tag_ranges[i+1]
-            if self.text_widget.compare(index, ">=", start) and self.text_widget.compare(index, "<", end):
-                return start, end
-        return None
-
-    def _toggle_roll_unique(self):
-        """Adds or removes the '!' prefix to force a unique roll for the wildcard."""
-        indices = self._get_wildcard_indices_at_event()
-        if not indices: return
-        start_index, end_index = indices
-
-        wildcard_text = self.text_widget.get(start_index, end_index)
-        
-        pattern = re.compile(r'__(!)?([a-zA-Z0-9_.\s-]+?)((?::\d+(?:-\d+)?)?)__')
-        match = pattern.fullmatch(wildcard_text)
-        if not match: return
-
-        force_unique_str, key, multi_select_part = match.groups()
-        multi_select_part = multi_select_part or ""
-
-        if force_unique_str == '!':
-            new_wildcard_text = f"__{key}{multi_select_part}__"
-        else:
-            new_wildcard_text = f"__!{key}{multi_select_part}__"
-
-        self.text_widget.delete(start_index, end_index)
-        self.text_widget.insert(start_index, new_wildcard_text)
-        self.app_instance._schedule_live_update()
-
-    def _select_n_items(self):
-        """Opens a dialog to set the multi-selection count for a wildcard."""
-        from . import custom_dialogs # Local import to avoid circular dependency
-        indices = self._get_wildcard_indices_at_event()
-        if not indices: return
-        start_index, end_index = indices
-
-        wildcard_text = self.text_widget.get(start_index, end_index)
-        
-        pattern = re.compile(r'__(!)?([a-zA-Z0-9_.\s-]+?)((?::\d+(?:-\d+)?)?)__')
-        match = pattern.fullmatch(wildcard_text)
-        if not match: return
-
-        force_unique_str, key, _ = match.groups()
-        force_unique_prefix = force_unique_str or ""
-
-        count_str = custom_dialogs.ask_string(self, "Select N Items", "Enter a number (e.g., '3') or a range (e.g., '2-4').\nLeave blank to remove multi-selection.", initialvalue="")
-        if count_str is None: return
-
-        count_str = count_str.strip()
-        new_multi_select_part = f":{count_str}" if count_str and re.fullmatch(r'\d+(?:-\d+)?', count_str) else ""
-        
-        new_wildcard_text = f"__{force_unique_prefix}{key}{new_multi_select_part}__"
-        self.text_widget.delete(start_index, end_index)
-        self.text_widget.insert(start_index, new_wildcard_text)
-        self.app_instance._schedule_live_update()
-
-    def _schedule_ordering_error_tooltip(self, event):
-        """Schedules an error tooltip to appear after a short delay."""
-        if self.ordering_error_tooltip_after_id:
-            self.after_cancel(self.ordering_error_tooltip_after_id)
-
-        current_hover_range = None
-        index = self.text_widget.index(f"@{event.x},{event.y}")
-        tag_ranges = self.text_widget.tag_ranges("ordering_error")
-        for i in range(0, len(tag_ranges), 2):
-            start, end = tag_ranges[i], tag_ranges[i+1]
-            if self.text_widget.compare(index, ">=", start) and self.text_widget.compare(index, "<", end):
-                current_hover_range = (start, end)
-                break
-        
-        if current_hover_range != self.last_hovered_error_range:
-            self.ordering_error_tooltip.hide()
-        
-        self.last_hovered_error_range = current_hover_range
-
-        if current_hover_range:
-            self.ordering_error_tooltip_after_id = self.after(500, lambda: self._display_ordering_error_tooltip(current_hover_range, event))
-
     def _display_ordering_error_tooltip(self, error_range: Tuple[str, str], event):
         """Fetches error content and displays the tooltip."""
         start, end = error_range
@@ -320,6 +236,14 @@ class TemplateEditor(ttk.Frame):
                 self.ordering_error_tooltip.text = f"Ordering Error: {error_message}"
                 self.ordering_error_tooltip.show(event)
 
+    def _on_ordering_error_leave(self, event=None):
+        """Hides the error tooltip and cancels any scheduled appearance."""
+        self.last_hovered_error_range = None
+        if self.ordering_error_tooltip_after_id:
+            self.after_cancel(self.ordering_error_tooltip_after_id)
+            self.ordering_error_tooltip_after_id = None
+        self.ordering_error_tooltip.hide()
+
     def _get_wildcard_indices_at_event(self) -> Optional[Tuple[str, str]]:
         """Helper to get the start and end indices of a wildcard tag under the last click event."""
         if not self.context_menu.last_event: return None
@@ -381,11 +305,3 @@ class TemplateEditor(ttk.Frame):
         self.text_widget.delete(start_index, end_index)
         self.text_widget.insert(start_index, new_wildcard_text)
         self.app_instance._schedule_live_update()
-
-    def _on_ordering_error_leave(self, event=None):
-        """Hides the error tooltip and cancels any scheduled appearance."""
-        self.last_hovered_error_range = None
-        if self.ordering_error_tooltip_after_id:
-            self.after_cancel(self.ordering_error_tooltip_after_id)
-            self.ordering_error_tooltip_after_id = None
-        self.ordering_error_tooltip.hide()

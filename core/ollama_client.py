@@ -35,16 +35,6 @@ class OllamaClient:
         self._last_check_time = current_time
         return self._is_running_cache
 
-    def cleanup_prompt_with_ai(self, prompt_to_clean: str, model: str) -> str:
-        """Uses an AI model to clean up a generated prompt for grammatical coherence."""
-        from .default_content import DEFAULT_AI_CLEANUP_PROMPT # Local import to avoid circular dependency issues at module level
-        full_prompt = DEFAULT_AI_CLEANUP_PROMPT.format(prompt_to_clean=prompt_to_clean)
-        # This is a relatively quick task, so a shorter timeout is fine.
-        try:
-            # Use the one-shot generate endpoint for this.
-            return self._generate(model, full_prompt, config.DEFAULT_TIMEOUT)
-        except Exception:
-            raise
     def list_models(self) -> List[str]:
         """Get list of installed Ollama models."""
         if not self._is_ollama_running():
@@ -206,14 +196,15 @@ class OllamaClient:
             # Re-raise to be caught by the GUI and displayed to the user.
             raise
 
-    def chat(self, model: str, messages: List[Dict[str, str]]) -> str:
+    def chat(self, model: str, messages: List[Dict[str, str]], timeout: Optional[int] = None) -> str:
         """Generic chat with a model for brainstorming, using a message history."""
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
         }
-        response_data = self._post_request("/api/chat", payload, config.DEFAULT_TIMEOUT)
+        final_timeout = timeout if timeout is not None else config.DEFAULT_TIMEOUT
+        response_data = self._post_request("/api/chat", payload, final_timeout)
         return response_data.get('message', {}).get('content', '')
 
     def parse_json_array_from_response(self, response: str) -> List[Any]:
@@ -345,10 +336,16 @@ class OllamaClient:
             
         return template_content, new_wildcards
 
-    def create_single_variation(self, instruction: str, base_prompt: str, base_sd_model: str, model: str, variation_type: str) -> Tuple[str, str]:
+    def create_single_variation(self, instruction: str, base_prompt: str, base_sd_model: str, model: str, variation_type: str, original_prompt_context: Optional[str] = None) -> Tuple[str, str]:
         """Create a single variation of a given type."""
         try:
-            full_instruction_prompt = instruction + base_prompt
+            # If we have both original and enhanced (base) prompts, provide both to the AI for better context.
+            if original_prompt_context and original_prompt_context != base_prompt:
+                prompt_to_transform = (f"ORIGINAL PROMPT: {original_prompt_context}\n\n"
+                                       f"ENHANCED PROMPT TO TRANSFORM: {base_prompt}")
+            else:
+                prompt_to_transform = base_prompt
+            full_instruction_prompt = instruction + prompt_to_transform
             raw_response = self._generate(model, full_instruction_prompt, config.VARIATION_TIMEOUT)
             var_prompt, var_sd_model = self.parse_enhanced_response(raw_response)
             return var_prompt.replace('\n', ' ').replace('  ', ' '), var_sd_model

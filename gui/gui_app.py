@@ -60,8 +60,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # Core logic
         self.processor = PromptProcessor(verbose=verbose)
-        self.processor.initialize()
-        self.processor.set_callbacks(status_callback=self._update_status_bar_from_event)
         self.model_usage_manager = ModelUsageManager(self.processor)
         self.enhancement_total_calls = 0
         self.enhancement_calls_made = 0
@@ -95,10 +93,14 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.font_size_var = tk.IntVar(value=config.font_size)
         self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
-        self.ai_cleanup_queue = queue.Queue()
-        self.ai_cleanup_after_id: Optional[str] = None
         self.enhancement_suggestion_queue = queue.Queue()
         self.enhancement_suggestion_after_id: Optional[str] = None
+        self.generate_from_wildcards_queue = queue.Queue()
+        self.initial_load_queue = queue.Queue()
+        self.initial_load_after_id: Optional[str] = None
+        self.generate_from_wildcards_after_id: Optional[str] = None
+        self.clear_cache_queue = queue.Queue()
+        self.clear_cache_after_id: Optional[str] = None
         self.missing_wildcards_container: Optional[ttk.Frame] = None
         self.enhancement_windows: List[EnhancementResultWindow] = []
         self.last_saved_entry_id_from_preview: Optional[str] = None
@@ -107,11 +109,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # Create widgets
         self._create_widgets()
+        self._start_initial_load()
         self.wildcard_tooltip = Tooltip(self.prompt_text)
         self._update_text_widget_colors() # Set initial theme-based colors
-        self._load_templates()
-        self._load_models()
-        self._populate_wildcard_lists()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         self._update_window_title() # Set initial title
 
@@ -206,6 +206,58 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # --- Main View (packed last to fill remaining space) ---
         self._create_main_view(self)
 
+    def _start_initial_load(self):
+        """Starts the initial loading of data in a background thread."""
+        self.status_var.set("Initializing...")
+        self.loading_animation.start()
+        self.template_dropdown.config(state=tk.DISABLED)
+        self.model_dropdown.config(state=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, suggest=tk.DISABLED)
+
+        def task():
+            try:
+                self.processor.initialize()
+                self.processor.set_callbacks(status_callback=self._update_status_bar_from_event)
+                templates = self.processor.get_available_templates()
+                wildcard_files = self.processor.get_wildcard_files()
+                models = self.processor.get_available_models()
+                recommendations = self.processor.get_model_recommendations(models)
+                
+                self.initial_load_queue.put({
+                    "success": True,
+                    "templates": templates,
+                    "wildcard_files": wildcard_files,
+                    "models": models,
+                    "recommendations": recommendations
+                })
+            except Exception as e:
+                self.initial_load_queue.put({"success": False, "error": e})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.initial_load_after_id = self.after(100, self._check_initial_load_queue)
+
+    def _check_initial_load_queue(self):
+        """Checks for the result of the initial data load and populates the UI."""
+        try:
+            result = self.initial_load_queue.get_nowait()
+            
+            self.loading_animation.stop()
+            
+            if not result['success']:
+                self._handle_initialization_error(result['error'])
+                return
+
+            # --- Populate UI with loaded data ---
+            self._populate_template_dropdown(result['templates'])
+            self._populate_model_dropdown(result['models'], result['recommendations'])
+            self._populate_wildcard_lists(result['wildcard_files'])
+            
+            self.status_var.set("Ready")
+
+        except queue.Empty:
+            self.initial_load_after_id = self.after(100, self._check_initial_load_queue)
+
     def _generate_new_template(self):
         """Opens a dialog to generate a new template with AI."""
         concept = custom_dialogs.ask_string(self, "Generate Template", "What kind of template would you like to generate?\n\nDescribe the concept:")
@@ -290,7 +342,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             enhance_callback=self._on_select_for_enhancement,
             copy_callback=self._copy_generated_prompt,
             save_as_template_callback=self._save_preview_as_template,
-            ai_cleanup_callback=self._ai_cleanup_prompt,
             suggest_callback=self._suggest_template_additions,
             generate_image_callback=self._generate_image_from_preview
         )
@@ -387,12 +438,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.loading_animation:
             self.loading_animation.update_style(bg_color=status_bar_bg, dot_color=status_bar_dot_color, is_dark_theme=is_dark)
 
-    def _load_templates(self):
-        """Loads available templates into the dropdown menu."""
-        # Always reset the view to a clean state before loading new templates
-        self._clear_template_view()
-
-        templates = self.processor.get_available_templates()
+    def _populate_template_dropdown(self, templates: List[str]):
+        """Populates the template dropdown menu with a list of template names."""
         menu = self.template_dropdown["menu"]
         menu.delete(0, "end")
 
@@ -402,35 +449,63 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.template_var.set("No templates found")
             self.template_dropdown.config(state=tk.DISABLED)
             return
-        
+
         self.template_dropdown.config(state=tk.NORMAL)
         for template in templates:
             menu.add_command(label=template, command=lambda value=template: self.template_var.set(value))
-        
+
         # Force the UI to update the dropdown menu before any subsequent code tries to set its value.
         self.update_idletasks()
-        
-        # Prompt the user to make a selection
-        self.template_var.set("Select a template")
+
+        # Automatically select the first template to get the user started.
+        if templates:
+            self.template_var.set(templates[0])
+        else:
+            self.template_var.set("Select a template")
+
+    def _load_templates(self):
+        """Loads available templates into the dropdown menu."""
+        # Always reset the view to a clean state before loading new templates
+        self._clear_template_view()
+        templates = self.processor.get_available_templates()
+        self._populate_template_dropdown(templates)
 
     def _update_action_bar_variations(self):
         """Updates the variation checkboxes in the action bar based on the current workflow."""
         variations = self.processor.get_available_variations()
         self.action_bar.rebuild_variations(variations)
 
+    def _populate_model_dropdown(self, models: List[str], recommendations: List[tuple]):
+        """Populates the model dropdown menu with a list of models and recommendations."""
+        if not models:
+            custom_dialogs.show_warning(
+                self,
+                "No Models Found",
+                "Successfully connected to Ollama, but no models were found.\n\n"
+                "Please pull a model using 'ollama run <model_name>' to enable AI features.")
+            self.enhancement_model_var.set("No models available")
+            self.model_dropdown.config(state=tk.DISABLED)
+            return
+
+        self.model_dropdown.config(state=tk.NORMAL)
+        menu = self.model_dropdown["menu"]
+        menu.delete(0, "end")
+        for model in models:
+            menu.add_command(label=model, command=lambda value=model: self.enhancement_model_var.set(value))
+
+        if recommendations:
+            default_model = recommendations[0][1]
+        else:
+            default_model = models[0]
+
+        self.enhancement_model_var.set(default_model)
+        self.main_window_model = default_model
+        self.model_usage_manager.register_usage(self.main_window_model)
+
     def _load_models(self):
         """Loads available Ollama models into the dropdown menu."""
         try:
             models = self.processor.get_available_models()
-            if not models:
-                custom_dialogs.show_warning(
-                    self,
-                    "No Models Found",
-                    "Successfully connected to Ollama, but no models were found.\n\n"
-                    "Please pull a model using 'ollama run <model_name>' to enable AI features.")
-                self.enhancement_model_var.set("No models available")
-                return
-
             menu = self.model_dropdown["menu"]
             menu.delete(0, "end")
             for model in models:
@@ -438,29 +513,26 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
             # Set a default model by finding the highest-priority recommended model.
             recommendations = self.processor.get_model_recommendations(models)
-            if recommendations:
-                # The recommendations are sorted by priority. The first one is the best.
-                # The tuple is (index, model_name, reason). We want the model name.
-                default_model = recommendations[0][1]
-            else:
-                # Fallback if no models match our recommendation rules
-                default_model = models[0]
-
-            self.enhancement_model_var.set(default_model)
-            
-            # Register initial model usage
-            self.main_window_model = default_model
-            self.model_usage_manager.register_usage(self.main_window_model)
+            self._populate_model_dropdown(models, recommendations)
 
         except Exception as e:
-            error_message = (
-                f"Could not connect to the Ollama server.\n\n"
-                f"All AI features (Enhancement, Brainstorming, etc.) will be disabled until the connection is restored.\n\n"
-                f"Please ensure Ollama is running and the server URL is correct in 'Tools -> Settings...'.\n\n"
-                f"Details: {e}"
-            )
-            custom_dialogs.show_error(self, "Ollama Connection Error", error_message)
-            self.enhancement_model_var.set("Error: No connection")
+            self._handle_initialization_error(e)
+
+    def _handle_initialization_error(self, error: Exception):
+        """Handles critical errors during the initial load."""
+        error_message = (
+            f"A critical error occurred during initialization:\n\n{error}\n\n"
+            "This may be due to a connection issue with Ollama or a problem with your configuration files. "
+            "Please check your settings and restart the application."
+        )
+        custom_dialogs.show_error(self, "Initialization Error", error_message)
+        self.status_var.set("Initialization failed. Please restart.")
+        # Disable UI elements that rely on a successful load
+        self.template_dropdown.config(state=tk.DISABLED)
+        self.model_dropdown.config(state=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, suggest=tk.DISABLED)
+        if self.menubar:
+            self.menubar.entryconfig("Tools", state=tk.DISABLED)
 
     def _switch_workflow(self):
         """Handles the logic for switching between SFW and NSFW modes."""
@@ -505,11 +577,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.prompt_text.config(state=tk.NORMAL)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.config(state=tk.DISABLED)
-        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, ai_cleanup=tk.DISABLED)
+        self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED)
         self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
-    def _populate_wildcard_lists(self):
+
+    def _populate_wildcard_lists(self, wildcard_files: Optional[List[str]] = None):
         """Populates both the inserter and editor wildcard lists."""
-        wildcard_files = self.processor.get_wildcard_files()
+        if wildcard_files is None:
+            wildcard_files = self.processor.get_wildcard_files()
         if not wildcard_files:
             shared_dir = config.WILDCARD_DIR
             message = (
@@ -520,6 +594,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 message += f"\n\nor the NSFW-specific folder:\n{config.WILDCARD_NSFW_DIR}"
             custom_dialogs.show_warning(self, "No Wildcards", message)
         self.wildcard_inserter.populate(wildcard_files)
+
 
     def _on_template_var_change(self, *args):
         """Callback for when the template_var changes."""
@@ -591,6 +666,64 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.last_saved_entry_id_from_preview = None
         self._update_prompt_preview()
 
+    def _suggest_template_additions(self):
+        """Uses AI to suggest additions for the current prompt template."""
+        model = self.enhancement_model_var.get()
+        if not model or "model" in model.lower():
+            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
+            return
+
+        # Get the current text from the editor
+        prompt_text = self.template_editor.get_content().strip()
+        if not prompt_text:
+            custom_dialogs.show_error(self, "Error", "There is no prompt text to get suggestions for.")
+            return
+
+        self.action_bar.enhance_template_button.config(state=tk.DISABLED, text="Enhancing...")
+        self.status_var.set(f"Getting enhancement suggestion from {model}...")
+
+        def task():
+            try:
+                suggestion = self.processor.ai_enhance_template(prompt_text, model)
+                self.enhancement_suggestion_queue.put({'success': True, 'suggestion': suggestion, 'original': prompt_text})
+            except Exception as e:
+                self.enhancement_suggestion_queue.put({'success': False, 'error': str(e)})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
+
+    def _check_enhancement_suggestion_queue(self):
+        """Checks for AI enhancement suggestions and shows a confirmation dialog."""
+        try:
+            result = self.enhancement_suggestion_queue.get_nowait()
+            self.action_bar.enhance_template_button.config(state=tk.NORMAL, text="Enhance Template (AI)")
+            
+            if result['success']:
+                suggestion = result.get('suggestion', '').strip()
+                original_text = result.get('original', '')
+                if suggestion:
+                    # Show the diff confirmation dialog
+                    dialog = custom_dialogs._DiffConfirmationDialog(
+                        self, 
+                        "Confirm AI Enhancement", 
+                        original_text, 
+                        suggestion
+                    )
+                    if dialog.result:
+                        self.template_editor.set_content(suggestion)
+                        self.status_var.set("AI enhancement applied to the template.")
+                        self._schedule_live_update()
+                    else:
+                        self.status_var.set("AI enhancement discarded.")
+                else:
+                    self.status_var.set("AI returned no suggestions.")
+            else:
+                custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating a suggestion:\n{result['error']}")
+                self.status_var.set("Suggestion failed.")
+        except queue.Empty:
+            self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
+
     def _update_prompt_preview(self):
         """Update the prompt preview with the latest generation."""
         self._display_structured_prompt()
@@ -602,7 +735,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             enhance=tk.NORMAL if is_prompt_available else tk.DISABLED, 
             copy=tk.NORMAL if is_prompt_available else tk.DISABLED, 
             save_as_template=tk.NORMAL if is_prompt_available else tk.DISABLED,
-            ai_cleanup=tk.NORMAL if is_prompt_available else tk.DISABLED,
             generate_image=tk.NORMAL if is_prompt_available and self.processor.is_invokeai_connected() else tk.DISABLED,
             suggest=tk.NORMAL if is_template_available else tk.DISABLED
         )
@@ -717,12 +849,24 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if not (0 <= segment_index < len(self.current_structured_prompt)):
             return
 
-        segment = self.current_structured_prompt[segment_index]
-        wildcard_to_swap = segment.wildcard_name
-        if not wildcard_to_swap: return
+        segment_to_swap = self.current_structured_prompt[segment_index]
+        wildcard_name = segment_to_swap.wildcard_name
+        if not wildcard_name: return
 
-        # We tell the live update function to force this wildcard to the new value.
-        self._perform_live_update(force_swap={wildcard_to_swap: new_value})
+        # --- BUG FIX ---
+        # Instead of relying on the `force_swap` parameter which seems to be buggy,
+        # we directly modify the context of the last generation. This ensures that
+        # when `_perform_live_update` is called, it uses a context that already
+        # reflects the user's choice, preserving all other rolled values.
+        context = self.last_generation_result.get('context')
+        if context and 'resolved_wildcards' in context:
+            context['resolved_wildcards'][wildcard_name] = new_value
+            # Now we can call for a live update without `force_swap`, as the
+            # context is already correct.
+            self._perform_live_update()
+        else:
+            # Fallback to the old method if the context is not as expected.
+            self._perform_live_update(force_swap={wildcard_name: new_value})
 
     def _schedule_live_update(self, event=None, force_swap: Optional[Dict[str, str]] = None):
         """Schedules a live update of the prompt preview after a short delay."""
@@ -892,11 +1036,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Handles the 'Enhance This Prompt' button click."""
         prompt_text = self._get_current_prompt_string()
         template_name = self.current_template_file
+        context = self.last_generation_result.get('context')
         existing_entry_id = self.last_saved_entry_id_from_preview
-        self.start_enhancement_for_prompt(prompt_text, template_name, existing_entry_id=existing_entry_id)
+        self.start_enhancement_for_prompt(prompt_text, template_name, context=context, existing_entry_id=existing_entry_id)
         self.last_saved_entry_id_from_preview = None # Consume the ID so it's not reused
 
-    def start_enhancement_for_prompt(self, prompt_text: str, template_name: Optional[str] = None, existing_entry_id: Optional[str] = None):
+    def start_enhancement_for_prompt(self, prompt_text: str, template_name: Optional[str] = None, context: Optional[Dict] = None, existing_entry_id: Optional[str] = None):
         """Handles starting an enhancement process for a given prompt string."""
         model = self.enhancement_model_var.get()
         if not model or "model" in model.lower():
@@ -909,7 +1054,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # Create the results window immediately
         selected_variations = self.action_bar.get_selected_variations()
-        initial_data = {'original': prompt_text, 'variations': {}}
+        initial_data = {'original': prompt_text, 'variations': {}, 'template_name': template_name, 'context': context}
 
         # Set up call counters for the new batch
         self.enhancement_calls_made = 0
@@ -1246,127 +1391,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             generate=tk.DISABLED,
             enhance=tk.NORMAL,
             copy=tk.NORMAL,
-            ai_cleanup=tk.NORMAL,
             save_as_template=tk.NORMAL,
             generate_image=tk.NORMAL if self.processor.is_invokeai_connected() else tk.DISABLED,
             suggest=tk.DISABLED
         )
         self.status_var.set("Loaded prompt from history. Ready to enhance.")
-
-    def _ai_cleanup_prompt(self):
-        """Uses AI to clean up the currently generated prompt."""
-        model = self.enhancement_model_var.get()
-        if not model or "model" in model.lower():
-            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
-            return
-        
-        prompt_to_clean = self._get_current_prompt_string()
-        if not prompt_to_clean:
-            custom_dialogs.show_error(self, "Error", "No prompt to clean up.")
-            return
-
-        self.action_bar.ai_cleanup_button.config(state=tk.DISABLED, text="Cleaning...")
-        self.loading_animation.start()
-
-        def task():
-            try:
-                cleaned_prompt = self.processor.ai_cleanup_prompt(prompt_to_clean, model)
-                self.ai_cleanup_queue.put({'success': True, 'prompt': cleaned_prompt})
-            except Exception as e:
-                self.ai_cleanup_queue.put({'success': False, 'error': str(e)})
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self.ai_cleanup_after_id = self.after(100, self._check_ai_cleanup_queue)
-
-    def _check_ai_cleanup_queue(self):
-        """Checks for results from the AI cleanup thread."""
-        try:
-            result = self.ai_cleanup_queue.get_nowait()
-            self.loading_animation.stop()
-            self.action_bar.ai_cleanup_button.config(state=tk.NORMAL, text="AI Cleanup ✨")
-
-            if result['success']:
-                cleaned_prompt = result['prompt']
-                
-                # The cleanup action invalidates the structured prompt, as the text has changed.
-                # We display the cleaned text as a final, static result.
-                self.current_structured_prompt = []
-                self.segment_map = []
-                
-                self.prompt_text.config(state=tk.NORMAL)
-                self.prompt_text.delete("1.0", tk.END)
-                self.prompt_text.insert("1.0", cleaned_prompt)
-                self.prompt_text.config(state=tk.DISABLED)
-                
-                # The user can now copy or enhance this final prompt.
-                # The "Generate" button remains active to create a new preview from the original template.
-                self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.NORMAL, copy=tk.NORMAL, save_as_template=tk.NORMAL, ai_cleanup=tk.NORMAL)
-                
-                self.status_var.set("Prompt cleaned up by AI.")
-            else:
-                custom_dialogs.show_error(self, "AI Cleanup Error", f"An error occurred during cleanup:\n{result['error']}")
-                self.status_var.set("AI cleanup failed.")
-        except queue.Empty:
-            self.ai_cleanup_after_id = self.after(100, self._check_ai_cleanup_queue)
-
-    def _suggest_template_additions(self):
-        """Uses AI to suggest additions for the current prompt template."""
-        model = self.enhancement_model_var.get()
-        if not model or "model" in model.lower():
-            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
-            return
-
-        # Get the current text from the editor
-        prompt_text = self.template_editor.get_content().strip()
-        if not prompt_text:
-            custom_dialogs.show_error(self, "Error", "There is no prompt text to get suggestions for.")
-            return
-
-        self.action_bar.enhance_template_button.config(state=tk.DISABLED, text="Enhancing...")
-        self.status_var.set(f"Getting enhancement suggestion from {model}...")
-
-        def task():
-            try:
-                suggestion = self.processor.suggest_template_additions(prompt_text, model)
-                self.enhancement_suggestion_queue.put({'success': True, 'suggestion': suggestion, 'original': prompt_text})
-            except Exception as e:
-                self.enhancement_suggestion_queue.put({'success': False, 'error': str(e)})
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
-
-    def _check_enhancement_suggestion_queue(self):
-        """Checks for AI enhancement suggestions and shows a confirmation dialog."""
-        try:
-            result = self.enhancement_suggestion_queue.get_nowait()
-            self.action_bar.enhance_template_button.config(state=tk.NORMAL, text="Enhance Template (AI)")
-            
-            if result['success']:
-                suggestion = result.get('suggestion', '').strip()
-                original_text = result.get('original', '')
-                if suggestion:
-                    # Show the diff confirmation dialog
-                    dialog = custom_dialogs._DiffConfirmationDialog(
-                        self, 
-                        "Confirm AI Enhancement", 
-                        original_text, 
-                        suggestion
-                    )
-                    if dialog.result:
-                        self.template_editor.set_content(suggestion)
-                        self.status_var.set("AI enhancement applied to the template.")
-                        self._schedule_live_update()
-                    else:
-                        self.status_var.set("AI enhancement discarded.")
-                else:
-                    self.status_var.set("AI returned no suggestions.")
-            else:
-                custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating a suggestion:\n{result['error']}")
-                self.status_var.set("Suggestion failed.")
-        except queue.Empty:
-            self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
 
     def _generate_image_from_preview(self):
         """Generates an image from the current prompt preview using the consolidated workflow."""
@@ -1378,7 +1407,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         def on_success(images_to_save: List[Dict[str, Any]]):
             """Callback to handle saving a new history entry."""
             saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
-            entry = {'original_prompt': images_to_save[0]['prompt'], 'status': 'generated_only', 'original_images': saved_images_data, 'template_name': self.current_template_file}
+            entry = {'original_prompt': images_to_save[0]['prompt'], 'status': 'generated_only', 'original_images': saved_images_data, 'template_name': self.current_template_file, 'context': self.last_generation_result.get('context')}
+
             saved_entry = self.processor.history_manager.save_result(**entry)
             if saved_entry:
                 self.last_saved_entry_id_from_preview = saved_entry.get('id')
@@ -1392,6 +1422,44 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             spinner_to_manage=self.action_bar.image_gen_spinner,
             on_success_callback=on_success
         )
+
+    def load_template_from_history(self, template_name: str, context: Dict[str, Any]):
+        """Loads a template and its specific wildcard context from history."""
+        # 1. Check if the template file still exists.
+        try:
+            template_content = self.processor.load_template_content(template_name)
+        except FileNotFoundError:
+            custom_dialogs.show_error(self, "Template Not Found", f"The template file '{template_name}' could not be found. It may have been moved or deleted.")
+            return
+
+        # Manually do the work of _on_template_select without the automatic preview generation.
+        self.current_template_file = template_name
+        self.template_editor.set_label("Template Content")
+        self.current_template_content = template_content
+        self.template_editor.set_content(self.current_template_content)
+        self._highlight_template_wildcards()
+        self.menubar.update_file_menu_state(save_enabled=True, archive_enabled=True)
+        
+        # Set the dropdown value AFTER manually loading, to avoid the trace from firing.
+        trace_info = self.template_var.trace_info()
+        if trace_info:
+            trace_id = trace_info[0][1]
+            self.template_var.trace_vdelete("w", trace_id)
+            self.template_var.set(template_name)
+            self.template_var.trace_add("write", self._on_template_var_change)
+        else:
+            self.template_var.set(template_name)
+
+        # Now, generate the preview using the provided context.
+        live_content = self.template_editor.get_content()
+        seed = context.get('seed')
+
+        segments, new_context = self.processor.generate_single_structured_prompt(live_content, existing_context=context, seed=seed)
+        self.last_generation_result = {'segments': segments, 'context': new_context}
+        self.current_structured_prompt = segments
+        if seed: self.seed_var.set(str(seed))
+        self._update_prompt_preview()
+        self.status_var.set(f"Reloaded template '{template_name}' from history with its original choices.")
 
     def _start_image_generation_workflow(self, parent_window: tk.Widget, prompt: str, initial_dialog_params: Dict[str, Any], button_to_manage: Optional[ttk.Button], spinner_to_manage: Optional[LoadingAnimation], on_success_callback: Optional[Callable[[List[Dict[str, Any]]], None]]):
         """A centralized method to handle the entire image generation process."""
@@ -1460,51 +1528,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             generation_jobs=generation_jobs,
             processor=self.processor,
             progress_callback=on_generation_progress,
-            completion_callback=on_preview_dialog_close
+            completion_callback=on_preview_dialog_close,
+            save_to_gallery=options.get("save_to_gallery", False)
         )
-
-    def _start_direct_image_generation(self, parent_window: tk.Widget, prompt: str, gen_params: Dict[str, Any], button_to_manage: ttk.Button, on_success_callback: Callable[[Dict[str, Any]], None]):
-        """Starts an image generation process directly without the options dialog."""
-        
-        original_button_text = button_to_manage.cget("text")
-        button_to_manage.config(state=tk.DISABLED, text="Generating...")
-
-        def task():
-            generated_images = []
-            errors = []
-            
-            try:
-                # We are generating a single image here.
-                current_gen_params = gen_params.copy()
-                model_object = current_gen_params.get('model')
-                if not model_object:
-                    raise ValueError("Model object missing in generation parameters.")
-
-                gen_args = {
-                    "prompt": prompt, "negative_prompt": current_gen_params.get("negative_prompt", ""), "seed": current_gen_params.get("seed"),
-                    "model_object": model_object, "loras": current_gen_params.get("loras", []), "steps": current_gen_params.get("steps"),
-                    "cfg_scale": current_gen_params.get("cfg_scale"), "scheduler": current_gen_params.get("scheduler"),
-                    "cfg_rescale_multiplier": current_gen_params.get("cfg_rescale_multiplier"), "save_to_gallery": current_gen_params.get("save_to_gallery", False),
-                }
-                image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
-                generated_images.append({'bytes': image_bytes, 'prompt': prompt, 'generation_params': current_gen_params})
-            except Exception as e:
-                errors.append(f"Model '{model_object.get('name', 'Unknown')}': {e}")
-            
-            self.after(0, self._handle_direct_generation_result, generated_images, errors, button_to_manage, on_success_callback, original_button_text)
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-
-    def _handle_direct_generation_result(self, generated_images: List[Dict[str, Any]], errors: List[str], button_to_manage: ttk.Button, on_success_callback: Callable[[Dict[str, Any]], None], original_button_text: str):
-        """Handles the result of a direct image generation task."""
-        button_to_manage.config(state=tk.NORMAL, text=original_button_text)
-
-        if errors:
-            custom_dialogs.show_error(self, "Image Generation Errors", f"Some images failed to generate:\n{error_str}")
-
-        if generated_images:
-            on_success_callback(generated_images[0])
 
     def _brainstorm_with_template(self):
         """Sends the current template content to the brainstorming window."""
@@ -1542,64 +1568,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 filename=wildcard_name,
                 template_context=template_context
             )
-
-    def _suggest_template_additions(self):
-        """Asks the AI to suggest additions for the current prompt template."""
-        model = self.enhancement_model_var.get()
-        if not model or "model" in model.lower():
-            custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
-            return
-
-        # Get the current text from the editor
-        prompt_text = self.template_editor.get_content().strip()
-        if not prompt_text:
-            custom_dialogs.show_error(self, "Error", "There is no prompt text to get suggestions for.")
-            return
-
-        self.action_bar.enhance_template_button.config(state=tk.DISABLED, text="Enhancing...")
-        self.status_var.set(f"Getting enhancement suggestion from {model}...")
-
-        def task():
-            try:
-                suggestion = self.processor.suggest_template_additions(prompt_text, model)
-                self.enhancement_suggestion_queue.put({'success': True, 'suggestion': suggestion, 'original': prompt_text})
-            except Exception as e:
-                self.enhancement_suggestion_queue.put({'success': False, 'error': str(e)})
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
-
-    def _check_enhancement_suggestion_queue(self):
-        """Checks for AI enhancement suggestions and shows a confirmation dialog."""
-        try:
-            result = self.enhancement_suggestion_queue.get_nowait()
-            self.action_bar.enhance_template_button.config(state=tk.NORMAL, text="Enhance Template (AI)")
-            
-            if result['success']:
-                suggestion = result.get('suggestion', '').strip()
-                original_text = result.get('original', '')
-                if suggestion:
-                    # Show the diff confirmation dialog
-                    dialog = custom_dialogs._DiffConfirmationDialog(
-                        self, 
-                        "Confirm AI Enhancement", 
-                        original_text, 
-                        suggestion
-                    )
-                    if dialog.result:
-                        self.template_editor.set_content(suggestion)
-                        self.status_var.set("AI enhancement applied to the template.")
-                        self._schedule_live_update()
-                    else:
-                        self.status_var.set("AI enhancement discarded.")
-                else:
-                    self.status_var.set("AI returned no suggestions.")
-            else:
-                custom_dialogs.show_error(self, "Suggestion Error", f"An error occurred while generating a suggestion:\n{result['error']}")
-                self.status_var.set("Suggestion failed.")
-        except queue.Empty:
-            self.enhancement_suggestion_after_id = self.after(100, self._check_enhancement_suggestion_queue)
 
     def _generate_template_from_all_wildcards(self):
         """Asks for a theme and generates a template using all available wildcards."""
@@ -1692,22 +1660,38 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         ):
             return
 
-        try:
-            # The processor method handles both clearing and reloading.
-            self.processor.clear_wildcard_cache_and_reload()
-            
-            # Refresh UI components that depend on wildcards.
-            self._populate_wildcard_lists()
-            
-            # If the wildcard manager is open, it also needs to be refreshed.
-            if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
-                self.wildcard_manager_window._populate_wildcard_list()
-                self.wildcard_manager_window._clear_editor_view()
+        self.status_var.set("Clearing wildcard cache and reloading...")
+        self.loading_animation.start()
 
-            custom_dialogs.show_info(self, "Success", "Wildcard cache has been cleared and reloaded.")
-            self.status_var.set("Wildcard cache cleared and reloaded.")
-        except Exception as e:
-            custom_dialogs.show_error(self, "Error", f"Failed to clear wildcard cache:\n{e}")
+        def task():
+            try:
+                self.processor.clear_wildcard_cache_and_reload()
+                self.clear_cache_queue.put({'success': True})
+            except Exception as e:
+                self.clear_cache_queue.put({'success': False, 'error': e})
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        self.clear_cache_after_id = self.after(100, self._check_clear_cache_queue)
+
+    def _check_clear_cache_queue(self):
+        """Checks for the result of the cache clearing task."""
+        try:
+            result = self.clear_cache_queue.get_nowait()
+            self.loading_animation.stop()
+
+            if result['success']:
+                self._populate_wildcard_lists()
+                if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
+                    self.wildcard_manager_window._populate_wildcard_list()
+                    self.wildcard_manager_window._clear_editor_view()
+                custom_dialogs.show_info(self, "Success", "Wildcard cache has been cleared and reloaded.")
+                self.status_var.set("Wildcard cache cleared and reloaded.")
+            else:
+                custom_dialogs.show_error(self, "Error", f"Failed to clear wildcard cache:\n{result['error']}")
+                self.status_var.set("Failed to clear cache.")
+        except queue.Empty:
+            self.clear_cache_after_id = self.after(100, self._check_clear_cache_queue)
 
     def _open_settings_window(self):
         """Opens the application settings window."""
@@ -1747,24 +1731,32 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.wildcard_manager_window.close()
         if self.brainstorming_window and self.brainstorming_window.winfo_exists():
             self.brainstorming_window.close()
+        if self.history_viewer_window and self.history_viewer_window.winfo_exists():
+            self.history_viewer_window.close()
+        if self.prompt_evolver_window and self.prompt_evolver_window.winfo_exists():
+            self.prompt_evolver_window.close()
+        if self.favorite_images_viewer_window and self.favorite_images_viewer_window.winfo_exists():
+            self.favorite_images_viewer_window.close()
+        if self.image_interrogator_window and self.image_interrogator_window.winfo_exists():
+            self.image_interrogator_window.close()
         for window in list(self.enhancement_windows):
             if window.winfo_exists():
                 window.close()
-        active_models_on_exit = self.model_usage_manager.get_active_models()
-        if active_models_on_exit:
-            print(f"Unloading all active models: {', '.join(active_models_on_exit)}...")
-            for model in active_models_on_exit:
-                self.processor.cleanup_model(model)
-            print("Cleanup complete.")
+        # Unregister the main window's model. The manager will handle unloading if needed.
+        self.model_usage_manager.unregister_usage(self.main_window_model)
         if self.processor.is_invokeai_connected():
             print("INFO: Clearing InvokeAI model cache on exit (async)...")
             self.processor.clear_invokeai_cache_async()
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
-        if self.ai_cleanup_after_id:
-            self.after_cancel(self.ai_cleanup_after_id)
+        if self.initial_load_after_id:
+            self.after_cancel(self.initial_load_after_id)
         if self.enhancement_suggestion_after_id:
             self.after_cancel(self.enhancement_suggestion_after_id)
+        if self.clear_cache_after_id:
+            self.after_cancel(self.clear_cache_after_id)
+        if self.generate_from_wildcards_after_id:
+            self.after_cancel(self.generate_from_wildcards_after_id)
         if self.last_saved_entry_id_from_preview:
             self.last_saved_entry_id_from_preview = None
         self.destroy()

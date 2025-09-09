@@ -7,16 +7,13 @@ from .common import Tooltip
 
 class ActionBar(ttk.Frame):
     """The main action bar with Generate, Enhance, and variation selection."""
-    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, save_as_template_callback: Callable, ai_cleanup_callback: Callable, generate_image_callback: Callable, suggest_callback: Callable, **kwargs):
+    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, save_as_template_callback: Callable, generate_image_callback: Callable, suggest_callback: Callable, **kwargs):
         super().__init__(parent, **kwargs)
 
         self.generate_button = ttk.Button(self, text="Generate Next Preview", command=generate_callback, state=tk.DISABLED)
 
         self.enhance_template_button = ttk.Button(self, text="Enhance Template (AI)", command=suggest_callback, state=tk.DISABLED)
         Tooltip(self.enhance_template_button, "Ask the AI to enhance the current template with more detail and wildcards.")
-
-        self.ai_cleanup_button = ttk.Button(self, text="AI Cleanup ✨", command=ai_cleanup_callback, state=tk.DISABLED)
-        Tooltip(self.ai_cleanup_button, "Use AI to fix grammar and flow in the generated prompt.")
 
         self.select_button = ttk.Button(self, text="Enhance This Prompt", command=enhance_callback, state=tk.DISABLED)
 
@@ -50,7 +47,6 @@ class ActionBar(ttk.Frame):
         # Ensure all widgets are managed by grid before configuring them
         self.generate_button.grid()
         self.enhance_template_button.grid()
-        self.ai_cleanup_button.grid()
         self.select_button.grid()
         self.variations_frame.grid()
         self.copy_prompt_button.grid()
@@ -70,8 +66,7 @@ class ActionBar(ttk.Frame):
             self.generate_button.grid_configure(row=0, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
             self.select_button.grid_configure(row=0, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
             # Group 2: AI Tools
-            self.enhance_template_button.grid_configure(row=1, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
-            self.ai_cleanup_button.grid_configure(row=1, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
+            self.enhance_template_button.grid_configure(row=1, column=0, columnspan=2, sticky='ew', pady=(0, 5), padx=0)
             # Group 3: Variations (full width)
             self.variations_frame.grid_configure(row=2, column=0, columnspan=2, sticky='ew', pady=(5, 5))
             # Group 4: Utility actions
@@ -86,13 +81,12 @@ class ActionBar(ttk.Frame):
 
             self.generate_button.grid_configure(row=0, column=0, columnspan=1, sticky='w', padx=(0, 5), pady=0)
             self.enhance_template_button.grid_configure(row=0, column=1, columnspan=1, sticky='w', padx=(0, 5), pady=0)
-            self.ai_cleanup_button.grid_configure(row=0, column=2, columnspan=1, sticky='w', padx=(0, 5), pady=0)
-            self.select_button.grid_configure(row=0, column=3, columnspan=1, sticky='w', pady=0)
-            self.variations_frame.grid_configure(row=0, column=4, columnspan=1, sticky='w', padx=(10, 0), pady=0)
-            self.copy_prompt_button.grid_configure(row=0, column=5, columnspan=1, sticky='w', padx=(10, 0), pady=0)
-            self.save_as_template_button.grid_configure(row=0, column=6, columnspan=1, sticky='w', padx=(5, 0), pady=0)
+            self.select_button.grid_configure(row=0, column=2, columnspan=1, sticky='w', pady=0)
+            self.variations_frame.grid_configure(row=0, column=3, columnspan=1, sticky='w', padx=(10, 0), pady=0)
+            self.copy_prompt_button.grid_configure(row=0, column=4, columnspan=1, sticky='w', padx=(10, 0), pady=0)
+            self.save_as_template_button.grid_configure(row=0, column=5, columnspan=1, sticky='w', padx=(5, 0), pady=0)
             # Column 7 is the expanding spacer
-            self.image_gen_frame.grid_configure(row=0, column=8, columnspan=1, sticky='e', padx=(10, 0), pady=0)
+            self.image_gen_frame.grid_configure(row=0, column=7, columnspan=1, sticky='e', padx=(10, 0), pady=0)
 
     def rebuild_variations(self, variations: List[Dict[str, str]]):
         """Clears and recreates the variation checkboxes."""
@@ -119,14 +113,12 @@ class ActionBar(ttk.Frame):
         """Returns a list of the names of the selected variations."""
         return [key for key, var in self.variation_vars.items() if var.get()]
 
-    def set_button_states(self, generate: str, enhance: str, copy: str, save_as_template: Optional[str] = None, ai_cleanup: Optional[str] = None, generate_image: Optional[str] = None, suggest: Optional[str] = None):
+    def set_button_states(self, generate: str, enhance: str, copy: str, save_as_template: Optional[str] = None, generate_image: Optional[str] = None, suggest: Optional[str] = None):
         self.generate_button.config(state=generate)
         self.select_button.config(state=enhance)
         self.copy_prompt_button.config(state=copy)
         if save_as_template is not None:
             self.save_as_template_button.config(state=save_as_template)
-        if ai_cleanup is not None:
-            self.ai_cleanup_button.config(state=ai_cleanup)
         if suggest is not None:
             self.enhance_template_button.config(state=suggest)
         if generate_image is not None:

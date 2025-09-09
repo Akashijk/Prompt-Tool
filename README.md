@@ -10,7 +10,24 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **Direct Image Generation & History:** Generate images directly from any prompt using a local InvokeAI server. All generations, prompts, and images are saved to a detailed, searchable history viewer with favoriting and image management.
 *   **Image to Prompt (Interrogator):** Generate a detailed Stable Diffusion prompt directly from an image using a local vision model (e.g., LLaVA).
 
-![Main Window Screenshot](assets/screenshot_main.png)
+<p align="center">
+  <img src="assets/screenshot_main.png" alt="Main Window Screenshot" width="80%"/>
+</p>
+
+A quick look at some of the key tool windows:
+
+<table align="center">
+  <tr>
+    <td align="center">Prompt Evolver</td>
+    <td align="center">Wildcard Manager</td>
+    <td align="center">AI Brainstorming</td>
+  </tr>
+  <tr>
+    <td><img src="assets/screenshot_evolver.png" alt="Prompt Evolver Screenshot" width="260"/></td>
+    <td><img src="assets/screenshot_wildcard_manager.png" alt="Wildcard Manager Screenshot" width="260"/></td>
+    <td><img src="assets/screenshot_brainstorming.png" alt="AI Brainstorming Screenshot" width="260"/></td>
+  </tr>
+</table>
 
 ## Key Features
 
@@ -46,8 +63,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
     *   **AI Assistant:** Use AI to suggest new choices, automatically add tags, refine choices with metadata, fix grammar, or check for compatibility between two files.
 *   **SFW/NSFW Workflows:** Keep your SFW and NSFW content completely separate. The app dynamically switches template, wildcard, and system prompt directories.
 *   **Customizable System Prompts:** Edit the underlying instructions given to the AI for enhancement and variations to tailor its output to your needs.
-*   **Comprehensive History Viewer:**
-    *   Browse, search, and reuse all your past enhanced prompts.
+*   **Comprehensive History Viewer:** Browse, search, and reuse all your past enhanced prompts. The viewer is filtered by the current workflow, showing only SFW history in SFW mode and only NSFW history in NSFW mode.
     *   Tracks which template was used for each generation.
     *   View generated images with pagination and full generation parameters.
     *   Mark entries and individual images as favorites.

@@ -11,31 +11,37 @@ import copy
 import sys
 import os
 from PIL import Image, ImageTk
-from typing import List, Dict, Optional, TYPE_CHECKING, Any, Tuple
+from typing import List, Dict, Optional, TYPE_CHECKING, Any, Tuple, Callable
 from . import custom_dialogs
-from core.config import config
+from core.config import config, PROJECT_ROOT
 from core.prompt_processor import PromptProcessor
-from .common import TextContextMenu, SmartWindowMixin, LoadingAnimation
+from .common import TextContextMenu, SmartWindowMixin, LoadingAnimation, ImagePreviewMixin, ScrollableFrame
+from .task_runner import TaskRunnerMixin
 from .common import Tooltip
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
 
-class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
+class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, TaskRunnerMixin):
     """A window to view and search the prompt generation history."""
     def __init__(self, parent: 'GUIApp', processor: PromptProcessor):
         super().__init__(parent)
+        ImagePreviewMixin.__init__(self)
         self.title("Prompt History Viewer")
 
         self.processor = processor
+        TaskRunnerMixin.__init__(self)
         self.parent_app = parent
         self.all_history_data: List[Dict[str, str]] = []
-        
+        self.scrollable_list: Optional[ScrollableFrame] = None
+        self.BATCH_SIZE = 50
+        self.current_offset = 0
         # --- Attributes for the new Canvas-based list ---
         self.history_canvas: Optional[tk.Canvas] = None
         self.history_container: Optional[ttk.Frame] = None
         self.history_widgets: List[Dict[str, Any]] = [] # Stores {'frame': widget, 'label': widget, 'data': row_data}
         self.history_load_queue = queue.Queue()
+        self.thumbnail_queue = queue.Queue()
         self.history_load_after_id: Optional[str] = None
         self.history_loading_animation: Optional[LoadingAnimation] = None
         self.selected_widget_info: Optional[Dict[str, Any]] = None
@@ -44,10 +50,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.image_favorite_var = tk.BooleanVar()
         self.current_pil_image: Optional[Image.Image] = None
         self.show_favorites_only_var = tk.BooleanVar(value=False)
+        self.cancellation_event = threading.Event()
         self.details_notebook: Optional[ttk.Notebook] = None
         self.filter_debounce_timer: Optional[str] = None
-        self.thumbnail_queue = queue.Queue()
-        self.thumbnail_after_id: Optional[str] = None
         self.detail_tabs: Dict[str, Dict[str, Any]] = {}
         self.original_edit_content: Optional[str] = None
         self.image_ref: Optional[ImageTk.PhotoImage] = None
@@ -61,8 +66,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.regen_prompt_after_id: Optional[str] = None
         self.image_gen_queue = queue.Queue()
         self.image_gen_after_id: Optional[str] = None
-        self.regen_image_spinner: Optional[LoadingAnimation] = None
         self.image_gen_after_id: Optional[str] = None
+        self.thumbnail_after_id: Optional[str] = None
         self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
         self.context_menu = tk.Menu(self, tearoff=0)
         self.image_context_menu = tk.Menu(self, tearoff=0)
@@ -72,36 +77,107 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         self.load_and_display_history()
 
         self.smart_geometry(min_width=1200, min_height=800)
-        self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
         self.regen_prompt_after_id = self.after(100, self._check_regen_prompt_queue)
+        self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
         self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _get_active_ai_model(self) -> str:
+        """Implementation for TaskRunnerMixin, not used here but required."""
+        return self.parent_app.enhancement_model_var.get()
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.history_load_after_id:
             self.after_cancel(self.history_load_after_id)
             self.history_load_after_id = None
-        if self.image_gen_after_id:
-            self.after_cancel(self.image_gen_after_id)
-            self.image_gen_after_id = None
+        if self.thumbnail_after_id:
+            self.after_cancel(self.thumbnail_after_id)
+            self.thumbnail_after_id = None
+        self.close_preview_on_destroy()
+        self.cancellation_event.set()
         if self.image_gen_after_id:
             self.after_cancel(self.image_gen_after_id)
             self.image_gen_after_id = None
         if self._resize_debounce_id:
             self.after_cancel(self._resize_debounce_id)
             self._resize_debounce_id = None
-        if self.thumbnail_after_id:
-            self.after_cancel(self.thumbnail_after_id)
-            self.thumbnail_after_id = None
         if self.regen_prompt_after_id:
             self.after_cancel(self.regen_prompt_after_id)
             self.regen_prompt_after_id = None
         self.destroy()
 
-    def _on_history_mouse_wheel(self, event):
-        """Handles mouse wheel scrolling for the history list."""
-        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
-        self.history_canvas.yview_scroll(delta, "units")
+    def _update_visible_thumbnails(self):
+        """Loads thumbnails only for the items currently visible in the history list."""
+        if not self.history_canvas or not self.history_container.winfo_exists():
+            return
+
+        try:
+            # The y-coordinate of the top of the visible part of the canvas
+            canvas_top = self.history_canvas.canvasy(0)
+            # The y-coordinate of the bottom of the visible part of the canvas
+            canvas_bottom = self.history_canvas.canvasy(self.history_canvas.winfo_height())
+        except tk.TclError:
+            return # This can happen if the window is being destroyed.
+
+        for widget_info in self.history_widgets:
+            frame = widget_info['frame']
+            if not frame.winfo_exists(): continue
+            
+            widget_top = frame.winfo_y()
+            widget_bottom = widget_top + frame.winfo_reqheight()
+            
+            # If the widget is visible and its thumbnail hasn't been loaded yet...
+            if not (widget_bottom < canvas_top or widget_top > canvas_bottom) and not widget_info.get('thumbnail_loaded'):
+                widget_info['thumbnail_loaded'] = True
+                image_path = widget_info.get('cover_image_path')
+                workflow = widget_info.get('workflow_tag')
+                label_widget = widget_info.get('thumb_label')
+
+                if image_path and workflow and label_widget:
+                    self._load_history_thumbnail(label_widget, image_path, workflow)
+
+    def _get_preview_image(self, widget_info: Dict[str, Any]) -> Optional[Image.Image]:
+        """Implementation of the abstract method from ImagePreviewMixin."""
+        relative_image_path = widget_info.get('cover_image_path')
+        if not relative_image_path: return None
+
+        try:
+            # The workflow tag is already on the widget_info from _populate_history_list
+            workflow = widget_info.get('workflow_tag', 'sfw')
+            original_workflow = config.workflow
+            config.workflow = workflow.lower()
+            full_path = os.path.join(config.get_history_file_dir(), relative_image_path)
+            config.workflow = original_workflow # Restore immediately
+            if not os.path.exists(full_path): return None
+            return Image.open(full_path)
+        except Exception as e:
+            print(f"Error loading full image for preview: {e}")
+            return None
+
+    def _get_cover_image_path_for_row(self, row: Dict[str, Any]) -> Optional[str]:
+        """Finds the cover image path for a given history row data."""
+        image_lists_to_check = []
+        if row.get('original_images'): image_lists_to_check.append(row['original_images'])
+        if row.get('enhanced', {}).get('images'): image_lists_to_check.append(row['enhanced']['images'])
+        for var_data in row.get('variations', {}).values():
+            if var_data.get('images'): image_lists_to_check.append(var_data['images'])
+
+        # Prioritize finding the explicitly set cover image first
+        cover_image_path = None
+        for img_list in image_lists_to_check:
+            for img_data in img_list:
+                if img_data.get('is_cover_image'):
+                    cover_image_path = img_data.get('image_path')
+                    break
+            if cover_image_path: break
+
+        # Fallback: If no cover is set, find the first available image
+        if not cover_image_path and image_lists_to_check:
+            for img_list in image_lists_to_check:
+                if img_list:
+                    cover_image_path = img_list[0].get('image_path')
+                    break
+        return cover_image_path
 
     def _create_styles(self):
         """Creates custom ttk styles for the history list."""
@@ -154,34 +230,25 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
         self.history_loading_animation = LoadingAnimation(list_frame, size=32)
 
-        # --- NEW: Create Canvas instead of Treeview ---
-        self.history_canvas = tk.Canvas(list_frame, borderwidth=0, highlightthickness=0)
-        history_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.history_canvas.yview)
-        self.history_container = ttk.Frame(self.history_canvas)
-        self.history_canvas.configure(yscrollcommand=history_scrollbar.set)
-        
-        history_scrollbar.pack(side="right", fill="y")
-        self.history_canvas.pack(side="left", fill="both", expand=True)
-        history_canvas_frame = self.history_canvas.create_window((0, 0), window=self.history_container, anchor="nw")
+        # --- NEW: Use ScrollableFrame ---
+        self.scrollable_list = ScrollableFrame(list_frame, scroll_callback=self._update_visible_thumbnails)
+        self.scrollable_list.pack(fill=tk.BOTH, expand=True)
+        self.history_container = self.scrollable_list.scrollable_frame
+        self.history_canvas = self.scrollable_list.canvas
 
-        def on_history_frame_configure(event):
-            self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all"))
+        self.load_more_button = ttk.Button(list_frame, text="Load More", command=self._load_next_history_batch, style="Accent.TButton")
+        # The button is packed later by _load_next_history_batch
 
         def on_history_canvas_configure(event):
-            self.history_canvas.itemconfig(history_canvas_frame, width=event.width)
             # Adjust wraplength of all visible prompt labels
             for widget_info in self.history_widgets:
                 if widget_info['frame'].winfo_ismapped():
                     widget_info['label'].configure(wraplength=event.width - 20) # -20 for padding
 
-        self.history_container.bind("<Configure>", on_history_frame_configure)
         self.history_canvas.bind("<Configure>", on_history_canvas_configure)
-        # Add mouse wheel scrolling
-        self.history_canvas.bind("<MouseWheel>", self._on_history_mouse_wheel)
-        self.history_container.bind("<MouseWheel>", self._on_history_mouse_wheel)
 
         # --- Right Pane (for details and image) ---
-        right_pane = ttk.Frame(h_pane, padding=5)
+        right_pane = ttk.Frame(h_pane)
         h_pane.add(right_pane, weight=2)
 
         # This will hold the image preview at the top and the prompt details below
@@ -309,17 +376,17 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
     def load_and_display_history(self):
         """Loads data from the history file and populates the list."""
-        # Clear existing list before loading
-        for widget_info in self.history_widgets:
-            widget_info['frame'].destroy()
-        self.history_widgets.clear()
-        
+        self._clear_list_and_state()
         self.history_loading_animation.pack(pady=50)
         self.history_loading_animation.start()
 
         def task():
             try:
-                history_data = self.processor.get_full_history()
+                all_history = self.processor.get_all_history_across_workflows()
+                if self.parent_app.workflow_var.get() == 'sfw':
+                    history_data = [item for item in all_history if item.get('workflow_source') == 'SFW']
+                else: # nsfw mode shows only nsfw
+                    history_data = [item for item in all_history if item.get('workflow_source') == 'NSFW']
                 self.history_load_queue.put({'success': True, 'data': history_data})
             except Exception as e:
                 self.history_load_queue.put({'success': False, 'error': str(e)})
@@ -327,6 +394,15 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
         self.history_load_after_id = self.after(100, self._check_history_load_queue)
+
+    def _clear_list_and_state(self):
+        """Clears the list and resets pagination state."""
+        for widget_info in self.history_widgets:
+            widget_info['frame'].destroy()
+        self.history_widgets.clear()
+        self.current_offset = 0
+        self.all_history_data = []
+        self.load_more_button.pack_forget()
 
     def _check_history_load_queue(self):
         """Checks for loaded history data and populates the view."""
@@ -337,49 +413,45 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
 
             if result['success']:
                 self.all_history_data = result['data']
-                self._populate_history_list(self.all_history_data)
+                self.current_offset = 0
+                self._load_next_history_batch()
             else:
                 custom_dialogs.show_error(self, "Error Loading History", result['error'])
         except queue.Empty:
             self.history_load_after_id = self.after(100, self._check_history_load_queue)
 
-    def _populate_history_list(self, data: List[Dict[str, str]]):
-        """Clears and fills the history list with the given data."""
-        if not self.history_container: return
+    def _load_next_history_batch(self):
+        """Loads the next batch of history items into the view."""
+        if self.current_offset >= len(self.all_history_data):
+            self.load_more_button.pack_forget()
+            return
+
+        start = self.current_offset
+        end = min(self.current_offset + self.BATCH_SIZE, len(self.all_history_data))
+        batch_data = self.all_history_data[start:end]
         
-        # Clear old widgets
-        for widget_info in self.history_widgets:
-            widget_info['frame'].destroy()
-        self.history_widgets.clear()
-        self.selected_widget_info = None
-        self.selected_row_data = None
+        self._populate_history_list(batch_data)
+        self.current_offset = end
+
+        self.load_more_button.pack(side=tk.BOTTOM, fill=tk.X, pady=(5,0))
+        self.after(100, self._update_visible_thumbnails)
+
+    def _populate_history_list(self, data: List[Dict[str, str]]):
+        """Appends a batch of history items to the list view."""
+        if not self.history_container or not data: return
 
         current_width = self.history_canvas.winfo_width()
-
+        
         for row in data:
-            # --- Find the cover image for the thumbnail ---
-            cover_image_path = None
-            image_lists_to_check = []
-            if row.get('original_images'): image_lists_to_check.append(row['original_images'])
-            if row.get('enhanced', {}).get('images'): image_lists_to_check.append(row['enhanced']['images'])
-            for var_data in row.get('variations', {}).values():
-                if var_data.get('images'): image_lists_to_check.append(var_data['images'])
-
-            for img_list in image_lists_to_check:
-                for img_data in img_list:
-                    if img_data.get('is_cover_image'):
-                        cover_image_path = img_data.get('image_path')
-                        break
-                if cover_image_path: break
-            
-            # Fallback to the first image of any kind if no cover is set
-            if not cover_image_path and image_lists_to_check:
-                first_list = image_lists_to_check[0]
-                if first_list:
-                    cover_image_path = first_list[0].get('image_path')
+            cover_image_path = self._get_cover_image_path_for_row(row)
 
             original_prompt = row.get('original_prompt', 'No original prompt found.')
             is_fav = row.get('favorite', False)
+
+            # Get the correct workflow source for this specific entry.
+            # FIX: The history viewer only ever loads from the current workflow, so we
+            # must use the global config. The row data doesn't contain 'workflow_source'.
+            workflow_tag = config.workflow.upper()
 
             # Create a frame for each item for better layout and binding
             item_frame = ttk.Frame(self.history_container, style="HistoryItem.TFrame", relief="groove", borderwidth=1)
@@ -388,8 +460,6 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             # --- Thumbnail Label (Left) ---
             thumb_label = ttk.Label(item_frame, text="🖼️", width=12, anchor=tk.CENTER)
             thumb_label.pack(side=tk.LEFT, padx=5, pady=5)
-            if cover_image_path:
-                self._load_history_thumbnail(thumb_label, cover_image_path)
 
             # --- Text Info (Right) ---
             text_frame = ttk.Frame(item_frame, style="HistoryItem.TFrame") # Match style for seamless selection color
@@ -409,8 +479,19 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             info_label.pack(fill=tk.X, expand=True, padx=5, pady=(0,5))
 
             # Store widget and data together
-            widget_info = {'frame': item_frame, 'label': prompt_label, 'data': row, 'thumb_label': thumb_label, 'text_frame': text_frame}
+            widget_info = {
+                'frame': item_frame, 'label': prompt_label, 'data': row, 
+                'thumb_label': thumb_label, 'text_frame': text_frame,
+                # --- NEW: Store data for lazy loading ---
+                'cover_image_path': cover_image_path,
+                'workflow_tag': workflow_tag,
+                'thumbnail_loaded': False
+            }
             self.history_widgets.append(widget_info)
+
+            # Bind preview events to the thumbnail
+            thumb_label.bind("<Enter>", lambda e, info=widget_info: self._schedule_preview(info))
+            thumb_label.bind("<Leave>", lambda e: self._schedule_hide())
 
             # Bind events to the frame and its labels
             right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
@@ -418,8 +499,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 widget.bind("<Button-1>", lambda e, info=widget_info: self._on_item_select(info))
                 widget.bind("<Double-1>", lambda e, info=widget_info: self._load_to_main_window())
                 widget.bind(right_click_event, lambda e, info=widget_info: self._show_context_menu(e, info))
-                # Make mousewheel work on the labels too, using the dedicated method for consistency.
-                widget.bind("<MouseWheel>", self._on_history_mouse_wheel)
+                widget.bind("<MouseWheel>", self.scrollable_list._on_mouse_wheel)
 
     def _apply_filters(self):
         """Shows or hides list items based on the current filter criteria."""
@@ -753,7 +833,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             self.clipboard_append(str(seed))
 
     def _set_as_cover_image(self, remove: bool = False):
-        """Sets the currently viewed image as the cover image for its group."""
+        """Sets the currently viewed image as the cover image for the entire history entry."""
         if not self.selected_row_data or not self.current_images:
             return
 
@@ -767,19 +847,44 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         if not current_tab_key: return
 
         updated_row = copy.deepcopy(self.selected_row_data)
-        target_obj, image_list_key = self._get_target_object_for_images(updated_row, current_tab_key)
-        if not target_obj or not image_list_key: return
-        image_list = target_obj.get(image_list_key, [])
-        if not image_list: return
-
-        # Clear all existing cover image flags in this list
-        for img in image_list:
-            img['is_cover_image'] = False
         
+        # --- FIX: Clear all cover image flags across the ENTIRE entry ---
+        image_lists_to_clear = []
+        if 'original_images' in updated_row: image_lists_to_clear.append(updated_row['original_images'])
+        if 'enhanced' in updated_row and 'images' in updated_row['enhanced']: image_lists_to_clear.append(updated_row['enhanced']['images'])
+        if 'variations' in updated_row:
+            for var_data in updated_row['variations'].values():
+                if 'images' in var_data: image_lists_to_clear.append(var_data['images'])
+        
+        for img_list in image_lists_to_clear:
+            for img in img_list:
+                if 'is_cover_image' in img:
+                    img['is_cover_image'] = False
+        
+        new_cover_image_path = None
         if not remove:
+            # Now, set the new cover image flag on the correct image
+            target_obj, image_list_key = self._get_target_object_for_images(updated_row, current_tab_key)
+            if not target_obj or not image_list_key: return
+            image_list = target_obj.get(image_list_key, [])
+            if not image_list or self.current_image_index >= len(image_list): return
             image_list[self.current_image_index]['is_cover_image'] = True
+            new_cover_image_path = image_list[self.current_image_index].get('image_path')
 
-        self._save_and_refresh_row(updated_row, "Cover image updated.")
+        if self._save_and_refresh_row(updated_row, "Cover image updated."):
+            # Find the widget in the list and update it.
+            row_id = updated_row.get('id')
+            widget_info = next((w for w in self.history_widgets if w['data'].get('id') == row_id), None)
+            
+            if widget_info:
+                widget_info['data'] = updated_row
+                final_cover_path = self._get_cover_image_path_for_row(updated_row)
+                widget_info['cover_image_path'] = final_cover_path
+                
+                thumb_label = widget_info.get('thumb_label')
+                workflow_tag = widget_info.get('workflow_tag')
+                if thumb_label and final_cover_path and workflow_tag:
+                    self._load_history_thumbnail(thumb_label, final_cover_path, workflow_tag)
 
     def _toggle_image_favorite(self):
         """Toggles the favorite status for the currently viewed image within its group."""
@@ -807,17 +912,20 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         # Just toggle the flag for the current image
         image_list[self.current_image_index]['is_favorite'] = new_favorite_status
 
-        self._save_and_refresh_row(updated_row, "Favorite status updated.")
+        self._save_and_refresh_row(updated_row, "Favorite status updated.", on_fail_callback=lambda: self.image_favorite_var.set(not new_favorite_status))
 
-    def _save_and_refresh_row(self, updated_row: Dict[str, Any], success_message: str):
+    def _save_and_refresh_row(self, updated_row: Dict[str, Any], success_message: str, on_fail_callback: Optional[Callable] = None) -> bool:
         """Saves the updated row data and refreshes the UI state."""
         success = self.processor.update_history_entry(self.selected_row_data, updated_row)
         if success:
             self.selected_row_data = updated_row
             custom_dialogs.show_info(self, "Success", success_message)
+            return True
         else:
-            custom_dialogs.show_error(self, "Error", "Failed to update favorite status in history.")
-            self.image_favorite_var.set(not new_favorite_status)
+            custom_dialogs.show_error(self, "Error", "Failed to update the history entry.")
+            if on_fail_callback:
+                on_fail_callback()
+            return False
 
     def _regenerate_prompt_with_ai(self, key: str):
         """Regenerates a single prompt (enhanced or variation) using the AI."""
@@ -838,15 +946,20 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                     original_prompt = self.selected_row_data.get('original_prompt', '')
                     if not original_prompt: raise ValueError("Original prompt not found for re-enhancement.")
                     new_prompt, new_sd_model = self.processor.regenerate_enhancement(original_prompt, model)
-                    result = {'key': key, 'prompt': new_prompt, 'sd_model': new_sd_model}
+                    result_data = {'prompt': new_prompt, 'sd_model': new_sd_model}
                 else: # It's a variation
-                    enhanced_prompt = self.selected_row_data.get('enhanced', {}).get('prompt', '')
-                    enhanced_sd_model = self.selected_row_data.get('enhanced', {}).get('sd_model', '')
-                    if not enhanced_prompt: raise ValueError("Enhanced prompt not found to generate variation from.")
-                    variation_result = self.processor.regenerate_variation(enhanced_prompt, enhanced_sd_model, model, key)
-                    result = {'key': key, 'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
+                    # Use the ENHANCED prompt as the base for regenerating a variation for better context.
+                    base_prompt_for_variation = self.selected_row_data.get('enhanced', {}).get('prompt')
+                    # Fallback to original prompt if enhanced doesn't exist for some reason
+                    if not base_prompt_for_variation:
+                        base_prompt_for_variation = self.selected_row_data.get('original_prompt', '')
+                    original_prompt_for_context = self.selected_row_data.get('original_prompt', '')
+
+                    if not base_prompt_for_variation: raise ValueError("Base prompt not found to generate variation from.")
+                    variation_result = self.processor.regenerate_variation(base_prompt_for_variation, "", model, key, original_prompt_context=original_prompt_for_context)
+                    result_data = {'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
                 
-                self.regen_prompt_queue.put({'success': True, 'result': result})
+                self.regen_prompt_queue.put({'success': True, 'key': key, 'data': result_data})
             except Exception as e:
                 self.regen_prompt_queue.put({'success': False, 'error': str(e), 'key': key})
 
@@ -857,7 +970,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         """Checks for AI prompt regeneration results and updates the UI."""
         try:
             result = self.regen_prompt_queue.get_nowait()
-            key = result.get('key')
+            key = result.get('key') # The key is now at the top level for both success and error
             
             button = self.detail_tabs.get(key, {}).get('regen_ai_button')
             if button:
@@ -867,7 +980,10 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 custom_dialogs.show_error(self, "Regeneration Error", result['error'])
                 return
             
-            self._update_prompt_from_ai(result['result'])
+            # Add the key back into the data dictionary for the update function
+            data_to_update = result['data']
+            data_to_update['key'] = key
+            self._update_prompt_from_ai(data_to_update)
         except queue.Empty:
             pass
         finally:
@@ -957,7 +1073,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                     "cfg_scale": new_gen_params.get("cfg_scale"),
                     "scheduler": new_gen_params.get("scheduler"),
                     "cfg_rescale_multiplier": new_gen_params.get("cfg_rescale_multiplier"),
-                    "save_to_gallery": new_gen_params.get("save_to_gallery", False),
+                    "save_to_gallery": False,
                 }
                 image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
                 result_data = {'bytes': image_bytes, 'prompt': prompt, 'generation_params': new_gen_params}
@@ -1238,41 +1354,38 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
     def _check_thumbnail_queue(self):
         """Checks for loaded thumbnails and updates the UI."""
         try:
-            while not self.thumbnail_queue.empty():
-                label_widget, image_data = self.thumbnail_queue.get_nowait()
-                if label_widget.winfo_exists():
-                    if isinstance(image_data, Image.Image):
-                        img_ref = ImageTk.PhotoImage(image_data)
-                        label_widget.config(image=img_ref, text="")
-                        label_widget.image = img_ref  # Keep a reference
-                    else: # It's an error string
-                        label_widget.config(text=image_data, image='')
+            label_widget, image_data = self.thumbnail_queue.get_nowait()
+            if label_widget.winfo_exists():
+                img_ref = ImageTk.PhotoImage(image_data)
+                label_widget.config(image=img_ref, text="")
+                label_widget.image = img_ref  # Keep a reference
         except queue.Empty:
             pass
         finally:
             if self.winfo_exists():
                 self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
 
-    def _load_history_thumbnail_worker(self, label_widget: ttk.Label, image_path: str):
-        """Worker thread to load and resize a thumbnail."""
-        try:
-            full_path = os.path.join(config.get_history_file_dir(), image_path)
-            if not os.path.exists(full_path):
-                self.thumbnail_queue.put((label_widget, "Not\nFound"))
-                return
-
-            img = Image.open(full_path)
-            img.thumbnail((96, 96))
-            self.thumbnail_queue.put((label_widget, img))
-        except Exception as e:
-            # Don't print to console unless verbose, as this can be noisy if many images are missing.
-            if self.processor.verbose:
-                print(f"Error loading history thumbnail {image_path}: {e}")
-            self.thumbnail_queue.put((label_widget, "Load\nError"))
-
-    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str):
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
         """Starts a background thread to load a thumbnail for the history list."""
-        thread = threading.Thread(target=self._load_history_thumbnail_worker, args=(label_widget, image_path), daemon=True)
+        def task():
+            try:
+                # Manually construct the path to avoid modifying global config from a thread.
+                # This is a more robust way to handle pathing in a multithreaded context.
+                base_history_dir = config.HISTORY_DIR
+                workflow_sub_dir = workflow.lower()
+                workflow_history_dir = os.path.join(base_history_dir, workflow_sub_dir)
+                full_path = os.path.join(workflow_history_dir, image_path)
+
+                if not os.path.exists(full_path): return # Silently fail if not found
+
+                with Image.open(full_path) as img:
+                    img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                    self.thumbnail_queue.put((label_widget, img.copy()))
+            except Exception as e:
+                if self.processor.verbose:
+                    print(f"Error getting history thumbnail {image_path}: {e}")
+
+        thread = threading.Thread(target=task, daemon=True)
         thread.start()
 
     def _on_image_container_resize(self, event=None):
@@ -1336,26 +1449,59 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         ):
             return
 
-        pruned_count = self.processor.prune_missing_image_entries()
-        custom_dialogs.show_info(self, "Prune Complete", f"Removed {pruned_count} missing image references from the history file.")
-        # Reload the view to reflect the changes
-        self.load_and_display_history()
+        def on_success(pruned_count):
+            custom_dialogs.show_info(self, "Prune Complete", f"Removed {pruned_count} missing image references from the history file.")
+            self.load_and_display_history()
+
+        def on_error(error_message):
+            custom_dialogs.show_error(self, "Prune Error", f"An error occurred while pruning history:\n{error_message}")
+
+        self.run_task(
+            task_callable=self.processor.prune_missing_image_entries,
+            on_success=on_success,
+            on_error=on_error,
+            loading_dialog_title="Pruning History",
+            loading_dialog_message="Scanning history for missing images..."
+        )
 
     def _garbage_collect_images(self):
         """Starts the process of pruning missing image entries from the history file."""
         if not custom_dialogs.ask_yes_no(
             self, 
-            "Confirm Prune", 
-            "This will scan your entire history file and remove any references to image files that no longer exist on disk.\n\nThis action cannot be undone. Are you sure you want to continue?"
+            "Confirm Garbage Collect", 
+            "This will scan your image history directories and delete any image files that are NOT referenced in your history file.\n\nThis action cannot be undone. Are you sure you want to continue?"
         ):
             return
 
-        deleted_count = self.processor.garbage_collect_orphaned_images()
-        custom_dialogs.show_info(self, "Garbage Collection Complete", f"Deleted {deleted_count} orphaned image files.")
+        def on_success(deleted_count):
+            custom_dialogs.show_info(self, "Garbage Collection Complete", f"Deleted {deleted_count} orphaned image files.")
+
+        def on_error(error_message):
+            custom_dialogs.show_error(self, "Garbage Collection Error", f"An error occurred during garbage collection:\n{error_message}")
+
+        self.run_task(
+            task_callable=self.processor.garbage_collect_orphaned_images,
+            on_success=on_success,
+            on_error=on_error,
+            loading_dialog_title="Garbage Collecting Images",
+            loading_dialog_message="Scanning for and deleting orphaned images..."
+        )
 
     def _on_double_click(self, event=None):
         """Handles double-click on an item to load it into the main window."""
         self._load_to_main_window()
+
+    def _load_to_main_window(self):
+        """Intelligently loads the selected history item into the main window."""
+        if not self.selected_row_data:
+            return
+
+        # Prioritize reloading the template if context is available, as it's more editable.
+        has_template_context = self.selected_row_data.get('template_name') and self.selected_row_data.get('context')
+        if has_template_context:
+            self._reload_template_to_main_window()
+        else:
+            self._load_prompt_to_main_window()
 
     def _delete_selected_history(self):
         """Deletes the selected row from the history file and the view."""
@@ -1456,7 +1602,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
         
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Copy Template Name", command=lambda: self._copy_selected_prompt_part('template_name'))
-        self.context_menu.add_command(label="Load to Main Window", command=self._load_to_main_window)
+        
+        # --- Loading Sub-menu ---
+        load_menu = tk.Menu(self.context_menu, tearoff=0)
+        load_menu.add_command(label="Load Final Prompt to Editor", command=self._load_prompt_to_main_window)
+        has_template_context = full_row_data.get('template_name') and full_row_data.get('context')
+        load_menu.add_command(label="Reload Template & Choices", command=self._reload_template_to_main_window, state=tk.NORMAL if has_template_context else tk.DISABLED)
+        self.context_menu.add_cascade(label="Load to Main Window", menu=load_menu)
+
         self.context_menu.add_separator()
         
         # Favorite toggle
@@ -1500,7 +1653,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
                 self.clipboard_clear()
                 self.clipboard_append(content_to_copy)
 
-    def _load_to_main_window(self):
+    def _load_prompt_to_main_window(self):
         """Sends the selected original prompt back to the main app for re-enhancement."""
         if not self.selected_row_data: return
         full_row_data = self.selected_row_data
@@ -1509,6 +1662,15 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin):
             if original_prompt:
                 self.parent_app.load_prompt_from_history(original_prompt)
                 self.destroy()
+
+    def _reload_template_to_main_window(self):
+        """Sends the selected entry's template and context back to the main app."""
+        if not self.selected_row_data: return
+        template_name = self.selected_row_data.get('template_name')
+        context = self.selected_row_data.get('context')
+        if template_name and context:
+            self.parent_app.load_template_from_history(template_name, context)
+            self.destroy()
 
     def _delete_prompt_part(self, part_key: str):
         """Deletes a specific part (enhanced or a variation) of a history entry."""

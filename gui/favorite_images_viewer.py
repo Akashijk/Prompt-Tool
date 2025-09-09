@@ -11,7 +11,7 @@ import copy
 from PIL import Image, ImageTk
 from typing import List, Dict, Optional, TYPE_CHECKING, Any
 
-from .common import SmartWindowMixin, LoadingAnimation, Tooltip, TextContextMenu
+from .common import SmartWindowMixin, LoadingAnimation, Tooltip, TextContextMenu, ImagePreviewMixin, ScrollableFrame
 from . import custom_dialogs
 from core.config import config
 
@@ -19,10 +19,11 @@ if TYPE_CHECKING:
     from .gui_app import GUIApp
     from core.prompt_processor import PromptProcessor
 
-class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
+class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
     """A window to view and manage all favorited images."""
     def __init__(self, parent: 'GUIApp', processor: 'PromptProcessor'):
         super().__init__(parent)
+        ImagePreviewMixin.__init__(self)
         self.title("Favorite Images")
         self.parent_app = parent
         self.processor = processor
@@ -36,45 +37,13 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
         self.smart_geometry(min_width=1000, min_height=700)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
-    def _on_mouse_wheel(self, event):
-        """Handles mouse wheel scrolling for the list."""
-        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
-        self.canvas.yview_scroll(delta, "units")
-
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.after_id:
             self.after_cancel(self.after_id)
             self.after_id = None
+        self.close_preview_on_destroy()
         self.destroy()
-
-    def _create_widgets(self):
-        main_frame = ttk.Frame(self, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        self.loading_animation = LoadingAnimation(main_frame, size=32)
-        self.loading_label = ttk.Label(main_frame, text="Loading favorite images...")
-
-        self.canvas = tk.Canvas(main_frame, borderwidth=0, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=self.canvas.yview)
-        self.container = ttk.Frame(self.canvas)
-        self.canvas.configure(yscrollcommand=scrollbar.set)
-
-        scrollbar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        canvas_frame = self.canvas.create_window((0, 0), window=self.container, anchor="nw")
-
-        def on_frame_configure(event):
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-        def on_canvas_configure(event):
-            self.canvas.itemconfig(canvas_frame, width=event.width)
-
-        self.container.bind("<Configure>", on_frame_configure)
-        self.canvas.bind("<Configure>", on_canvas_configure)
-        # Add mouse wheel scrolling
-        self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
-        self.container.bind("<MouseWheel>", self._on_mouse_wheel)
 
     def _start_loading_favorites(self):
         """Shows loading indicator and starts fetching data in a thread."""
@@ -106,11 +75,23 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
         except queue.Empty:
             self.after_id = self.after(100, self._check_load_queue)
 
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.loading_animation = LoadingAnimation(main_frame, size=32)
+        self.loading_label = ttk.Label(main_frame, text="Loading favorite images...")
+
+        self.scroll_view = ScrollableFrame(main_frame)
+        self.container = self.scroll_view.scrollable_frame
+
     def _populate_viewer(self, favorites_data: List[Dict[str, Any]]):
         """Clears and fills the view with favorite image entries."""
         for widget_info in self.favorite_widgets:
             widget_info['frame'].destroy()
         self.favorite_widgets.clear()
+
+        self.scroll_view.pack(fill=tk.BOTH, expand=True)
 
         if not favorites_data:
             ttk.Label(self.container, text="No favorite images found.", padding=20).pack()
@@ -119,17 +100,19 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
         for fav_data in favorites_data:
             item_frame = ttk.Frame(self.container, style="HistoryItem.TFrame", relief="groove", borderwidth=1, padding=10)
             item_frame.pack(fill=tk.X, pady=5, padx=5)
-            item_frame.bind("<MouseWheel>", self._on_mouse_wheel)
 
             # Image
             img_label = ttk.Label(item_frame, anchor=tk.CENTER)
             img_label.pack(side=tk.LEFT, padx=(0, 10))
-            self._load_thumbnail(img_label, fav_data.get('image_path'))
+            self._load_thumbnail(img_label, fav_data.get('image_path'), fav_data.get('workflow_source', 'sfw'))
+
+            # Bind preview events
+            img_label.bind("<Enter>", lambda e, info=fav_data: self._schedule_preview(info))
+            img_label.bind("<Leave>", lambda e: self._schedule_hide())
 
             # Info and actions
             info_frame = ttk.Frame(item_frame)
             info_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            info_frame.bind("<MouseWheel>", self._on_mouse_wheel)
 
             prompt_label = ttk.Label(info_frame, text=f"Prompt ({fav_data.get('prompt_type', 'N/A')}):", font=self.parent_app.small_font)
             prompt_label.pack(anchor='w')
@@ -137,7 +120,6 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
             prompt_text.insert("1.0", fav_data.get('prompt', ''))
             prompt_text.config(state=tk.DISABLED)
             prompt_text.pack(fill=tk.X, expand=True, pady=(0, 5))
-            prompt_text.bind("<MouseWheel>", self._on_mouse_wheel)
             TextContextMenu(prompt_text)
 
             # Generation parameters
@@ -146,13 +128,11 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
             seed = gen_params.get('seed', 'N/A')
             params_str = f"Model: {model_name} | Seed: {seed}"
             params_label = ttk.Label(info_frame, text=params_str, font=self.parent_app.small_font)
-            params_label.bind("<MouseWheel>", self._on_mouse_wheel)
             params_label.pack(anchor='w')
             Tooltip(params_label, json.dumps(gen_params, indent=2))
 
             # Action buttons
             button_frame = ttk.Frame(info_frame)
-            button_frame.bind("<MouseWheel>", self._on_mouse_wheel)
             button_frame.pack(fill=tk.X, pady=(10, 0))
             
             unfav_button = ttk.Button(button_frame, text="Unfavorite", command=lambda d=fav_data, f=item_frame: self._unfavorite_image(d, f))
@@ -164,14 +144,35 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin):
 
             self.favorite_widgets.append({'frame': item_frame, 'data': fav_data})
 
-    def _load_thumbnail(self, label_widget: ttk.Label, image_path: Optional[str]):
+    def _get_preview_image(self, widget_info: Dict[str, Any]) -> Optional[Image.Image]:
+        """Implementation of the abstract method from ImagePreviewMixin."""
+        relative_image_path = widget_info.get('image_path')
+        if not relative_image_path: return None
+
+        try:
+            workflow = widget_info.get('workflow_source', 'sfw')
+            original_workflow = config.workflow
+            config.workflow = workflow.lower()
+            full_path = os.path.join(config.get_history_file_dir(), relative_image_path)
+            config.workflow = original_workflow
+            if not os.path.exists(full_path): return None
+            return Image.open(full_path)
+        except Exception as e:
+            print(f"Error loading full image for preview: {e}")
+            return None
+
+    def _load_thumbnail(self, label_widget: ttk.Label, image_path: Optional[str], workflow: str):
         """Loads an image thumbnail into a label."""
         if not image_path:
             label_widget.config(text="Path\nMissing")
             return
 
         try:
+            original_workflow = config.workflow
+            config.workflow = workflow.lower()
             full_path = os.path.join(config.get_history_file_dir(), image_path)
+            config.workflow = original_workflow
+
             if not os.path.exists(full_path):
                 label_widget.config(text="Image\nNot Found")
                 return

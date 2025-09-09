@@ -120,10 +120,31 @@ DEFAULT_NSFW_VARIATIONS = {
         "name": "Photorealistic",
         "description": "Re-writes the prompt to be hyper-realistic, focusing on details like skin pores, sweat, and raw, intimate lighting.",
         "prompt": "Transform this NSFW Stable Diffusion prompt into a hyper-realistic PHOTOREALISTIC version. Focus on technical photography details like skin pores, sweat, bodily fluids, and realistic lighting to create a raw, intimate, and high-quality image.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic NSFW content]\n\n**Original prompt to transform:**\n"
-    }
+    },
 }
 
 # --- DEFAULT BRAINSTORMING PROMPTS ---
+
+DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT = """You are an expert AI prompt engineer acting as a planner. Your task is to select a small, highly relevant set of wildcards to use for generating a Stable Diffusion prompt template based on a user's theme.
+
+**THEME:** {theme}
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Analyze the Theme:** Deeply understand the user's theme.
+2.  **Review Available Wildcards:** Read the list of available wildcards and their descriptions below.
+3.  **Select the BEST Wildcards:** Choose 5-10 of the most relevant and high-impact wildcards for the theme.
+    -   Avoid redundancy. If multiple wildcards serve a similar purpose (e.g., `__clothing__`, `__outfit__`), pick only the best one.
+    -   Prioritize wildcards that offer creative variety.
+4.  **Return ONLY a List:** Your entire response MUST be a single, comma-separated list of the wildcard names you have selected. Do not include any other text, explanations, or formatting.
+
+**EXAMPLE RESPONSE:**
+`__character_class__, __fantasy_armor__, __weapon_type__, __lighting_style__, __fantasy_forest__`
+
+**AVAILABLE WILDCARDS (with descriptions):**
+{wildcard_list_with_desc_str}
+
+Now, provide the comma-separated list of the best wildcard names for the theme.
+"""
 
 DEFAULT_BRAINSTORM_TEMPLATE_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to write a descriptive prompt template based on the user's concept. You can use existing wildcards from the list below, but you are also **strongly encouraged to invent new, relevant wildcard names** to make the template more versatile.
 
@@ -168,25 +189,79 @@ DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT = """You are an expert prompt en
 Now, generate the template.
 """
 
-DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT = """You are an expert AI prompt engineer acting as a planner. Your task is to select a small, highly relevant set of wildcards to use for generating a Stable Diffusion prompt template based on a user's theme.
+DEFAULT_AI_REFACTOR_CHOICES_PROMPT = """You are a JSON sorting AI. Your task is to analyze two wildcard files and move any choice that is thematically in the wrong file.
 
-**THEME:** {theme}
+**CONTEXT:**
+- You are given two files: a "Primary File" and a "Supporting File".
+- Each file has a `description` explaining its purpose.
+- Each file has a `choices` array containing prompt fragments.
+
+**YOUR TASK:**
+1.  Read the `description` of both files to understand their themes.
+2.  Analyze the `choices` in the **Primary File**. If a choice is **entirely** about the theme of the Supporting File, you MUST move the entire choice object to the Supporting File's `choices` array.
+3.  Analyze the `choices` in the **Supporting File**. If a choice is **entirely** about the theme of the Primary File, you MUST move the entire choice object to the Primary File's `choices` array.
+4.  If a choice is already in the correct file, or if it contains mixed themes, you MUST leave it untouched in its original file.
 
 **CRITICAL INSTRUCTIONS:**
-1.  **Analyze the Theme:** Deeply understand the user's theme.
-2.  **Review Available Wildcards:** Read the list of available wildcards and their descriptions below.
-3.  **Select the BEST Wildcards:** Choose 5-10 of the most relevant and high-impact wildcards for the theme.
-    -   Avoid redundancy. If multiple wildcards serve a similar purpose (e.g., `__clothing__`, `__outfit__`), pick only the best one.
-    -   Prioritize wildcards that offer creative variety.
-4.  **Return ONLY a List:** Your entire response MUST be a single, comma-separated list of the wildcard names you have selected. Do not include any other text, explanations, or formatting.
+1.  **YOUR ONLY ALLOWED OPERATION IS MOVING ENTIRE ENTRIES.** Do not split entries. Do not combine entries. Do not rewrite or rephrase text.
+2.  **PRESERVE DATA.** When moving a choice object, you must move it exactly as-is, with all its properties (`value`, `weight`, `tags`, etc.).
+3.  **RETURN FULL JSON FOR BOTH FILES.** You MUST return a single JSON object with two keys matching the original filenames. The value for each key must be the complete, valid JSON content for that file after you have moved the misplaced entries.
+4.  **NO EXTRA TEXT.** Do not add any commentary outside of the main JSON object.
 
-**EXAMPLE RESPONSE:**
-`__character_class__, __fantasy_armor__, __weapon_type__, __lighting_style__, __fantasy_forest__`
+**EXAMPLE:**
+- Primary File (appearance.json) Description: "Describes the character's body and face."
+- Supporting File (outfits.json) Description: "Describes the character's clothing."
+- A choice `{{"value": "wearing a leather corset"}}` found in `appearance.json` MUST be moved to `outfits.json`.
+- A choice `{{"value": "a woman with green eyes"}}` found in `outfits.json` MUST be moved to `appearance.json`.
+- A choice `{{"value": "a woman with green eyes wearing a leather corset"}}` found in `appearance.json` MUST be **left untouched** because it contains mixed themes.
 
-**AVAILABLE WILDCARDS (with descriptions):**
-{wildcard_list_with_desc_str}
+**PRIMARY FILE ({primary_filename}):**
+```json
+{primary_content}
+```
 
-Now, provide the comma-separated list of the best wildcard names for the theme.
+**SUPPORTING FILE TO RECEIVE MOVED CHOICES ({supporting_filename}):**
+```json
+{supporting_content}
+```
+
+Now, provide the full, refactored JSON object containing the content for both files.
+"""
+
+DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion wildcards for grammatical correctness. Your task is to analyze a "Primary" wildcard file and a "Supporting" wildcard file, then **unconditionally modify every choice** in the Primary file so it flows naturally when followed by a choice from the Supporting File.
+
+**CONTEXT:**
+- The Primary File has already been cleaned of misplaced content.
+- During prompt generation, a choice from the Primary File will be immediately followed by a choice from the Supporting File.
+- Example: `(a choice from Primary File), (a choice from Supporting File)`
+- The goal is to make this combination grammatically sound.
+
+**THE TASK:**
+You MUST modify every `value` in the Primary File by appending a short, grammatical "bridge" phrase (like "wearing a", "in a", "with", "who has").
+
+**EXAMPLE:**
+- **Primary File (character.json):** `{{"value": "a beautiful vampiress"}}`
+- **Supporting File (clothing.json):** `{{"value": "black lace bra"}}`
+- **CORRECT MODIFICATION:** The `value` in `character.json` MUST be changed to `"a beautiful vampiress wearing a"`.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **MODIFY EVERY CHOICE:** You are required to append a suitable bridge phrase to **every single choice** in the Primary File. Do not leave any unmodified.
+2.  **ADD ONLY BRIDGE WORDS:** Your ONLY task is to add short connecting words. Do not add new descriptive concepts, actions, or objects.
+3.  **MODIFY ONLY THE PRIMARY FILE:** You MUST NOT change the Supporting File.
+4.  **PRESERVE ALL OTHER DATA:** Do not change any other properties in the Primary File, such as `weight`, `tags`, or `requires`.
+5.  **RETURN FULL JSON:** You MUST return the complete, valid JSON content for the **Primary File only**. Do not return the supporting file's content or any commentary. Your entire response must be a single JSON object.
+
+**PRIMARY FILE TO MODIFY ({primary_filename}):**
+```json
+{primary_content}
+```
+
+**SUPPORTING FILE FOR CONTEXT ({supporting_filename}):**
+```json
+{supporting_content}
+```
+
+Now, provide the full, corrected JSON content for the Primary File.
 """
 
 DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.{template_context_section}{linked_wildcard_instruction}
@@ -289,6 +364,40 @@ DEFAULT_AI_AUTO_TAG_PROMPT = """You are an expert AI assistant specializing in d
 Now, generate the JSON array of tagged choices.
 """
 
+DEFAULT_AI_ENRICH_WILDCARD_CHOICES_PROMPT = """You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing list of choices and enrich them based on the user's request.
+
+**CONTEXT:**
+- The wildcard file has the following description: "{description}"
+- The choices are for the topic: '{topic}'
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Return a Full JSON Array:** Your entire response MUST be a single JSON array.
+2.  **Convert All to Objects:** Every item in the returned array MUST be a JSON object. If an input item was a simple string, convert it to an object with a `value` key.
+3.  **Match Array Length:** The number of objects in your returned array MUST be exactly the same as the number of items in the input `choices` array.
+4.  **Preserve Core Concept:** Do NOT change the fundamental subject of any choice.
+5.  **No Extra Text:** Do not add any commentary outside of the JSON array.
+
+{enrichment_instructions}
+
+**AVAILABLE WILDCARDS (for 'requires' and 'includes'):**
+{available_wildcards_str}
+
+**CHOICES TO ENRICH:**
+```json
+{choices_json}
+```
+
+**EXAMPLE RESPONSE (if enriching both descriptions and metadata):**
+```json
+[
+  {{"value": "a gleaming longsword with an ornate hilt and a large ruby set in the pommel", "tags": ["weapon", "melee"], "weight": 2, "requires": {{"character_class": "warrior"}}}},
+  {{"value": "a worn leather-bound spellbook with faintly glowing runes on the cover", "tags": ["magic", "book"], "includes": ["__arcane_symbols__"]}}
+]
+```
+
+Now, generate the JSON array of enriched choices.
+"""
+
 DEFAULT_AI_FIX_GRAMMAR_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion wildcards for grammatical correctness. Your task is to analyze a wildcard's JSON content and fix grammatical issues that occur when a `value` is combined with its `includes`.
 
 **CONTEXT:**
@@ -316,97 +425,6 @@ Sometimes, the combination is grammatically awkward.
 ```
 
 Now, provide the full, corrected JSON content.
-"""
-
-DEFAULT_AI_REFACTOR_CHOICES_PROMPT = """You are a JSON sorting AI. Your task is to analyze two wildcard files and move any choice that is thematically in the wrong file.
-
-**CONTEXT:**
-- You are given two files: a "Primary File" and a "Supporting File".
-- Each file has a `description` explaining its purpose.
-- Each file has a `choices` array containing prompt fragments.
-
-**YOUR TASK:**
-1.  Read the `description` of both files to understand their themes.
-2.  Analyze the `choices` in the **Primary File**. If a choice is **entirely** about the theme of the Supporting File, you MUST move the entire choice object to the Supporting File's `choices` array.
-3.  Analyze the `choices` in the **Supporting File**. If a choice is **entirely** about the theme of the Primary File, you MUST move the entire choice object to the Primary File's `choices` array.
-4.  If a choice is already in the correct file, or if it contains mixed themes, you MUST leave it untouched in its original file.
-
-**CRITICAL INSTRUCTIONS:**
-1.  **YOUR ONLY ALLOWED OPERATION IS MOVING ENTIRE ENTRIES.** Do not split entries. Do not combine entries. Do not rewrite or rephrase text.
-2.  **PRESERVE DATA.** When moving a choice object, you must move it exactly as-is, with all its properties (`value`, `weight`, `tags`, etc.).
-3.  **RETURN FULL JSON FOR BOTH FILES.** You MUST return a single JSON object with two keys matching the original filenames. The value for each key must be the complete, valid JSON content for that file after you have moved the misplaced entries.
-4.  **NO EXTRA TEXT.** Do not add any commentary outside of the main JSON object.
-
-**EXAMPLE:**
-- Primary File (appearance.json) Description: "Describes the character's body and face."
-- Supporting File (outfits.json) Description: "Describes the character's clothing."
-- A choice `{{"value": "wearing a leather corset"}}` found in `appearance.json` MUST be moved to `outfits.json`.
-- A choice `{{"value": "a woman with green eyes"}}` found in `outfits.json` MUST be moved to `appearance.json`.
-- A choice `{{"value": "a woman with green eyes wearing a leather corset"}}` found in `appearance.json` MUST be **left untouched** because it contains mixed themes.
-
-**PRIMARY FILE ({primary_filename}):**
-```json
-{primary_content}
-```
-
-**SUPPORTING FILE TO RECEIVE MOVED CHOICES ({supporting_filename}):**
-```json
-{supporting_content}
-```
-
-Now, provide the full, refactored JSON object containing the content for both files.
-"""
-
-DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion wildcards for grammatical correctness. Your task is to analyze a "Primary" wildcard file and a "Supporting" wildcard file, then **unconditionally modify every choice** in the Primary file so it flows naturally when followed by a choice from the Supporting file.
-
-**CONTEXT:**
-- The Primary File has already been cleaned of misplaced content.
-- During prompt generation, a choice from the Primary File will be immediately followed by a choice from the Supporting File.
-- Example: `(a choice from Primary File), (a choice from Supporting File)`
-- The goal is to make this combination grammatically sound.
-
-**THE TASK:**
-You MUST modify every `value` in the Primary File by appending a short, grammatical "bridge" phrase (like "wearing a", "in a", "with", "who has").
-
-**EXAMPLE:**
-- **Primary File (character.json):** `{{"value": "a beautiful vampiress"}}`
-- **Supporting File (clothing.json):** `{{"value": "black lace bra"}}`
-- **CORRECT MODIFICATION:** The `value` in `character.json` MUST be changed to `"a beautiful vampiress wearing a"`.
-
-**CRITICAL INSTRUCTIONS:**
-1.  **MODIFY EVERY CHOICE:** You are required to append a suitable bridge phrase to **every single choice** in the Primary File. Do not leave any unmodified.
-2.  **ADD ONLY BRIDGE WORDS:** Your ONLY task is to add short connecting words. Do not add new descriptive concepts, actions, or objects.
-3.  **MODIFY ONLY THE PRIMARY FILE:** You MUST NOT change the Supporting File.
-4.  **PRESERVE ALL OTHER DATA:** Do not change any other properties in the Primary File, such as `weight`, `tags`, or `requires`.
-5.  **RETURN FULL JSON:** You MUST return the complete, valid JSON content for the **Primary File only**. Do not return the supporting file's content or any commentary. Your entire response must be a single JSON object.
-
-**PRIMARY FILE TO MODIFY ({primary_filename}):**
-```json
-{primary_content}
-```
-
-**SUPPORTING FILE FOR CONTEXT ({supporting_filename}):**
-```json
-{supporting_content}
-```
-
-Now, provide the full, corrected JSON content for the Primary File.
-"""
-
-DEFAULT_AI_CLEANUP_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion prompts. Your task is to take a generated prompt, which is a comma-separated list of keywords and phrases, and clean it up for grammatical coherence and natural language flow, while preserving all key concepts.
-
-**CRITICAL INSTRUCTIONS:**
-1.  **Analyze the Prompt:** Read the entire prompt to understand the scene, subject, and style.
-2.  **Fix Grammar & Flow:** Correct awkward phrasing, fix subject-verb agreement, and ensure smooth transitions between concepts. For example, change "a woman, beautiful face" to "a woman with a beautiful face". Change "athletic build, a toned stomach" to "athletic build with a toned stomach".
-3.  **Combine Redundancies:** Merge redundant or overly similar tags. For example, "masterpiece, best quality, high quality" can be simplified to "masterpiece, best quality".
-4.  **Preserve Core Concepts:** Do NOT remove any core subjects, objects, or style keywords (e.g., 'photorealistic', 'cinematic', 'by artist name', `__wildcard__` tags, or weighted terms like `(word)1.2`).
-5.  **Maintain Format:** The final output MUST remain a comma-separated list of keywords and phrases suitable for Stable Diffusion.
-6.  **Return ONLY the Prompt:** Return only the cleaned-up prompt text. Do not include any other commentary, labels, or explanations.
-
-**ORIGINAL PROMPT TO CLEAN UP:**
-{prompt_to_clean}
-
-**CLEANED-UP PROMPT:**
 """
 
 DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION = """
@@ -440,11 +458,11 @@ DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT = """You are an expert conten
 Now, generate the JSON array of new choices.
 """
 
-DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to take a user's prompt template and enhance it by adding more detail, style, and creative wildcards.
+DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to take a user's prompt template and enhance it by adding more detail, style, and creative wildcards. Your goal is to return a new, more detailed **template**, not a final, generated prompt.
 
 **CRITICAL INSTRUCTIONS:**
-1.  **Preserve Core Concepts:** Do not remove or fundamentally change the core subject of the template.
-2.  **Integrate Wildcards:** Analyze the 'AVAILABLE WILDCARDS' list. Intelligently integrate relevant existing wildcards to add variety and detail.
+1.  **Preserve Existing Wildcards:** Any text in the original template that is surrounded by double underscores (e.g., `__wildcard_name__`, `__stylish outfit__`) is a placeholder. You MUST keep these placeholders exactly as they are in your output. Do NOT replace them with specific values. This is the most important rule.
+2.  **Integrate New Wildcards:** Analyze the 'AVAILABLE WILDCARDS' list. Intelligently integrate relevant existing wildcards to add variety and detail.
 3.  **Add Descriptive Keywords:** Weave in new descriptive keywords for lighting, style, quality, composition, etc.
 4.  **Maintain Structure:** The output must be a single, comma-separated paragraph suitable for a Stable Diffusion template.
 5.  **Return ONLY the Template:** Return only the full, enhanced template text. Do not include any other commentary, labels, or explanations.

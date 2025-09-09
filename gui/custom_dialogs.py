@@ -11,21 +11,22 @@ import copy
 import difflib
 import re
 import os
-from typing import TYPE_CHECKING, Callable, Tuple, Any
+from typing import TYPE_CHECKING, Callable, Tuple, Any, Optional
 from .common import Tooltip, TextContextMenu
 
 if TYPE_CHECKING:
     from core.prompt_processor import PromptProcessor
     from .gui_app import GUIApp
-    
+
 class _CustomDialog(tk.Toplevel):
     """Base class for custom dialogs, handling window positioning and setup."""
-    def __init__(self, parent, title: str):
+    def __init__(self, parent, title: str, modal: bool = True):
         super().__init__(parent)
         self.title(title)
         self.transient(parent)
-        self.grab_set()
         self.result = None
+        if modal:
+            self.grab_set()
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
         self.bind("<Escape>", self._on_cancel)
@@ -49,6 +50,46 @@ class _CustomDialog(tk.Toplevel):
 
     def _on_cancel(self, event=None):
         self.result = None
+        self.destroy()
+
+class _EnrichChoicesDialog(_CustomDialog):
+    """A dialog to select options for AI-powered choice enrichment."""
+    def __init__(self, parent):
+        super().__init__(parent, "Enrich Choices with AI")
+
+        self.improve_descriptions_var = tk.BooleanVar(value=True)
+        self.add_metadata_var = tk.BooleanVar(value=True)
+
+        main_frame = ttk.Frame(self, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Select how you want the AI to enrich your choices:", wraplength=350).pack(pady=(0, 15), anchor='w')
+
+        options_frame = ttk.Frame(main_frame)
+        options_frame.pack(fill=tk.X)
+
+        cb1 = ttk.Checkbutton(options_frame, text="Improve Descriptions", variable=self.improve_descriptions_var, onvalue=True, offvalue=False)
+        cb1.pack(anchor='w', pady=2)
+        Tooltip(cb1, "Rewrite choice values to be more descriptive and evocative for image generation.")
+
+        cb2 = ttk.Checkbutton(options_frame, text="Add/Update Metadata", variable=self.add_metadata_var, onvalue=True, offvalue=False)
+        cb2.pack(anchor='w', pady=2)
+        Tooltip(cb2, "Add or update metadata like tags, weights, requirements, and includes.")
+
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(20, 0))
+        ok_button = ttk.Button(button_frame, text="Enrich", command=self._on_ok, style="Accent.TButton")
+        ok_button.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+        self.bind("<Return>", self._on_ok)
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_ok(self, event=None):
+        self.result = (self.improve_descriptions_var.get(), self.add_metadata_var.get())
         self.destroy()
 
 class _AskStringDialog(_CustomDialog):
@@ -120,6 +161,33 @@ class _MessageBox(_CustomDialog):
         self.result = False
         self.destroy()
 
+class _YesNoCancelBox(_CustomDialog):
+    """A custom, theme-aware message box that returns True, False, or None."""
+    def __init__(self, parent, title: str, message: str):
+        super().__init__(parent, title)
+        self.result = None # Default for cancel/close
+
+        main_frame = ttk.Frame(self, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text=message, wraplength=350).pack(pady=(0, 20), anchor='w')
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X)
+
+        yes_button = ttk.Button(button_frame, text="Yes", command=self._on_yes, style="Accent.TButton")
+        yes_button.pack(side=tk.RIGHT, padx=(5, 0))
+        no_button = ttk.Button(button_frame, text="No", command=self._on_no)
+        no_button.pack(side=tk.RIGHT, padx=(5,0))
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_yes(self): self.result = True; self.destroy()
+    def _on_no(self): self.result = False; self.destroy()
+
 class _CopyableErrorDialog(_CustomDialog):
     """A message box with selectable text for copying."""
     def __init__(self, parent, title: str, message: str):
@@ -159,6 +227,10 @@ def ask_string(parent, title, prompt, **kwargs) -> str | None:
 
 def ask_yes_no(parent, title, message) -> bool:
     dialog = _MessageBox(parent, title, message, yes_no=True)
+    return dialog.result
+
+def ask_yes_no_cancel(parent, title, message) -> Optional[bool]:
+    dialog = _YesNoCancelBox(parent, title, message)
     return dialog.result
 
 def show_info(parent, title, message):

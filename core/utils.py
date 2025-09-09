@@ -3,6 +3,7 @@ Core utility functions shared across the application's backend logic.
 """
 
 from typing import List, Dict, Any, Optional
+import json
 
 def _clean_string(s: Any, replace_underscores: bool = True) -> str:
     """Helper to clean a string value by stripping whitespace and optionally replacing underscores."""

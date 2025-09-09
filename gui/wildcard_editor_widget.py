@@ -52,12 +52,16 @@ class _AutocompletePopup(tk.Toplevel):
 
 class WildcardEditor(ttk.Frame):
     """A structured editor for wildcard files."""
-    def __init__(self, parent, processor: 'PromptProcessor', suggestion_callback: Optional[Callable] = None, refinement_callback: Optional[Callable] = None, autotag_callback: Optional[Callable] = None, **kwargs):
+    def __init__(self, parent, processor: 'PromptProcessor', suggestion_callback: Optional[Callable] = None, autotag_callback: Optional[Callable] = None, enrich_callback: Optional[Callable] = None, add_requirement_callback: Optional[Callable] = None, dirty_callback: Optional[Callable] = None, current_filename_callback: Optional[Callable] = None, add_requirement_label: Optional[str] = None, **kwargs):
         super().__init__(parent, **kwargs)
         self.processor = processor
         self.suggestion_callback = suggestion_callback
-        self.refinement_callback = refinement_callback
         self.autotag_callback = autotag_callback
+        self.enrich_callback = enrich_callback
+        self.add_requirement_callback = add_requirement_callback
+        self.dirty_callback = dirty_callback
+        self.current_filename_callback = current_filename_callback
+        self.add_requirement_label = add_requirement_label or "Require this value for selected in other pane"
         self.iid_to_choice_map: Dict[str, Any] = {}
         # The parent is a frame inside the WildcardManagerWindow.
         self.autocomplete_popup: Optional[_AutocompletePopup] = None
@@ -73,9 +77,16 @@ class WildcardEditor(ttk.Frame):
         self.duplicate_tag = "duplicate"
         self._create_widgets()
         self.error_tooltip = Tooltip(self.tree)
+        self.value_tooltip = Tooltip(self.tree)
         self.error_tooltip_after_id: Optional[str] = None
+        self.value_tooltip_after_id: Optional[str] = None
         self.last_hovered_iid: Optional[str] = None
         self.update_theme() # Set initial theme-based colors
+
+    def _mark_dirty(self):
+        """Marks the editor as dirty and calls the parent callback."""
+        if self.dirty_callback:
+            self.dirty_callback()
 
     def _create_widgets(self):
         # --- Description ---
@@ -83,6 +94,7 @@ class WildcardEditor(ttk.Frame):
         desc_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(desc_frame, text="Description:").pack(side=tk.LEFT, padx=(0, 5))
         self.description_entry = ttk.Entry(desc_frame)
+        self.description_entry.bind("<KeyRelease>", lambda e: self._mark_dirty())
         self.description_entry.pack(fill=tk.X, expand=True)
 
         self.file_error_label = ttk.Label(self, text="", foreground="red", wraplength=500)
@@ -107,30 +119,39 @@ class WildcardEditor(ttk.Frame):
         ai_button_frame.pack(side=tk.RIGHT)
         self.suggest_button = ttk.Button(ai_button_frame, text="Suggest Choices (AI)", command=self._on_suggest_choices, state=tk.DISABLED)
         self.suggest_button.pack(side=tk.LEFT)
-        self.refine_button = ttk.Button(ai_button_frame, text="Refine Choices (AI)", command=self._on_refine_choices, state=tk.DISABLED)
-        self.refine_button.pack(side=tk.LEFT, padx=(5,0))
         self.autotag_button = ttk.Button(ai_button_frame, text="Auto-Tag All (AI)", command=self._on_auto_tag_choices, state=tk.DISABLED)
         self.autotag_button.pack(side=tk.LEFT, padx=(5,0))
-
+        self.enrich_button = ttk.Button(ai_button_frame, text="Enrich Choices (AI)", command=self._on_enrich_choices, state=tk.DISABLED)
+        self.enrich_button.pack(side=tk.LEFT, padx=(5,0))
+ 
         tree_container = ttk.Frame(choices_frame)
         tree_container.pack(fill=tk.BOTH, expand=True)
 
+        # Use grid layout to accommodate horizontal scrollbar
+        tree_container.grid_rowconfigure(0, weight=1)
+        tree_container.grid_columnconfigure(0, weight=1)
+
         columns = ('value', 'weight', 'tags', 'requires', 'includes')
         self.tree = ttk.Treeview(tree_container, columns=columns, show='headings', selectmode=tk.EXTENDED)
-        self.tree.heading('value', text='Value')
-        self.tree.heading('weight', text='Weight')
-        self.tree.heading('tags', text='Tags')
-        self.tree.heading('requires', text='Requires')
-        self.tree.heading('includes', text='Includes')
-        self.tree.column('value', width=200)
+        self.tree.heading('value', text='Value', command=lambda: self._sort_by_column('value', False))
+        self.tree.heading('weight', text='Weight', command=lambda: self._sort_by_column('weight', False))
+        self.tree.heading('tags', text='Tags', command=lambda: self._sort_by_column('tags', False))
+        self.tree.heading('requires', text='Requires', command=lambda: self._sort_by_column('requires', False))
+        self.tree.heading('includes', text='Includes', command=lambda: self._sort_by_column('includes', False))
+        # Set a larger default width for value to make horizontal scrolling more useful
+        self.tree.column('value', width=300)
         self.tree.column('weight', width=50, anchor='center')
         self.tree.column('tags', width=100)
         self.tree.column('requires', width=150)
         self.tree.column('includes', width=150)
-        tree_scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=tree_scrollbar.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        v_scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
+        h_scrollbar = ttk.Scrollbar(tree_container, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        v_scrollbar.grid(row=0, column=1, sticky='ns')
+        h_scrollbar.grid(row=1, column=0, sticky='ew')
+
         self.tree.bind("<Double-1>", self._on_double_click_item)
 
         self.tree.bind("<Motion>", self._on_tree_motion)
@@ -148,9 +169,11 @@ class WildcardEditor(ttk.Frame):
         includes_toolbar = ttk.Frame(includes_frame)
         includes_toolbar.pack(fill=tk.X, pady=(0, 5))
         ttk.Button(includes_toolbar, text="Insert Wildcard...", command=self._insert_include_wildcard).pack(side=tk.LEFT)
+        TextContextMenu(self.description_entry, insert_wildcard_callback=lambda: self._insert_wildcard_into_entry(self.description_entry))
 
         # The new text widget for includes
         self.includes_text = tk.Text(includes_frame, height=5, wrap=tk.WORD, undo=True, exportselection=False)
+        TextContextMenu(self.includes_text, insert_wildcard_callback=lambda: self._insert_wildcard_into_text_widget(self.includes_text))
         self.includes_text.bind("<KeyRelease>", self._on_includes_key_release)
         self.includes_text.pack(fill=tk.BOTH, expand=True)
 
@@ -241,8 +264,8 @@ class WildcardEditor(ttk.Frame):
         has_choices = bool(choices)
 
         self._validate_all_items()
-        self.refine_button.config(state=tk.NORMAL if has_choices else tk.DISABLED)
         self.autotag_button.config(state=tk.NORMAL if has_choices else tk.DISABLED)
+        self.enrich_button.config(state=tk.NORMAL if has_choices else tk.DISABLED)
 
     def get_data(self) -> Dict[str, Any]:
         """Constructs the JSON data object from the UI widgets."""
@@ -356,11 +379,12 @@ class WildcardEditor(ttk.Frame):
                 self.iid_to_choice_map[item_id] = new_choice_obj
                 self._validate_item(item_id)
 
+                self._mark_dirty()
                 self.tree.see(item_id)
                 self.tree.selection_set(item_id)
 
-                if hasattr(manager_window, 'save_button'):
-                    manager_window.save_button.config(state=tk.NORMAL)
+                # if hasattr(manager_window, 'save_button'):
+                #     manager_window.save_button.config(state=tk.NORMAL)
         finally:
             try:
                 if is_in_manager and manager_window.winfo_exists():
@@ -434,38 +458,21 @@ class WildcardEditor(ttk.Frame):
                 final_choices.extend(new_values[j1:j2])
         
         self.set_data({'description': self.description_entry.get(), 'choices': final_choices})
-
-        # After applying changes, enable the save button on the parent window.
-        manager_window = self.winfo_toplevel()
-        if hasattr(manager_window, 'save_button'):
-            manager_window.save_button.config(state=tk.NORMAL)
+        self._mark_dirty()
 
     def _delete_item(self):
         for selected_item in self.tree.selection():
             if selected_item in self.iid_to_choice_map:
                 del self.iid_to_choice_map[selected_item]
             self.tree.delete(selected_item)
+        self._mark_dirty()
 
-    def _edit_cell_in_place(self, event):
+    def _edit_cell_in_place(self, event, item_id: str, column_id: str):
         """Handles in-place editing of a cell in the treeview."""
         # First, destroy any existing in-place editor to prevent conflicts
         if self.inplace_edit_entry:
             self.inplace_edit_entry.destroy()
             self.inplace_edit_entry = None
-
-        # Identify what was clicked
-        region = self.tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
-
-        column_id = self.tree.identify_column(event.x)
-        item_id = self.tree.identify_row(event.y)
-        if not item_id: return
-
-        # Only allow in-place editing for the 'value' and 'weight' columns
-        if column_id not in ['#1', '#2']: # 'value', 'weight'
-            self._open_full_edit_dialog(item_id)
-            return
 
         # Get cell geometry
         x, y, width, height = self.tree.bbox(item_id, column_id)
@@ -481,14 +488,20 @@ class WildcardEditor(ttk.Frame):
         self.inplace_edit_entry.focus_set()
 
         # Bind events to save or cancel the edit
-        self.inplace_edit_entry.bind("<Return>", lambda e, i=item_id, c=column_id: self._save_inplace_edit(i, c))
-        self.inplace_edit_entry.bind("<FocusOut>", lambda e, i=item_id, c=column_id: self._save_inplace_edit(i, c))
+        self.inplace_edit_entry.bind("<Return>", lambda e, i=item_id, c=column_id, ov=current_value: self._save_inplace_edit(i, c, ov))
+        self.inplace_edit_entry.bind("<FocusOut>", lambda e, i=item_id, c=column_id, ov=current_value: self._save_inplace_edit(i, c, ov))
         self.inplace_edit_entry.bind("<Escape>", lambda e: self.inplace_edit_entry.destroy())
 
-    def _save_inplace_edit(self, item_id: str, column_id: str):
+    def _save_inplace_edit(self, item_id: str, column_id: str, old_value: str):
         """Saves the content of the in-place editor back to the tree and data model."""
         if not self.inplace_edit_entry:
             return
+
+        manager_window = self.winfo_toplevel()
+        new_value_str = self.inplace_edit_entry.get()
+        # Check if the value changed and register it for refactoring
+        if column_id == '#1' and new_value_str != old_value and hasattr(manager_window, 'register_value_change'):
+            manager_window.register_value_change(old_value, new_value_str)
 
         new_value = self.inplace_edit_entry.get()
         self.inplace_edit_entry.destroy()
@@ -507,11 +520,26 @@ class WildcardEditor(ttk.Frame):
                 self.iid_to_choice_map[item_id] = new_value
 
         self._validate_item(item_id)
-        self.winfo_toplevel().save_button.config(state=tk.NORMAL)
+        self._mark_dirty()
 
     def _on_double_click_item(self, event):
         """Handles a double-click event, routing it to in-place or full dialog editing."""
-        self._edit_cell_in_place(event)
+        # First, destroy any existing in-place editor to prevent conflicts
+        if self.inplace_edit_entry:
+            self.inplace_edit_entry.destroy()
+            self.inplace_edit_entry = None
+
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell": return
+
+        column_id = self.tree.identify_column(event.x)
+        item_id = self.tree.identify_row(event.y)
+        if not item_id: return
+
+        if column_id in ['#1', '#2']: # 'value', 'weight'
+            self._edit_cell_in_place(event, item_id, column_id)
+        else:
+            self._open_full_edit_dialog(item_id)
 
     def _open_full_edit_dialog_from_selection(self):
         """Wrapper to open the full edit dialog for the current selection."""
@@ -551,6 +579,7 @@ class WildcardEditor(ttk.Frame):
                 updated_choice = self._get_choice_from_tree_item(item_id)
                 self.iid_to_choice_map[item_id] = updated_choice
                 self._validate_item(item_id)
+                self._mark_dirty()
 
                 # After a successful edit, check if we can apply this fix to other items.
                 self._find_and_offer_mass_fix(item_id, original_choice_obj, updated_choice)
@@ -570,11 +599,12 @@ class WildcardEditor(ttk.Frame):
             current_data = self.get_data()
             self.suggestion_callback(current_data)
 
-    def _on_refine_choices(self):
-        """Callback to ask the manager window to trigger AI refinement."""
-        if self.refinement_callback:
-            current_data = self.get_data()
-            self.refinement_callback(current_data)
+    def _insert_wildcard_into_text_widget(self, text_widget: tk.Text):
+        """Callback to insert a wildcard into a specific Text widget."""
+        selector_dialog = custom_dialogs.WildcardSelectorDialog(self, self.processor)
+        if selector_dialog.result:
+            wildcard_name = selector_dialog.result[0] # Use the first selected
+            text_widget.insert(tk.INSERT, f"__{wildcard_name}__")
 
     def _on_auto_tag_choices(self):
         """Callback to ask the manager window to trigger AI auto-tagging."""
@@ -638,25 +668,22 @@ class WildcardEditor(ttk.Frame):
                 self._validate_item(iid)
             
             custom_dialogs.show_info(self, "Mass Fix Applied", f"Updated {len(matches_to_fix)} other choices.")
-            self.winfo_toplevel().save_button.config(state=tk.NORMAL)
+            self._mark_dirty()
 
-    def update_choice_value(self, item_id: str, new_value: str):
-        """Updates the value of a specific choice by its item ID."""
-        if item_id not in self.iid_to_choice_map:
-            return
+    def _sort_by_column(self, col_name: str, reverse: bool):
+        """Sorts the treeview by a given column, delegating to the parent manager window."""
+        manager = self.winfo_toplevel()
+        if hasattr(manager, '_sort_treeview_column'):
+            col_id = f"#{self.tree['columns'].index(col_name) + 1}"
+            manager._sort_treeview_column(self.tree, col_id, reverse)
+            # Re-bind the command for the next click to toggle sort order
+            self.tree.heading(col_name, command=lambda: self._sort_by_column(col_name, not reverse))
 
-        # Update the treeview display
-        self.tree.set(item_id, 'value', new_value)
-
-        # Update the underlying data model
-        choice_obj = self.iid_to_choice_map.get(item_id)
-        if choice_obj:
-            if isinstance(choice_obj, dict):
-                choice_obj['value'] = new_value
-            else: # It was a simple string
-                self.iid_to_choice_map[item_id] = new_value
-        
-        self._validate_item(item_id)
+    def _on_enrich_choices(self):
+        """Callback to ask the manager window to trigger AI enrichment."""
+        if self.enrich_callback:
+            current_data = self.get_data()
+            self.enrich_callback(current_data)
 
     def delete_choice_by_iid(self, item_id: str):
         """Deletes a specific choice by its item ID."""
@@ -664,6 +691,7 @@ class WildcardEditor(ttk.Frame):
             del self.iid_to_choice_map[item_id]
         if self.tree.exists(item_id):
             self.tree.delete(item_id)
+        self._mark_dirty()
 
     def add_suggested_choices(self, new_choices: List[Any]):
         """Adds choices suggested by the AI to the treeview."""
@@ -691,6 +719,7 @@ class WildcardEditor(ttk.Frame):
                     includes = ", ".join(choice.get('includes', []))
                     item_id = self.tree.insert('', tk.END, values=(value, weight, tags, requires, includes))
                     self.iid_to_choice_map[item_id] = choice
+        self._mark_dirty()
 
     def update_with_refined_choices(self, refined_choices: List[Any]):
         """Replaces the current choices with a refined list from the AI."""
@@ -705,6 +734,7 @@ class WildcardEditor(ttk.Frame):
         
         # Reload the editor with the updated data
         self.set_data(current_data)
+        self._mark_dirty()
 
     def update_with_tagged_choices(self, tagged_choices: List[Any]):
         """Replaces the current choices with a tagged list from the AI."""
@@ -716,6 +746,7 @@ class WildcardEditor(ttk.Frame):
         # Replace the old choices list with the new tagged one
         current_data['choices'] = tagged_choices
         self.set_data(current_data)
+        self._mark_dirty()
 
     def _insert_include_wildcard(self):
         """Opens a dialog to select wildcards and inserts them into the includes text widget."""
@@ -851,16 +882,22 @@ class WildcardEditor(ttk.Frame):
         """Schedules an error tooltip to appear after a short delay."""
         if self.error_tooltip_after_id:
             self.after_cancel(self.error_tooltip_after_id)
+        if self.value_tooltip_after_id:
+            self.after_cancel(self.value_tooltip_after_id)
 
         iid = self.tree.identify_row(event.y)
         
         if iid != self.last_hovered_iid:
             self.error_tooltip.hide()
+            self.value_tooltip.hide()
         
         self.last_hovered_iid = iid
         
-        if iid and iid in self.item_errors:
-            self.error_tooltip_after_id = self.after(500, lambda: self._display_error_tooltip(iid, event))
+        if iid:
+            if iid in self.item_errors:
+                self.error_tooltip_after_id = self.after(500, lambda: self._display_error_tooltip(iid, event))
+            else:
+                self.value_tooltip_after_id = self.after(500, lambda: self._display_value_tooltip(iid, event))
 
     def _display_error_tooltip(self, iid: str, event):
         """Fetches error content and displays the tooltip."""
@@ -869,19 +906,46 @@ class WildcardEditor(ttk.Frame):
             self.error_tooltip.text = f"Validation Errors:\n- {error_text}"
             self.error_tooltip.show(event)
 
+    def _display_value_tooltip(self, iid: str, event):
+        """Fetches the full value of a choice and displays it in a tooltip."""
+        if iid and iid in self.iid_to_choice_map:
+            choice_obj = self.iid_to_choice_map[iid]
+            value = choice_obj.get('value') if isinstance(choice_obj, dict) else choice_obj
+            if value:
+                self.value_tooltip.text = str(value)
+                self.value_tooltip.show(event)
+
     def _on_tree_leave(self, event=None):
         """Hides the error tooltip and cancels any scheduled appearance."""
         self.last_hovered_iid = None
         if self.error_tooltip_after_id:
             self.after_cancel(self.error_tooltip_after_id)
             self.error_tooltip_after_id = None
+        if self.value_tooltip_after_id:
+            self.after_cancel(self.value_tooltip_after_id)
+            self.value_tooltip_after_id = None
         self.error_tooltip.hide()
+        self.value_tooltip.hide()
 
     def _validate_all_items(self):
         """Runs validation on all items in the treeview."""
         self.item_errors.clear()
+        all_known_wildcards = self.processor.get_wildcard_names()
+
+        # --- Pre-calculate global errors once to avoid redundant checks ---
+        global_include_errors = []
+        global_includes_text = self.includes_text.get("1.0", "end-1c").strip()
+        if global_includes_text:
+            # Find wildcards in both __wildcard__ and [wildcard] format
+            global_includes = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', global_includes_text)
+            global_includes.extend(re.findall(r'\[([a-zA-Z0-9_.-]+)\]', global_includes_text))
+            
+            for wc in set(global_includes): # Use set to check each unique name only once
+                if wc not in all_known_wildcards:
+                    global_include_errors.append(f"Global include '{wc}' not found.")
+
         for iid in self.tree.get_children():
-            self._validate_item(iid)
+            self._validate_item(iid, all_known_wildcards, global_include_errors)
         
         # Perform file-level validation like circular dependency checks
         self.file_error_label.config(text="") # Clear previous error
@@ -892,19 +956,10 @@ class WildcardEditor(ttk.Frame):
             if cycle:
                 self.file_error_label.config(text=f"Circular dependency detected: {' -> '.join(cycle)}")
 
-    def _validate_item(self, iid: str):
+    def _validate_item(self, iid: str, all_known_wildcards: List[str], global_errors: List[str]):
         """Validates a single item in the treeview for dependency errors."""
         choice_obj = self.iid_to_choice_map.get(iid)
-        errors = []
-        all_known_wildcards = self.processor.get_wildcard_names()
-
-        # --- Check Global Includes ---
-        global_includes_text = self.includes_text.get("1.0", "end-1c").strip()
-        if global_includes_text:
-            global_includes = re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', global_includes_text)
-            for wc in global_includes:
-                if wc not in all_known_wildcards:
-                    errors.append(f"Global include '{wc}' not found.")
+        errors = global_errors[:] # Start with a copy of global errors
 
         # --- Check Choice-Specific Properties ---
         if isinstance(choice_obj, dict):
@@ -923,7 +978,7 @@ class WildcardEditor(ttk.Frame):
             # Validate requires
             rules = choice_obj.get('requires')
             if isinstance(rules, dict):
-                self._check_rules_recursive(rules, errors)
+                self._check_rules_recursive(rules, errors, all_known_wildcards)
 
         # --- Update UI based on errors ---
         if errors:
@@ -940,14 +995,13 @@ class WildcardEditor(ttk.Frame):
                 current_tags.remove(self.validation_error_tag)
                 self.tree.item(iid, tags=tuple(current_tags))
 
-    def _check_rules_recursive(self, rules: Dict, errors: List[str]):
+    def _check_rules_recursive(self, rules: Dict, errors: List[str], all_known_wildcards: List[str]):
         """Recursively checks 'requires' rules for non-existent wildcards and values."""
-        all_known_wildcards = self.processor.get_wildcard_names()
         for key, condition in rules.items():
             if key in ['and', 'or', 'not']:
                 sub_rules = condition if isinstance(condition, list) else [condition]
                 for sub_rule in sub_rules:
-                    if isinstance(sub_rule, dict): self._check_rules_recursive(sub_rule, errors)
+                    if isinstance(sub_rule, dict): self._check_rules_recursive(sub_rule, errors, all_known_wildcards)
             elif key != 'tags': # It's a wildcard name
                 if key not in all_known_wildcards:
                     errors.append(f"Requires non-existent wildcard: '{key}'")
@@ -974,9 +1028,39 @@ class WildcardEditor(ttk.Frame):
         self.context_menu.add_command(label="Edit...", command=self._open_full_edit_dialog_from_selection)
         self.context_menu.add_command(label="Merge Selected Items... (2)", command=self._merge_selected_items)
         self.context_menu.add_separator()
+        self.context_menu.add_command(label=self.add_requirement_label, command=self._execute_add_requirement)
+        self.context_menu.add_command(label="Copy as 'requires' JSON", command=self._copy_as_requires_json)
+        self.context_menu.add_separator()
         self.context_menu.add_command(label="Add New Choice", command=self._add_item)
         self.context_menu.add_command(label="Delete Selected", command=self._delete_item)
         self.context_menu.add_command(label="Duplicate Selected", command=self._duplicate_items)
+
+    def _execute_add_requirement(self):
+        """Executes the add requirement callback if it exists."""
+        selection = self.tree.selection()
+        if len(selection) != 1: return
+        source_iid = selection[0]
+        if self.add_requirement_callback:
+            self.add_requirement_callback(source_iid)
+
+    def _copy_as_requires_json(self):
+        selection = self.tree.selection()
+        if len(selection) != 1 or not self.current_filename_callback:
+            return
+        
+        iid = selection[0]
+        choice_obj = self.iid_to_choice_map.get(iid)
+        if not choice_obj: return
+
+        value = choice_obj.get('value') if isinstance(choice_obj, dict) else choice_obj
+        filename = self.current_filename_callback()
+        basename, _ = os.path.splitext(filename)
+
+        req_dict = {basename: value}
+        req_json = json.dumps(req_dict)
+
+        self.clipboard_clear()
+        self.clipboard_append(req_json)
 
     def _show_context_menu(self, event):
         """Shows the context menu and configures its state based on the selection."""
@@ -992,6 +1076,8 @@ class WildcardEditor(ttk.Frame):
         
         self.context_menu.entryconfig("Edit...", state=tk.NORMAL if len(selection) == 1 else tk.DISABLED)
         self.context_menu.entryconfig("Merge Selected Items... (2)", state=tk.NORMAL if len(selection) == 2 else tk.DISABLED)
+        self.context_menu.entryconfig(3, state=tk.NORMAL if self.add_requirement_callback and len(selection) == 1 else tk.DISABLED)
+        self.context_menu.entryconfig("Copy as 'requires' JSON", state=tk.NORMAL if len(selection) == 1 and self.current_filename_callback else tk.DISABLED)
         self.context_menu.entryconfig("Delete Selected", state=tk.NORMAL if selection else tk.DISABLED)
         self.context_menu.entryconfig("Duplicate Selected", state=tk.NORMAL if selection else tk.DISABLED)
 
@@ -1121,6 +1207,7 @@ class WildcardEditor(ttk.Frame):
             self.tree.delete(item2_id)
             if item1_id in self.iid_to_choice_map: del self.iid_to_choice_map[item1_id]
             if item2_id in self.iid_to_choice_map: del self.iid_to_choice_map[item2_id]
+        self._mark_dirty()
 
     def _duplicate_items(self):
         """Duplicates the selected items in the treeview."""
@@ -1157,3 +1244,4 @@ class WildcardEditor(ttk.Frame):
             # Update the map with the new item's ID and its new data object
             self.iid_to_choice_map[new_item_id] = new_choice_obj
             self._validate_item(new_item_id)
+        self._mark_dirty()
