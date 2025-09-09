@@ -23,9 +23,9 @@ A quick look at some of the key tool windows:
     <td align="center">AI Brainstorming</td>
   </tr>
   <tr>
-    <td><img src="assets/screenshot_evolver.png" alt="Prompt Evolver Screenshot" width="260"/></td>
-    <td><img src="assets/screenshot_wildcard_manager.png" alt="Wildcard Manager Screenshot" width="260"/></td>
-    <td><img src="assets/screenshot_brainstorming.png" alt="AI Brainstorming Screenshot" width="260"/></td>
+    <td><img src="assets/prompt_history.png" alt="Prompt History Screenshot" width="260"/></td>
+    <td><img src="assets/image_generation.png" alt="InvokeAI Image Generation Screenshot" width="260"/></td>
+    <!-- <td><img src="assets/screenshot_brainstorming.png" alt="AI Brainstorming Screenshot" width="260"/></td> -->
   </tr>
 </table>
 
