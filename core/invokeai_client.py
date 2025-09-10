@@ -146,6 +146,32 @@ class InvokeAIClient:
         including LoRA chaining.
         Returns the complete graph dictionary.
         """
+        # --- Automatic Negative Prompt Splitting ---
+        # To improve generation quality, we separate style-related negatives from content-related ones.
+        content_neg_parts = []
+        style_neg_parts = []
+        # A set of common, style-related negative keywords. This is not exhaustive but covers the majority of presets.
+        STYLE_KEYWORDS = {
+            'ugly', 'deformed', 'disfigured', 'bad anatomy', 'blurry', 'low resolution',
+            'duplicate', 'bad quality', 'worst quality', 'low quality', 'normal quality',
+            'jpeg artifacts', 'signature', 'watermark', 'username', 'artist name', 'logo',
+            'text', 'error', 'missing fingers', 'extra digit', 'fewer digits', 'cropped',
+            '3d', 'cgi', 'render', 'cartoon', 'anime', 'manga', 'child', 'loli', 'shota', 'cub'
+        }
+        
+        for part in negative_prompt.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            # Use a simple heuristic: if the exact phrase is a known style keyword, send it to the style prompt.
+            if part.lower() in STYLE_KEYWORDS:
+                style_neg_parts.append(part)
+            else:
+                content_neg_parts.append(part)
+        
+        content_negative_prompt = ", ".join(content_neg_parts)
+        style_negative_prompt = ", ".join(style_neg_parts)
+
         # By default, the VAE comes from the main model loader.
         vae_source_node_id = "sdxl_model_loader"
         compatible_vae = self._get_vae_override(model_object)
@@ -196,10 +222,15 @@ class InvokeAIClient:
                 "id": "positive_prompt", 
                 "value": prompt
             },
-            "negative_prompt": {
+            "content_negative_prompt": {
                 "type": "string", 
-                "id": "negative_prompt", 
-                "value": negative_prompt
+                "id": "content_negative_prompt", 
+                "value": content_negative_prompt
+            },
+            "style_negative_prompt": {
+                "type": "string",
+                "id": "style_negative_prompt",
+                "value": style_negative_prompt
             },
             "positive_conditioning": {
                 "type": "sdxl_compel_prompt",
@@ -284,8 +315,8 @@ class InvokeAIClient:
             # Prompts -> Conditioning
             {"source": {"node_id": "positive_prompt", "field": "value"}, "destination": {"node_id": "positive_conditioning", "field": "prompt"}},
             {"source": {"node_id": "positive_prompt", "field": "value"}, "destination": {"node_id": "positive_conditioning", "field": "style"}},
-            {"source": {"node_id": "negative_prompt", "field": "value"}, "destination": {"node_id": "negative_conditioning", "field": "prompt"}},
-            {"source": {"node_id": "negative_prompt", "field": "value"}, "destination": {"node_id": "negative_conditioning", "field": "style"}},
+            {"source": {"node_id": "content_negative_prompt", "field": "value"}, "destination": {"node_id": "negative_conditioning", "field": "prompt"}},
+            {"source": {"node_id": "style_negative_prompt", "field": "value"}, "destination": {"node_id": "negative_conditioning", "field": "style"}},
 
             # Model/LoRA Chain -> Conditioning
             {"source": {"node_id": last_clip_source_node, "field": "clip"}, "destination": {"node_id": "positive_conditioning", "field": "clip"}},

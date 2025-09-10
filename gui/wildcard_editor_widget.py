@@ -377,7 +377,7 @@ class WildcardEditor(ttk.Frame):
                 item_id = self.tree.insert('', tk.END, values=new_values)
                 new_choice_obj = self._get_choice_from_tree_item(item_id)
                 self.iid_to_choice_map[item_id] = new_choice_obj
-                self._validate_item(item_id)
+                self._validate_all_items()
 
                 self._mark_dirty()
                 self.tree.see(item_id)
@@ -519,7 +519,7 @@ class WildcardEditor(ttk.Frame):
             elif column_key == 'value': # It was a simple string
                 self.iid_to_choice_map[item_id] = new_value
 
-        self._validate_item(item_id)
+        self._validate_all_items()
         self._mark_dirty()
 
     def _on_double_click_item(self, event):
@@ -578,7 +578,7 @@ class WildcardEditor(ttk.Frame):
                 self.tree.item(item_id, values=new_values)
                 updated_choice = self._get_choice_from_tree_item(item_id)
                 self.iid_to_choice_map[item_id] = updated_choice
-                self._validate_item(item_id)
+                self._validate_all_items()
                 self._mark_dirty()
 
                 # After a successful edit, check if we can apply this fix to other items.
@@ -665,7 +665,7 @@ class WildcardEditor(ttk.Frame):
                 
                 self.iid_to_choice_map[iid] = choice_to_update if len(choice_to_update) > 1 or 'value' not in choice_to_update else choice_to_update['value']
                 self.tree.item(iid, values=self._get_values_tuple_from_choice(choice_to_update))
-                self._validate_item(iid)
+                self._validate_all_items()
             
             custom_dialogs.show_info(self, "Mass Fix Applied", f"Updated {len(matches_to_fix)} other choices.")
             self._mark_dirty()
@@ -1243,5 +1243,5 @@ class WildcardEditor(ttk.Frame):
             
             # Update the map with the new item's ID and its new data object
             self.iid_to_choice_map[new_item_id] = new_choice_obj
-            self._validate_item(new_item_id)
+            self._validate_all_items()
         self._mark_dirty()

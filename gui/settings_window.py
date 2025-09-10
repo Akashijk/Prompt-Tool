@@ -27,8 +27,7 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
             "history_dir": tk.StringVar(value=config.HISTORY_DIR),
             "system_prompt_base_dir": tk.StringVar(value=config.SYSTEM_PROMPT_BASE_DIR),
             "ollama_base_url": tk.StringVar(value=config.OLLAMA_BASE_URL),
-            "invokeai_base_url": tk.StringVar(value=config.INVOKEAI_BASE_URL),
-            "default_negative_prompt": tk.StringVar(value=config.DEFAULT_NEGATIVE_PROMPT),
+            "invokeai_base_url": tk.StringVar(value=config.INVOKEAI_BASE_URL)
         }
 
         self._create_widgets()
@@ -72,15 +71,6 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
         invokeai_entry.grid(row=1, column=1, sticky='ew', pady=5)
         Tooltip(invokeai_entry, "The base URL for your InvokeAI server (e.g., http://127.0.0.1:9090)")
 
-        # --- Default Negative Prompt ---
-        neg_prompt_group = ttk.LabelFrame(main_frame, text="Default Negative Prompt", padding=10)
-        neg_prompt_group.grid(row=2, column=0, columnspan=3, sticky='ew')
-        neg_prompt_group.columnconfigure(0, weight=1)
-        self.neg_prompt_text = tk.Text(neg_prompt_group, height=3, wrap=tk.WORD, undo=True, exportselection=False)
-        self.neg_prompt_text.grid(row=0, column=0, sticky='ew')
-        self.neg_prompt_text.insert("1.0", self.setting_vars["default_negative_prompt"].get())
-        TextContextMenu(self.neg_prompt_text)
-
         # --- Buttons ---
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=3, column=0, columnspan=3, sticky='e', pady=(20, 0))
@@ -103,9 +93,6 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
 
     def _on_save(self):
         """Validates, saves the new settings, and triggers the callback."""
-        # First, get the text from the widget into the stringvar
-        self.setting_vars["default_negative_prompt"].set(self.neg_prompt_text.get("1.0", "end-1c").strip())
-        
         new_settings = {key: var.get() for key, var in self.setting_vars.items()}
         
         # --- Test Ollama connection if URL changed ---

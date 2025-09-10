@@ -3,98 +3,32 @@
 import tkinter as tk
 from tkinter import ttk
 import queue
-import sys
 import random
+import sys
 import threading
-import tkinter.font as tkfont
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable, Tuple
 
-from .common import SmartWindowMixin, Tooltip
+from .common import SmartWindowMixin, Tooltip, VerticalSpinbox, ScrollableFrame
 from . import custom_dialogs
 from .common import TextContextMenu
-
+from core.prompt_processor import PromptProcessor
 if TYPE_CHECKING:
     from core.invokeai_client import InvokeAIClient
-
-class VerticalSpinbox(ttk.Frame):
-    """A custom spinbox with vertical buttons for a more compact look."""
-    def __init__(self, parent, from_=0.0, to=100.0, increment=1.0, width=5, textvariable=None, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.from_ = from_
-        self.to = to
-        self.increment = increment
-        self.textvariable = textvariable if textvariable else tk.StringVar()
-
-        # Determine the format string based on the increment
-        if isinstance(self.increment, int) or self.increment == 1.0:
-            self.format_spec = "{:.0f}"
-        elif self.increment < 0.1:
-            self.format_spec = "{:.2f}"
-        else:
-            self.format_spec = "{:.1f}"
-
-        # Entry widget
-        self.entry = ttk.Entry(self, textvariable=self.textvariable, width=width, justify='center')
-        self.entry.pack(side=tk.LEFT, fill=tk.Y)
-
-        # Frame for buttons
-        button_frame = ttk.Frame(self)
-        button_frame.pack(side=tk.LEFT, fill=tk.Y)
-
-        # --- Smart Sizing Logic ---
-        # Get the default font size to make the buttons proportionally smaller.
-        default_font = tkfont.nametofont("TkDefaultFont")
-        default_size = default_font.cget("size")
-        button_font_size = max(6, default_size - 3) # Make it smaller but not tiny.
-
-        # Create a unique style name to avoid conflicts if this widget is used multiple times.
-        style_name = f"{id(self)}.Small.Toolbutton"
-        style = ttk.Style()
-        style.configure(style_name, font=('Helvetica', button_font_size), padding=(2, 0, 2, 0))
-
-        # Up and Down buttons
-        self.up_button = ttk.Button(button_frame, text="⏶", command=self._increment, width=1, style=style_name)
-        self.up_button.pack(side=tk.TOP, fill=tk.Y, expand=True, pady=(0,1))
-        self.down_button = ttk.Button(button_frame, text="⏷", command=self._decrement, width=1, style=style_name)
-        self.down_button.pack(side=tk.TOP, fill=tk.Y, expand=True)
-
-        # Bind mouse wheel for increment/decrement
-        for widget in [self.entry, self.up_button, self.down_button]:
-            widget.bind("<MouseWheel>", self._on_mouse_wheel) # For Windows and macOS
-            widget.bind("<Button-4>", self._on_mouse_wheel)   # For Linux scroll up
-            widget.bind("<Button-5>", self._on_mouse_wheel)   # For Linux scroll down
-
-    def _on_mouse_wheel(self, event):
-        """Handles mouse wheel scrolling to increment/decrement the value."""
-        # Differentiate between platforms for scroll direction
-        if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
-            self._increment()
-        elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
-            self._decrement()
-
-    def _increment(self):
-        try:
-            current_value = float(self.textvariable.get())
-            new_value = min(self.to, current_value + self.increment)
-            self.textvariable.set(self.format_spec.format(new_value))
-        except (ValueError, tk.TclError):
-            self.textvariable.set(self.format_spec.format(self.from_))
-
-    def _decrement(self):
-        try:
-            current_value = float(self.textvariable.get())
-            new_value = max(self.from_, current_value - self.increment)
-            self.textvariable.set(self.format_spec.format(new_value))
-        except (ValueError, tk.TclError):
-            self.textvariable.set(self.format_spec.format(self.from_))
 
 class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixin):
     """A dialog for selecting image generation options for InvokeAI."""
     def _randomize_seed(self):
         self.seed_var.set(str(random.randint(0, 2**32 - 1)))
 
+    def _on_text_widget_scroll(self, event):
+        """Handles mouse wheel scrolling for a text widget, preventing event propagation."""
+        # This allows the text widget's default scroll behavior to work
+        # without the event propagating to the parent scrollable frame.
+        return "break"
+
     def _on_model_mouse_wheel(self, event):
         """Handles mouse wheel scrolling for the model list."""
+        # The sys import is necessary for platform-specific delta calculation.
         delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
         self.model_canvas.yview_scroll(delta, "units")
 
@@ -103,9 +37,10 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
         self.lora_canvas.yview_scroll(delta, "units")
 
-    def __init__(self, parent, invokeai_client: 'InvokeAIClient', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None):
+    def __init__(self, parent, processor: 'PromptProcessor', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None):
         super().__init__(parent, "Image Generation Options")
-        self.client = invokeai_client
+        self.processor = processor
+        self.client = processor.invokeai_client
         self.models: Dict[str, List[Dict[str, Any]]] = {}
         self.model_data: Dict[str, Dict[str, Any]] = {}  # name -> full model object
         self.lora_data: Dict[str, Dict[str, Any]] = {}   # name -> full lora object
@@ -116,7 +51,11 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.lora_vars: Dict[str, tk.BooleanVar] = {}
         self.lora_weight_vars: Dict[str, tk.StringVar] = {}
         self.save_to_gallery_var = tk.BooleanVar(value=False)
+        self.lora_overrides: Dict[str, List[Dict[str, Any]]] = {}
+        self.total_images_var = tk.StringVar()
         self.model_queue = queue.Queue()
+        self.neg_prompt_overrides: Dict[str, str] = {}
+        self.original_negative_prompt_text: str = ""
         self.after_id: Optional[str] = None
 
         self._create_widgets()
@@ -124,32 +63,6 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
         self.smart_geometry(min_width=500, min_height=600)
         self.wait_window(self)
-
-    def _reflow_buttons(self, event=None):
-        if not hasattr(self, 'button_frame') or not self.button_frame.winfo_exists():
-            return
-
-        # Ensure all widgets are managed by grid before configuring them
-        self.ok_button.grid()
-        self.cancel_button.grid()
-
-        width = self.button_frame.winfo_width()
-        req_w = self.ok_button.winfo_reqwidth() + self.cancel_button.winfo_reqwidth() + 20
-
-        if width < req_w:
-            # Vertical
-            self.button_frame.columnconfigure(0, weight=1, minsize=0)
-            self.button_frame.columnconfigure(1, weight=0)
-            self.button_frame.columnconfigure(2, weight=0)
-            self.ok_button.grid_configure(row=0, column=0, columnspan=3, sticky='ew', pady=(0, 5), padx=0)
-            self.cancel_button.grid_configure(row=1, column=0, columnspan=3, sticky='ew', pady=0, padx=0)
-        else:
-            # Horizontal
-            self.button_frame.columnconfigure(0, weight=1)
-            self.button_frame.columnconfigure(1, weight=0)
-            self.button_frame.columnconfigure(2, weight=0)
-            self.cancel_button.grid_configure(row=0, column=1, columnspan=1, sticky='e', pady=0, padx=0)
-            self.ok_button.grid_configure(row=0, column=2, columnspan=1, sticky='e', pady=0, padx=(5, 0))
 
     def _start_model_fetch(self):
         """Starts fetching models in a background thread."""
@@ -215,6 +128,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 elif not initial_model_names and model_name == main_model_names[0]:
                     var.set(True)
                 
+                var.trace_add("write", self._on_model_checkbox_change)
                 cb = ttk.Checkbutton(self.model_container, text=model_name, variable=var)
                 
                 if model_name in self.disabled_models:
@@ -258,14 +172,28 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 self.lora_weight_vars[lora_name] = weight_var
         else:
             ttk.Label(self.lora_container, text="No LoRAs found").pack()
+        
+        self._update_override_button_state()
+        self._update_total_images_label()
 
     def _create_widgets(self):
-        main_frame = ttk.Frame(self, padding=15)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Create a scrollable container that fills the dialog
+        scroll_view = ScrollableFrame(self)
+        scroll_view.pack(fill=tk.BOTH, expand=True)
+
+        # This is the frame that will hold all the content and be scrolled
+        main_frame = scroll_view.scrollable_frame
+        main_frame.config(padding=15) # Apply padding to the content frame
 
         # Main Model
         model_frame = ttk.LabelFrame(main_frame, text="Main Model (SDXL)", padding=10)
         model_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        model_select_frame = ttk.Frame(model_frame)
+        model_select_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(model_select_frame, text="Select All", command=self._select_all_models).pack(side=tk.LEFT)
+        ttk.Button(model_select_frame, text="Select None", command=self._select_none_models).pack(side=tk.LEFT, padx=5)
+
         self.model_canvas = tk.Canvas(model_frame, borderwidth=0, highlightthickness=0)
         model_scrollbar = ttk.Scrollbar(model_frame, orient="vertical", command=self.model_canvas.yview)
         self.model_container = ttk.Frame(self.model_canvas)
@@ -311,11 +239,32 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
         # Negative Prompt
         neg_prompt_frame = ttk.LabelFrame(main_frame, text="Negative Prompt", padding=10)
-        neg_prompt_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        neg_prompt_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        neg_prompt_controls = ttk.Frame(neg_prompt_frame)
+        neg_prompt_controls.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(neg_prompt_controls, text="Preset:").pack(side=tk.LEFT, padx=(0, 5))
+
+        self.override_button = ttk.Button(neg_prompt_controls, text="Set Per-Model Overrides...", command=self._set_overrides, state=tk.DISABLED)
+        self.override_button.pack(side=tk.RIGHT)
+
+        self.negative_prompts = self.processor.get_available_negative_prompts()
+        self.neg_prompt_names = [p['name'] for p in self.negative_prompts]
+        self.neg_prompt_var = tk.StringVar()
+
+        self.neg_prompt_names.insert(0, "Custom")
+        self.neg_prompt_combo = ttk.Combobox(neg_prompt_controls, textvariable=self.neg_prompt_var, values=self.neg_prompt_names, state="readonly")
+        self.neg_prompt_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.neg_prompt_combo.bind("<<ComboboxSelected>>", self._on_negative_prompt_select)
+
         self.neg_prompt_text = tk.Text(neg_prompt_frame, height=4, wrap=tk.WORD, undo=True, exportselection=False)
         self.neg_prompt_text.pack(fill=tk.BOTH, expand=True)
-        self.neg_prompt_text.insert("1.0", self.initial_params.get('negative_prompt', ''))
+        initial_neg_prompt = self.initial_params.get('negative_prompt', '')
+        self.neg_prompt_text.insert("1.0", initial_neg_prompt)
         TextContextMenu(self.neg_prompt_text)
+        self.neg_prompt_text.bind("<MouseWheel>", self._on_text_widget_scroll)
+        self.neg_prompt_text.bind("<KeyRelease>", self._on_neg_prompt_text_change)
+        self._set_initial_negative_prompt_preset(initial_neg_prompt)
 
         # Other parameters
         params_frame = ttk.Frame(main_frame)
@@ -338,6 +287,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
         ttk.Label(params_frame, text="# Imgs:").grid(row=0, column=4, sticky='w', padx=(10, 5), pady=2)
         self.num_images_var = tk.StringVar(value=str(self.initial_params.get('num_images', 1)))
+        self.num_images_var.trace_add("write", self._update_total_images_label)
         num_images_spinbox = VerticalSpinbox(params_frame, from_=1, to=100, increment=1, textvariable=self.num_images_var, width=3)
         num_images_spinbox.grid(row=0, column=5, sticky='w', pady=2)
         if self.is_editing:
@@ -372,11 +322,146 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         # Buttons
         self.button_frame = ttk.Frame(main_frame)
         self.button_frame.pack(fill=tk.X, pady=(20, 0))
-        self.ok_button = ttk.Button(self.button_frame, text="Generate", command=self._on_ok, style="Accent.TButton")
-        self.cancel_button = ttk.Button(self.button_frame, text="Cancel", command=self._on_cancel)
         
-        self.button_frame.bind("<Configure>", self._reflow_buttons)
-        self.after(10, self._reflow_buttons)
+        # Configure grid for the button frame
+        self.button_frame.columnconfigure(0, weight=1) # Spacer on the left
+        
+        self.total_images_label = ttk.Label(self.button_frame, textvariable=self.total_images_var, anchor='w')
+        self.total_images_label.grid(row=0, column=0, sticky='w')
+
+        self.ok_button = ttk.Button(self.button_frame, text="Generate", command=self._on_ok, style="Accent.TButton")
+        self.ok_button.grid(row=0, column=2, sticky='e', padx=(5,0))
+        
+        self.cancel_button = ttk.Button(self.button_frame, text="Cancel", command=self._on_cancel)
+        self.cancel_button.grid(row=0, column=1, sticky='e')
+
+    def _select_all_models(self):
+        """Sets all enabled model checkboxes to True."""
+        for model_name, var in self.model_vars.items():
+            # Only select models that are not explicitly disabled (e.g., already in a batch)
+            if model_name not in self.disabled_models:
+                var.set(True)
+
+    def _select_none_models(self):
+        """Sets all model checkboxes to False."""
+        # This can clear even disabled models if needed, which is generally safe.
+        for var in self.model_vars.values():
+            var.set(False)
+
+    def _on_model_checkbox_change(self, *args):
+        self._update_override_button_state()
+        self._update_total_images_label()
+
+    def _update_override_button_state(self):
+        num_selected = sum(1 for var in self.model_vars.values() if var.get())
+        self.override_button.config(state=tk.NORMAL if num_selected > 1 else tk.DISABLED)
+
+    def _update_total_images_label(self, *args):
+        """Calculates and updates the label showing the total number of images to be generated."""
+        try:
+            num_models = sum(1 for var in self.model_vars.values() if var.get())
+            num_images_per_model = int(self.num_images_var.get())
+            total_images = num_models * num_images_per_model
+            
+            if total_images > 0:
+                plural_model = "model" if num_models == 1 else "models"
+                plural_image = "image" if total_images == 1 else "images"
+                self.total_images_var.set(f"Total: {total_images} {plural_image} ({num_models} {plural_model})")
+            else:
+                self.total_images_var.set("")
+        except (ValueError, tk.TclError):
+            # This can happen if the num_images_var is empty or contains non-numeric text
+            self.total_images_var.set("")
+
+    def _refresh_negative_prompts(self):
+        """Reloads the negative prompt presets from the processor and updates the combobox."""
+        # Preserve the current selection if it still exists after refresh
+        current_selection = self.neg_prompt_var.get()
+        self.negative_prompts = self.processor.get_available_negative_prompts()
+        self.neg_prompt_names = ["Custom"] + [p['name'] for p in self.negative_prompts]
+        self.neg_prompt_combo['values'] = self.neg_prompt_names
+
+    def _on_negative_prompt_select(self, event=None):
+        selected_name = self.neg_prompt_var.get()
+        if selected_name == "Custom":
+            return
+
+        selected_prompt_obj = next((p for p in self.negative_prompts if p['name'] == selected_name), None)
+        if selected_prompt_obj:
+            self.neg_prompt_text.delete("1.0", tk.END)
+            self.neg_prompt_text.insert("1.0", selected_prompt_obj['prompt'])
+            self.original_negative_prompt_text = selected_prompt_obj['prompt'].strip()
+
+    def _on_neg_prompt_text_change(self, event=None):
+        """Sets the combobox to 'Custom' if the text is manually edited."""
+        current_text = self.neg_prompt_text.get("1.0", "end-1c").strip()
+        
+        matching_preset = next((p['name'] for p in self.negative_prompts if p['prompt'].strip() == current_text), None)
+        
+        if matching_preset:
+            if self.neg_prompt_var.get() != matching_preset:
+                self.neg_prompt_var.set(matching_preset)
+        else:
+            if self.neg_prompt_var.get() != "Custom":
+                self.neg_prompt_var.set("Custom")
+
+    def _set_initial_negative_prompt_preset(self, initial_text: str):
+        """Sets the initial value of the combobox based on the initial text."""
+        stripped_initial = initial_text.strip()
+        matching_preset = next((p['name'] for p in self.negative_prompts if p['prompt'].strip() == stripped_initial), None)
+        self.neg_prompt_var.set(matching_preset or "Custom")
+        self.original_negative_prompt_text = stripped_initial
+
+    def _set_overrides(self):
+        """Opens the dialog to set per-model negative prompt overrides."""
+        selected_model_names = [name for name, var in self.model_vars.items() if var.get()]
+        if len(selected_model_names) < 2:
+            custom_dialogs.show_info(self, "Not Applicable", "Select at least two models to set per-model overrides.")
+            return
+        
+        dialog = custom_dialogs._PerModelNegativePromptDialog(self, self.processor, selected_model_names, self.neg_prompt_overrides)
+        if dialog.result is not None:
+            self.neg_prompt_overrides = dialog.result
+
+    def _save_new_negative_prompt(self, prompt_text: str):
+        """Handles the dialog and logic for saving a new negative prompt preset."""
+        filename = custom_dialogs.ask_string(self, "Save New Preset", "Enter a filename for the new negative prompt preset:", validator=custom_dialogs.is_valid_filename_component)
+        if not filename:
+            return
+        
+        filename = filename.replace(' ', '_').lower()
+        
+        content_data = {
+            "name": filename.replace('_', ' ').title(),
+            "prompt": prompt_text
+        }
+        
+        try:
+            self.processor.create_system_prompt(filename, 'negative_prompt', content_data=content_data)
+            custom_dialogs.show_info(self, "Preset Saved", f"Saved new preset '{filename}'.")
+            self._refresh_negative_prompts()
+            self.neg_prompt_var.set(content_data["name"])
+            self.original_negative_prompt_text = prompt_text
+            return True
+        except Exception as e:
+            custom_dialogs.show_error(self, "Save Error", f"Could not save new preset:\n{e}")
+            return False
+
+    def _update_existing_negative_prompt(self, preset_name: str, new_prompt_text: str) -> bool:
+        """Handles the logic for updating an existing negative prompt preset."""
+        preset_obj = next((p for p in self.negative_prompts if p['name'] == preset_name), None)
+        if not preset_obj: return
+        
+        filename = f"negative_prompts/{preset_obj['key']}.txt"
+        try:
+            self.processor.save_system_prompt_content(filename, new_prompt_text)
+            custom_dialogs.show_info(self, "Preset Updated", f"Updated preset '{preset_name}'.")
+            self._refresh_negative_prompts()
+            self.original_negative_prompt_text = new_prompt_text
+            return True
+        except Exception as e:
+            custom_dialogs.show_error(self, "Update Error", f"Could not update preset:\n{e}")
+            return False
 
     def _on_cancel(self, event=None):
         if self.after_id:
@@ -389,48 +474,82 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             self.after_cancel(self.after_id)
             self.after_id = None
         
+        # --- Check for negative prompt changes before proceeding ---
+        current_neg_prompt_text = self.neg_prompt_text.get("1.0", "end-1c").strip()
+        selected_preset_name = self.neg_prompt_var.get()
+
+        is_dirty = False
+        if selected_preset_name == "Custom":
+            # Only prompt to save if there's actually text to save.
+            if current_neg_prompt_text:
+                is_dirty = True
+        else:
+            # Check if the text for an existing preset has been modified.
+            if current_neg_prompt_text != self.original_negative_prompt_text:
+                is_dirty = True
+        
+        if is_dirty:
+            if selected_preset_name == "Custom":
+                if custom_dialogs.ask_yes_no(self, "Save Negative Prompt", "You have a custom negative prompt. Would you like to save it as a new preset?"):
+                    if not self._save_new_negative_prompt(current_neg_prompt_text):
+                        return # Abort if user cancels the save dialog
+            else: # An existing preset was modified
+                res = custom_dialogs.ask_yes_no_cancel(self, "Save Negative Prompt Changes", f"You have modified the '{selected_preset_name}' preset. Would you like to save the changes?\n\nYes: Update the existing preset.\nNo: Save as a new preset.")
+                if res is True:
+                    self._update_existing_negative_prompt(selected_preset_name, current_neg_prompt_text)
+                elif res is False:
+                    if not self._save_new_negative_prompt(current_neg_prompt_text):
+                        return # Abort if user cancels the save dialog
+        
         # Get selected models
         selected_model_names = [name for name, var in self.model_vars.items() if var.get()]
+        default_neg_prompt = self.neg_prompt_text.get("1.0", "end-1c").strip()
+
         if not selected_model_names:
             custom_dialogs.show_error(self, "Invalid Input", "Please select at least one model.")
             self.result = None
             return
             
-        selected_model_objects = [self.model_data[name] for name in selected_model_names if name in self.model_data]
-
-        if not selected_model_objects:
-            custom_dialogs.show_error(self, "Invalid Input", "Could not find data for selected models.")
-            self.result = None
-            return
-        
-        # Get selected LoRAs
-        selected_lora_names = [name for name, var in self.lora_vars.items() if var.get()]
-        selected_loras = []
-        if selected_lora_names and self.lora_data:
-            for lora_name in selected_lora_names:
+        # Get GLOBAL LoRA selection to use as a default
+        global_selected_lora_names = [name for name, var in self.lora_vars.items() if var.get()]
+        global_selected_loras = []
+        if global_selected_lora_names and self.lora_data:
+            for lora_name in global_selected_lora_names:
                 lora_object = self.lora_data.get(lora_name)
                 if lora_object:
                     try:
                         weight = float(self.lora_weight_vars[lora_name].get())
                     except (ValueError, KeyError):
-                        weight = 0.75 # Fallback to default weight if something goes wrong.
-                    selected_loras.append({
-                        'lora_object': lora_object,
-                        'weight': weight
-                    })
+                        weight = 0.75
+                    global_selected_loras.append({'lora_object': lora_object, 'weight': weight})
+            
+        selected_models_with_prompts_and_loras = []
+        for name in selected_model_names:
+            if name in self.model_data:
+                # Use per-model LoRAs if they exist, otherwise use the global selection
+                loras_for_this_model = self.lora_overrides.get(name, global_selected_loras)
+                
+                selected_models_with_prompts_and_loras.append({
+                    'model': self.model_data[name], 
+                    'negative_prompt': self.neg_prompt_overrides.get(name, default_neg_prompt),
+                    'loras': loras_for_this_model
+                })
+
+        if not selected_models_with_prompts_and_loras:
+            custom_dialogs.show_error(self, "Invalid Input", "Could not find data for the selected model(s).")
+            self.result = None
+            return
         
         try:
             self.result = {
-                "models": selected_model_objects,
-                "loras": selected_loras,
+                "models": selected_models_with_prompts_and_loras,
                 "seed": int(self.seed_var.get()),
                 "steps": int(self.steps_var.get()),
                 "cfg_scale": float(self.cfg_var.get()),
                 "cfg_rescale_multiplier": float(self.cfg_rescale_var.get()),
                 "scheduler": self.scheduler_var.get(),
                 "num_images": int(self.num_images_var.get()),
-                "save_to_gallery": self.save_to_gallery_var.get(),
-                "negative_prompt": self.neg_prompt_text.get("1.0", "end-1c").strip()
+                "save_to_gallery": self.save_to_gallery_var.get()
             }
         except (ValueError, TypeError) as e:
             custom_dialogs.show_error(self, "Invalid Input", f"Please check your parameters (Seed and Steps must be whole numbers):\n{e}")

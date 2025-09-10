@@ -6,17 +6,35 @@ standard simpledialog and messagebox to ensure consistent styling.
 import tkinter as tk
 from tkinter import ttk
 import sys
+import re
 import json
 import copy
 import difflib
 import re
 import os
-from typing import TYPE_CHECKING, Callable, Tuple, Any, Optional
+from typing import TYPE_CHECKING, Callable, Tuple, Any, Optional, List, Dict
 from .common import Tooltip, TextContextMenu
 
 if TYPE_CHECKING:
     from core.prompt_processor import PromptProcessor
     from .gui_app import GUIApp
+
+def is_valid_filename_component(name: str) -> Tuple[bool, str]:
+    """
+    Validates a string to ensure it's a safe component for a filename.
+    Returns (is_valid, error_message).
+    """
+    if not name:
+        return False, "Filename cannot be empty."
+    if name in {".", ".."}:
+        return False, "Filename cannot be '.' or '..'."
+    
+    # Disallow characters that are invalid in Windows/Linux/macOS filenames
+    invalid_chars = r'[\\/:*?"<>|]'
+    if re.search(invalid_chars, name):
+        return False, f"Filename cannot contain any of the following characters: \\ / : * ? \" < > |"
+    
+    return True, ""
 
 class _CustomDialog(tk.Toplevel):
     """Base class for custom dialogs, handling window positioning and setup."""
@@ -94,8 +112,9 @@ class _EnrichChoicesDialog(_CustomDialog):
 
 class _AskStringDialog(_CustomDialog):
     """A custom dialog to get a string input from the user."""
-    def __init__(self, parent, title: str, prompt: str, initialvalue: str = ""):
+    def __init__(self, parent, title: str, prompt: str, initialvalue: str = "", validator: Optional[Callable[[str], Tuple[bool, str]]] = None):
         super().__init__(parent, title)
+        self.validator = validator
 
         main_frame = ttk.Frame(self, padding=20)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -122,7 +141,13 @@ class _AskStringDialog(_CustomDialog):
         self.wait_window(self)
 
     def _on_ok(self, event=None):
-        self.result = self.entry.get()
+        value = self.entry.get().strip()
+        if self.validator:
+            is_valid, error_message = self.validator(value)
+            if not is_valid:
+                show_warning(self, "Invalid Input", error_message)
+                return
+        self.result = value
         self.destroy()
 
 class _MessageBox(_CustomDialog):
@@ -243,6 +268,158 @@ def show_warning(parent, title, message):
 def show_error(parent, title, message):
     # In a real app, you might add an error icon here
     _CopyableErrorDialog(parent, title, message)
+
+class _CreateSystemPromptDialog(_CustomDialog):
+    """A dialog to get the type and name for a new system prompt."""
+    def __init__(self, parent):
+        super().__init__(parent, "Create New System Prompt")
+        self.prompt_type_var = tk.StringVar(value="variation")
+        self.filename_var = tk.StringVar()
+
+        main_frame = ttk.Frame(self, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Select the type of prompt to create:").pack(anchor='w', pady=(0, 10))
+        
+        type_frame = ttk.Frame(main_frame)
+        type_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Radiobutton(type_frame, text="Variation (.json)", variable=self.prompt_type_var, value="variation").pack(anchor='w')
+        ttk.Radiobutton(type_frame, text="Enhancement (.txt)", variable=self.prompt_type_var, value="enhancement").pack(anchor='w')
+        ttk.Radiobutton(type_frame, text="Negative Prompt (.txt)", variable=self.prompt_type_var, value="negative_prompt").pack(anchor='w')
+
+        ttk.Label(main_frame, text="Enter filename (without extension):").pack(anchor='w')
+        self.entry = ttk.Entry(main_frame, textvariable=self.filename_var, width=40)
+        self.entry.pack(fill=tk.X, pady=(0, 20))
+        self.entry.focus_set()
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X)
+        ok_button = ttk.Button(button_frame, text="Create", command=self._on_ok, style="Accent.TButton")
+        ok_button.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+        self.bind("<Return>", self._on_ok)
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_ok(self, event=None):
+        filename = self.filename_var.get().strip()
+        is_valid, error_message = is_valid_filename_component(filename)
+        if not is_valid:
+            show_warning(self, "Invalid Input", error_message)
+            return
+            
+        self.result = {
+            "type": self.prompt_type_var.get(),
+            "filename": filename
+        }
+        self.destroy()
+
+class _PerModelNegativePromptDialog(_CustomDialog):
+    """A dialog to set negative prompt overrides for selected models."""
+    def __init__(self, parent, processor: 'PromptProcessor', selected_models: List[str], overrides: Dict[str, str]):
+        super().__init__(parent, "Per-Model Negative Prompt Overrides")
+        self.processor = processor
+        self.entries: Dict[str, tk.StringVar] = {}
+        self.combo_vars: Dict[str, tk.StringVar] = {}
+        self.text_widgets: Dict[str, tk.Entry] = {}
+
+        # Get presets once
+        self.negative_prompts = self.processor.get_available_negative_prompts()
+        self.neg_prompt_names = ["(Use Default)"] + [p['name'] for p in self.negative_prompts]
+
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Select a preset or enter a custom negative prompt for specific models. Leave blank to use the main negative prompt.", wraplength=480).pack(pady=(0, 10))
+
+        from .common import ScrollableFrame # Local import
+        scroll_frame = ScrollableFrame(main_frame)
+        scroll_frame.pack(fill=tk.BOTH, expand=True)
+        container = scroll_frame.scrollable_frame
+
+        for model_name in selected_models:
+            row_frame = ttk.LabelFrame(container, text=model_name, padding=5)
+            row_frame.pack(fill=tk.X, pady=3, padx=3)
+            row_frame.columnconfigure(0, weight=1)
+
+            # Preset Combobox
+            combo_var = tk.StringVar()
+            combo = ttk.Combobox(row_frame, textvariable=combo_var, values=self.neg_prompt_names, state="readonly")
+            combo.pack(fill=tk.X, pady=(0, 5))
+            combo.bind("<<ComboboxSelected>>", lambda event, m=model_name: self._on_preset_select(event, m))
+            self.combo_vars[model_name] = combo_var
+            
+            # Text Entry
+            string_var = tk.StringVar(value=overrides.get(model_name, ""))
+            entry = ttk.Entry(row_frame, textvariable=string_var)
+            entry.pack(fill=tk.X)
+            entry.bind("<KeyRelease>", lambda event, m=model_name: self._on_text_change(event, m))
+            self.entries[model_name] = string_var
+            self.text_widgets[model_name] = entry
+
+            # Set initial state
+            self._set_initial_preset(model_name, overrides.get(model_name, ""))
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
+        ok_button = ttk.Button(button_frame, text="OK", command=self._on_ok, style="Accent.TButton")
+        ok_button.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+        self.geometry("500x400")
+        self._center_window()
+        self.wait_window(self)
+
+    def _on_preset_select(self, event, model_name: str):
+        combo_var = self.combo_vars[model_name]
+        entry_var = self.entries[model_name]
+        selected_name = combo_var.get()
+
+        if selected_name == "(Use Default)":
+            entry_var.set("")
+            return
+
+        selected_prompt_obj = next((p for p in self.negative_prompts if p['name'] == selected_name), None)
+        if selected_prompt_obj:
+            entry_var.set(selected_prompt_obj['prompt'])
+
+    def _on_text_change(self, event, model_name: str):
+        combo_var = self.combo_vars[model_name]
+        entry_var = self.entries[model_name]
+        current_text = entry_var.get().strip()
+
+        if not current_text:
+            combo_var.set("(Use Default)")
+            return
+
+        matching_preset = next((p['name'] for p in self.negative_prompts if p['prompt'].strip() == current_text), None)
+        
+        if matching_preset:
+            if combo_var.get() != matching_preset:
+                combo_var.set(matching_preset)
+        else:
+            # It's a custom value, so clear the combobox selection
+            combo_var.set("")
+
+    def _set_initial_preset(self, model_name: str, initial_text: str):
+        combo_var = self.combo_vars[model_name]
+        stripped_initial = initial_text.strip()
+        if not stripped_initial:
+            combo_var.set("(Use Default)")
+            return
+
+        matching_preset = next((p['name'] for p in self.negative_prompts if p['prompt'].strip() == stripped_initial), None)
+        if matching_preset:
+            combo_var.set(matching_preset)
+        else:
+            combo_var.set("")
+
+    def _on_ok(self, event=None):
+        self.result = {name: var.get().strip() for name, var in self.entries.items() if var.get().strip()}
+        self.destroy()
 
 class _DiffConfirmationDialog(_CustomDialog):
     """A dialog to show a side-by-side diff of text changes and ask for confirmation."""

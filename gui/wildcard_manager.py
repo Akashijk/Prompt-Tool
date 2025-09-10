@@ -15,7 +15,7 @@ from tkinter import ttk
 import threading
 import sys
 from typing import Optional, Callable, List, Dict, Any, TYPE_CHECKING, Tuple, Set
-from core.prompt_processor import PromptProcessor
+from core.prompt_processor import PromptProcessor, sanitize_wildcard_choices
 from core.config import config
 from . import custom_dialogs
 from .dependency_graph_window import DependencyGraphWindow
@@ -221,17 +221,22 @@ class _DeduplicateSimilarChoicesDialog(custom_dialogs._CustomDialog):
 
 class _MultiWildcardEditorWindow(custom_dialogs._CustomDialog):
     """A dialog for side-by-side editing of two wildcard files."""
-    def __init__(self, parent: 'WildcardManagerWindow', processor: 'PromptProcessor', file1_name: Optional[str], file2_name: Optional[str]):
+    def __init__(self, parent: tk.Toplevel, processor: 'PromptProcessor', file1_name: Optional[str], file2_name: Optional[str], update_callback: Callable, generation_task: Optional[Callable] = None):
         super().__init__(parent, "Compare & Edit Wildcards")
-        self.manager = parent
-        self.parent_app = parent.parent_app
+        self.parent_app = parent.parent_app if hasattr(parent, 'parent_app') else parent
         self.processor = processor
+        self.update_callback = update_callback
         self.file1_name = file1_name
         self.file2_name = file2_name
         self.editor1_dirty = False
         self.editor2_dirty = False
+        self.loading_spinner1: Optional['LoadingAnimation'] = None
+        self.loading_spinner2: Optional['LoadingAnimation'] = None
+        self.generation_queue = queue.Queue()
+        self.generation_after_id: Optional[str] = None
 
-        self.all_files = sorted(self.manager.all_wildcard_files)
+        # Get files directly from processor, as this dialog is now more generic
+        self.all_files = sorted(self.processor.get_wildcard_files())
 
         # Add a main frame for padding
         main_frame = ttk.Frame(self)
@@ -281,12 +286,62 @@ class _MultiWildcardEditorWindow(custom_dialogs._CustomDialog):
         self.save_button.pack(side=tk.RIGHT)
         ttk.Button(button_frame, text="Close", command=self._on_close).pack(side=tk.RIGHT, padx=(0, 5))
 
-        self._load_file_into_pane(1, self.file1_name)
-        self._load_file_into_pane(2, self.file2_name)
+        if generation_task:
+            self._start_generation(generation_task)
+        else:
+            self._load_file_into_pane(1, self.file1_name)
+            self._load_file_into_pane(2, self.file2_name)
+
         self.geometry("1200x800")
         self._center_window()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.wait_window(self)
+
+    def _start_generation(self, task: Callable):
+        """Sets up the UI for loading and starts the generation task."""
+        from .common import LoadingAnimation # avoid circular import
+        
+        # Setup loading state for pane 1
+        self.editor1.pack_forget()
+        self.loading_spinner1 = LoadingAnimation(self.frame1, size=48)
+        self.loading_spinner1.pack(pady=50, expand=True)
+        self.loading_spinner1.start()
+
+        # Setup loading state for pane 2
+        self.editor2.pack_forget()
+        self.loading_spinner2 = LoadingAnimation(self.frame2, size=48)
+        self.loading_spinner2.pack(pady=50, expand=True)
+        self.loading_spinner2.start()
+
+        self.save_button.config(state=tk.DISABLED)
+
+        def task_wrapper():
+            try:
+                result = task()
+                self.generation_queue.put({'success': True, 'data': result})
+            except Exception as e:
+                self.generation_queue.put({'success': False, 'error': e})
+
+        thread = threading.Thread(target=task_wrapper, daemon=True)
+        thread.start()
+        self.generation_after_id = self.after(100, self._check_generation_queue)
+
+    def _check_generation_queue(self):
+        """Checks for AI generation results and populates the editors."""
+        try:
+            result = self.generation_queue.get_nowait()
+            
+            self._stop_loading_spinners()
+
+            if result['success']:
+                data = result['data']
+                self._load_file_into_pane(1, self.file1_name, content=data['primary_content'])
+                self._load_file_into_pane(2, self.file2_name, content=data['supporting_content'])
+                self.save_button.config(state=tk.NORMAL)
+            else:
+                custom_dialogs.show_error(self, "Generation Failed", f"Could not generate linked wildcards:\n{result['error']}")
+        except queue.Empty:
+            self.generation_after_id = self.after(100, self._check_generation_queue)
 
     def _set_dirty(self, editor_num: int):
         if editor_num == 1:
@@ -300,6 +355,32 @@ class _MultiWildcardEditorWindow(custom_dialogs._CustomDialog):
         # which now contains the dirty-checking logic.
         new_filename = self.combo1_var.get() if editor_num == 1 else self.combo2_var.get()
         self._load_file_into_pane(editor_num, new_filename)
+
+    def _stop_loading_spinners(self):
+        """Stops and removes loading spinners, then repacks the editors."""
+        if self.loading_spinner1:
+            self.loading_spinner1.stop()
+            self.loading_spinner1.destroy()
+        if self.loading_spinner2:
+            self.loading_spinner2.stop()
+            self.loading_spinner2.destroy()
+        
+        self.editor1.pack(fill=tk.BOTH, expand=True)
+        self.editor2.pack(fill=tk.BOTH, expand=True)
+
+    def _sort_treeview_column(self, tv, col, reverse):
+        """Sort treeview contents when a column is clicked on."""
+        l = [(tv.set(k, col), k) for k in tv.get_children('')]
+        try:
+            # Try to sort numerically if possible
+            l.sort(key=lambda t: float(t[0]), reverse=reverse)
+        except ValueError:
+            # Fallback to case-insensitive string sort
+            l.sort(key=lambda t: t[0].lower(), reverse=reverse)
+
+        for index, (val, k) in enumerate(l):
+            tv.move(k, '', index)
+        tv.heading(col, command=lambda: self._sort_treeview_column(tv, col, not reverse))
 
     def _save_pane(self, editor_num: int) -> bool:
         editor = self.editor1 if editor_num == 1 else self.editor2
@@ -318,14 +399,14 @@ class _MultiWildcardEditorWindow(custom_dialogs._CustomDialog):
             custom_dialogs.show_error(self, "Save Error", f"Could not save {filename}:\n{e}")
             return False
 
-    def _load_file_into_pane(self, editor_num: int, filename: Optional[str]):
+    def _load_file_into_pane(self, editor_num: int, filename: Optional[str], content: Optional[str] = None):
         editor = self.editor1 if editor_num == 1 else self.editor2
         frame = self.frame1 if editor_num == 1 else self.frame2
         combo_var = self.combo1_var if editor_num == 1 else self.combo2_var
         is_dirty = self.editor1_dirty if editor_num == 1 else self.editor2_dirty
         old_filename = self.file1_name if editor_num == 1 else self.file2_name
 
-        if old_filename == filename:
+        if old_filename == filename and content is None:
             return
 
         if is_dirty:
@@ -338,37 +419,48 @@ class _MultiWildcardEditorWindow(custom_dialogs._CustomDialog):
                 combo_var.set(old_filename) # Revert dropdown
                 return
 
-        if not filename:
-            editor.set_data({})
-            frame.config(text="No file selected")
-            if editor_num == 1:
-                self.file1_name = None
-                self.editor1_dirty = False
-            else:
-                self.file2_name = None
-                self.editor2_dirty = False
-            return
-
-        try:
-            data, is_broken = self.processor.get_wildcard_data_for_editing(filename)
-            if is_broken:
-                custom_dialogs.show_warning(self, "Load Warning", f"Could not parse content from {filename}.\nFile may be empty or corrupted. Loading as empty.")
+        # --- Load data ---
+        data_to_load = None
+        is_broken = False
+        if content is not None:
+            try:
+                data_to_load = json.loads(content)
+            except json.JSONDecodeError:
+                is_broken = True
+                data_to_load = content # Pass raw content if broken
+        elif filename:
+            try:
+                data_to_load, is_broken = self.processor.get_wildcard_data_for_editing(filename)
+            except Exception as e:
+                custom_dialogs.show_error(self, "Load Error", f"An unexpected error occurred while loading {filename}:\n{e}")
                 editor.set_data({})
                 frame.config(text=f"{filename} (Error)")
-            else:
-                editor.set_data(data)
-                frame.config(text=filename)
-
-            if editor_num == 1:
-                self.file1_name = filename
-                self.editor1_dirty = False
-            else:
-                self.file2_name = filename
-                self.editor2_dirty = False
-        except Exception as e:
-            custom_dialogs.show_error(self, "Load Error", f"An unexpected error occurred while loading {filename}:\n{e}")
+                return
+        
+        # --- Update UI ---
+        if data_to_load is None:
+            editor.set_data({})
+            frame.config(text="No file selected")
+        elif is_broken:
+            custom_dialogs.show_warning(self, "Load Warning", f"Could not parse content from {filename or 'generated content'}.\nContent may be empty or corrupted. Loading as empty.")
             editor.set_data({})
             frame.config(text=f"{filename} (Error)")
+        else:
+            editor.set_data(data_to_load)
+            frame.config(text=filename)
+
+        # --- Update state ---
+        if editor_num == 1:
+            self.file1_name = filename
+            self.editor1_dirty = (content is not None)
+        else:
+            self.file2_name = filename
+            self.editor2_dirty = (content is not None)
+
+        if self.editor1_dirty or self.editor2_dirty:
+            self.save_button.config(text="Save All & Close*")
+        else:
+            self.save_button.config(text="Save All & Close")
 
     def _add_requirement(self, source_editor: WildcardEditor, dest_editor: WildcardEditor, source_iid: str):
         """Adds the selected choice from the source editor as a 'requires' clause to selected items in the destination editor."""
@@ -433,7 +525,7 @@ class _MultiWildcardEditorWindow(custom_dialogs._CustomDialog):
             if self.editor2_dirty:
                 if not self._save_pane(2): return
             
-            self.manager.update_callback()
+            self.update_callback()
             if close_after:
                 custom_dialogs.show_info(self, "Save Complete", "All changes have been saved.")
                 self.destroy()
@@ -966,8 +1058,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin, TaskRunnerMixin):
         elif num_selected >= 2:
             file1 = self.wildcard_listbox.get(selection_indices[0])
             file2 = self.wildcard_listbox.get(selection_indices[1])
-        
-        _MultiWildcardEditorWindow(self, self.processor, file1, file2)
+
+        _MultiWildcardEditorWindow(self, self.processor, file1, file2, self.update_callback)
 
     def _display_valid_wildcard(self, wildcard_data: Dict[str, Any]):
         """Updates the editor UI for a successfully loaded wildcard."""
@@ -1191,7 +1283,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin, TaskRunnerMixin):
         is_nsfw_only = False
 
         with self._protect_listbox_focus():
-            filename_result = custom_dialogs.ask_string(self, "New Wildcard File", "Enter new wildcard filename:")
+            filename_result = custom_dialogs.ask_string(self, "New Wildcard File", "Enter new wildcard filename:", validator=custom_dialogs.is_valid_filename_component)
             if not filename_result:
                 return # User cancelled
 
@@ -1985,7 +2077,8 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin, TaskRunnerMixin):
                 self, 
                 "Rename Wildcard", 
                 "Enter new name (without extension):", 
-                initialvalue=old_basename
+                initialvalue=old_basename,
+                validator=custom_dialogs.is_valid_filename_component
             )
             new_basename = dialog.result
 
@@ -2125,11 +2218,12 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin, TaskRunnerMixin):
                     # Merge 'includes'
                     inc1 = existing_choice.get('includes')
                     inc2 = new_choice_data.get('includes')
+                    merged_includes = None
                     is_inc1_list = isinstance(inc1, list)
                     is_inc2_list = isinstance(inc2, list)
 
-                    merged_includes = None
                     if is_inc1_list and is_inc2_list:
+                        # Both are lists, so we can safely merge them.
                         merged_includes = sorted(list(set(inc1) | set(inc2)))
                     elif inc1 or inc2:
                         s1 = " ".join([f"[{w}]" for w in inc1]) if is_inc1_list else (inc1 or '')

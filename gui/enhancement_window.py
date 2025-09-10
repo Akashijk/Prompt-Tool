@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
     """A pop-up window to display enhancement results."""
-    def __init__(self, parent: 'GUIApp', result_data: dict, processor: PromptProcessor, model: str, selected_variations: List[str], cancel_callback: Callable, api_call_finish_callback: Callable, existing_entry_id: Optional[str] = None):
+    def __init__(self, parent: 'GUIApp', result_data: dict, processor: PromptProcessor, model: str, models: List[str], selected_variations: List[str], cancel_callback: Callable, api_call_finish_callback: Callable, existing_entry_id: Optional[str] = None):
         super().__init__(parent)
         self.title("Enhancement Result")
         self.transient(parent)
@@ -29,6 +29,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
 
         self.processor = processor
         self.model = model
+        self.models = models
         self.result_data = result_data
         self.is_favorite = tk.BooleanVar(value=False)
         self.existing_entry_id = existing_entry_id
@@ -54,12 +55,20 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # --- NEW: Use grid layout for robustness ---
-        main_frame.rowconfigure(0, weight=1) # The scrollable area gets all the extra space
+        main_frame.rowconfigure(1, weight=1) # The scrollable area gets all the extra space
         main_frame.columnconfigure(0, weight=1)
+
+        # --- NEW: Add model selector to top of window ---
+        top_controls_frame = ttk.Frame(main_frame)
+        top_controls_frame.grid(row=0, column=0, sticky='ew', pady=(0, 10))
+        ttk.Label(top_controls_frame, text="AI Model:").pack(side=tk.LEFT, padx=(0, 5))
+        self.model_var = tk.StringVar(value=self.model)
+        model_menu = ttk.OptionMenu(top_controls_frame, self.model_var, self.model, *self.models, command=self._on_model_change)
+        model_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # --- Action Buttons ---
         self.button_frame = ttk.Frame(main_frame) # Padding is handled by grid's pady
-        self.button_frame.grid(row=1, column=0, sticky='ew', pady=(10, 0))
+        self.button_frame.grid(row=2, column=0, sticky='ew', pady=(10, 0))
 
         # --- Button Layout (using pack for simplicity and robustness) ---
         self.save_button = ttk.Button(self.button_frame, text="Save to History", command=self._save, state=tk.DISABLED)
@@ -74,18 +83,18 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
 
         # --- Scrollable container for prompts (this is the main expanding area) ---
         scrollable_prompts_container = ScrollableFrame(main_frame)
-        scrollable_prompts_container.grid(row=0, column=0, sticky='nsew')
+        scrollable_prompts_container.grid(row=1, column=0, sticky='nsew')
         prompts_parent_frame = scrollable_prompts_container.scrollable_frame
 
         # Create all text areas with placeholder content for dynamic fields, inside the scrollable frame
         self._create_text_area(prompts_parent_frame, 'original', "Original Prompt", self.result_data['original'], height=3, has_regen=False, is_loading=False)
-        self._create_text_area(prompts_parent_frame, 'enhanced', "Enhanced Prompt", "Generating...", sd_model="Generating...", height=6, is_loading=True)
+        self._create_text_area(prompts_parent_frame, 'enhanced', "Enhanced Prompt", "Generating...", height=6, is_loading=True)
 
         if self.selected_variations:
             variations_frame = ttk.LabelFrame(prompts_parent_frame, text="Variations", padding="10")
             variations_frame.pack(fill=tk.BOTH, expand=True, pady=5)
             for var_type in self.selected_variations:
-                self._create_text_area(variations_frame, var_type, var_type.capitalize(), "Generating...", sd_model="Generating...", height=4, is_loading=True)
+                self._create_text_area(variations_frame, var_type, var_type.capitalize(), "Generating...", height=4, is_loading=True)
 
         self.result_queue_after_id = self.after(100, self._check_result_queue)
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -109,7 +118,16 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         self.parent_app.report_enhancement_window_closed(self)
         self.destroy()
     
-    def _create_text_area(self, parent, prompt_key: str, title: str, content: str, height: int, sd_model: Optional[str] = None, has_regen: bool = True, is_loading: bool = False):
+    def _on_model_change(self, new_model: str):
+        """Handles when the user selects a new model in the dropdown."""
+        old_model = self.model
+        if new_model != old_model:
+            self.model_usage_manager.unregister_usage(old_model)
+            self.model_usage_manager.register_usage(new_model)
+            self.model = new_model
+            self.regen_all_button.config(state=tk.NORMAL)
+    
+    def _create_text_area(self, parent, prompt_key: str, title: str, content: str, height: int, is_loading: bool = False, has_regen: bool = True):
         frame = ttk.LabelFrame(parent, text=title, padding="5")
         frame.pack(fill=tk.X, pady=5)
         
@@ -176,11 +194,10 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             # Don't pack the regen button yet
             self.regen_buttons[prompt_key] = regen_button
 
-        # Add SD model label if provided
-        if sd_model:
-            model_label = ttk.Label(frame, text=f"Recommended Model: {sd_model}", font=self.parent_app.small_font, foreground="gray")
-            model_label.pack(anchor='w', padx=5, pady=(2, 0))
-            self.sd_model_labels[prompt_key] = model_label
+        # Add LLM label
+        model_label = ttk.Label(frame, text=f"LLM: {self.model}", font=self.parent_app.small_font, foreground="gray")
+        model_label.pack(anchor='w', padx=5, pady=(2, 0))
+        self.sd_model_labels[prompt_key] = model_label
 
     def _save(self):
         """Save the result to the history, either as a new entry or by updating an existing one."""
@@ -234,8 +251,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             prompt = self.result_data['variations'][prompt_key].get('prompt', '')
         elif prompt_key == 'original':
             prompt = self.result_data.get('original', '')
-        
-        negative_prompt = config.DEFAULT_NEGATIVE_PROMPT
+        negative_prompt = self.processor.get_default_negative_prompt_text()
         
         if not prompt:
             custom_dialogs.show_error(self, "Error", "No prompt available to generate an image.")
@@ -307,10 +323,10 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         """The background task that calls the AI model for regeneration."""
         try:
             if prompt_key == 'enhanced':
-                new_prompt, new_sd_model = self.processor.regenerate_enhancement(
+                new_prompt = self.processor.regenerate_enhancement(
                     self.result_data['original'], self.model
                 )
-                result = {'key': prompt_key, 'prompt': new_prompt, 'sd_model': new_sd_model}
+                result = {'key': prompt_key, 'prompt': new_prompt, 'ollama_model': self.model}
             else: # It's a variation
                 # Use the ENHANCED prompt as the base for regenerating a variation for better context.
                 base_prompt_for_variation = self.result_data.get('enhanced', {}).get('prompt')
@@ -319,10 +335,8 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
                     base_prompt_for_variation = self.result_data.get('original', '')
                 original_prompt_for_context = self.result_data.get('original', '')
                 if not base_prompt_for_variation: raise ValueError("Base prompt not found to generate variation from.")
-                variation_result = self.processor.regenerate_variation(
-                    base_prompt_for_variation, "", self.model, prompt_key, original_prompt_context=original_prompt_for_context
-                )
-                result = {'key': prompt_key, 'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
+                variation_result = self.processor.regenerate_variation(base_prompt_for_variation, self.model, prompt_key, original_prompt_context=original_prompt_for_context)
+                result = {'key': prompt_key, 'prompt': variation_result['prompt'], 'ollama_model': self.model}
             self.regen_queue.put(result)
         except Exception as e:
             self.regen_queue.put({'key': prompt_key, 'error': str(e)})
@@ -334,49 +348,55 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
 
         try:
             result = self.regen_queue.get_nowait()
-            key = result['key']
+            key = result.get('key')
+            if not key: return # Cannot proceed without a key
 
-            # Hide spinner and show regen button
-            self.loading_animations[key].stop()
-            self.loading_animations[key].pack_forget()
-            self.regen_buttons[key].pack(fill=tk.X, pady=(5,0))
+            # --- Safely update UI ---
+            spinner = self.loading_animations.get(key)
+            regen_button = self.regen_buttons.get(key)
+            if spinner:
+                spinner.stop()
+                spinner.pack_forget()
+            if regen_button:
+                regen_button.pack(fill=tk.X, pady=(5,0))
             
             if 'error' in result:
                 custom_dialogs.show_error(self, "Regeneration Error", result['error'])
-                # Notify parent that the call failed
                 self.parent_app.report_regeneration_finished(success=False)
-                self._check_and_enable_regen_all_button()
-                return
-
-            new_prompt = result['prompt']
-            new_sd_model = result['sd_model']
-            
-            # Update UI
-            self.text_widgets[key].config(state=tk.NORMAL)
-            self.text_widgets[key].delete("1.0", tk.END)
-            self.text_widgets[key].insert("1.0", new_prompt)
-            self.text_widgets[key].config(state=tk.DISABLED)
-            if key in self.sd_model_labels:
-                self.sd_model_labels[key].config(text=f"Recommended Model: {new_sd_model}")
-            
-            # Update internal data for saving
-            if key == 'enhanced':
-                self.result_data['enhanced'] = {'prompt': new_prompt, 'sd_model': new_sd_model}
             else:
-                # Variations now also carry their own negative prompts
-                self.result_data['variations'][key] = {'prompt': new_prompt, 'sd_model': new_sd_model}
-            
-            # Notify parent that the call is complete
-            self.parent_app.report_regeneration_finished(success=True)
+                new_prompt = result.get('prompt')
+                if new_prompt is None: return
+
+                new_ollama_model = result.get('ollama_model', self.model)
+                
+                # Update UI
+                text_widget = self.text_widgets.get(key)
+                if text_widget:
+                    text_widget.config(state=tk.NORMAL)
+                    text_widget.delete("1.0", tk.END)
+                    text_widget.insert("1.0", new_prompt)
+                    text_widget.config(state=tk.DISABLED)
+                
+                model_label = self.sd_model_labels.get(key)
+                if model_label:
+                    model_label.config(text=f"LLM: {new_ollama_model}")
+                
+                # Update internal data for saving
+                if key == 'enhanced':
+                    self.result_data['enhanced'] = {'prompt': new_prompt, 'ollama_model': new_ollama_model}
+                else:
+                    self.result_data['variations'][key] = {'prompt': new_prompt, 'ollama_model': new_ollama_model}
+                
+                self.parent_app.report_regeneration_finished(success=True)
             
             self._check_and_enable_regen_all_button()
             
         except queue.Empty:
             pass
-        except tk.TclError:
-            # This can happen if the window is destroyed while the queue is being processed.
-            # We can safely ignore it and stop the loop.
-            return
+        except Exception as e:
+            # Add a general exception handler to prevent the loop from dying silently.
+            print(f"ERROR: Unhandled exception in _check_regen_queue: {e}")
+            traceback.print_exc()
         finally:
             if self.winfo_exists():
                 self.regen_queue_after_id = self.after(100, self._check_regen_queue)
@@ -396,7 +416,8 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             self.text_widgets[key].config(state=tk.DISABLED)
             
             if key in self.sd_model_labels:
-                self.sd_model_labels[key].config(text=f"Recommended Model: {data['sd_model']}")
+                ollama_model_text = data.get('ollama_model', self.model)
+                self.sd_model_labels[key].config(text=f"LLM: {ollama_model_text}")
             
             # Stop the spinner and show the regen button if it exists
             if key in self.loading_animations:

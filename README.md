@@ -18,9 +18,9 @@ A quick look at some of the key tool windows:
 
 <table align="center">
   <tr>
-    <td align="center">Prompt Evolver</td>
-    <td align="center">Wildcard Manager</td>
-    <td align="center">AI Brainstorming</td>
+    <td align="center">Prompt History</td>
+    <td align="center">Image Generation</td>
+   <!-- <td align="center">AI Brainstorming</td> -->
   </tr>
   <tr>
     <td><img src="assets/prompt_history.png" alt="Prompt History Screenshot" width="260"/></td>

@@ -44,15 +44,8 @@ DEFAULT_SFW_ENHANCEMENT_INSTRUCTION = """You are a specialized AI prompt enhance
 5.  Include mood or emotional tone (e.g., serene, chaotic, joyful).
 6.  Add quality and realism boosters (e.g., masterpiece, photorealistic, highly detailed, 8k).
 7.  Keep the enhanced prompt under 200 words in a comma-separated format suitable for Stable Diffusion.
-
-**IMPORTANT FORMAT:** Respond with EXACTLY this format:
+**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text, and nothing else.
 ENHANCED_PROMPT: [your enhanced prompt here]
-SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason]
-
-**SD Model Guidelines:**
--   Always specify base type: SD1.5, SDXL, or SD3.
--   Recommend common, high-quality models like "DreamShaper", "Realistic Vision", or "Juggernaut XL".
--   Format example: "DreamShaper v8 (SDXL) - for high-quality general purpose and fantasy imagery"
 
 **Original prompt to enhance:**
 """
@@ -61,17 +54,17 @@ DEFAULT_SFW_VARIATIONS = {
     "cinematic": {
         "name": "Cinematic",
         "description": "Re-writes the prompt with a focus on dramatic lighting, camera angles, and movie-like composition.",
-        "prompt": "Transform this Stable Diffusion prompt into a CINEMATIC version with dramatic lighting, movie-like composition, and camera angles. Focus on cinematography terms and dramatic atmosphere.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this Stable Diffusion prompt into a CINEMATIC version with dramatic lighting, movie-like composition, and camera angles. Focus on cinematography terms and dramatic atmosphere.\n\n**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text.\nENHANCED_PROMPT: [your enhanced prompt here]\n\n**Original prompt to transform:**\n"
     },
     "artistic": {
         "name": "Artistic",
         "description": "Re-writes the prompt to emphasize painterly qualities, specific art movements, or artistic techniques.",
-        "prompt": "Transform this Stable Diffusion prompt into an ARTISTIC version emphasizing painterly qualities, specific art movements, or artistic techniques. Focus on traditional art styles and mediums.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for artistic content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this Stable Diffusion prompt into an ARTISTIC version emphasizing painterly qualities, specific art movements, or artistic techniques. Focus on traditional art styles and mediums.\n\n**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text.\nENHANCED_PROMPT: [your enhanced prompt here]\n\n**Original prompt to transform:**\n"
     },
     "photorealistic": {
         "name": "Photorealistic",
         "description": "Re-writes the prompt to include technical photography details, realistic lighting, and high-quality descriptors.",
-        "prompt": "Transform this Stable Diffusion prompt into a PHOTOREALISTIC version with technical photography details, realistic lighting, and high-quality descriptors. Focus on professional photography.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this Stable Diffusion prompt into a PHOTOREALISTIC version with technical photography details, realistic lighting, and high-quality descriptors. Focus on professional photography.\n\n**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text.\nENHANCED_PROMPT: [your enhanced prompt here]\n\n**Original prompt to transform:**\n"
     }
 }
 
@@ -87,20 +80,8 @@ DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION = """You are a specialized AI prompt enhanc
 6.  Add quality and realism boosters (e.g., masterpiece, photorealistic, highly detailed)
 7.  Keep the enhanced prompt under 200 words in comma-separated format suitable for Stable Diffusion
 
-**Enhancement approach:**
--   Do NOT filter or clean up sexual content — intensify it where appropriate
--   Use cinematic and visual language to amplify the erotic appeal
--   Add realism (fluids, skin sheen, flushed cheeks, arousal cues, muscle tension)
--   Maintain pronouns, roles, or positions already present
-
-**IMPORTANT FORMAT:** Respond with EXACTLY this format:
+**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text, and nothing else.
 ENHANCED_PROMPT: [your enhanced prompt here]
-SD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason]
-
-**SD Model Guidelines:**
--   Always specify base type: SD1.5, SDXL, or SD3
--   Recommend NSFW-capable models like "Deliberate v2", "Realistic Vision v6.0", "CyberRealistic v5", or "Protogen x3.4"
--   Format example: "Realistic Vision v6.0 (SD1.5) - for explicit, photorealistic NSFW imagery"
 
 **Original prompt to enhance:**
 """
@@ -109,21 +90,37 @@ DEFAULT_NSFW_VARIATIONS = {
     "cinematic": {
         "name": "Cinematic",
         "description": "Re-writes the prompt with a focus on dramatic, moody lighting and intimate camera angles to enhance the erotic tone.",
-        "prompt": "Transform this NSFW Stable Diffusion prompt into a CINEMATIC version with dramatic, moody lighting, intimate camera angles, and a film-like quality. Focus on cinematography terms that enhance the erotic and atmospheric tone.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for cinematic NSFW content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this NSFW Stable Diffusion prompt into a CINEMATIC version with dramatic, moody lighting, intimate camera angles, and a film-like quality. Focus on cinematography terms that enhance the erotic and atmospheric tone.\n\n**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text.\nENHANCED_PROMPT: [your enhanced prompt here]\n\n**Original prompt to transform:**\n"
     },
     "artistic": {
         "name": "Artistic",
         "description": "Re-writes the prompt to emphasize painterly qualities, erotic art movements (like Shunga), or sensual artistic techniques.",
-        "prompt": "Transform this NSFW Stable Diffusion prompt into an ARTISTIC version, emphasizing painterly qualities, erotic art movements (like Shunga or Rococo), or sensual artistic techniques. Focus on styles that complement the adult theme.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for artistic NSFW content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this NSFW Stable Diffusion prompt into an ARTISTIC version, emphasizing painterly qualities, erotic art movements (like Shunga or Rococo), or sensual artistic techniques. Focus on styles that complement the adult theme.\n\n**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text.\nENHANCED_PROMPT: [your enhanced prompt here]\n\n**Original prompt to transform:**\n"
     },
     "photorealistic": {
         "name": "Photorealistic",
         "description": "Re-writes the prompt to be hyper-realistic, focusing on details like skin pores, sweat, and raw, intimate lighting.",
-        "prompt": "Transform this NSFW Stable Diffusion prompt into a hyper-realistic PHOTOREALISTIC version. Focus on technical photography details like skin pores, sweat, bodily fluids, and realistic lighting to create a raw, intimate, and high-quality image.\n\n**IMPORTANT FORMAT:** Respond with EXACTLY this format:\nENHANCED_PROMPT: [your enhanced prompt here]\nSD_MODEL: [specific model name] ([SD1.5/SDXL/SD3]) - [brief reason for photorealistic NSFW content]\n\n**Original prompt to transform:**\n"
+        "prompt": "Transform this NSFW Stable Diffusion prompt into a hyper-realistic PHOTOREALISTIC version. Focus on technical photography details like skin pores, sweat, bodily fluids, and realistic lighting to create a raw, intimate, and high-quality image.\n\n**IMPORTANT FORMAT:** Respond with ONLY the enhanced prompt text.\nENHANCED_PROMPT: [your enhanced prompt here]\n\n**Original prompt to transform:**\n"
     },
 }
 
+# --- DEFAULT SFW NEGATIVE PROMPTS ---
+DEFAULT_SFW_NEGATIVE_PROMPTS = {
+    "standard": "ugly, deformed, bad quality, cartoon, 3d, disfigured, bad anatomy, blurry, low resolution, duplicate",
+    "simple": "bad quality, worst quality",
+    "text_and_watermarks": "text, watermark, signature, username, artist name, logo"
+}
+
+# --- DEFAULT NSFW NEGATIVE PROMPTS ---
+DEFAULT_NSFW_NEGATIVE_PROMPTS = {
+    "standard_nsfw": "ugly, deformed, bad quality, disfigured, bad anatomy, blurry, low resolution, duplicate, child, loli, shota, cub",
+    "no_text_nsfw": "text, watermark, signature, username, artist name, logo, patreon, pixiv",
+    "photorealistic_anime_nsfw": "3d, cgi, render, text, watermark, signature, username, artist name, logo, patreon, pixiv, child, loli, shota, cub, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
+}
+
 # --- DEFAULT BRAINSTORMING PROMPTS ---
+
+# --- Mechanical AI Task Prompts (Hardcoded for stability) ---
 
 DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT = """You are an expert AI prompt engineer acting as a planner. Your task is to select a small, highly relevant set of wildcards to use for generating a Stable Diffusion prompt template based on a user's theme.
 
@@ -144,49 +141,6 @@ DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT = """You are an expert AI prompt enginee
 {wildcard_list_with_desc_str}
 
 Now, provide the comma-separated list of the best wildcard names for the theme.
-"""
-
-DEFAULT_BRAINSTORM_TEMPLATE_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to write a descriptive prompt template based on the user's concept. You can use existing wildcards from the list below, but you are also **strongly encouraged to invent new, relevant wildcard names** to make the template more versatile.
-
-**CONTEXT:** {workflow_context}
-
-**CRITICAL INSTRUCTIONS:**
-1.  All wildcard names, existing or new, MUST be in the exact format `__wildcard_name__`.
-2.  The final template should be a single paragraph of comma-separated keywords and phrases.
-3.  You MUST return your response in the following format, with nothing before or after:
-TEMPLATE: [The full template text you generated]
-NEW_WILDCARDS: [A comma-separated list of any new wildcard names you invented. If you invented none, write 'none'.]
-
-**EXAMPLE RESPONSE:**
-TEMPLATE: a portrait of a __character_class__, __hair_style__ hair, wearing __fantasy_armor__, holding a __weapon_type__, in a __fantasy_forest__, __lighting_style__
-NEW_WILDCARDS: fantasy_armor, fantasy_forest
-
-Here is a sample of EXISTING wildcards you can use: {wildcard_sample_str}
-
-Now, generate the template for the concept: '{concept}'.
-"""
-
-DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to write a high-quality, detailed, and creative prompt template based on the user's theme.
-
-**THEME:** {theme}
-
-**CONTEXT:** {workflow_context}
-
-**CRITICAL INSTRUCTIONS:**
-1.  **Use a wide variety of wildcards** from the 'AVAILABLE WILDCARDS' list below. Combine them in creative and logical ways based on the theme.
-2.  **Create a comma-separated list** of keywords, phrases, and wildcards. This is for a machine, so it should not be a grammatically correct sentence.
-3.  **Add descriptive keywords** alongside the wildcards to enhance the scene (e.g., lighting, style, quality tags like 'masterpiece').
-4.  **Strictly Use Provided Wildcards:** You MUST ONLY use wildcards from the 'AVAILABLE WILDCARDS' list. Do NOT invent any new wildcard names. This is a critical rule.
-5.  All wildcard names MUST be in the exact format `__wildcard_name__`, as shown in the list below.
-6.  Return ONLY the generated template text. Do not include any other commentary, titles, or explanations.
-
-**EXAMPLE of a good template for the theme 'fantasy portrait':**
-`masterpiece, best quality, a portrait of a __character_class__, __hair_color__ hair, wearing __fantasy_armor__, detailed clothing, __lighting_style__, in a __fantasy_forest__, intricate details, sharp focus`
-
-**AVAILABLE WILDCARDS (with examples):**
-{wildcard_list_str}
-
-Now, generate the template.
 """
 
 DEFAULT_AI_REFACTOR_CHOICES_PROMPT = """You are a JSON sorting AI. Your task is to analyze two wildcard files and move any choice that is thematically in the wrong file.
@@ -264,140 +218,6 @@ You MUST modify every `value` in the Primary File by appending a short, grammati
 Now, provide the full, corrected JSON content for the Primary File.
 """
 
-DEFAULT_BRAINSTORM_WILDCARD_PROMPT = """You are an expert content creator specializing in generating diverse and thematic lists for Stable Diffusion wildcards. Your task is to generate a JSON object containing a list of 20-30 items that are **strictly and creatively** related to the topic: '{topic}'.{template_context_section}{linked_wildcard_instruction}
-
-**CONTEXT:** {workflow_context}
-
-**CRITICAL INSTRUCTIONS:**
-1.  **Topic is Paramount:** The user's topic, '{topic}', is the absolute priority. The workflow context (e.g., NSFW) should ONLY apply if the topic itself is explicitly sexual. For a non-sexual topic like 'college dorm room' or 'types of trees', you MUST generate safe, non-sexual content, regardless of the workflow context.
-2.  **Stay Strictly on Theme:** Every single new choice MUST be a specific example of '{topic}'. Do not suggest items that are merely related accessories or concepts. For example, if the topic is 'sex positions', do not suggest 'garter belt'.
-3.  **JSON Format:** You MUST return a single JSON object with a `description` and a `choices` array.
-4.  **Complex Choices:** The `choices` array should contain a mix of simple strings and complex objects. For objects, you can include `weight`, `tags`, `requires`, and `includes` keys.
-5.  **Requirements & Includes:** Use `requires` for dependencies. This can be a value check (e.g., `{{ "wildcard_name": "value" }}`) or a tag check (e.g., `{{ "tags": {{"any": ["tag1"]}} }}`). Use `includes` (e.g., `["another_wildcard"]`) to add more wildcards.
-6.  **No Self-Reference:** The `requires` key MUST NOT refer to the wildcard being generated (`{wildcard_name_from_topic}`). This is a critical rule.
-7.  **Use Normal Spaces:** For all `value` fields and simple string choices, use normal spaces, NOT underscores (e.g., 'elven archer', not 'elven_archer'). Underscores are only for wildcard names in `includes`.
-8.  **Unique Values:** Ensure all `value` fields within your generated `choices` array are unique. Do not repeat items.
-9.  **No Extra Text:** Do not add any commentary outside of the JSON object.
-
-**Existing Wildcards sample for 'requires' and 'includes' clauses:** {wildcard_sample_str}
-
-**EXAMPLE for topic 'fantasy_character_class':**
-{{
-  "description": "A list of fantasy character classes.",
-  "choices": [
-    "peasant",
-    {{"value": "elven archer", "weight": 3, "tags": ["ranged", "elf"], "requires": {{"fantasy_race": "elf"}}, "includes": ["elven_bow", "leather_armor"]}},
-    {{"value": "dwarven warrior", "weight": 3, "tags": ["melee", "dwarf"], "requires": {{"fantasy_race": "dwarf"}}, "includes": ["dwarven_axe", "plate_armor"]}},
-    {{"value": "shadowmancer", "tags": ["magic", "stealth"], "requires": {{"tags": {{"any": ["night", "darkness"]}}}}}}
-  ]
-}}
-
-Now, generate the JSON for the topic: '{topic}'.
-"""
-
-DEFAULT_AI_BREED_PROMPTS_PROMPT = """You are a highly creative AI assistant specializing in conceptual blending for Stable Diffusion prompts. 
-Your task is to "breed" new, unique prompts from a list of "parent" prompts. 
-You are not just combining keywords; you are inventing entirely new scenes inspired by the parents.
-
-### PROCESS
-1. **Deconstruct Parents:** Break each parent prompt into:
-   - **Subject:** Main character, creature, or focal point.
-   - **Setting:** The environment or world around them.
-   - **Style/Medium:** Artistic, photographic, or cinematic style.
-   - **Mood/Atmosphere:** Emotional tone or vibe.
-   - **Details:** Colors, lighting, props, perspective, composition.
-
-2. **Conceptual Blending:** For each new child prompt:
-   - **Invent a New Core Idea:** Imagine a fresh, unified concept inspired by elements of the parents. Do not just swap subjects/settings.
-   - **Fuse Creatively:** Blend styles, moods, and details into a coherent new prompt. It should feel like a scene that could exist naturally, not a stitched-together collage.
-   - **Keyword Order:** Place important style/quality tags (e.g., masterpiece, cinematic, ultra-detailed, photorealistic) at the start for Stable Diffusion optimization.
-
-### CRITICAL RULES
-1. **Novelty First:** Every child prompt must represent a genuinely new idea, not a mashup.
-2. **Inspired, Not Copied:** Parents provide raw inspiration. Children should feel distinct and surprising.
-3. **Clarity & Quality:** Each prompt must be coherent, descriptive, and directly usable in Stable Diffusion.
-4. **Strict Output Format:** Return ONLY a numbered list of finished prompts. No extra text, no explanations, no titles.
-
-### EXAMPLE
-Parent 1: masterpiece, photorealistic, a stoic knight in heavy plate armor, standing in a ruined cathedral, god rays
-Parent 2: cyberpunk city street, neon signs, rainy, cinematic, a sleek android geisha holding a glowing parasol
-
-Example Response (num_children=2):
-1. masterpiece, cinematic, a cybernetic knight kneeling in a holographic cathedral, neon rain scattering across its visor, dramatic god rays cutting through digital stained glass
-2. photorealistic, ultra-detailed, a solemn android draped in fractured plate armor, reflecting neon city lights, holding a parasol of hard light beneath a storm of rain
-
-### PARENT PROMPTS
-{parent_prompts_str}
-
-Now, generate {num_children} new child prompts as a numbered list.
-"""
-
-DEFAULT_AI_AUTO_TAG_PROMPT = """You are an expert AI assistant specializing in data categorization for Stable Diffusion wildcards. Your task is to analyze a list of prompt fragments (choices) and generate relevant, descriptive tags for each one.
-
-**CONTEXT:**
-- The wildcard file has the following description: "{description}"
-- The choices are for the topic: '{topic}'
-
-**CRITICAL INSTRUCTIONS:**
-1.  **Analyze Each Choice:** For every item in the `choices` array, generate a list of 3-5 relevant, descriptive, lowercase tags.
-2.  **Tag Content, Not Grammar:** Tags should describe the *subject* of the choice (e.g., "clothing", "gothic", "leather"), not its grammatical structure.
-3.  **Preserve Original Data:** You MUST NOT change the original `value` of any choice.
-4.  **Return a Full JSON Array:** Your entire response MUST be a single JSON array.
-5.  **Convert All to Objects:** Every item in the returned array MUST be a JSON object. If an input item was a simple string, convert it to an object with a `value` key and add your new `tags` key to it.
-6.  **Match Array Length:** The number of objects in your returned array MUST be exactly the same as the number of items in the input `choices` array.
-7.  **No Extra Text:** Do not add any commentary outside of the JSON array.
-
-**CHOICES TO TAG:**
-```json
-{choices_json}
-```
-
-**EXAMPLE RESPONSE:**
-```json
-[
-  {{"value": "a leather corset", "tags": ["clothing", "gothic", "leather", "top"]}},
-  {{"value": "fishnet stockings", "tags": ["clothing", "gothic", "hosiery", "legwear"]}},
-  {{"value": "a simple peasant", "tags": ["person", "character", "commoner", "fantasy"]}}
-]
-```
-
-Now, generate the JSON array of tagged choices.
-"""
-
-DEFAULT_AI_ENRICH_WILDCARD_CHOICES_PROMPT = """You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing list of choices and enrich them based on the user's request.
-
-**CONTEXT:**
-- The wildcard file has the following description: "{description}"
-- The choices are for the topic: '{topic}'
-
-**CRITICAL INSTRUCTIONS:**
-1.  **Return a Full JSON Array:** Your entire response MUST be a single JSON array.
-2.  **Convert All to Objects:** Every item in the returned array MUST be a JSON object. If an input item was a simple string, convert it to an object with a `value` key.
-3.  **Match Array Length:** The number of objects in your returned array MUST be exactly the same as the number of items in the input `choices` array.
-4.  **Preserve Core Concept:** Do NOT change the fundamental subject of any choice.
-5.  **No Extra Text:** Do not add any commentary outside of the JSON array.
-
-{enrichment_instructions}
-
-**AVAILABLE WILDCARDS (for 'requires' and 'includes'):**
-{available_wildcards_str}
-
-**CHOICES TO ENRICH:**
-```json
-{choices_json}
-```
-
-**EXAMPLE RESPONSE (if enriching both descriptions and metadata):**
-```json
-[
-  {{"value": "a gleaming longsword with an ornate hilt and a large ruby set in the pommel", "tags": ["weapon", "melee"], "weight": 2, "requires": {{"character_class": "warrior"}}}},
-  {{"value": "a worn leather-bound spellbook with faintly glowing runes on the cover", "tags": ["magic", "book"], "includes": ["__arcane_symbols__"]}}
-]
-```
-
-Now, generate the JSON array of enriched choices.
-"""
-
 DEFAULT_AI_FIX_GRAMMAR_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion wildcards for grammatical correctness. Your task is to analyze a wildcard's JSON content and fix grammatical issues that occur when a `value` is combined with its `includes`.
 
 **CONTEXT:**
@@ -425,70 +245,6 @@ Sometimes, the combination is grammatically awkward.
 ```
 
 Now, provide the full, corrected JSON content.
-"""
-
-DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION = """
-
-**LINKED WILDCARD CONTEXT:**
-This wildcard ('{topic}') is being generated to work with a supporting wildcard named '{supporting_basename}'. The application will automatically add `"includes": ["{supporting_basename}"]` to the generated file. Your generated choices should be phrases or actions that can be combined with an item from '{supporting_basename}'. For example, if '{supporting_basename}' contains weapons, your choices for '{topic}' could be poses like 'swinging', 'holding', 'parrying with'.
-"""
-
-DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT = """You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing wildcard file on the topic of '{topic}' and suggest 5-10 new, creative, and relevant choices that expand upon it.
-
-**CONTEXT:** {workflow_context}
-
-**EXISTING WILDCARD DESCRIPTION:** {description}
-
-**SAMPLE OF EXISTING CHOICES (DO NOT REPEAT THESE):**
-{sample_choices_str}
-
-**CRITICAL INSTRUCTIONS:**
-{instructions}
-
-**Existing Wildcards sample for context:** {other_wildcard_sample}
-
-**EXAMPLE RESPONSE for a 'fantasy_race' wildcard:**
-[
-  "gnome",
-  {{"value": "tiefling", "weight": 2, "tags": ["fiendish"], "requires": {{"body_type": "curvy"}} }},
-  {{"value": "aasimar", "weight": 2, "tags": ["celestial"], "includes": ["halo"]}},
-  {{"value": "orc shaman", "tags": ["magic", "orc"], "includes": "chanting a __tribal_spell__"}}
-]
-
-Now, generate the JSON array of new choices.
-"""
-
-DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT = """You are an expert prompt engineer for Stable Diffusion. Your task is to take a user's prompt template and enhance it by adding more detail, style, and creative wildcards. Your goal is to return a new, more detailed **template**, not a final, generated prompt.
-
-**CRITICAL INSTRUCTIONS:**
-1.  **Preserve Existing Wildcards:** Any text in the original template that is surrounded by double underscores (e.g., `__wildcard_name__`, `__stylish outfit__`) is a placeholder. You MUST keep these placeholders exactly as they are in your output. Do NOT replace them with specific values. This is the most important rule.
-2.  **Integrate New Wildcards:** Analyze the 'AVAILABLE WILDCARDS' list. Intelligently integrate relevant existing wildcards to add variety and detail.
-3.  **Add Descriptive Keywords:** Weave in new descriptive keywords for lighting, style, quality, composition, etc.
-4.  **Maintain Structure:** The output must be a single, comma-separated paragraph suitable for a Stable Diffusion template.
-5.  **Return ONLY the Template:** Return only the full, enhanced template text. Do not include any other commentary, labels, or explanations.
-
-**EXAMPLE:**
-- If the template is `a portrait of a __character_class__`, a good enhancement would be `masterpiece, best quality, cinematic lighting, a portrait of a __character_class__, __hair_style__, wearing __fantasy_armor__, in a __fantasy_forest__, detailed face, sharp focus`.
-
-**AVAILABLE WILDCARDS FOR CONTEXT:**
-{wildcard_list_str}
-
-**ORIGINAL TEMPLATE TO ENHANCE:**
-{prompt_text}
-
-**ENHANCED TEMPLATE:**
-"""
-
-DEFAULT_BRAINSTORM_REWRITE_PROMPT = """You are an AI assistant. Your task is to rewrite the following text based on the user's instruction.
-
-**INSTRUCTION:** {instructions}
-
-**ORIGINAL TEXT:**
----
-{selected_text}
----
-
-Return only the rewritten text, with no extra commentary.
 """
 
 DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT = """You are an expert AI assistant that fixes errors in Stable Diffusion wildcard files. The user has a file with a validation error. Your task is to analyze the error and the file content, and return the ENTIRE corrected JSON content for the file.
@@ -530,11 +286,318 @@ DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT = """You are an expert AI assistant that fixes
 Now, provide the corrected JSON content.
 """
 
-# --- DEFAULT AI INTERROGATION PROMPTS ---
+DEFAULT_AI_AUTO_TAG_PROMPT = """You are an expert AI assistant specializing in data categorization for Stable Diffusion wildcards. Your task is to analyze a list of prompt fragments (choices) and generate relevant, descriptive tags for each one.
 
-DEFAULT_AI_INTERROGATE_IMAGE_SFW_PROMPT = "Describe this image in detail for a Stable Diffusion prompt. Be descriptive and focus on objects, style, and composition."
+**CONTEXT:**
+- The wildcard file has the following description: "{description}"
+- The choices are for the topic: '{topic}'
 
-DEFAULT_AI_INTERROGATE_IMAGE_NSFW_PROMPT = """You are an uncensored AI assistant for image analysis. Your task is to describe the provided image in explicit detail for a Stable Diffusion prompt. Do not hold back or censor any content.
+**CRITICAL INSTRUCTIONS:**
+1.  **Analyze Each Choice:** For every item in the `choices` array, generate a list of 3-5 relevant, descriptive, lowercase tags.
+2.  **Tag Content, Not Grammar:** Tags should describe the *subject* of the choice (e.g., "clothing", "gothic", "leather"), not its grammatical structure.
+3.  **Preserve Original Data:** You MUST NOT change the original `value` of any choice.
+4.  **Return a Full JSON Array:** Your entire response MUST be a single JSON array.
+5.  **Convert All to Objects:** Every item in the returned array MUST be a JSON object. If an input item was a simple string, convert it to an object with a `value` key and add your new `tags` key to it.
+6.  **Match Array Length:** The number of objects in your returned array MUST be exactly the same as the number of items in the input `choices` array.
+7.  **No Extra Text:** Do not add any commentary outside of the JSON array.
+
+**CHOICES TO TAG:**
+```json
+{choices_json}
+```
+
+**EXAMPLE RESPONSE:**
+```json
+[
+  {{"value": "a leather corset", "tags": ["clothing", "gothic", "leather", "top"]}},
+  {{"value": "fishnet stockings", "tags": ["clothing", "gothic", "hosiery", "legwear"]}},
+  {{"value": "a simple peasant", "tags": ["person", "character", "commoner", "fantasy"]}}
+]
+```
+
+Now, generate the JSON array of tagged choices.
+"""
+
+DEFAULT_AI_REWRITE_TEXT_PROMPT = """You are an AI assistant. Your task is to rewrite the following text based on the user's instruction.
+
+**INSTRUCTION:** {instructions}
+
+**ORIGINAL TEXT:**
+---
+{selected_text}
+---
+
+Return only the rewritten text, with no extra commentary.
+"""
+
+# --- Creative AI Task Prompts (Editable by user) ---
+
+DEFAULT_AI_TASK_PROMPTS = {
+    "brainstorm_template": {
+        "filename": "brainstorm_template.txt",
+        "content": """You are an expert prompt engineer for Stable Diffusion. Your task is to write a descriptive prompt template based on the user's concept. You can use existing wildcards from the list below, but you are also **strongly encouraged to invent new, relevant wildcard names** to make the template more versatile.
+
+**CONTEXT:** {workflow_context}
+
+**CRITICAL INSTRUCTIONS:**
+1.  All wildcard names, existing or new, MUST be in the exact format `__wildcard_name__`.
+2.  The final template should be a single paragraph of comma-separated keywords and phrases.
+3.  You MUST return your response in the following format, with nothing before or after:
+TEMPLATE: [The full template text you generated]
+NEW_WILDCARDS: [A comma-separated list of any new wildcard names you invented. If you invented none, write 'none'.]
+
+**EXAMPLE RESPONSE:**
+TEMPLATE: a portrait of a __character_class__, __hair_style__ hair, wearing __fantasy_armor__, holding a __weapon_type__, in a __fantasy_forest__, __lighting_style__
+NEW_WILDCARDS: fantasy_armor, fantasy_forest
+
+Here is a sample of EXISTING wildcards you can use: {wildcard_sample_str}
+
+Now, generate the template for the concept: '{concept}'.
+"""
+    },
+    "generate_template_from_wildcards": {
+        "filename": "generate_template_from_wildcards.txt",
+        "content": """You are an expert prompt engineer for Stable Diffusion. Your task is to write a high-quality, detailed, and creative prompt template based on the user's theme.
+
+**THEME:** {theme}
+
+**CONTEXT:** {workflow_context}
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Use a wide variety of wildcards** from the 'AVAILABLE WILDCARDS' list below. Combine them in creative and logical ways based on the theme.
+2.  **Create a comma-separated list** of keywords, phrases, and wildcards. This is for a machine, so it should not be a grammatically correct sentence.
+3.  **Add descriptive keywords** alongside the wildcards to enhance the scene (e.g., lighting, style, quality tags like 'masterpiece').
+4.  **Strictly Use Provided Wildcards:** You MUST ONLY use wildcards from the 'AVAILABLE WILDCARDS' list. Do NOT invent any new wildcard names. This is a critical rule.
+5.  All wildcard names MUST be in the exact format `__wildcard_name__`, as shown in the list below.
+6.  Return ONLY the generated template text. Do not include any other commentary, titles, or explanations.
+
+**EXAMPLE of a good template for the theme 'fantasy portrait':**
+`masterpiece, best quality, a portrait of a __character_class__, __hair_color__ hair, wearing __fantasy_armor__, detailed clothing, __lighting_style__, in a __fantasy_forest__, intricate details, sharp focus`
+
+**AVAILABLE WILDCARDS (with examples):**
+{wildcard_list_str}
+
+Now, generate the template.
+"""
+    },
+    "brainstorm_wildcard": {
+        "filename": "brainstorm_wildcard.txt",
+        "content": """You are an expert Stable Diffusion wildcard generator with deep knowledge of prompt engineering and thematic content creation. Your mission is to create a comprehensive JSON wildcard collection for the topic: '{topic}'.
+
+{template_context_section}{linked_wildcard_instruction}
+
+**WORKFLOW CONTEXT:** {workflow_context}
+
+**CORE PRINCIPLES:**
+1. **Topic Supremacy:** '{topic}' is your absolute north star. Generate 20-30 items that are direct, specific examples of this topic—not related concepts, accessories, or tangential elements.
+
+2. **Context Application Logic:** 
+   - If '{topic}' is inherently NSFW/sexual → Apply NSFW context
+   - If '{topic}' is non-sexual (e.g., 'forest animals', 'kitchen utensils') → Generate safe content regardless of workflow context
+   - When in doubt, prioritize topic accuracy over context forcing
+
+3. **Quality Over Quantity:** Each choice should be:
+   - Distinctly different from others
+   - Highly specific and descriptive
+   - Optimized for Stable Diffusion generation
+   - Varied in complexity (mix simple strings with rich objects)
+
+**TECHNICAL REQUIREMENTS:**
+
+**JSON Structure:**
+```json
+{{
+  "description": "Clear, concise explanation of what this wildcard contains",
+  "choices": [/* array of strings and objects */]
+}}
+```
+
+**Object Properties:**
+- `value`: The actual choice (use normal spaces, never underscores)
+- `weight`: Numeric selection probability (higher = more likely)
+- `tags`: Array of descriptive tags for filtering/matching
+- `requires`: Dependencies (wildcard values or tag conditions)
+- `includes`: Array of other wildcards to inject
+
+**Dependency Syntax:**
+- Value check: `{{"wildcard_name": "specific_value"}}`
+- Tag check: `{{"tags": {{"any": ["tag1", "tag2"]}}}}`
+- Multiple conditions: `{{"wildcard_a": "value", "tags": {{"all": ["tag1"]}}}}`
+
+**CRITICAL CONSTRAINTS:**
+- ❌ NO self-referencing in `requires` (cannot reference `{wildcard_name_from_topic}`)
+- ❌ NO underscores in `value` fields (use "space marine" not "space_marine")
+- ❌ NO duplicate values in the choices array
+- ❌ NO commentary outside the JSON object
+- ✅ Ensure all values are unique and topic-specific
+
+**AVAILABLE WILDCARDS:** {wildcard_sample_str}
+
+**REFERENCE EXAMPLE** (topic: 'fantasy_character_class'):
+{{
+  "description": "Fantasy RPG character classes with gear and racial synergies",
+  "choices": [
+    "village peasant",
+    "traveling merchant",
+    {{"value": "elven ranger", "weight": 3, "tags": ["ranged", "nature", "elf"], "requires": {{"fantasy_race": "elf"}}, "includes": ["elven_longbow", "forest_armor"]}},
+    {{"value": "dwarven berserker", "weight": 2, "tags": ["melee", "fury", "dwarf"], "requires": {{"fantasy_race": "dwarf"}}, "includes": ["dwarven_waraxe"]}},
+    {{"value": "shadow assassin", "tags": ["stealth", "darkness"], "requires": {{"tags": {{"any": ["night", "stealth"]}}}}, "includes": ["poison_blade"]}},
+    {{"value": "celestial paladin", "weight": 4, "tags": ["holy", "melee"], "requires": {{"alignment": "good"}}, "includes": ["holy_sword", "plate_armor"]}}
+  ]
+}}
+
+**Generate JSON for topic:** '{topic}'
+"""
+    },
+    "brainstorm_linked_wildcard_addition": {
+        "filename": "brainstorm_linked_wildcard_addition.txt",
+        "content": """
+
+**LINKED WILDCARD CONTEXT:**
+This wildcard ('{topic}') will be combined with choices from another wildcard named '{supporting_basename}'. 
+Your generated choices should be phrases or actions that can be grammatically followed by a choice from '{supporting_basename}'.
+
+For example, if '{supporting_basename}' contains types of weapons, your choices for '{topic}' could be:
+- "holding a"
+- "wielding a"
+- "posing with a"
+- "showing off their"
+
+Do NOT add any `includes` or `requires` clauses to link to '{supporting_basename}'. The application handles the linking automatically. Focus only on generating compatible text for the 'value' of each choice.
+"""
+    },
+    "suggest_wildcard_choices": {
+        "filename": "suggest_wildcard_choices.txt",
+        "content": """You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing wildcard file on the topic of '{topic}' and suggest 5-10 new, creative, and relevant choices that expand upon it.
+
+**CONTEXT:** {workflow_context}
+
+**EXISTING WILDCARD DESCRIPTION:** {description}
+
+**SAMPLE OF EXISTING CHOICES (DO NOT REPEAT THESE):**
+{sample_choices_str}
+
+**CRITICAL INSTRUCTIONS:**
+{instructions}
+
+**Existing Wildcards sample for context:** {other_wildcard_sample}
+
+**EXAMPLE RESPONSE for a 'fantasy_race' wildcard:**
+[
+  "gnome",
+  {{"value": "tiefling", "weight": 2, "tags": ["fiendish"], "requires": {{"body_type": "curvy"}} }},
+  {{"value": "aasimar", "weight": 2, "tags": ["celestial"], "includes": ["halo"]}},
+  {{"value": "orc shaman", "tags": ["magic", "orc"], "includes": "chanting a __tribal_spell__"}}
+]
+
+Now, generate the JSON array of new choices.
+"""
+    },
+    "breed_prompts": {
+        "filename": "breed_prompts.txt",
+        "content": """You are a highly creative AI assistant specializing in conceptual blending for Stable Diffusion prompts. 
+Your task is to "breed" new, unique prompts from a list of "parent" prompts. 
+You are not just combining keywords; you are inventing entirely new scenes inspired by the parents.
+
+### PROCESS
+1. **Deconstruct Parents:** Break each parent prompt into:
+   - **Subject:** Main character, creature, or focal point.
+   - **Setting:** The environment or world around them.
+   - **Style/Medium:** Artistic, photographic, or cinematic style.
+   - **Mood/Atmosphere:** Emotional tone or vibe.
+   - **Details:** Colors, lighting, props, perspective, composition.
+
+2. **Conceptual Blending:** For each new child prompt:
+   - **Invent a New Core Idea:** Imagine a fresh, unified concept inspired by elements of the parents. Do not just swap subjects/settings.
+   - **Fuse Creatively:** Blend styles, moods, and details into a coherent new prompt. It should feel like a scene that could exist naturally, not a stitched-together collage.
+   - **Keyword Order:** Place important style/quality tags (e.g., masterpiece, cinematic, ultra-detailed, photorealistic) at the start for Stable Diffusion optimization.
+
+### CRITICAL RULES
+1. **Novelty First:** Every child prompt must represent a genuinely new idea, not a mashup.
+2. **Inspired, Not Copied:** Parents provide raw inspiration. Children should feel distinct and surprising.
+3. **Clarity & Quality:** Each prompt must be coherent, descriptive, and directly usable in Stable Diffusion.
+4. **Strict Output Format:** Return ONLY a numbered list of finished prompts. No extra text, no explanations, no titles.
+
+### EXAMPLE
+Parent 1: masterpiece, photorealistic, a stoic knight in heavy plate armor, standing in a ruined cathedral, god rays
+Parent 2: cyberpunk city street, neon signs, rainy, cinematic, a sleek android geisha holding a glowing parasol
+
+Example Response (num_children=2):
+1. masterpiece, cinematic, a cybernetic knight kneeling in a holographic cathedral, neon rain scattering across its visor, dramatic god rays cutting through digital stained glass
+2. photorealistic, ultra-detailed, a solemn android draped in fractured plate armor, reflecting neon city lights, holding a parasol of hard light beneath a storm of rain
+
+### PARENT PROMPTS
+{parent_prompts_str}
+
+Now, generate {num_children} new child prompts as a numbered list.
+"""
+    },
+    "enrich_wildcard_choices": {
+        "filename": "enrich_wildcard_choices.txt",
+        "content": """You are an expert content creator for Stable Diffusion wildcards. Your task is to analyze an existing list of choices and enrich them based on the user's request.
+
+**CONTEXT:**
+- The wildcard file has the following description: "{description}"
+- The choices are for the topic: '{topic}'
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Return a Full JSON Array:** Your entire response MUST be a single JSON array.
+2.  **Convert All to Objects:** Every item in the returned array MUST be a JSON object. If an input item was a simple string, convert it to an object with a `value` key.
+3.  **Match Array Length:** The number of objects in your returned array MUST be exactly the same as the number of items in the input `choices` array.
+4.  **Preserve Core Concept:** Do NOT change the fundamental subject of any choice.
+5.  **No Extra Text:** Do not add any commentary outside of the JSON array.
+
+{enrichment_instructions}
+
+**AVAILABLE WILDCARDS (for 'requires' and 'includes'):**
+{available_wildcards_str}
+
+**CHOICES TO ENRICH:**
+```json
+{choices_json}
+```
+
+**EXAMPLE RESPONSE (if enriching both descriptions and metadata):**
+```json
+[
+  {{"value": "a gleaming longsword with an ornate hilt and a large ruby set in the pommel", "tags": ["weapon", "melee"], "weight": 2, "requires": {{"character_class": "warrior"}}}},
+  {{"value": "a worn leather-bound spellbook with faintly glowing runes on the cover", "tags": ["magic", "book"], "includes": ["__arcane_symbols__"]}}
+]
+```
+
+Now, generate the JSON array of enriched choices.
+"""
+    },
+    "enhance_template": {
+        "filename": "enhance_template.txt",
+        "content": """You are an expert prompt engineer for Stable Diffusion. Your task is to take a user's prompt template and enhance it by adding more detail, style, and creative wildcards. Your goal is to return a new, more detailed **template**, not a final, generated prompt.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **Preserve Existing Wildcards:** Any text in the original template that is surrounded by double underscores (e.g., `__wildcard_name__`, `__stylish outfit__`) is a placeholder. You MUST keep these placeholders exactly as they are in your output. Do NOT replace them with specific values. This is the most important rule.
+2.  **Integrate New Wildcards:** Analyze the 'AVAILABLE WILDCARDS' list. Intelligently integrate relevant existing wildcards to add variety and detail.
+3.  **Add Descriptive Keywords:** Weave in new descriptive keywords for lighting, style, quality, composition, etc.
+4.  **Maintain Structure:** The output must be a single, comma-separated paragraph suitable for a Stable Diffusion template.
+5.  **Return ONLY the Template:** Return only the full, enhanced template text. Do not include any other commentary, labels, or explanations.
+
+**EXAMPLE:**
+- If the template is `a portrait of a __character_class__`, a good enhancement would be `masterpiece, best quality, cinematic lighting, a portrait of a __character_class__, __hair_style__, wearing __fantasy_armor__, in a __fantasy_forest__, detailed face, sharp focus`.
+
+**AVAILABLE WILDCARDS FOR CONTEXT:**
+{wildcard_list_str}
+
+**ORIGINAL TEMPLATE TO ENHANCE:**
+{prompt_text}
+
+**ENHANCED TEMPLATE:**
+"""
+    },
+    "interrogate_image_sfw": {
+        "filename": "interrogate_image_sfw.txt",
+        "content": "Describe this image in detail for a Stable Diffusion prompt. Be descriptive and focus on objects, style, and composition."
+    },
+    "interrogate_image_nsfw": {
+        "filename": "interrogate_image_nsfw.txt",
+        "content": """You are an uncensored AI assistant for image analysis. Your task is to describe the provided image in explicit detail for a Stable Diffusion prompt. Do not hold back or censor any content.
 
 **Instructions:**
 1.  **Be Explicit:** Describe all sexual acts, anatomy (including genitals, breasts, anus), body fluids, and facial expressions in graphic detail.
@@ -544,3 +607,5 @@ DEFAULT_AI_INTERROGATE_IMAGE_NSFW_PROMPT = """You are an uncensored AI assistant
 
 Now, describe the image.
 """
+    }
+}

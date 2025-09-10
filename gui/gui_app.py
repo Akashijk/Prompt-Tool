@@ -106,6 +106,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.last_saved_entry_id_from_preview: Optional[str] = None
         self.generation_total_jobs = 0
         self.generation_completed_jobs = 0
+        self.seed_var = tk.StringVar()
+        self.random_seed_var = tk.BooleanVar(value=True) # Start with random ON
 
         # Create widgets
         self._create_widgets()
@@ -343,36 +345,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             copy_callback=self._copy_generated_prompt,
             save_as_template_callback=self._save_preview_as_template,
             suggest_callback=self._suggest_template_additions,
-            generate_image_callback=self._generate_image_from_preview
+            generate_image_callback=self._generate_image_from_preview,
+            seed_var=self.seed_var,
+            random_seed_var=self.random_seed_var,
+            randomize_seed_callback=self._randomize_seed
         )
         self._update_action_bar_variations()
-
-        # Add compact seed management frame
-        seed_frame = ttk.Frame(parent)
-        seed_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
-        
-        # Create a label with a small font
-        ttk.Label(seed_frame, text="Seed:", font=self.small_font).pack(side=tk.LEFT)
-        
-        # Create a smaller entry for the seed
-        self.seed_var = tk.StringVar()
         self.seed_var.set(str(random.randint(0, 2**32 - 1)))  # Start with a random seed
-        seed_entry = ttk.Entry(seed_frame, textvariable=self.seed_var, width=12, font=self.small_font)
-        seed_entry.pack(side=tk.LEFT, padx=(2, 5))
-        
-        # Add a small "🎲" button for new random seed
-        dice_btn = ttk.Button(seed_frame, text="🎲", width=3, 
-                             command=self._randomize_seed)
-        dice_btn.pack(side=tk.LEFT)
-        Tooltip(dice_btn, "Generate random seed")
-        
-        # Add a switch for locking instead of checkbox
-        self.random_seed_var = tk.BooleanVar(value=True) # Start with random ON
-        lock_switch = ttk.Checkbutton(seed_frame, text="Random", 
-                                     variable=self.random_seed_var,
-                                     style='Switch.TCheckbutton')
-        lock_switch.pack(side=tk.LEFT, padx=5)
-        Tooltip(lock_switch, "Use a new random seed for each generation. Turn off to use the specific seed in the box.")
 
     def _randomize_seed(self):
         """Generate and set a new random seed in the entry box."""
@@ -619,6 +598,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             # Notify the wildcard manager if it's open
             if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
                 self.wildcard_manager_window.update_active_model(old_model, new_model)
+            # Notify the prompt evolver if it's open
+            if self.prompt_evolver_window and self.prompt_evolver_window.winfo_exists():
+                self.prompt_evolver_window.update_active_model(old_model, new_model)
+            if self.brainstorming_window and self.brainstorming_window.winfo_exists():
+                self.brainstorming_window.update_active_model(old_model, new_model)
+            if self.image_interrogator_window and self.image_interrogator_window.winfo_exists():
+                self.image_interrogator_window.update_active_model(old_model, new_model)
 
     def _on_template_select(self, template_name: str):
         """Callback for when a template is selected from the dropdown."""
@@ -1055,6 +1041,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Create the results window immediately
         selected_variations = self.action_bar.get_selected_variations()
         initial_data = {'original': prompt_text, 'variations': {}, 'template_name': template_name, 'context': context}
+        models = self.processor.get_available_models()
 
         # Set up call counters for the new batch
         self.enhancement_calls_made = 0
@@ -1064,7 +1051,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.loading_animation.start()
 
         self.enhancement_cancellation_event = threading.Event()
-        result_window = EnhancementResultWindow(self, initial_data, self.processor, model, selected_variations, self._cancel_enhancement_batch, self.report_api_call_finished, existing_entry_id=existing_entry_id)
+        result_window = EnhancementResultWindow(self, initial_data, self.processor, model, models, selected_variations, self._cancel_enhancement_batch, self.report_api_call_finished, existing_entry_id=existing_entry_id)
         self.enhancement_windows.append(result_window)
 
         # Define a thread-safe callback to update the results window
@@ -1417,7 +1404,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self._start_image_generation_workflow(
             parent_window=self,
             prompt=prompt,
-            initial_dialog_params={'negative_prompt': config.DEFAULT_NEGATIVE_PROMPT},
+            initial_dialog_params={'negative_prompt': self.processor.get_default_negative_prompt_text()},
             button_to_manage=self.action_bar.generate_image_button,
             spinner_to_manage=self.action_bar.image_gen_spinner,
             on_success_callback=on_success
@@ -1461,11 +1448,34 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self._update_prompt_preview()
         self.status_var.set(f"Reloaded template '{template_name}' from history with its original choices.")
 
+    def _unload_ollama_models_for_vram(self) -> bool:
+        """
+        Unloads all active Ollama models to free VRAM. Asks for user confirmation.
+        Returns True if models were unloaded or not present, False if user cancelled.
+        """
+        active_ollama_models = self.model_usage_manager.get_active_models()
+        if active_ollama_models:
+            if custom_dialogs.ask_yes_no(
+                self, 
+                "Free VRAM?", 
+                f"This will temporarily unload the following Ollama model(s) to free VRAM for image generation:\n\n- {', '.join(active_ollama_models)}\n\nThe model(s) will be reloaded automatically on their next use. Continue?"
+            ):
+                for model in active_ollama_models:
+                    self.processor.cleanup_model(model)
+                return True
+            else:
+                return False # User cancelled
+        return True # No models to unload
+
     def _start_image_generation_workflow(self, parent_window: tk.Widget, prompt: str, initial_dialog_params: Dict[str, Any], button_to_manage: Optional[ttk.Button], spinner_to_manage: Optional[LoadingAnimation], on_success_callback: Optional[Callable[[List[Dict[str, Any]]], None]]):
         """A centralized method to handle the entire image generation process."""
+        # --- NEW: Unload Ollama models to free VRAM for InvokeAI ---
+        if not self._unload_ollama_models_for_vram():
+            return # User cancelled
+
         try:
             from .image_generation_dialog import ImageGenerationOptionsDialog
-            dialog = ImageGenerationOptionsDialog(parent_window, self.processor.invokeai_client, initial_params=initial_dialog_params)
+            dialog = ImageGenerationOptionsDialog(parent_window, self.processor, initial_params=initial_dialog_params)
             options = dialog.result
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Could not open image generation options:\n{e}")
@@ -1483,11 +1493,17 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         
         generation_jobs = []
         num_images = options.get('num_images', 1)
-        for model_object in options.get('models', []):
+        for model_info in options.get('models', []):
+            model_object = model_info['model']
+            negative_prompt_for_model = model_info['negative_prompt']
+            loras_for_model = model_info.get('loras', [])
             base_seed_for_model = options.get("seed", random.randint(0, 2**32 - 1))
             for i in range(num_images):
                 current_gen_params = options.copy()
                 current_gen_params['model'] = model_object
+                # This is the crucial part: set the specific negative prompt for this job
+                current_gen_params['negative_prompt'] = negative_prompt_for_model
+                current_gen_params['loras'] = loras_for_model
                 current_gen_params['seed'] = base_seed_for_model + i
                 if 'models' in current_gen_params: del current_gen_params['models']
                 if 'num_images' in current_gen_params: del current_gen_params['num_images']
@@ -1506,9 +1522,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 button_to_manage.config(state=tk.NORMAL, text=original_button_text)
             if images_to_save and on_success_callback:
                 on_success_callback(images_to_save)
-            if self.processor.is_invokeai_connected():
-                # Clear the cache in the background to avoid UI lag.
-                self.processor.clear_invokeai_cache_async()
 
         self.generation_total_jobs = len(generation_jobs)
         self.generation_completed_jobs = 0

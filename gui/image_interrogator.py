@@ -12,7 +12,6 @@ from PIL import Image, ImageTk
 
 from .common import SmartWindowMixin, TextContextMenu
 from . import custom_dialogs
-from core.default_content import DEFAULT_AI_INTERROGATE_IMAGE_SFW_PROMPT, DEFAULT_AI_INTERROGATE_IMAGE_NSFW_PROMPT
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
@@ -46,6 +45,7 @@ class ImageInterrogatorWindow(tk.Toplevel, SmartWindowMixin):
         ttk.Label(control_frame, text="Model:").pack(side=tk.LEFT, padx=(10, 5))
         
         vision_models = [m for m in models if 'llava' in m.lower() or 'bakllava' in m.lower()]
+        vision_models.sort(key=str.lower)
         if not vision_models:
             custom_dialogs.show_warning(self, "No Vision Models", "No LLaVA or BakLLaVA models found in Ollama. Please pull one to use this feature (e.g., 'ollama run llava').")
             self.model_var = tk.StringVar(value="No vision models found")
@@ -101,6 +101,16 @@ class ImageInterrogatorWindow(tk.Toplevel, SmartWindowMixin):
         self.model_usage_manager.unregister_usage(self.active_model)
         self.destroy()
 
+    def update_active_model(self, old_model: Optional[str], new_model: Optional[str]):
+        """Called by the parent app when the main model changes."""
+        if old_model != new_model:
+            # This window has its own dropdown, but we'll update it to reflect the main app's change
+            # to avoid holding onto a model that might be unloaded.
+            self.model_usage_manager.unregister_usage(self.active_model)
+            self.model_usage_manager.register_usage(new_model)
+            self.active_model = new_model
+            self.model_var.set(new_model)
+
     def _on_model_change(self, new_model: str):
         """Handles when the user selects a new model."""
         old_model = self.active_model
@@ -151,7 +161,10 @@ class ImageInterrogatorWindow(tk.Toplevel, SmartWindowMixin):
 
         # Determine which prompt to use based on the current workflow
         workflow = self.parent_app.workflow_var.get()
-        interrogation_prompt = DEFAULT_AI_INTERROGATE_IMAGE_NSFW_PROMPT if workflow == 'nsfw' else DEFAULT_AI_INTERROGATE_IMAGE_SFW_PROMPT
+        if workflow == 'nsfw':
+            interrogation_prompt = self.processor.load_ai_task_prompt('interrogate_image_nsfw')
+        else:
+            interrogation_prompt = self.processor.load_ai_task_prompt('interrogate_image_sfw')
 
         def task():
             try:

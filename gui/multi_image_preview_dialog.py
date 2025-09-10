@@ -38,6 +38,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         self.completion_callback = completion_callback
         
         # Queues for async operations
+        self.thumbnail_work_queue = queue.Queue()
         self.thumbnail_queue = queue.Queue()
         self.generation_queue = queue.Queue()
         
@@ -51,6 +52,10 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         
         self.thumbnail_size = (256, 256)
         self.item_width = self.thumbnail_size[0] + 20 # Approx width for layout calculation
+
+        # Start the single thumbnail worker thread
+        self.thumbnail_worker_thread = threading.Thread(target=self._thumbnail_worker, daemon=True)
+        self.thumbnail_worker_thread.start()
 
         self._create_widgets()
         self.image_context_menu.add_command(label="Edit & Regenerate...", command=self._edit_and_regenerate_image)
@@ -92,6 +97,11 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             self.completion_callback(self.result)
             self.completion_callback = None # Prevent double calls
 
+        # --- NEW: Unload InvokeAI models when the window is closed ---
+        # This is the most reliable place to ensure cleanup happens.
+        if self.processor.is_invokeai_connected():
+            self.processor.clear_invokeai_cache_async()
+
         self.destroy()
 
     def _start_generation_threads(self):
@@ -101,6 +111,28 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 break
             thread = threading.Thread(target=self._generation_worker, args=(job['id'], job), daemon=True)
             thread.start()
+
+    def _thumbnail_worker(self):
+        """A single worker thread to process all thumbnail generation tasks."""
+        while not self.cancellation_event.is_set():
+            try:
+                # Wait for a task. Timeout allows the thread to check for cancellation.
+                label_widget, image_bytes = self.thumbnail_work_queue.get(timeout=1)
+                
+                if image_bytes:
+                    try:
+                        with Image.open(io.BytesIO(image_bytes)) as img:
+                            thumb = img.copy()
+                            thumb.thumbnail(self.thumbnail_size, Image.Resampling.LANCZOS)
+                            new_img = Image.new("RGBA", self.thumbnail_size, (0, 0, 0, 0))
+                            paste_x = (self.thumbnail_size[0] - thumb.width) // 2
+                            paste_y = (self.thumbnail_size[1] - thumb.height) // 2
+                            new_img.paste(thumb, (paste_x, paste_y))
+                            self.thumbnail_queue.put((label_widget, new_img))
+                    except Exception as e:
+                        self.thumbnail_queue.put((label_widget, e))
+            except queue.Empty:
+                continue # Loop again to check for cancellation or new tasks
 
     def _generation_worker(self, job_id: str, job: Dict[str, Any]):
         """The actual image generation task run in a thread."""
@@ -114,10 +146,17 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 gen_params = job['gen_params']
 
                 gen_args = {
-                    "prompt": prompt, "negative_prompt": gen_params.get("negative_prompt", ""), "seed": gen_params.get("seed"),
-                    "model_object": gen_params.get("model"), "loras": gen_params.get("loras", []), "steps": gen_params.get("steps"),
-                    "cfg_scale": gen_params.get("cfg_scale"), "scheduler": gen_params.get("scheduler"),
-                    "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier"), "save_to_gallery": self.save_to_gallery_for_batch, "cancellation_event": self.cancellation_event
+                    "prompt": prompt,
+                    "negative_prompt": gen_params.get("negative_prompt", ""),
+                    "seed": gen_params.get("seed"),
+                    "model_object": gen_params.get("model"),
+                    "loras": gen_params.get("loras", []),
+                    "steps": gen_params.get("steps", 30),
+                    "cfg_scale": gen_params.get("cfg_scale", 7.5),
+                    "scheduler": gen_params.get("scheduler", "dpmpp_2m"),
+                    "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier", 0.0),
+                    "save_to_gallery": self.save_to_gallery_for_batch,
+                    "cancellation_event": self.cancellation_event
                 }
                 image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
                 
@@ -299,18 +338,29 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         if canvas_width <= 1 or not self.image_widgets: # Not yet rendered or nothing to draw
             return
 
-        # Forget all previous grid placements to allow recalculation
-        for widget_info in self.image_widgets:
-            widget_info['frame'].grid_forget()
-
         # Calculate columns
         cols = max(1, canvas_width // self.item_width)
 
-        # Re-grid all widgets
+        # --- NEW: Centering Logic ---
+        # Clear any previous column configurations on the container.
+        # This is important to handle window resizing correctly.
+        for i in range(self.container.grid_size()[0]):
+            self.container.columnconfigure(i, weight=0, pad=0)
+
+        # Configure spacer columns with weight to push the content to the center.
+        self.container.columnconfigure(0, weight=1)
+        self.container.columnconfigure(cols + 1, weight=1)
+
+        # Configure item columns without weight so they don't expand.
+        for i in range(cols):
+            self.container.columnconfigure(i + 1, weight=0)
+
+        # Re-grid all widgets, offsetting the column by 1 for the left spacer.
         for i, widget_info in enumerate(self.image_widgets):
+            widget_info['frame'].grid_forget() # Forget previous placement
             row = i // cols
-            col = i % cols
-            widget_info['frame'].grid(row=row, column=col, padx=5, pady=5, sticky='nw')
+            col = (i % cols) + 1 # Offset by 1 for the spacer
+            widget_info['frame'].grid(row=row, column=col, padx=5, pady=5, sticky='n')
 
     def _populate_grid(self):
         """Clears and fills the grid with image widgets."""
@@ -401,30 +451,14 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         widget_info['job_data']['gen_params'] = new_image_data['generation_params']
         widget_info['image_data'] = new_image_data
         widget_info['image_label'].config(text="Loading Thumb...")
-        def task():
-            image_bytes = new_image_data.get('bytes')
-            if image_bytes:
-                try:
-                    # Store the full image
-                    full_image = Image.open(io.BytesIO(image_bytes))
-                    widget_info['full_pil_image'] = full_image
-                    with Image.open(io.BytesIO(image_bytes)) as img:
-                        thumb = img.copy()
-                        thumb.thumbnail(self.thumbnail_size, Image.Resampling.LANCZOS)
 
-                        # Create a new blank image with the target size and a transparent background
-                        new_img = Image.new("RGBA", self.thumbnail_size, (0, 0, 0, 0))
-                        
-                        # Calculate position to paste the thumbnail in the center
-                        paste_x = (self.thumbnail_size[0] - thumb.width) // 2
-                        paste_y = (self.thumbnail_size[1] - thumb.height) // 2
-                        
-                        new_img.paste(thumb, (paste_x, paste_y))
-                        self.thumbnail_queue.put((widget_info['image_label'], new_img))
-                except Exception as e:
-                    self.thumbnail_queue.put((widget_info['image_label'], e))
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
+        # Store the full-resolution image in memory
+        image_bytes = new_image_data.get('bytes')
+        if image_bytes:
+            widget_info['full_pil_image'] = Image.open(io.BytesIO(image_bytes))
+            # Instead of starting a new thread, put the task on the work queue.
+            self.thumbnail_work_queue.put((widget_info['image_label'], image_bytes))
+
         widget_info['regen_button'].config(state=tk.NORMAL)
         model_name = new_image_data.get('generation_params', {}).get('model', {}).get('name', 'Unknown')
         widget_info['model_label'].config(text=model_name)
@@ -489,8 +523,8 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         
         from .image_generation_dialog import ImageGenerationOptionsDialog
         dialog = ImageGenerationOptionsDialog(
-            self, 
-            self.processor.invokeai_client, 
+            self,
+            self.processor,
             initial_params=initial_dialog_params, 
             is_editing=True,
             disabled_models=list(current_model_names)
@@ -510,18 +544,24 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             return
 
         # 1. Replace the original job with the first new model
-        first_model = new_models.pop(0)
+        first_model_info = new_models.pop(0)
         first_new_gen_params = new_options.copy()
-        first_new_gen_params['model'] = first_model
+        # Correctly unpack the model object and its specific negative prompt
+        first_new_gen_params['model'] = first_model_info['model']
+        first_new_gen_params['loras'] = first_model_info.get('loras', [])
+        first_new_gen_params['negative_prompt'] = first_model_info['negative_prompt']
         self._regenerate_image_with_new_params(widget_info, first_new_gen_params)
 
         # 2. Insert new jobs for any additional models
         if new_models:
             original_job = self.generation_jobs[index_to_replace]
-            for i, model_object in enumerate(new_models):
+            for i, model_info in enumerate(new_models):
                 insertion_index = index_to_replace + 1 + i
                 new_gen_params = new_options.copy()
-                new_gen_params['model'] = model_object
+                # Correctly unpack the model object and its specific negative prompt for each new job
+                new_gen_params['model'] = model_info['model']
+                new_gen_params['loras'] = model_info.get('loras', [])
+                new_gen_params['negative_prompt'] = model_info['negative_prompt']
                 # --- NEW: Assign a unique ID ---
                 new_job = {'prompt': original_job['prompt'], 'gen_params': new_gen_params, 'id': str(uuid.uuid4())}
                 self.generation_jobs.insert(insertion_index, new_job)

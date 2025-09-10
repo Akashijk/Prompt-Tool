@@ -12,15 +12,11 @@ from .template_engine import TemplateEngine, PromptSegment
 from .history_manager import HistoryManager
 from .thumbnail_manager import ThumbnailManager
 from .config import config
-from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT, DEFAULT_AI_BREED_PROMPTS_PROMPT, DEFAULT_AI_ENRICH_WILDCARD_CHOICES_PROMPT,
-                              DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS, DEFAULT_AI_AUTO_TAG_PROMPT,
-                              DEFAULT_BRAINSTORM_TEMPLATE_PROMPT, DEFAULT_BRAINSTORM_WILDCARD_PROMPT, DEFAULT_AI_REFACTOR_CHOICES_PROMPT,
-                              DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION,
-                              DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT, 
-                              DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT, DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT,
-                              DEFAULT_BRAINSTORM_REWRITE_PROMPT, DEFAULT_AI_FIX_GRAMMAR_PROMPT, DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT,
-                              DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT,
-                              DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT)
+from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS, DEFAULT_SFW_NEGATIVE_PROMPTS, DEFAULT_NSFW_NEGATIVE_PROMPTS,
+                              DEFAULT_AI_TASK_PROMPTS, DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT,
+                              DEFAULT_AI_REFACTOR_CHOICES_PROMPT, DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT,
+                              DEFAULT_AI_FIX_GRAMMAR_PROMPT, DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT, DEFAULT_AI_REWRITE_TEXT_PROMPT,
+                              DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT, DEFAULT_AI_AUTO_TAG_PROMPT)
 from .ollama_client import OllamaClient
 from .invokeai_client import InvokeAIClient
 from .utils import sanitize_wildcard_choices
@@ -90,13 +86,17 @@ class PromptProcessor:
         os.makedirs(os.path.join(config.HISTORY_DIR, 'nsfw', 'images'), exist_ok=True)
         os.makedirs(config.SYSTEM_PROMPT_BASE_DIR, exist_ok=True)
 
+        # Always run the AI task file creation, as it's idempotent and may have been
+        # added in a newer version of the app. This ensures existing users get new prompts.
+        self._create_default_ai_task_files()
+
         # Check for a flag file to see if we need to create defaults.
         # This avoids disk I/O on every startup after the first one.
         flag_file_path = os.path.join(config.SYSTEM_PROMPT_BASE_DIR, '.defaults_created')
         if os.path.exists(flag_file_path):
             return
 
-        # If no flag file, create the defaults and then the flag file.
+        # If no flag file, create the SFW/NSFW-specific defaults and then the flag file.
         self._create_default_files('sfw')
         self._create_default_files('nsfw')
 
@@ -106,6 +106,17 @@ class PromptProcessor:
                 f.write(f"Defaults created on {datetime.now().isoformat()}")
         except IOError as e:
             print(f"Warning: Could not create defaults flag file: {e}")
+
+    def _create_default_ai_task_files(self):
+        """Creates default AI task prompt files if they don't exist."""
+        ai_task_dir = os.path.join(config.SYSTEM_PROMPT_BASE_DIR, 'ai_tasks')
+        os.makedirs(ai_task_dir, exist_ok=True)
+
+        for key, data in DEFAULT_AI_TASK_PROMPTS.items():
+            filepath = os.path.join(ai_task_dir, data['filename'])
+            if not os.path.exists(filepath):
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(data['content'])
 
     def _create_default_files(self, workflow: str):
         """
@@ -136,6 +147,21 @@ class PromptProcessor:
                 filepath = os.path.join(variations_dir, f"{key}.json")
                 with open(filepath, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2)
+
+        # 3. Create default negative prompt .json files.
+        neg_prompts_dir = os.path.join(system_prompt_dir, 'negative_prompts')
+        os.makedirs(neg_prompts_dir, exist_ok=True)
+        try:
+            has_txt_files_neg = any(f.endswith('.txt') for f in os.listdir(neg_prompts_dir))
+        except FileNotFoundError:
+            has_txt_files_neg = False
+
+        if not has_txt_files_neg:
+            default_neg_prompts = DEFAULT_SFW_NEGATIVE_PROMPTS if workflow == 'sfw' else DEFAULT_NSFW_NEGATIVE_PROMPTS
+            for key, content in default_neg_prompts.items():
+                filepath = os.path.join(neg_prompts_dir, f"{key}.txt")
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(content)
 
     def _get_wildcard_load_order(self) -> List[str]:
         """Returns dirs for loading all wildcards. Specific (NSFW) overrides shared (root)."""
@@ -928,24 +954,81 @@ class PromptProcessor:
         """Pass-through to find a choice object by its value."""
         return self.template_engine.find_choice_object_by_value(wildcard_name, value)
 
-    def get_system_prompt_files(self) -> List[str]:
-        """Get a list of available system prompt files."""
-        files = []
+    def get_system_prompt_files(self) -> Dict[str, List[Dict[str, str]]]:
+        """
+        Get a structured dictionary of available system prompt files, categorized.
+        Returns a dictionary where keys are categories and values are lists of file info dicts.
+        """
+        files_by_category = {
+            "Enhancement & Variations": [],
+            "AI Tasks": [],
+            "Negative Prompts": []
+        }
+        
+        # --- Enhancement & Variations ---
         system_prompt_dir = config.get_system_prompt_dir()
         variations_dir = config.get_variations_dir()
 
         # Add the main enhancement file
         enhancement_file = 'enhancement.txt'
-        if os.path.exists(os.path.join(config.get_system_prompt_dir(), enhancement_file)):
-            files.append(enhancement_file)
+        if os.path.exists(os.path.join(system_prompt_dir, enhancement_file)):
+            files_by_category["Enhancement & Variations"].append({
+                'display_name': 'Enhancement',
+                'relative_path': enhancement_file
+            })
 
         # Add variation files, prefixing them to distinguish from top-level files
         if os.path.exists(variations_dir):
             for filename in sorted(os.listdir(variations_dir)):
                 if filename.endswith('.json'):
-                    files.append(os.path.join('variations', filename))
+                    try:
+                        full_path = os.path.join(variations_dir, filename)
+                        with open(full_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            name = data.get('name', os.path.splitext(filename)[0])
+                            display_name = f"{name} (Variation)"
+                            files_by_category["Enhancement & Variations"].append({
+                                'display_name': display_name,
+                                'relative_path': os.path.join('variations', filename)
+                            })
+                    except Exception:
+                        display_name = f"{os.path.splitext(filename)[0]} (Variation)"
+                        files_by_category["Enhancement & Variations"].append({
+                            'display_name': display_name,
+                            'relative_path': os.path.join('variations', filename)
+                        })
         
-        return files
+        # --- AI Tasks ---
+        ai_task_dir = os.path.join(config.SYSTEM_PROMPT_BASE_DIR, 'ai_tasks')
+        if os.path.exists(ai_task_dir):
+            for filename in sorted(os.listdir(ai_task_dir)):
+                if filename.endswith('.txt'):
+                    # Create a more user-friendly display name
+                    display_name = filename.replace('.txt', '').replace('_', ' ').title()
+                    files_by_category["AI Tasks"].append({
+                        'display_name': display_name,
+                        'relative_path': os.path.join('ai_tasks', filename)
+                    })
+
+        # --- Negative Prompts ---
+        neg_prompts_dir = os.path.join(config.get_system_prompt_dir(), 'negative_prompts')
+        if os.path.exists(neg_prompts_dir):
+            for filename in sorted(os.listdir(neg_prompts_dir)):
+                if filename.endswith('.txt'):
+                    try:
+                        display_name = os.path.splitext(filename)[0].replace('_', ' ').title()
+                        files_by_category["Negative Prompts"].append({
+                            'display_name': display_name,
+                            'relative_path': os.path.join('negative_prompts', filename)
+                        })
+                    except Exception: # Should not happen, but for safety
+                        display_name = os.path.splitext(filename)[0]
+                        files_by_category["Negative Prompts"].append({
+                            'display_name': display_name,
+                            'relative_path': os.path.join('negative_prompts', filename)
+                        })
+
+        return files_by_category
 
     def get_available_variations(self) -> List[Dict[str, str]]:
         """Scans for and loads all available variation JSON files."""
@@ -972,10 +1055,42 @@ class PromptProcessor:
                     print(f"Warning: Could not load or parse variation file {filename}: {e}")
         return variations
 
+    def get_available_negative_prompts(self) -> List[Dict[str, str]]:
+        """Scans for and loads all available negative prompt JSON files."""
+        neg_prompts_dir = os.path.join(config.get_system_prompt_dir(), 'negative_prompts')
+        if not os.path.exists(neg_prompts_dir):
+            return []
+
+        prompts = []
+        for filename in sorted(os.listdir(neg_prompts_dir)):
+            if filename.endswith('.txt'):
+                try:
+                    filepath = os.path.join(neg_prompts_dir, filename)
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        key = os.path.splitext(filename)[0]
+                        prompts.append({
+                            'key': key,
+                            'name': key.replace('_', ' ').title(),
+                            'prompt': f.read().strip()
+                        })
+                except IOError as e:
+                    print(f"Warning: Could not load or parse negative prompt file {filename}: {e}")
+        return prompts
+
+    def get_default_negative_prompt_text(self) -> str:
+        """Gets the prompt text from the first available negative prompt preset."""
+        available_prompts = self.get_available_negative_prompts()
+        return available_prompts[0].get('prompt', '') if available_prompts else ""
+
     def load_system_prompt_content(self, filename: str) -> str:
         """Load the content of a system prompt file."""
-        # The filename can be 'enhancement.txt' or 'variations/cinematic.json'
-        filepath = os.path.join(config.get_system_prompt_dir(), filename)
+        # The filename can be 'enhancement.txt', 'variations/cinematic.json', or 'ai_tasks/some_task.txt'
+        base_dir = config.SYSTEM_PROMPT_BASE_DIR
+        if filename.startswith('ai_tasks/'):
+            filepath = os.path.join(base_dir, filename)
+        else: # Enhancement or variation, which are workflow-dependent
+            filepath = os.path.join(config.get_system_prompt_dir(), filename)
+
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 if filename.endswith('.json'):
@@ -988,7 +1103,12 @@ class PromptProcessor:
 
     def save_system_prompt_content(self, filename: str, content: str):
         """Save content to a system prompt file."""
-        filepath = os.path.join(config.get_system_prompt_dir(), filename)
+        base_dir = config.SYSTEM_PROMPT_BASE_DIR
+        if filename.startswith('ai_tasks/'):
+            filepath = os.path.join(base_dir, filename)
+        else: # Enhancement or variation, which are workflow-dependent
+            filepath = os.path.join(config.get_system_prompt_dir(), filename)
+
         try:
             if filename.endswith('.json'):
                 # Read existing data, update prompt, and write back to preserve other keys
@@ -1005,17 +1125,127 @@ class PromptProcessor:
 
     def get_default_system_prompt(self, filename: str) -> str:
         """Gets the default content for a given system prompt."""
-        if filename.endswith('.txt'):
+        if filename.startswith('ai_tasks/'):
+            basename = os.path.basename(filename)
+            for key, data in DEFAULT_AI_TASK_PROMPTS.items():
+                if data['filename'] == basename:
+                    return data['content']
+        elif filename.endswith('.txt'):
             key = filename.replace('.txt', '')
             if key == 'enhancement':
                 return DEFAULT_SFW_ENHANCEMENT_INSTRUCTION if config.workflow == 'sfw' else DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION
-        elif filename.endswith('.json'):
+        elif filename.startswith('variations/'):
             # Filename is like 'variations/cinematic.json'
             key = os.path.basename(filename).replace('.json', '')
             defaults = DEFAULT_SFW_VARIATIONS if config.workflow == 'sfw' else DEFAULT_NSFW_VARIATIONS
             return defaults.get(key, {}).get('prompt', '')
+        elif filename.startswith('negative_prompts/'):
+            key = os.path.basename(filename).replace('.txt', '')
+            defaults = DEFAULT_SFW_NEGATIVE_PROMPTS if config.workflow == 'sfw' else DEFAULT_NSFW_NEGATIVE_PROMPTS
+            return defaults.get(key, '')
         
         return ""
+
+    def archive_system_prompt(self, filename: str) -> None:
+        """Archives a system prompt file."""
+        base_dir = config.SYSTEM_PROMPT_BASE_DIR
+        if filename.startswith('ai_tasks/'):
+            source_path = os.path.join(base_dir, filename)
+        else:
+            source_path = os.path.join(config.get_system_prompt_dir(), filename)
+        
+        if not os.path.exists(source_path):
+            raise FileNotFoundError(f"System prompt file not found: {source_path}")
+
+        # The archive directory should be inside the file's own directory.
+        # e.g., .../sfw/archive/enhancement.txt or .../sfw/variations/archive/cinematic.json
+        source_dir = os.path.dirname(source_path)
+        archive_dir = os.path.join(source_dir, 'archive')
+        dest_path = os.path.join(archive_dir, os.path.basename(filename))
+
+        try:
+            os.makedirs(archive_dir, exist_ok=True)
+            os.rename(source_path, dest_path)
+        except OSError as e:
+            raise Exception(f"Error archiving system prompt {filename}: {e}")
+
+    def rename_system_prompt(self, old_filename: str, new_filename: str) -> None:
+        """Renames a system prompt file."""
+        base_dir = config.SYSTEM_PROMPT_BASE_DIR
+        if old_filename.startswith('ai_tasks/'):
+            old_path = os.path.join(base_dir, old_filename)
+        else:
+            old_path = os.path.join(config.get_system_prompt_dir(), old_filename)
+
+        
+        if not os.path.exists(old_path):
+            raise FileNotFoundError(f"System prompt file not found: {old_path}")
+
+        # New path is in the same directory as the old one.
+        source_dir = os.path.dirname(old_path)
+        new_path = os.path.join(source_dir, new_filename)
+
+        if os.path.exists(new_path):
+            raise FileExistsError(f"A file named '{new_filename}' already exists.")
+
+        try:
+            os.rename(old_path, new_path)
+        except OSError as e:
+            raise Exception(f"Error renaming system prompt from '{old_filename}' to '{new_filename}': {e}")
+
+    def create_system_prompt(self, filename: str, prompt_type: str, content_data: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Creates a new system prompt file with default or provided content.
+        `prompt_type` can be 'enhancement', 'variation', or 'negative_prompt'.
+        `content_data` is a dictionary to be written as JSON content.
+        """
+        if prompt_type == 'ai_task':
+            save_dir = os.path.join(config.SYSTEM_PROMPT_BASE_DIR, 'ai_tasks')
+            if not filename.endswith('.txt'): filename += '.txt'
+            content_str = "This is a new AI task prompt. Edit its content here."
+        elif prompt_type == 'negative_prompt':
+            base_dir = config.get_system_prompt_dir()
+            save_dir = os.path.join(base_dir, 'negative_prompts')
+            if not filename.endswith('.txt'): filename += '.txt'
+            if content_data and 'prompt' in content_data:
+                content_str = content_data['prompt']
+            else:
+                content_str = "new negative prompt keywords"
+        else: # enhancement or variation
+            base_dir = config.get_system_prompt_dir()
+            if prompt_type == 'variation':
+                save_dir = os.path.join(base_dir, 'variations')
+                if not filename.endswith('.json'): filename += '.json'
+                basename, _ = os.path.splitext(filename)
+                content = {"name": basename.replace('_', ' ').title(), "description": f"A new custom variation: {basename}", "prompt": "You are a helpful AI assistant. The user's prompt is below.\n\n"}
+                content_str = json.dumps(content, indent=2)
+            elif prompt_type == 'enhancement':
+                save_dir = base_dir
+                if not filename.endswith('.txt'): filename += '.txt'
+                content_str = "You are a helpful AI assistant. Enhance the user's prompt."
+            else: raise ValueError(f"Invalid prompt_type: {prompt_type}")
+
+        filepath = os.path.join(save_dir, filename)
+        if os.path.exists(filepath): raise FileExistsError(f"A system prompt named '{os.path.basename(filename)}' already exists.")
+        try:
+            os.makedirs(save_dir, exist_ok=True)
+            with open(filepath, 'w', encoding='utf-8') as f: f.write(content_str)
+        except OSError as e: raise Exception(f"Error creating system prompt file {filename}: {e}")
+
+    def load_ai_task_prompt(self, key: str) -> str:
+        """Loads a specific AI task prompt from its file."""
+        if key not in DEFAULT_AI_TASK_PROMPTS:
+            raise ValueError(f"Unknown AI task prompt key: {key}")
+
+        filename = DEFAULT_AI_TASK_PROMPTS[key]['filename']
+        filepath = os.path.join(config.SYSTEM_PROMPT_BASE_DIR, 'ai_tasks', filename)
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return f.read()
+        except (FileNotFoundError, IOError):
+            print(f"Warning: AI task prompt file not found: {filepath}. Using default content.")
+            return DEFAULT_AI_TASK_PROMPTS[key]['content']
 
     def chat_with_model(self, model: str, messages: List[Dict[str, str]], timeout: Optional[int] = None) -> str:
         """Handles a chat interaction with the specified Ollama model."""
@@ -1085,7 +1315,8 @@ class PromptProcessor:
         sample_size = min(15, len(wildcard_names))
         wildcard_sample_str = ", ".join(random.sample(wildcard_names, sample_size)) if wildcard_names else "none"
 
-        prompt = DEFAULT_BRAINSTORM_TEMPLATE_PROMPT.format(
+        prompt_template = self.load_ai_task_prompt('brainstorm_template')
+        prompt = prompt_template.format(
             concept=concept,
             workflow_context=workflow_context,
             wildcard_sample_str=wildcard_sample_str
@@ -1127,7 +1358,8 @@ class PromptProcessor:
         # Build a rich sample string using ONLY the selected wildcards
         rich_wildcard_sample_str = self._get_rich_wildcard_sample_str(wildcard_names=selected_wildcard_names)
 
-        generator_prompt = DEFAULT_GENERATE_TEMPLATE_FROM_WILDCARDS_PROMPT.format(
+        generator_prompt_template = self.load_ai_task_prompt('generate_template_from_wildcards')
+        generator_prompt = generator_prompt_template.format(
             theme=theme,
             workflow_context=workflow_context,
             wildcard_list_str=rich_wildcard_sample_str
@@ -1140,7 +1372,7 @@ class PromptProcessor:
         """
         Uses an AI model to rewrite a piece of text based on instructions.
         """
-        prompt = DEFAULT_BRAINSTORM_REWRITE_PROMPT.format(
+        prompt = DEFAULT_AI_REWRITE_TEXT_PROMPT.format(
             selected_text=selected_text,
             instructions=instructions
         )
@@ -1160,7 +1392,8 @@ class PromptProcessor:
             linked_wildcard_instruction = ""
             if supporting_wildcard:
                 supporting_basename, _ = os.path.splitext(supporting_wildcard)
-                linked_wildcard_instruction = DEFAULT_BRAINSTORM_LINKED_WILDCARD_PROMPT_ADDITION.format(
+                linked_wildcard_addition_template = self.load_ai_task_prompt('brainstorm_linked_wildcard_addition')
+                linked_wildcard_instruction = linked_wildcard_addition_template.format(
                     topic=topic,
                     supporting_basename=supporting_basename
                 )
@@ -1170,7 +1403,8 @@ class PromptProcessor:
             wildcard_sample_str = self._get_rich_wildcard_sample_str(count=10)
 
             # --- Build the final prompt ---
-            prompt = DEFAULT_BRAINSTORM_WILDCARD_PROMPT.format(
+            prompt_template = self.load_ai_task_prompt('brainstorm_wildcard')
+            prompt = prompt_template.format(
                 topic=topic,
                 template_context_section=template_context_section,
                 linked_wildcard_instruction=linked_wildcard_instruction,
@@ -1211,6 +1445,25 @@ class PromptProcessor:
         # The parser itself returns a string representation of the JSON.
         return self.ollama_client.parse_json_object_from_response(raw_response, fallback_topic)
 
+    def ai_generate_linked_wildcards(self, primary_topic: str, supporting_topic: str, model: str) -> Dict[str, str]:
+        """Generates content for two linked wildcards."""
+        # Step 1: Generate the supporting wildcard. It has no special context.
+        self._update_status("brainstorm_template_step", step=1, total_steps=2, message=f"Generating supporting wildcard: {supporting_topic}...")
+        supporting_content_str = self.generate_wildcard_for_brainstorming(model, supporting_topic)
+
+        # Step 2: Generate the primary wildcard, telling it to include the supporting one.
+        self._update_status("brainstorm_template_step", step=2, total_steps=2, message=f"Generating primary wildcard: {primary_topic}...")
+        supporting_filename = f"{supporting_topic.replace(' ', '_')}.json"
+        primary_metadata = {'supporting_wildcard_to_include': supporting_filename}
+        primary_content_str = self.generate_wildcard_for_brainstorming(model, primary_topic, metadata=primary_metadata)
+
+        return {
+            'primary_topic': primary_topic,
+            'supporting_topic': supporting_topic,
+            'primary_content': primary_content_str,
+            'supporting_content': supporting_content_str
+        }
+
     def fix_json_syntax_with_ai(self, broken_json: str, model: str) -> str:
         """Uses AI to attempt to fix broken JSON syntax."""
         prompt = DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT.format(broken_json=broken_json)
@@ -1230,8 +1483,7 @@ class PromptProcessor:
 
     def ai_fix_wildcard_grammar(self, wildcard_content: str, model: str) -> str:
         """Uses AI to fix grammatical issues in a wildcard file's choices and includes."""
-        
-        prompt = DEFAULT_AI_FIX_GRAMMAR_PROMPT.replace('{wildcard_content}', wildcard_content)
+        prompt = DEFAULT_AI_FIX_GRAMMAR_PROMPT.format(wildcard_content=wildcard_content)
         
         # Use chat for better instruction following
         messages = [{'role': 'user', 'content': prompt}]
@@ -1402,15 +1654,15 @@ class PromptProcessor:
 
             # Enhance the prompt
             self._update_status('enhancement_start', prompt_num=i+1, total_prompts=total_prompts)
-            enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
+            enhanced = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
 
             # Send back the main enhancement result immediately
             if self.result_callback:
-                self.result_callback('enhanced', {'prompt': enhanced, 'sd_model': enhanced_sd_model})
+                self.result_callback('enhanced', {'prompt': enhanced, 'ollama_model': model})
 
             result = {
                 'original': prompt,
-                'enhanced': {'prompt': enhanced, 'sd_model': enhanced_sd_model},
+                'enhanced': {'prompt': enhanced, 'ollama_model': model},
                 'variations': {},
                 'status': 'enhanced',
                 'template_name': template_name,
@@ -1424,8 +1676,8 @@ class PromptProcessor:
 
                     variation_instruction = available_variations[var_type]['prompt']
                     self._update_status('variation_start', var_type=var_type, prompt_num=i+1, total_prompts=total_prompts)
-                    var_prompt, var_sd_model = self.ollama_client.create_single_variation(variation_instruction, prompt, "", model, var_type)
-                    variation_result = {'prompt': var_prompt, 'sd_model': var_sd_model}
+                    var_prompt = self.ollama_client.create_single_variation(variation_instruction, prompt, model, var_type)
+                    variation_result = {'prompt': var_prompt, 'ollama_model': model}
                     # Send back variation result immediately
                     if self.result_callback:
                         self.result_callback(var_type, variation_result)
@@ -1441,12 +1693,12 @@ class PromptProcessor:
         
         return results
 
-    def regenerate_enhancement(self, original_prompt: str, model: str) -> Tuple[str, str]:
+    def regenerate_enhancement(self, original_prompt: str, model: str) -> str:
         """Regenerates just the main enhancement for a given prompt."""
         instruction = self.load_system_prompt_content('enhancement.txt')
         full_prompt = instruction + original_prompt
-        enhanced, enhanced_sd_model = self.ollama_client.enhance_prompt(full_prompt, model)
-        return enhanced, enhanced_sd_model
+        enhanced = self.ollama_client.enhance_prompt(full_prompt, model)
+        return enhanced
 
     def _prepare_suggestion_context(self, wildcard_data: Dict[str, Any], current_wildcard_filename: Optional[str]) -> Tuple[str, str, str, str, Optional[str]]:
         """Prepares context variables for the AI suggestion prompt."""
@@ -1478,15 +1730,15 @@ class PromptProcessor:
 
         return topic, description, sample_choices_str, other_wildcard_sample, current_wildcard_name
 
-    def regenerate_variation(self, base_prompt: str, base_sd_model: str, model: str, variation_type: str, original_prompt_context: Optional[str] = None) -> Dict[str, str]:
+    def regenerate_variation(self, base_prompt: str, model: str, variation_type: str, original_prompt_context: Optional[str] = None) -> Dict[str, str]:
         """Regenerates a single variation."""
         available_variations = {v['key']: v for v in self.get_available_variations()}
         variation_data = available_variations.get(variation_type)
         if not variation_data:
             raise ValueError(f"Variation '{variation_type}' not found or is invalid.")
         instruction = variation_data['prompt']
-        var_prompt, var_sd_model = self.ollama_client.create_single_variation(instruction, base_prompt, base_sd_model, model, variation_type, original_prompt_context=original_prompt_context)
-        return {'prompt': var_prompt, 'sd_model': var_sd_model}
+        var_prompt = self.ollama_client.create_single_variation(instruction, base_prompt, model, variation_type, original_prompt_context=original_prompt_context)
+        return {'prompt': var_prompt}
 
     def cleanup_prompt_string(self, prompt: str) -> str:
         """Pass-through to the template engine's cleanup method."""
@@ -1529,7 +1781,8 @@ class PromptProcessor:
 
     def _format_suggestion_prompt(self, topic: str, description: str, sample_choices_str: str, instructions: str, other_wildcard_sample: str, workflow_context: str) -> str:
         """Formats the final prompt string for the AI suggestion task."""
-        return DEFAULT_BRAINSTORM_SUGGEST_WILDCARD_CHOICES_PROMPT.format(
+        prompt_template = self.load_ai_task_prompt('suggest_wildcard_choices')
+        return prompt_template.format(
             topic=topic,
             description=description,
             sample_choices_str=sample_choices_str,
@@ -1564,7 +1817,7 @@ class PromptProcessor:
     def ai_enhance_template(self, prompt_text: str, model: str) -> str:
         """Uses AI to enhance a template by adding more detail and wildcards."""
         wildcard_list_str = self._get_rich_wildcard_sample_str()
-        prompt = DEFAULT_AI_ENHANCE_TEMPLATE_PROMPT.format(
+        prompt = self.load_ai_task_prompt('enhance_template').format(
             prompt_text=prompt_text,
             wildcard_list_str=wildcard_list_str
         )
@@ -1610,7 +1863,8 @@ class PromptProcessor:
             if current_wildcard_name:
                 enrichment_instructions.append(f"**No Self-Reference:** The `requires` key MUST NOT refer to the wildcard being edited (`{current_wildcard_name}`).")
 
-        prompt = DEFAULT_AI_ENRICH_WILDCARD_CHOICES_PROMPT.format(
+        prompt_template = self.load_ai_task_prompt('enrich_wildcard_choices')
+        prompt = prompt_template.format(
             description=description,
             topic=topic,
             choices_json=choices_json,
@@ -1719,7 +1973,8 @@ class PromptProcessor:
         for i, p in enumerate(parent_prompts):
             parent_prompts_str += f"Parent {i+1}: {p}\n"
 
-        prompt = DEFAULT_AI_BREED_PROMPTS_PROMPT.format(
+        prompt_template = self.load_ai_task_prompt('breed_prompts')
+        prompt = prompt_template.format(
             parent_prompts_str=parent_prompts_str.strip(),
             num_children=num_children
         )

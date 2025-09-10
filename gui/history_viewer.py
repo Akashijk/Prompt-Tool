@@ -38,6 +38,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.current_offset = 0
         # --- Attributes for the new Canvas-based list ---
         self.history_canvas: Optional[tk.Canvas] = None
+        self.thumbnail_work_queue = queue.Queue()
         self.history_container: Optional[ttk.Frame] = None
         self.history_widgets: List[Dict[str, Any]] = [] # Stores {'frame': widget, 'label': widget, 'data': row_data}
         self.history_load_queue = queue.Queue()
@@ -71,6 +72,10 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
         self.context_menu = tk.Menu(self, tearoff=0)
         self.image_context_menu = tk.Menu(self, tearoff=0)
+
+        # Start the single thumbnail worker thread
+        self.thumbnail_worker_thread = threading.Thread(target=self._thumbnail_worker, daemon=True)
+        self.thumbnail_worker_thread.start()
 
         self._create_styles()
         self._create_widgets()
@@ -551,25 +556,6 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         # Before doing anything, ensure we exit edit mode if it was active
         if 'edit_button' in self.detail_tabs['enhanced']:
             self._cancel_edit_mode('enhanced', force=True)
-        
-        # Forget all tabs to ensure a clean slate for each selection
-        for tab_id in self.details_notebook.tabs():
-            self.details_notebook.forget(tab_id)
-
-        if not full_row_data:
-            # Ensure the 'original' tab exists before trying to use it for an error message
-            if 'original' not in self.detail_tabs:
-                self._create_detail_tab('original', 'Original')
-            error_tab = self.detail_tabs.get('original')
-            if not error_tab: return # Should not happen
-
-            error_tab['text'].config(state=tk.NORMAL)
-            error_tab['text'].delete("1.0", tk.END)
-            error_tab['text'].insert("1.0", "Error: Could not find details for the selected row.")
-            error_tab['text'].config(state=tk.DISABLED)
-            error_tab['model_label'].config(text="")
-            self.details_notebook.add(error_tab['frame'], text=error_tab['title'])
-            return
 
         # --- DYNAMIC TAB LOGIC ---
         # 1. Determine the order of tabs to display for this specific entry
@@ -577,36 +563,37 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         if 'variations' in full_row_data:
             display_order.extend(sorted(full_row_data['variations'].keys()))
 
+        # Forget all tabs to ensure a clean slate for each selection
+        for tab_id in self.details_notebook.tabs():
+            self.details_notebook.forget(tab_id)
+
         # 2. Iterate and display tabs
         for key in display_order:
             prompt = ""
-            model = ""
             data_exists = False
             images = []
+            prompt_data = {}
 
             if key == 'original':
                 prompt = full_row_data.get('original_prompt', '')
                 images = full_row_data.get('original_images', [])
+                prompt_data = full_row_data
                 if prompt: data_exists = True
             elif key == 'enhanced':
-                enhanced_data = full_row_data.get('enhanced', {})
-                prompt = enhanced_data.get('prompt', '')
-                model = enhanced_data.get('sd_model', '')
-                images = enhanced_data.get('images', [])
+                prompt_data = full_row_data.get('enhanced', {})
+                prompt = prompt_data.get('prompt', '')
+                images = prompt_data.get('images', [])
                 if prompt: data_exists = True
             else: # It's a variation
-                var_data = full_row_data.get('variations', {}).get(key)
-                if var_data:
-                    prompt = var_data.get('prompt', '')
-                    model = var_data.get('sd_model', '')
-                    images = var_data.get('images', [])
-                    if prompt: data_exists = True
+                prompt_data = full_row_data.get('variations', {}).get(key, {})
+                prompt = prompt_data.get('prompt', '')
+                images = prompt_data.get('images', [])
+                if prompt: data_exists = True
             
             if data_exists:
                 # 3. Ensure the tab widgets exist, creating them if necessary
                 if key not in self.detail_tabs:
                     self._create_detail_tab(key, key.capitalize() if key not in ['negative', 'params'] else 'Negative' if key == 'negative' else 'Parameters')
-
                 tab = self.detail_tabs[key]
                 
                 # Update tab content
@@ -614,17 +601,26 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
                 tab['text'].delete("1.0", tk.END)
                 tab['text'].insert("1.0", prompt)
                 tab['text'].config(state=tk.DISABLED)
-                
+
                 # --- Model Label Logic ---
-                model_display_text = ""
+                sd_model_text = ""
+                ollama_model_text = prompt_data.get('ollama_model', '')
+
                 if images:
                     first_image_params = images[0].get('generation_params', {})
                     gen_model_obj = first_image_params.get('model', {})
-                    gen_model_name = gen_model_obj.get('name', 'Unknown Model')
-                    model_display_text = f"Generated with: {gen_model_name}"
-                elif model:
-                    model_display_text = f"Recommended Model: {model}"
-                tab['model_label'].config(text=model_display_text)
+                    sd_model_text = f"SD: {gen_model_obj.get('name', 'Unknown')}"
+
+                display_parts = []
+                if ollama_model_text: display_parts.append(f"LLM: {ollama_model_text}")
+                if sd_model_text: display_parts.append(sd_model_text)
+                
+                tab['model_label'].config(text=" | ".join(display_parts))
+                # --- Negative Prompt Logic ---
+                neg_prompt_text_widget = tab.get('negative_prompt_text')
+                if neg_prompt_text_widget:
+                    neg_prompt = images[0].get('generation_params', {}).get('negative_prompt', '') if images else ""
+                    self._update_text_widget(neg_prompt_text_widget, neg_prompt)
                 
                 # Reset button state based on the current row's data and InvokeAI connection status
                 if 'generate_image_button' in tab:
@@ -647,6 +643,13 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         
         # After populating tabs, show the image for the first available tab with an image
         self._update_image_for_current_tab()
+
+    def _update_text_widget(self, widget: tk.Text, content: str):
+        """Helper to safely update a text widget's content."""
+        widget.config(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        widget.insert("1.0", content)
+        widget.config(state=tk.DISABLED)
 
     def _on_tab_changed(self, event=None):
         """Updates the image preview when the user switches tabs."""
@@ -741,6 +744,14 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
 
             info_text = f"({self.current_image_index + 1}/{len(self.current_images)}) Model: {model_name}{lora_display_text}"
             self.image_info_label.config(text=info_text)
+
+            # Update the negative prompt for the current image
+            current_tab_key = self._get_current_tab_key()
+            if current_tab_key:
+                neg_prompt_widget = self.detail_tabs.get(current_tab_key, {}).get('negative_prompt_text')
+                if neg_prompt_widget:
+                    neg_prompt = gen_params.get('negative_prompt', '')
+                    self._update_text_widget(neg_prompt_widget, neg_prompt)
             
             # Update tooltip with all params
             if gen_params:
@@ -763,6 +774,16 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             self.image_label.config(text=f"Error loading image:\n{e}", image='')
             self.image_ref = None
             self.current_pil_image = None
+
+    def _get_current_tab_key(self) -> Optional[str]:
+        """Helper to get the key of the currently selected tab."""
+        if not self.details_notebook: return None
+        try:
+            selected_tab_id = self.details_notebook.select()
+            selected_tab_widget = self.details_notebook.nametowidget(selected_tab_id)
+            return next((key for key, tab_info in self.detail_tabs.items() if tab_info['frame'] == selected_tab_widget), None)
+        except tk.TclError:
+            return None
 
     def _next_image(self):
         if self.current_image_index < len(self.current_images) - 1:
@@ -930,7 +951,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
     def _regenerate_prompt_with_ai(self, key: str):
         """Regenerates a single prompt (enhanced or variation) using the AI."""
         if not self.selected_row_data: return
-
+        
         model = self.parent_app.enhancement_model_var.get()
         if not model or "model" in model.lower():
             custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model in the main window.")
@@ -945,8 +966,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
                 if key == 'enhanced':
                     original_prompt = self.selected_row_data.get('original_prompt', '')
                     if not original_prompt: raise ValueError("Original prompt not found for re-enhancement.")
-                    new_prompt, new_sd_model = self.processor.regenerate_enhancement(original_prompt, model)
-                    result_data = {'prompt': new_prompt, 'sd_model': new_sd_model}
+                    new_prompt = self.processor.regenerate_enhancement(original_prompt, model)
+                    result_data = {'prompt': new_prompt, 'ollama_model': model}
                 else: # It's a variation
                     # Use the ENHANCED prompt as the base for regenerating a variation for better context.
                     base_prompt_for_variation = self.selected_row_data.get('enhanced', {}).get('prompt')
@@ -954,10 +975,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
                     if not base_prompt_for_variation:
                         base_prompt_for_variation = self.selected_row_data.get('original_prompt', '')
                     original_prompt_for_context = self.selected_row_data.get('original_prompt', '')
-
                     if not base_prompt_for_variation: raise ValueError("Base prompt not found to generate variation from.")
-                    variation_result = self.processor.regenerate_variation(base_prompt_for_variation, "", model, key, original_prompt_context=original_prompt_for_context)
-                    result_data = {'prompt': variation_result['prompt'], 'sd_model': variation_result['sd_model']}
+                    variation_result = self.processor.regenerate_variation(base_prompt_for_variation, model, key, original_prompt_context=original_prompt_for_context)
+                    result_data = {'prompt': variation_result['prompt'], 'ollama_model': model}
                 
                 self.regen_prompt_queue.put({'success': True, 'key': key, 'data': result_data})
             except Exception as e:
@@ -970,22 +990,26 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         """Checks for AI prompt regeneration results and updates the UI."""
         try:
             result = self.regen_prompt_queue.get_nowait()
-            key = result.get('key') # The key is now at the top level for both success and error
+            key = result.get('key')
             
             button = self.detail_tabs.get(key, {}).get('regen_ai_button')
             if button:
                 button.config(state=tk.NORMAL, text="Regen Prompt")
 
-            if not result['success']:
-                custom_dialogs.show_error(self, "Regeneration Error", result['error'])
-                return
-            
-            # Add the key back into the data dictionary for the update function
-            data_to_update = result['data']
-            data_to_update['key'] = key
-            self._update_prompt_from_ai(data_to_update)
+            if not result.get('success'):
+                custom_dialogs.show_error(self, "Regeneration Error", result.get('error', 'An unknown error occurred.'))
+            else:
+                # Success path
+                data_to_update = result.get('data')
+                if data_to_update:
+                    data_to_update['key'] = key
+                    self._update_prompt_from_ai(data_to_update)
         except queue.Empty:
             pass
+        except Exception as e:
+            # Add a general exception handler to prevent the loop from dying silently.
+            print(f"ERROR: Unhandled exception in _check_regen_prompt_queue: {e}")
+            traceback.print_exc()
         finally:
             if self.winfo_exists():
                 self.regen_prompt_after_id = self.after(100, self._check_regen_prompt_queue)
@@ -1051,6 +1075,16 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         if not prompt:
             custom_dialogs.show_error(self, "Error", "Could not determine the prompt for this image.")
             return
+        
+        # --- NEW: Unload Ollama models to free VRAM for InvokeAI ---
+        if not self.parent_app._unload_ollama_models_for_vram():
+            return # User cancelled
+        
+        # Get the negative prompt from the specific image being regenerated
+        gen_params = image_data.get('generation_params', {})
+        negative_prompt = gen_params.get('negative_prompt', self.processor.get_default_negative_prompt_text())
+        initial_dialog_params = copy.deepcopy(gen_params)
+        initial_dialog_params['negative_prompt'] = negative_prompt
 
         # --- Start of async logic ---
         self.regen_image_button.config(state=tk.DISABLED)
@@ -1060,7 +1094,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         # Create a copy of params and set a new seed
         new_gen_params = copy.deepcopy(gen_params)
         new_gen_params['seed'] = random.randint(0, 2**32 - 1)
-
+        
         def task():
             try:
                 gen_args = {
@@ -1069,10 +1103,10 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
                     "seed": new_gen_params.get("seed"),
                     "model_object": new_gen_params.get("model"),
                     "loras": new_gen_params.get("loras", []),
-                    "steps": new_gen_params.get("steps"),
-                    "cfg_scale": new_gen_params.get("cfg_scale"),
-                    "scheduler": new_gen_params.get("scheduler"),
-                    "cfg_rescale_multiplier": new_gen_params.get("cfg_rescale_multiplier"),
+                    "steps": new_gen_params.get("steps", 30),
+                    "cfg_scale": new_gen_params.get("cfg_scale", 7.5),
+                    "scheduler": new_gen_params.get("scheduler", "dpmpp_2m"),
+                    "cfg_rescale_multiplier": new_gen_params.get("cfg_rescale_multiplier", 0.0),
                     "save_to_gallery": False,
                 }
                 image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
@@ -1140,29 +1174,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
     def _generate_image_from_history(self, key: str):
         """Starts the image generation process for a prompt from the history."""
         if not self.selected_row_data: return
-        full_row_data = self.selected_row_data
 
-        prompt = ""
-        # Start with the global default negative prompt.
-        negative_prompt = config.DEFAULT_NEGATIVE_PROMPT
-
-        if key == 'original':
-            prompt = full_row_data.get('original_prompt', '')
-            original_images = full_row_data.get('original_images', [])
-            if original_images:
-                negative_prompt = original_images[0].get('generation_params', {}).get('negative_prompt', negative_prompt)
-        elif key == 'enhanced':
-            enhanced_data = full_row_data.get('enhanced', {})
-            prompt = enhanced_data.get('prompt', '')
-            enhanced_images = enhanced_data.get('images', [])
-            if enhanced_images:
-                negative_prompt = enhanced_images[0].get('generation_params', {}).get('negative_prompt', negative_prompt)
-        elif key in full_row_data.get('variations', {}):
-            variation_data = full_row_data['variations'][key]
-            prompt = variation_data.get('prompt', '')
-            variation_images = variation_data.get('images', [])
-            if variation_images:
-                negative_prompt = variation_images[0].get('generation_params', {}).get('negative_prompt', negative_prompt)
+        prompt = self._get_prompt_for_key(key)
+        # Get the negative prompt from the text widget associated with this tab
+        neg_prompt_widget = self.detail_tabs.get(key, {}).get('negative_prompt_text')
+        negative_prompt = neg_prompt_widget.get("1.0", "end-1c").strip() if neg_prompt_widget else self.processor.get_default_negative_prompt_text()
         
         if not prompt:
             custom_dialogs.show_error(self, "Error", "No prompt available to generate an image.")
@@ -1275,6 +1291,12 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         model_label = ttk.Label(bottom_bar, text="", font=self.parent_app.small_font, foreground="gray")
         model_label.pack(side=tk.LEFT, anchor='w', fill=tk.X, expand=True)
 
+        # Add a frame for the negative prompt
+        neg_prompt_frame = ttk.LabelFrame(frame, text="Negative Prompt", padding=5)
+        neg_prompt_frame.pack(fill=tk.X, expand=False, pady=(5,0))
+        neg_prompt_text = tk.Text(neg_prompt_frame, wrap=tk.WORD, height=2, font=self.parent_app.small_font, state=tk.DISABLED, relief=tk.FLAT, exportselection=False)
+        neg_prompt_text.pack(fill=tk.X, expand=True)
+
         self.detail_tabs[key].update({'model_label': model_label, 'button_container': button_container})
 
         # Special handling for the 'enhanced' and 'negative' tab's edit buttons
@@ -1283,6 +1305,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             update_button = ttk.Button(button_container, text="Update", style="Accent.TButton", command=lambda k=key: self._update_edited_prompt(k))
             cancel_button = ttk.Button(button_container, text="Cancel", command=lambda k=key: self._cancel_edit_mode(k))
             
+            self.detail_tabs[key]['negative_prompt_text'] = neg_prompt_text
+
             self.detail_tabs[key].update({'edit_button': edit_button, 'update_button': update_button, 'cancel_button': cancel_button})
             edit_button.pack(side=tk.LEFT)
 
@@ -1304,6 +1328,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             generate_image_button = ttk.Button(gen_image_frame, text="Generate Image", command=lambda k=key: self._generate_image_from_history(k))
             generate_image_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
             self.detail_tabs[key]['generate_image_button'] = generate_image_button
+            self.detail_tabs[key]['negative_prompt_text'] = neg_prompt_text
 
     def _clear_image_preview(self):
         """Resets the image preview to its default state."""
@@ -1322,7 +1347,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         """Updates the UI and history data after a successful AI regeneration."""
         key = data['key']
         new_prompt = data['prompt']
-        new_sd_model = data['sd_model']
+        new_ollama_model = data.get('ollama_model', '')
 
         # Update the text widget
         text_widget = self.detail_tabs[key]['text']
@@ -1333,7 +1358,15 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
 
         # Update the model label
         model_label = self.detail_tabs[key]['model_label']
-        model_label.config(text=f"Recommended Model: {new_sd_model}")
+        current_label_text = model_label.cget("text")
+        sd_model_part = ""
+        if "SD:" in current_label_text:
+            parts = current_label_text.split(" | ")
+            sd_model_part = next((p for p in parts if p.startswith("SD:")), "")
+        display_parts = []
+        if new_ollama_model: display_parts.append(f"LLM: {new_ollama_model}")
+        if sd_model_part: display_parts.append(sd_model_part)
+        model_label.config(text=" | ".join(display_parts))
 
         # Update the underlying history data
         original_row = self.selected_row_data
@@ -1342,12 +1375,18 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         if key == 'enhanced':
             if 'enhanced' not in updated_row: updated_row['enhanced'] = {}
             updated_row['enhanced']['prompt'] = new_prompt
-            updated_row['enhanced']['sd_model'] = new_sd_model
         else: # Variation
             if 'variations' not in updated_row: updated_row['variations'] = {}
             if key not in updated_row['variations']: updated_row['variations'][key] = {}
             updated_row['variations'][key]['prompt'] = new_prompt
-            updated_row['variations'][key]['sd_model'] = new_sd_model
+        
+        # Update the ollama_model for the specific part that was regenerated
+        if key == 'enhanced':
+            updated_row['enhanced']['ollama_model'] = new_ollama_model
+            if 'sd_model' in updated_row['enhanced']: del updated_row['enhanced']['sd_model']
+        else:
+            updated_row['variations'][key]['ollama_model'] = new_ollama_model
+            if 'sd_model' in updated_row['variations'][key]: del updated_row['variations'][key]['sd_model']
         
         self._save_and_refresh_row(updated_row, f"'{self.detail_tabs[key]['title']}' prompt has been regenerated.")
 
@@ -1365,28 +1404,25 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             if self.winfo_exists():
                 self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
 
-    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
-        """Starts a background thread to load a thumbnail for the history list."""
-        def task():
+    def _thumbnail_worker(self):
+        """A single worker thread to process all thumbnail generation tasks."""
+        while not self.cancellation_event.is_set():
             try:
-                # Manually construct the path to avoid modifying global config from a thread.
-                # This is a more robust way to handle pathing in a multithreaded context.
+                label_widget, image_path, workflow = self.thumbnail_work_queue.get(timeout=1)
                 base_history_dir = config.HISTORY_DIR
                 workflow_sub_dir = workflow.lower()
                 workflow_history_dir = os.path.join(base_history_dir, workflow_sub_dir)
                 full_path = os.path.join(workflow_history_dir, image_path)
+                if os.path.exists(full_path):
+                    with Image.open(full_path) as img:
+                        img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                        self.thumbnail_queue.put((label_widget, img.copy()))
+            except queue.Empty:
+                continue
 
-                if not os.path.exists(full_path): return # Silently fail if not found
-
-                with Image.open(full_path) as img:
-                    img.thumbnail((100, 100), Image.Resampling.LANCZOS)
-                    self.thumbnail_queue.put((label_widget, img.copy()))
-            except Exception as e:
-                if self.processor.verbose:
-                    print(f"Error getting history thumbnail {image_path}: {e}")
-
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
+        """Starts a background thread to load a thumbnail for the history list."""
+        self.thumbnail_work_queue.put((label_widget, image_path, workflow))
 
     def _on_image_container_resize(self, event=None):
         """Handles resizing of the image container to re-thumbnail the image."""

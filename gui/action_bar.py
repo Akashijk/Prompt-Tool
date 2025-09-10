@@ -2,121 +2,201 @@
 
 import tkinter as tk
 from tkinter import ttk
+import random
 from typing import Dict, List, Callable, Optional, TYPE_CHECKING
 from .common import Tooltip
 
 class ActionBar(ttk.Frame):
     """The main action bar with Generate, Enhance, and variation selection."""
-    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, copy_callback: Callable, save_as_template_callback: Callable, generate_image_callback: Callable, suggest_callback: Callable, **kwargs):
+    def __init__(self, parent, generate_callback: Callable, enhance_callback: Callable, 
+                 copy_callback: Callable, save_as_template_callback: Callable, 
+                 generate_image_callback: Callable, suggest_callback: Callable, 
+                 seed_var: tk.StringVar, random_seed_var: tk.BooleanVar, 
+                 randomize_seed_callback: Callable, **kwargs):
         super().__init__(parent, **kwargs)
-
-        self.generate_button = ttk.Button(self, text="Generate Next Preview", command=generate_callback, state=tk.DISABLED)
-
-        self.enhance_template_button = ttk.Button(self, text="Enhance Template (AI)", command=suggest_callback, state=tk.DISABLED)
-        Tooltip(self.enhance_template_button, "Ask the AI to enhance the current template with more detail and wildcards.")
-
-        self.select_button = ttk.Button(self, text="Enhance This Prompt", command=enhance_callback, state=tk.DISABLED)
-
-        self.variations_frame = ttk.LabelFrame(self, text="Variations", padding=(10, 5))
+        
+        # Store callbacks as instance variables
+        self.generate_callback = generate_callback
+        self.enhance_callback = enhance_callback
+        self.copy_callback = copy_callback
+        self.save_as_template_callback = save_as_template_callback
+        self.generate_image_callback = generate_image_callback
+        self.suggest_callback = suggest_callback
+        self.seed_var = seed_var
+        self.random_seed_var = random_seed_var
+        self.randomize_seed_callback = randomize_seed_callback
+        
+        # Main container that will center everything
+        self.main_container = ttk.Frame(self)
+        self.main_container.pack(expand=True, fill='both', padx=20, pady=10)
+        
+        # Configure main container to center content
+        self.main_container.columnconfigure(0, weight=1)
+        self.main_container.columnconfigure(1, weight=0)  # Content column
+        self.main_container.columnconfigure(2, weight=1)
+        
+        # Content frame - all our actual widgets go here
+        self.content_frame = ttk.Frame(self.main_container)
+        self.content_frame.grid(row=0, column=1, sticky='')
+        
+        self._create_primary_actions()
+        self._create_secondary_actions()
+        self._create_seed_controls()
+        self._create_variations_section()
+        
+    def _create_primary_actions(self):
+        """Create the main action buttons (top row)"""
+        primary_frame = ttk.LabelFrame(self.content_frame, text="Generate Actions", 
+                                     padding=(12, 8))
+        primary_frame.pack(pady=(0, 10), fill='x')
+        
+        # Center the buttons in this frame
+        button_container = ttk.Frame(primary_frame)
+        button_container.pack()
+        
+        self.enhance_template_button = ttk.Button(
+            button_container, 
+            text="Enhance Template (AI)", 
+            command=self.suggest_callback, 
+            state=tk.DISABLED
+        )
+        self.enhance_template_button.pack(side='left', padx=(0, 8))
+        Tooltip(self.enhance_template_button, 
+                "Ask the AI to enhance the current template with more detail and wildcards.")
+        
+        self.generate_button = ttk.Button(
+            button_container, 
+            text="Generate Next Preview", 
+            command=self.generate_callback, 
+            state=tk.DISABLED
+        )
+        self.generate_button.pack(side='left', padx=8)
+        
+        self.select_button = ttk.Button(
+            button_container, 
+            text="Enhance This Prompt", 
+            command=self.enhance_callback, 
+            state=tk.DISABLED
+        )
+        self.select_button.pack(side='left', padx=(8, 0))
+        
+    def _create_secondary_actions(self):
+        """Create output/utility buttons (second row)"""
+        secondary_frame = ttk.LabelFrame(self.content_frame, text="Output Actions", 
+                                       padding=(12, 8))
+        secondary_frame.pack(pady=(0, 10), fill='x')
+        
+        # Container to center all the content
+        button_container = ttk.Frame(secondary_frame)
+        button_container.pack()
+        
+        # Left side: Copy and Save buttons
+        left_actions = ttk.Frame(button_container)
+        left_actions.pack(side='left', padx=(0, 20))
+        
+        self.copy_prompt_button = ttk.Button(left_actions, text="Copy Prompt", 
+                                           command=self.copy_callback, state=tk.DISABLED)
+        self.copy_prompt_button.pack(side='left', padx=(0, 8))
+        
+        self.save_as_template_button = ttk.Button(left_actions, text="Save as Template", 
+                                                command=self.save_as_template_callback, 
+                                                state=tk.DISABLED)
+        self.save_as_template_button.pack(side='left')
+        
+        # Right side: Image generation
+        self.image_gen_frame = ttk.Frame(button_container)
+        self.image_gen_frame.pack(side='left')
+        
+        # The spinner will be packed to the left of the button when active
+        from .common import LoadingAnimation  # Local import to avoid circular dependency
+        self.image_gen_spinner = LoadingAnimation(self.image_gen_frame, size=20)
+        
+        self.generate_image_button = ttk.Button(self.image_gen_frame, text="Generate Image", 
+                                              command=self.generate_image_callback, 
+                                              state=tk.DISABLED)
+        self.generate_image_button.pack(side='left')
+        
+    def _create_seed_controls(self):
+        """Create seed input and randomization controls"""
+        seed_frame = ttk.LabelFrame(self.content_frame, text="Seed Controls", 
+                                  padding=(12, 8))
+        seed_frame.pack(pady=(0, 10), fill='x')
+        
+        # Container to center the seed controls
+        seed_container = ttk.Frame(seed_frame)
+        seed_container.pack()
+        
+        ttk.Label(seed_container, text="Seed:").pack(side='left')
+        seed_entry = ttk.Entry(seed_container, textvariable=self.seed_var, width=12)
+        seed_entry.pack(side='left', padx=(5, 8))
+        
+        dice_btn = ttk.Button(seed_container, text="🎲", width=3, 
+                             command=self.randomize_seed_callback)
+        dice_btn.pack(side='left', padx=(0, 8))
+        Tooltip(dice_btn, "Generate random seed")
+        
+        lock_switch = ttk.Checkbutton(seed_container, text="Random", 
+                                     variable=self.random_seed_var, 
+                                     style='Switch.TCheckbutton')
+        lock_switch.pack(side='left')
+        Tooltip(lock_switch, 
+                "Use a new random seed for each generation. Turn off to use the specific seed in the box.")
+        
+    def _create_variations_section(self):
+        """Create the variations selection area"""
+        self.variations_frame = ttk.LabelFrame(self.content_frame, text="Variations", 
+                                             padding=(12, 8))
+        self.variations_frame.pack(fill='x')
+        
+        # Container for variation checkboxes
+        self.variations_container = ttk.Frame(self.variations_frame)
+        self.variations_container.pack()
         
         self.variation_vars: Dict[str, tk.BooleanVar] = {}
         self.variation_tooltips: List[Tooltip] = []
-
-        self.copy_prompt_button = ttk.Button(self, text="Copy Prompt", command=copy_callback, state=tk.DISABLED)
-
-        self.save_as_template_button = ttk.Button(self, text="Save as Template", command=save_as_template_callback, state=tk.DISABLED)
-
-        # Create a container for the image generation controls on the right
-        self.image_gen_frame = ttk.Frame(self)
-
-        # The spinner will be packed to the left of the button when active
-        from .common import LoadingAnimation # Local import to avoid circular dependency
-        self.image_gen_spinner = LoadingAnimation(self.image_gen_frame, size=20)
-
-        self.generate_image_button = ttk.Button(self.image_gen_frame, text="Generate Image", command=generate_image_callback, state=tk.DISABLED)
-        self.generate_image_button.pack(side=tk.LEFT)
-
-        self.bind("<Configure>", self._reflow_controls)
-        self.after(10, self._reflow_controls)
-
-    def _reflow_controls(self, event=None):
-        """Reflows the action bar controls based on the available width."""
-        if not self.winfo_exists():
-            return
-
-        # Ensure all widgets are managed by grid before configuring them
-        self.generate_button.grid()
-        self.enhance_template_button.grid()
-        self.select_button.grid()
-        self.variations_frame.grid()
-        self.copy_prompt_button.grid()
-        self.save_as_template_button.grid()
-        self.image_gen_frame.grid()
-
-        width = self.winfo_width()
-        threshold = 950 # A reasonable threshold for when to switch to vertical layout
-
-        if width < threshold:
-            # Vertical layout
-            self.columnconfigure(0, weight=1)
-            self.columnconfigure(1, weight=1)
-            for i in range(2, 9): self.columnconfigure(i, weight=0) # Reset others
-
-            # Group 1: Core prompt actions
-            self.generate_button.grid_configure(row=0, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
-            self.select_button.grid_configure(row=0, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
-            # Group 2: AI Tools
-            self.enhance_template_button.grid_configure(row=1, column=0, columnspan=2, sticky='ew', pady=(0, 5), padx=0)
-            # Group 3: Variations (full width)
-            self.variations_frame.grid_configure(row=2, column=0, columnspan=2, sticky='ew', pady=(5, 5))
-            # Group 4: Utility actions
-            self.copy_prompt_button.grid_configure(row=3, column=0, sticky='ew', pady=(0, 5), padx=(0, 2))
-            self.save_as_template_button.grid_configure(row=3, column=1, sticky='ew', pady=(0, 5), padx=(2, 0))
-            # Group 5: Final image generation (full width)
-            self.image_gen_frame.grid_configure(row=4, column=0, columnspan=2, sticky='ew', pady=(5, 0))
-        else:
-            # Horizontal layout
-            for i in range(9): self.columnconfigure(i, weight=0) # Reset all
-            self.columnconfigure(7, weight=1) # Spacer column
-
-            self.generate_button.grid_configure(row=0, column=0, columnspan=1, sticky='w', padx=(0, 5), pady=0)
-            self.enhance_template_button.grid_configure(row=0, column=1, columnspan=1, sticky='w', padx=(0, 5), pady=0)
-            self.select_button.grid_configure(row=0, column=2, columnspan=1, sticky='w', pady=0)
-            self.variations_frame.grid_configure(row=0, column=3, columnspan=1, sticky='w', padx=(10, 0), pady=0)
-            self.copy_prompt_button.grid_configure(row=0, column=4, columnspan=1, sticky='w', padx=(10, 0), pady=0)
-            self.save_as_template_button.grid_configure(row=0, column=5, columnspan=1, sticky='w', padx=(5, 0), pady=0)
-            # Column 7 is the expanding spacer
-            self.image_gen_frame.grid_configure(row=0, column=7, columnspan=1, sticky='e', padx=(10, 0), pady=0)
-
+        
     def rebuild_variations(self, variations: List[Dict[str, str]]):
         """Clears and recreates the variation checkboxes."""
-        for widget in self.variations_frame.winfo_children():
+        # Clear existing variations
+        for widget in self.variations_container.winfo_children():
             widget.destroy()
-
+            
         self.variation_vars.clear()
         self.variation_tooltips.clear()
-
-        for variation in variations:
+        
+        if not variations:
+            return
+            
+        # Create new variations in a more organized layout
+        for i, variation in enumerate(variations):
             key = variation['key']
             name = variation['name']
             description = variation.get('description', 'Generate this variation.')
+            
             var = tk.BooleanVar(value=True)
             self.variation_vars[key] = var
-            cb = ttk.Checkbutton(self.variations_frame, text=name, variable=var)
-            cb.pack(side=tk.LEFT, padx=5)
+            
+            cb = ttk.Checkbutton(self.variations_container, text=name, variable=var)
+            cb.pack(side='left', padx=(0, 12))
+            
             tooltip = Tooltip(cb, description)
             cb.bind("<Enter>", tooltip.show)
             cb.bind("<Leave>", tooltip.hide)
             self.variation_tooltips.append(tooltip)
-
+            
     def get_selected_variations(self) -> List[str]:
         """Returns a list of the names of the selected variations."""
         return [key for key, var in self.variation_vars.items() if var.get()]
-
-    def set_button_states(self, generate: str, enhance: str, copy: str, save_as_template: Optional[str] = None, generate_image: Optional[str] = None, suggest: Optional[str] = None):
+        
+    def set_button_states(self, generate: str, enhance: str, copy: str, 
+                         save_as_template: Optional[str] = None, 
+                         generate_image: Optional[str] = None, 
+                         suggest: Optional[str] = None):
+        """Update button states"""
         self.generate_button.config(state=generate)
         self.select_button.config(state=enhance)
         self.copy_prompt_button.config(state=copy)
+        
         if save_as_template is not None:
             self.save_as_template_button.config(state=save_as_template)
         if suggest is not None:

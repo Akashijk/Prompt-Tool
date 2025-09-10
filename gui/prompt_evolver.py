@@ -34,6 +34,7 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
         self.current_offset = 0
         self.generation_queue = queue.Queue()
         self.history_widgets: List[Dict[str, Any]] = [] # This will store widget references and data
+        self.thumbnail_work_queue = queue.Queue()
         self.thumbnail_queue = queue.Queue()
         self.cancellation_event = threading.Event()
         self.child_image_gen_spinners: Dict[str, 'LoadingAnimation'] = {}
@@ -72,6 +73,10 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
         style.configure("Favorite.History.TLabel", font=tkfont.Font(family="Helvetica", size=config.font_size, weight="bold"), foreground=favorite_color)
         style.configure("Prompt.History.TLabel")
 
+        # Start the single thumbnail worker thread
+        self.thumbnail_worker_thread = threading.Thread(target=self._thumbnail_worker, daemon=True)
+        self.thumbnail_worker_thread.start()
+
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.after_id:
@@ -81,6 +86,16 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
         self.cancellation_event.set()
         self.model_usage_manager.unregister_usage(self.active_model)
         self.destroy()
+
+    def update_active_model(self, old_model: Optional[str], new_model: Optional[str]):
+        """Called by the parent app when the main model changes."""
+        if old_model != new_model:
+            # Unregister the old model that this window was tracking
+            self.model_usage_manager.unregister_usage(self.active_model)
+            # Register the new model
+            self.model_usage_manager.register_usage(new_model)
+            # Update the internal state
+            self.active_model = new_model
 
     def refresh_data(self):
         """Reloads history data and repopulates the listbox."""
@@ -230,25 +245,25 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
             if self.winfo_exists():
                 self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
 
-    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
-        """Starts a background thread to load a thumbnail for the history list."""
-        def task():
+    def _thumbnail_worker(self):
+        """A single worker thread to process all thumbnail generation tasks."""
+        while not self.cancellation_event.is_set():
             try:
-                # Manually construct the path to avoid modifying global config from a thread.
+                label_widget, image_path, workflow = self.thumbnail_work_queue.get(timeout=1)
                 base_history_dir = config.HISTORY_DIR
                 workflow_sub_dir = workflow.lower()
                 workflow_history_dir = os.path.join(base_history_dir, workflow_sub_dir)
                 full_path = os.path.join(workflow_history_dir, image_path)
+                if os.path.exists(full_path):
+                    with Image.open(full_path) as img:
+                        img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                        self.thumbnail_queue.put((label_widget, img.copy()))
+            except queue.Empty:
+                continue
 
-                if not os.path.exists(full_path): return # Silently fail if not found
-
-                with Image.open(full_path) as img:
-                    img.thumbnail((100, 100), Image.Resampling.LANCZOS)
-                    self.thumbnail_queue.put((label_widget, img.copy()))
-            except Exception as e:
-                if self.processor.verbose: print(f"Error getting history thumbnail {image_path}: {e}")
-
-        threading.Thread(target=task, daemon=True).start()
+    def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
+        """Starts a background thread to load a thumbnail for the history list."""
+        self.thumbnail_work_queue.put((label_widget, image_path, workflow))
 
     def _load_next_history_batch(self):
         """Loads the next batch of history items into the view."""
@@ -570,8 +585,11 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
             self.refresh_data()
 
         self.parent_app._start_image_generation_workflow(
-            parent_window=self, prompt=prompt, initial_dialog_params={'negative_prompt': config.DEFAULT_NEGATIVE_PROMPT},
-            button_to_manage=None, spinner_to_manage=None, on_success_callback=on_success
+            parent_window=self, 
+            prompt=prompt, 
+            initial_dialog_params={'negative_prompt': self.processor.get_default_negative_prompt_text()},
+            button_to_manage=None, 
+            spinner_to_manage=None, on_success_callback=on_success
         )
 
     def _enhance_child_prompt(self, widget_info):

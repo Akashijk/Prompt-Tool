@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk
+import tkinter.font as tkfont
 from PIL import Image, ImageTk
 import difflib
 import sys
@@ -638,6 +639,78 @@ class DiffViewer(ttk.Frame):
         """Calculates a diff between two texts and displays it."""
         diff_text = "".join(difflib.unified_diff(original_text.splitlines(keepends=True), new_text.splitlines(keepends=True), fromfile=fromfile, tofile=tofile))
         self.set_diff_text(diff_text if diff_text else "No changes proposed.")
+
+class VerticalSpinbox(ttk.Frame):
+    """A custom spinbox with vertical buttons for a more compact look."""
+    def __init__(self, parent, from_=0.0, to=100.0, increment=1.0, width=5, textvariable=None, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.from_ = from_
+        self.to = to
+        self.increment = increment
+        self.textvariable = textvariable if textvariable else tk.StringVar()
+
+        # Determine the format string based on the increment
+        if isinstance(self.increment, int) or self.increment == 1.0:
+            self.format_spec = "{:.0f}"
+        elif self.increment < 0.1:
+            self.format_spec = "{:.2f}"
+        else:
+            self.format_spec = "{:.1f}"
+
+        # Entry widget
+        self.entry = ttk.Entry(self, textvariable=self.textvariable, width=width, justify='center')
+        self.entry.pack(side=tk.LEFT, fill=tk.Y)
+
+        # Frame for buttons
+        button_frame = ttk.Frame(self)
+        button_frame.pack(side=tk.LEFT, fill=tk.Y)
+
+        # --- Smart Sizing Logic ---
+        # Get the default font size to make the buttons proportionally smaller.
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_size = default_font.cget("size")
+        button_font_size = max(6, default_size - 3) # Make it smaller but not tiny.
+
+        # Create a unique style name to avoid conflicts if this widget is used multiple times.
+        style_name = f"{id(self)}.Small.Toolbutton"
+        style = ttk.Style()
+        style.configure(style_name, font=('Helvetica', button_font_size), padding=(2, 0, 2, 0))
+
+        # Up and Down buttons
+        self.up_button = ttk.Button(button_frame, text="⏶", command=self._increment, width=1, style=style_name)
+        self.up_button.pack(side=tk.TOP, fill=tk.Y, expand=True, pady=(0,1))
+        self.down_button = ttk.Button(button_frame, text="⏷", command=self._decrement, width=1, style=style_name)
+        self.down_button.pack(side=tk.TOP, fill=tk.Y, expand=True)
+
+        # Bind mouse wheel for increment/decrement
+        for widget in [self.entry, self.up_button, self.down_button]:
+            widget.bind("<MouseWheel>", self._on_mouse_wheel) # For Windows and macOS
+            widget.bind("<Button-4>", self._on_mouse_wheel)   # For Linux scroll up
+            widget.bind("<Button-5>", self._on_mouse_wheel)   # For Linux scroll down
+
+    def _on_mouse_wheel(self, event):
+        """Handles mouse wheel scrolling to increment/decrement the value."""
+        # Differentiate between platforms for scroll direction
+        if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
+            self._increment()
+        elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
+            self._decrement()
+
+    def _increment(self):
+        try:
+            current_value = float(self.textvariable.get())
+            new_value = min(self.to, current_value + self.increment)
+            self.textvariable.set(self.format_spec.format(new_value))
+        except (ValueError, tk.TclError):
+            self.textvariable.set(self.format_spec.format(self.from_))
+
+    def _decrement(self):
+        try:
+            current_value = float(self.textvariable.get())
+            new_value = max(self.from_, current_value - self.increment)
+            self.textvariable.set(self.format_spec.format(new_value))
+        except (ValueError, tk.TclError):
+            self.textvariable.set(self.format_spec.format(self.from_))
 
 class ImagePreviewMixin:
     """A mixin class to provide hover-to-preview functionality for images."""

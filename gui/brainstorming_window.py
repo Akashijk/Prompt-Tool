@@ -182,6 +182,16 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         
         self.destroy()
 
+    def update_active_model(self, old_model: Optional[str], new_model: Optional[str]):
+        """Called by the parent app when the main model changes."""
+        if old_model != new_model:
+            # This window has its own dropdown, but we'll update it to reflect the main app's change
+            # to avoid holding onto a model that might be unloaded.
+            self.model_usage_manager.unregister_usage(self.active_brainstorm_model)
+            self.model_usage_manager.register_usage(new_model)
+            self.active_brainstorm_model = new_model
+            self.model_var.set(new_model)
+
     def _on_model_var_change(self, *args):
         """Handles when the user selects a new model in the dropdown."""
         new_model = self.model_var.get()
@@ -445,40 +455,29 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         self.generate_wildcard_with_topic(topic)
 
     def _generate_linked_wildcard_files(self):
-        """Orchestrates the two-step generation of linked wildcard files."""
+        """Orchestrates the generation of linked wildcard files in a side-by-side editor."""
         dialog = _AskLinkedWildcardTopicsDialog(self)
         if not dialog.result:
             return
 
         primary_topic, supporting_topic = dialog.result
+        primary_filename = f"{primary_topic.replace(' ', '_')}.json"
+        supporting_filename = f"{supporting_topic.replace(' ', '_')}.json"
 
-        # Define the second step of the process
-        def generate_primary_wildcard(supporting_filename: str):
-            # Check if the brainstorming window was closed in the meantime.
-            # This prevents a crash if the user saves the supporting file after closing the main window.
-            if not self.winfo_exists():
-                print("INFO: Brainstorming window was closed before the linked wildcard generation could continue.")
-                return
+        def generation_task():
+            model = self.model_var.get()
+            return self.processor.ai_generate_linked_wildcards(primary_topic, supporting_topic, model)
 
-            # Force a reload of wildcards so the newly created one is available.
-            self.processor.reload_wildcards()
-            # The main app's UI also needs to be refreshed.
-            self.update_callback('wildcard')
-
-            custom_dialogs.show_info(
-                self, 
-                "Step 2: Primary Wildcard", 
-                f"Now we will generate the primary wildcard '{primary_topic}', which will be prompted to include choices from the supporting wildcard you just saved."
-            )
-            self.generate_wildcard_with_topic(primary_topic, supporting_wildcard_to_include=supporting_filename)
-
-        # Start the first step
-        custom_dialogs.show_info(
-            self, 
-            "Step 1: Supporting Wildcard", 
-            f"First, we will generate the supporting wildcard: '{supporting_topic}'.\n\nPlease review and save it. The primary wildcard generation will begin automatically after you save."
+        from gui.wildcard_manager import _MultiWildcardEditorWindow
+        _MultiWildcardEditorWindow(
+            self,
+            self.processor,
+            primary_filename,
+            supporting_filename,
+            self.update_callback,
+            generation_task=generation_task
         )
-        self.generate_wildcard_with_topic(supporting_topic, next_step_callback=generate_primary_wildcard)
+        self._add_message("AI", f"Generating linked wildcards for '{primary_topic}' and '{supporting_topic}'. See the new window to review and save.", "ai")
 
     def generate_wildcard_with_topic(self, topic: str, filename: Optional[str] = None, existing_window: Optional[ReviewAndSaveWindow] = None, next_step_callback: Optional[Callable] = None, supporting_wildcard_to_include: Optional[str] = None, template_context: Optional[str] = None):
         """Starts the generation process for a wildcard with a given topic."""
@@ -707,6 +706,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
         self.history_text.delete(start_index, end_index)
         self.history_text.insert(start_index, rewritten_text)
         self.history_text.config(state=tk.DISABLED)
+
     def _handle_generated_content(self, content: str, content_type: str, metadata: Optional[Dict] = None, next_step_callback: Optional[Callable] = None) -> ReviewAndSaveWindow:
         """
         Opens or updates the review window for newly generated content.
