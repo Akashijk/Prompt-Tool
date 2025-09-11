@@ -71,6 +71,21 @@ class OllamaClient:
         # Format for the final output tuple
         return [(rec['idx'], rec['model'], rec['reason']) for rec in sorted_recs]
     
+    def get_running_models(self) -> List[str]:
+        """Gets a list of models currently loaded into memory by Ollama."""
+        if not self._is_ollama_running():
+            return [] # Return empty list if server is not running, don't raise exception
+        
+        try:
+            res = requests.get(f"{self.base_url}/api/ps", timeout=3)
+            res.raise_for_status()
+            models_data = res.json().get('models', [])
+            return [model['name'] for model in models_data]
+        except requests.RequestException:
+            # If the endpoint fails for some reason (e.g., older Ollama version),
+            # we can't know what's running, so we assume nothing is for safety.
+            return []
+    
     def parse_enhanced_response(self, response: str) -> str:
         """
         Parse the enhanced response to extract the prompt.

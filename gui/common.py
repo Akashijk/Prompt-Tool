@@ -453,7 +453,7 @@ class LoadingAnimation(ttk.Frame):
     def __init__(self, parent, size=16):
         super().__init__(parent, width=size, height=size)
         self.canvas = tk.Canvas(self, width=size, height=size, highlightthickness=0)
-        self.canvas.pack()
+        self.canvas.pack(expand=True)
         
         self.size = size
         self.color = "gray"
@@ -505,37 +505,49 @@ class LoadingAnimation(ttk.Frame):
 
 class SmartWindowMixin:
     """Mixin class to add smart window sizing behavior."""
-    def smart_geometry(self, min_width=600, min_height=400, padding=50):
+    def smart_geometry(self, min_width: int = 600, min_height: int = 400, padding: int = 50, width_percent: Optional[float] = None, height_percent: Optional[float] = None):
         """
-        Calculates and sets appropriate window geometry based on content.
+        Calculates and sets appropriate window geometry based on content and screen size.
         
         Args:
             min_width: Minimum window width
             min_height: Minimum window height
             padding: Extra space to add around the content
+            width_percent: Desired width as a percentage of screen width (e.g., 0.7 for 70%)
+            height_percent: Desired height as a percentage of screen height (e.g., 0.8 for 80%)
         """
         # Hide the window to prevent flickering during positioning
         self.withdraw()
 
         # Update all idle tasks to ensure widgets are rendered
         self.update_idletasks()
-        
+
         # Get required size for all widgets
         required_width = self.winfo_reqwidth()
         required_height = self.winfo_reqheight()
-        
-        # Add padding and ensure minimums
-        width = max(required_width + padding, min_width)
-        height = max(required_height + padding, min_height)
-        
+
         # Get screen dimensions
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        
+
+        # Calculate desired width based on percentage if provided
+        desired_width = 0
+        if width_percent:
+            desired_width = int(screen_width * width_percent)
+
+        # Calculate desired height based on percentage if provided
+        desired_height = 0
+        if height_percent:
+            desired_height = int(screen_height * height_percent)
+
+        # Determine final width and height, capped by screen size
+        width = min(screen_width - padding, max(required_width + padding, min_width, desired_width))
+        height = min(screen_height - padding, max(required_height + padding, min_height, desired_height))
+
         # Center the window
         x = (screen_width - width) // 2
         y = (screen_height - height) // 2
-        
+
         # Set geometry
         self.geometry(f"{width}x{height}+{x}+{y}")
         

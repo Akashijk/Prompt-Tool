@@ -41,7 +41,7 @@ class WildcardInserter(ttk.Frame, ImagePreviewMixin):
         frame.pack(fill=tk.BOTH, expand=True)
 
     def populate(self, wildcard_files: List[str]):
-        basenames = [os.path.splitext(f)[0] for f in wildcard_files]
+        basenames = sorted([os.path.splitext(f)[0] for f in wildcard_files], key=str.lower)
         self.wildcard_list_var.set(basenames)
 
     def get_selected_wildcard_name(self) -> Optional[str]:

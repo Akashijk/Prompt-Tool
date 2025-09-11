@@ -1,5 +1,6 @@
 """A dialog to preview multiple generated images and select which to keep."""
 
+import time
 import tkinter as tk
 from tkinter import ttk
 import sys
@@ -24,6 +25,13 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
     def __init__(self, parent, generation_jobs: List[Dict[str, Any]], processor: 'PromptProcessor', progress_callback: Callable, completion_callback: Callable, save_to_gallery: bool):
         super().__init__(parent, "Review Generated Images", modal=False)
         ImagePreviewMixin.__init__(self)
+
+        # Get the main GUIApp instance for callbacks and context.
+        if hasattr(parent, 'parent_app'):
+            self.parent_app = parent.parent_app
+        else: # Assume the parent is the main app
+            self.parent_app = parent
+
         self.processor = processor
         self.generation_jobs = generation_jobs
         # --- NEW: Assign unique IDs to each job for stable referencing ---
@@ -41,17 +49,19 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         self.thumbnail_work_queue = queue.Queue()
         self.thumbnail_queue = queue.Queue()
         self.generation_queue = queue.Queue()
+        self.job_queue = queue.PriorityQueue()
         
         # After job IDs
         self.thumbnail_after_id: Optional[str] = None
         self.generation_after_id: Optional[str] = None
         
         # Threading controls
-        self.concurrency_limiter = threading.Semaphore(4) # Limit concurrent generations
         self.cancellation_event = threading.Event()
+        self.last_used_model: Optional[str] = None
         
         self.thumbnail_size = (256, 256)
         self.item_width = self.thumbnail_size[0] + 20 # Approx width for layout calculation
+        self.cache_cleared_on_completion = False
 
         # Start the single thumbnail worker thread
         self.thumbnail_worker_thread = threading.Thread(target=self._thumbnail_worker, daemon=True)
@@ -76,7 +86,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         self.smart_geometry(min_width=min_width, min_height=600)
         
         # Start the generation process
-        self._start_generation_threads()
+        self._start_worker_pool()
         self.generation_after_id = self.after(100, self._check_generation_queue)
         self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
         
@@ -85,32 +95,43 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs and calling the completion callback."""
-        self.cancellation_event.set()
+        self._cancel_all_jobs()
         if self.generation_after_id:
             self.after_cancel(self.generation_after_id)
         if self.thumbnail_after_id:
             self.after_cancel(self.thumbnail_after_id)
         self.close_preview_on_destroy()
-        
+
         if self.completion_callback:
             # If result is still None, it means the window was closed via 'X' or Escape.
             self.completion_callback(self.result)
             self.completion_callback = None # Prevent double calls
 
-        # --- NEW: Unload InvokeAI models when the window is closed ---
-        # This is the most reliable place to ensure cleanup happens.
-        if self.processor.is_invokeai_connected():
-            self.processor.clear_invokeai_cache_async()
-
         self.destroy()
 
-    def _start_generation_threads(self):
-        """Starts worker threads to generate images."""
-        for job in self.generation_jobs:
+    def _cancel_all_jobs(self):
+        """Cancels all ongoing and pending generation jobs."""
+        if not self.cancellation_event.is_set():
+            self.cancellation_event.set()
+            # Add sentinel values to unblock any worker threads waiting on the queue
+            for _ in range(4): # Assuming a max of 4 workers
+                self.job_queue.put((float('inf'), None, None))
+            # Also clear the InvokeAI cache since we are stopping generation.
+            if self.processor.is_invokeai_connected():
+                self.processor.clear_invokeai_cache_async()
+
+    def _start_worker_pool(self):
+        """Starts a pool of worker threads to process jobs from the job_queue."""
+        num_workers = 4 # Concurrency limit
+        for _ in range(num_workers):
+            thread = threading.Thread(target=self._worker_loop, daemon=True)
+            thread.start()
+        
+        # Add initial jobs to the queue with medium priority
+        for i, job in enumerate(self.generation_jobs):
             if self.cancellation_event.is_set():
                 break
-            thread = threading.Thread(target=self._generation_worker, args=(job['id'], job), daemon=True)
-            thread.start()
+            self.job_queue.put((1, time.time() + i, job)) # Priority 1, timestamp for FIFO tie-breaking
 
     def _thumbnail_worker(self):
         """A single worker thread to process all thumbnail generation tasks."""
@@ -122,24 +143,23 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 if image_bytes:
                     try:
                         with Image.open(io.BytesIO(image_bytes)) as img:
-                            thumb = img.copy()
-                            thumb.thumbnail(self.thumbnail_size, Image.Resampling.LANCZOS)
-                            new_img = Image.new("RGBA", self.thumbnail_size, (0, 0, 0, 0))
-                            paste_x = (self.thumbnail_size[0] - thumb.width) // 2
-                            paste_y = (self.thumbnail_size[1] - thumb.height) // 2
-                            new_img.paste(thumb, (paste_x, paste_y))
-                            self.thumbnail_queue.put((label_widget, new_img))
+                            img.thumbnail(self.thumbnail_size, Image.Resampling.LANCZOS)
+                            self.thumbnail_queue.put((label_widget, img.copy()))
                     except Exception as e:
                         self.thumbnail_queue.put((label_widget, e))
             except queue.Empty:
                 continue # Loop again to check for cancellation or new tasks
 
-    def _generation_worker(self, job_id: str, job: Dict[str, Any]):
-        """The actual image generation task run in a thread."""
-        with self.concurrency_limiter:
-            if self.cancellation_event.is_set():
-                return
-            
+    def _worker_loop(self):
+        """The main loop for worker threads, pulling jobs from the priority queue."""
+        while not self.cancellation_event.is_set():
+            _priority, _timestamp, job = self.job_queue.get()
+            if job is None: # Sentinel value to exit
+                break
+
+            job_id = job['id']
+            self.last_used_model = job.get('gen_params', {}).get('model', {}).get('name')
+
             try:
                 self.generation_queue.put({'status': 'generating', 'job_id': job_id})
                 prompt = job['prompt']
@@ -160,7 +180,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 }
                 image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
                 
-                if self.cancellation_event.is_set(): return
+                if self.cancellation_event.is_set(): continue
 
                 result_data = {'bytes': image_bytes, 'prompt': prompt, 'generation_params': gen_params}
                 self.generation_queue.put({'status': 'completed', 'job_id': job_id, 'data': result_data})
@@ -204,24 +224,30 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             widget_info = next((w for w in self.image_widgets if w['job_data'].get('id') == job_id), None)
             if widget_info and widget_info['frame'].winfo_exists():
                 if status == 'generating':
-                    widget_info['image_label'].place_forget()
-                    widget_info['spinner'].place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+                    widget_info['image_label'].grid_forget()
+                    widget_info['spinner'].grid(row=0, column=0, sticky='nsew')
                     widget_info['spinner'].start()
                 elif status == 'completed':
                     self.completed_jobs += 1
                     widget_info['spinner'].stop()
-                    widget_info['spinner'].place_forget()
-                    widget_info['image_label'].place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+                    widget_info['spinner'].grid_forget()
+                    widget_info['image_label'].grid(row=0, column=0, sticky='nsew')
                     self._update_image_in_grid(widget_info, result['data'])
                 elif status == 'error':
                     self.completed_jobs += 1
                     widget_info['spinner'].stop()
-                    widget_info['spinner'].pack_forget()
-                    widget_info['image_label'].pack(expand=True)
+                    widget_info['spinner'].grid_forget()
+                    widget_info['image_label'].grid(row=0, column=0, sticky='nsew')
                     widget_info['image_label'].config(text=result['error'], image='')
                     widget_info['regen_button'].config(state=tk.NORMAL)
             
             self._update_save_button_state() # Update button state after each processed item
+
+            # Check if all jobs are complete and clear the cache if so
+            if not self.cache_cleared_on_completion and self.completed_jobs >= len(self.generation_jobs):
+                if self.processor.is_invokeai_connected():
+                    self.processor.clear_invokeai_cache_async()
+                    self.cache_cleared_on_completion = True
         except queue.Empty:
             pass # No more items to process in this cycle
         finally:
@@ -253,7 +279,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         self.container = ttk.Frame(self.canvas)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
-        # Scrollbar is packed dynamically later
+        # Scrollbar is packed dynamically 
         self.canvas.pack(side="left", fill="both", expand=True)
         canvas_window = self.canvas.create_window((0, 0), window=self.container, anchor="nw")
 
@@ -384,39 +410,51 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         # A sub-frame to hold the image and the checkbox, to use .place()
         image_container = ttk.Frame(item_frame, relief="groove", borderwidth=1, width=self.thumbnail_size[0], height=self.thumbnail_size[1])
         image_container.bind("<MouseWheel>", self._on_mouse_wheel)
-        image_container.pack(pady=(0,5), fill="both", expand=True)
-        image_container.pack_propagate(False) # Prevent the frame from shrinking to fit the text label
+        image_container.pack(pady=(0,5))
+        # Crucially, pack_propagate must be False on the container that HOLDS the label, not the one the label is in.
+        image_container.grid_propagate(False)
+        image_container.grid_rowconfigure(0, weight=1)
+        image_container.grid_columnconfigure(0, weight=1)
 
         # Image Label
         image_label = ttk.Label(image_container, anchor=tk.CENTER, text="Queued...")
-        image_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
-        
-        # Spinner for loading state
-        spinner = LoadingAnimation(image_container, size=32)
-        # Don't place it yet, it will be shown when generation starts.
-
+        image_label.grid(row=0, column=0, sticky='nsew')
+        # Spinner for loading state - its parent is the image_container
+        spinner = LoadingAnimation(image_container, size=48)
         # Checkbox
         keep_var = tk.BooleanVar(value=True)
         keep_check = ttk.Checkbutton(image_container, variable=keep_var, text="", command=self._update_save_button_state)
         keep_check.place(relx=1.0, rely=0.0, x=-5, y=5, anchor='ne')
 
-        # Info and Controls Frame below the image
-        controls_frame = ttk.Frame(item_frame, height=45) # Give it a fixed height
-        controls_frame.pack_propagate(False) # Prevent it from shrinking/growing
-        controls_frame.bind("<MouseWheel>", self._on_mouse_wheel)
+        # --- NEW: Frame for controls below the image ---
+        controls_frame = ttk.Frame(item_frame)
         controls_frame.pack(fill=tk.X)
 
-        # Model Name
-        parent_app = self.master.parent_app if hasattr(self.master, 'parent_app') else self.master
-        model_name = job_data.get('gen_params', {}).get('model', {}).get('name', 'Unknown')
-        model_label = ttk.Label(controls_frame, text=model_name, font=parent_app.small_font, wraplength=self.thumbnail_size[0] - 80, justify=tk.LEFT)
-        model_label.place(relx=0.0, rely=0.5, anchor='w', x=5)
-        model_label.bind("<MouseWheel>", self._on_mouse_wheel)
-
-        # Regen Button
-        regen_button = ttk.Button(controls_frame, text="Regen", width=7, state=tk.DISABLED)
-        regen_button.place(relx=1.0, rely=0.5, anchor='e', x=-5)
+        # Regen button on the right
+        regen_button = ttk.Button(controls_frame, text="Regen", width=6, state=tk.DISABLED)
+        regen_button.pack(side=tk.RIGHT, padx=(5,0), anchor='c')
         regen_button.bind("<MouseWheel>", self._on_mouse_wheel)
+
+        # Info box on the left, constrained to thumbnail width minus estimated button width
+        # Estimate button width (approximately 45px for "Regen" button with width=6)
+        estimated_button_width = 45
+        info_box_width = self.thumbnail_size[0] - estimated_button_width - 5
+        info_box_frame = ttk.Frame(controls_frame, width=info_box_width, height=80)
+        info_box_frame.pack(side=tk.LEFT, fill=tk.Y)
+        info_box_frame.pack_propagate(False)
+
+        info_text = tk.Text(info_box_frame, height=10, wrap=tk.WORD, relief=tk.FLAT, exportselection=False, font=self.parent_app.small_font)
+        info_scrollbar = ttk.Scrollbar(info_box_frame, orient=tk.VERTICAL, command=info_text.yview)
+        info_text.config(yscrollcommand=info_scrollbar.set)
+
+        info_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        info_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)  # This is fine within the constrained frame
+
+        model_name = job_data.get('gen_params', {}).get('model', {}).get('name', 'Unknown')
+        info_text.insert("1.0", f"Model: {model_name}")
+        info_text.config(state=tk.DISABLED)
+        info_text.bind("<MouseWheel>", self._on_mouse_wheel)
+
         # The command will be set after the widget_info is created
         widget_info = {
             'frame': item_frame,
@@ -426,7 +464,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             'keep_var': keep_var,
             'image_label': image_label,
             'spinner': spinner,
-            'model_label': model_label,
+            'info_text': info_text,
             'regen_button': regen_button
         }
         regen_button.config(command=lambda info=widget_info: self._regenerate_image(info))
@@ -437,7 +475,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
         right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
         # Bind to multiple widgets within the card for better UX
-        for widget in [widget_info['frame'], widget_info['image_label'], widget_info['model_label']]:
+        for widget in [widget_info['frame'], widget_info['image_label'], widget_info['info_text']]:
             widget.bind(right_click_event, lambda e, info=widget_info: self._show_context_menu(e, info))
 
         if index is None:
@@ -460,8 +498,23 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             self.thumbnail_work_queue.put((widget_info['image_label'], image_bytes))
 
         widget_info['regen_button'].config(state=tk.NORMAL)
-        model_name = new_image_data.get('generation_params', {}).get('model', {}).get('name', 'Unknown')
-        widget_info['model_label'].config(text=model_name)
+        
+        # --- NEW: Populate the info box ---
+        info_text_widget = widget_info['info_text']
+        gen_params = new_image_data.get('generation_params', {})
+        model_name = gen_params.get('model', {}).get('name', 'Unknown')
+        loras = gen_params.get('loras', [])
+        
+        info_content = f"Model: {model_name}"
+        if loras:
+            info_content += "\nLoRAs:\n"
+            lora_strings = [f"- {l['lora_object']['name']} (w: {l['weight']:.2f})" for l in loras]
+            info_content += "\n".join(lora_strings)
+            
+        info_text_widget.config(state=tk.NORMAL)
+        info_text_widget.delete("1.0", tk.END)
+        info_text_widget.insert("1.0", info_content)
+        info_text_widget.config(state=tk.DISABLED)
         widget_info['keep_var'].set(True)
 
     def _update_save_button_state(self):
@@ -523,7 +576,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         
         from .image_generation_dialog import ImageGenerationOptionsDialog
         dialog = ImageGenerationOptionsDialog(
-            self,
+            self.parent_app, # Pass the main app instance as the parent
             self.processor,
             initial_params=initial_dialog_params, 
             is_editing=True,
@@ -566,8 +619,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 new_job = {'prompt': original_job['prompt'], 'gen_params': new_gen_params, 'id': str(uuid.uuid4())}
                 self.generation_jobs.insert(insertion_index, new_job)
                 self._add_placeholder_to_grid(new_job, index=insertion_index)
-                thread = threading.Thread(target=self._generation_worker, args=(new_job['id'], new_job), daemon=True)
-                thread.start()
+                self.job_queue.put((1, time.time(), new_job)) # Add to queue with medium priority
             self._reflow_grid()
 
     def _regenerate_image(self, widget_info_to_regen: Dict[str, Any]):
@@ -614,17 +666,46 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         widget_info_to_regen['job_data'] = new_job
         # Clear old results
         widget_info_to_regen['image_data'] = None
+        
+        # --- Reset the UI to a generating state using the grid manager ---
+        # Use a more descriptive text for queued regenerations
+        widget_info_to_regen['image_label'].config(text="Queued for Regen...")
+        widget_info_to_regen['spinner'].grid_forget()
+        widget_info_to_regen['image_label'].grid(row=0, column=0, sticky='nsew')
 
-        # --- NEW: Explicitly reset the UI to a generating state ---
-        widget_info_to_regen['image_label'].pack_forget()
-        widget_info_to_regen['spinner'].pack(expand=True)
+        # --- NEW: Intelligently prioritize this job to minimize model switching ---
+        regen_model_name = new_gen_params.get('model', {}).get('name')
+
+        # Check if the regenerated model is the one we are currently working on.
+        # self.last_used_model is a good heuristic for the "current batch model".
+        if regen_model_name and regen_model_name == self.last_used_model:
+            # The model matches the current one. Give it top priority to run next.
+            priority = 0
+        else:
+            # The model is different. Give it a high priority, but one that is lower
+            # than any currently running batch. This ensures the current model's
+            # jobs finish first before switching.
+            priority = 1
+
+        # The timestamp is used as a tie-breaker. A slightly earlier timestamp
+        # ensures it runs before other jobs of the same priority level.
+        self.job_queue.put((priority, time.time() - 1, new_job))
+
+        widget_info_to_regen['image_label'].grid_forget()
+        widget_info_to_regen['spinner'].grid(row=0, column=0, sticky='nsew')
         widget_info_to_regen['spinner'].start()
+        
+        # --- NEW: Update info box during regeneration ---
+        info_text_widget = widget_info_to_regen['info_text']
         new_model_name = new_gen_params.get('model', {}).get('name', '...')
-        widget_info_to_regen['model_label'].config(text=new_model_name)
-
-        # Start a new worker thread for this single job with the new ID
-        thread = threading.Thread(target=self._generation_worker, args=(new_job['id'], new_job), daemon=True)
-        thread.start()
+        new_loras = new_gen_params.get('loras', [])
+        info_content = f"Model: {new_model_name}"
+        if new_loras:
+            info_content += "\nLoRAs: (Updating...)"
+        info_text_widget.config(state=tk.NORMAL)
+        info_text_widget.delete("1.0", tk.END)
+        info_text_widget.insert("1.0", info_content)
+        info_text_widget.config(state=tk.DISABLED)
 
     def _on_ok(self, event=None):
         self.result = [info['image_data'] for info in self.image_widgets if info.get('image_data') and info['keep_var'].get()]

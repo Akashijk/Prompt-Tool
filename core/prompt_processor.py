@@ -7,20 +7,19 @@ import random
 import re
 import uuid
 import threading
-from typing import List, Dict, Any, Optional, Callable, Tuple, Set
-from .template_engine import TemplateEngine, PromptSegment
-from .history_manager import HistoryManager
+from typing import List, Dict, Any, Optional, Callable, Tuple, Set, TYPE_CHECKING
 from .thumbnail_manager import ThumbnailManager
 from .config import config
-from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS, DEFAULT_SFW_NEGATIVE_PROMPTS, DEFAULT_NSFW_NEGATIVE_PROMPTS,
-                              DEFAULT_AI_TASK_PROMPTS, DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT,
-                              DEFAULT_AI_REFACTOR_CHOICES_PROMPT, DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT,
+from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS, DEFAULT_SFW_NEGATIVE_PROMPTS, DEFAULT_NSFW_NEGATIVE_PROMPTS, DEFAULT_AI_TASK_PROMPTS,
+                              DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT, DEFAULT_AI_CHECK_COMPATIBILITY_PROMPT,
                               DEFAULT_AI_FIX_GRAMMAR_PROMPT, DEFAULT_AI_FIX_WILDCARD_ERROR_PROMPT, DEFAULT_AI_REWRITE_TEXT_PROMPT,
                               DEFAULT_AI_FIX_JSON_SYNTAX_PROMPT, DEFAULT_AI_AUTO_TAG_PROMPT)
 from .ollama_client import OllamaClient
 from .invokeai_client import InvokeAIClient
 from .utils import sanitize_wildcard_choices
 from datetime import datetime
+from .template_engine import TemplateEngine, PromptSegment
+from .history_manager import HistoryManager
 
 class PromptProcessor:
     """Coordinates prompt generation and enhancement workflow."""
@@ -31,7 +30,7 @@ class PromptProcessor:
         # Lazily import OllamaClient to avoid issues if it's not needed (e.g., in GUI)
         self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL)
         self.invokeai_client = InvokeAIClient(base_url=config.INVOKEAI_BASE_URL)
-        self.history_manager = HistoryManager()
+        self.history_manager: 'HistoryManager' = HistoryManager()
         self.all_wildcards_cache: Optional[Dict[str, Dict]] = None
         self.verbose = verbose
         self.rng = random.Random()
@@ -1548,11 +1547,23 @@ class PromptProcessor:
         
         try:
             # The response should be a single JSON object with filenames as keys.
-            data = json.loads(json_str)
-            if primary_filename not in data or supporting_filename not in data:
-                raise KeyError("AI response missing one or both filenames as keys.")
-            return data
-        except (json.JSONDecodeError, KeyError) as e:
+            ai_data = json.loads(json_str)
+
+            # --- NEW: Robustly handle cases where the AI only returns one file ---
+            # If the AI returns a file, use its content. If not, use the original.
+            final_primary_content = ai_data.get(primary_filename)
+            if final_primary_content is None:
+                final_primary_content = json.loads(primary_content) # Use original if AI omitted it
+
+            final_supporting_content = ai_data.get(supporting_filename)
+            if final_supporting_content is None:
+                final_supporting_content = json.loads(supporting_content) # Use original if AI omitted it
+
+            return {
+                primary_filename: final_primary_content,
+                supporting_filename: final_supporting_content
+            }
+        except (json.JSONDecodeError) as e:
             raise Exception(f"AI failed to return valid refactored JSON for both files. Error: {e}\nResponse: {json_str[:500]}")
 
     def _ai_add_bridge_phrases(self, primary_filename: str, primary_content: str, supporting_filename: str, supporting_content: str, model: str) -> str:
@@ -1568,68 +1579,62 @@ class PromptProcessor:
         # This prompt should return a single JSON object for the primary file.
         return self.ollama_client.parse_json_object_from_response(raw_response, primary_filename)
 
-    def _get_rich_wildcard_sample_str(self, count: int = 15, wildcard_names: Optional[List[str]] = None) -> str:
-        """Gets a string of sample wildcards with example values for AI context."""
-        all_wildcard_names = self.get_wildcard_names()
-        if not all_wildcard_names:
-            return "none"
+    def ai_check_wildcard_compatibility(self, file1_filename: str, file1_content: str, file2_filename: str, file2_content: str, model: str) -> Dict[str, str]:
+        """Uses a single-step AI process to refactor and make two wildcard files grammatically compatible by modifying both."""
+        self._update_status("compatibility_check_step", step=1, total_steps=1, message="Refactoring and fixing grammar...")
 
-        if wildcard_names:
-            # Use the provided list of names, ensuring they exist
-            wildcard_sample_names = [name for name in wildcard_names if name in all_wildcard_names]
-        else:
-            # Fallback to random sampling if no list is provided
-            sample_size = min(count, len(all_wildcard_names))
-            wildcard_sample_names = self.rng.sample(all_wildcard_names, sample_size)
-        
-        rich_sample_parts = []
-        for wc_name in wildcard_sample_names:
-            options = self.get_wildcard_options(wc_name)
-            if options:
-                option_sample = self.rng.sample(options, min(3, len(options)))
-                # Truncate long options for the prompt
-                truncated_options = [(opt[:30] + '...' if len(opt) > 30 else opt) for opt in option_sample]
-                rich_sample_parts.append(f"- __{wc_name}__: (e.g., \"{', '.join(truncated_options)}\")")
-            else:
-                rich_sample_parts.append(f"- __{wc_name}__ (empty)")
-        
-        return "\n".join(rich_sample_parts) if rich_sample_parts else "none"
+        try:
+            file1_data = json.loads(file1_content)
+            file2_data = json.loads(file2_content)
+        except json.JSONDecodeError as e:
+            raise Exception(f"Could not parse one of the wildcard files as JSON: {e}")
 
-    def ai_check_wildcard_compatibility(self, primary_filename: str, primary_content: str, supporting_filename: str, supporting_content: str, model: str) -> Dict[str, str]:
-        """Uses a multi-step AI process to refactor and make two wildcard files grammatically compatible."""
-        # --- Step 1: Refactor choices between files ---
-        self._update_status("compatibility_check_step", step=1, total_steps=2, message="Refactoring misplaced choices...")
-        refactored_data = self._ai_refactor_choices(primary_filename, primary_content, supporting_filename, supporting_content, model)
+        file1_description = file1_data.get('description', 'No description provided.')
+        file2_description = file2_data.get('description', 'No description provided.')
 
-        refactored_primary_data = refactored_data[primary_filename]
-        refactored_supporting_data = refactored_data[supporting_filename]
-
-        # --- Step 2: Add bridge phrases to the now-refactored primary file ---
-        self._update_status("compatibility_check_step", step=2, total_steps=2, message="Fixing grammar...")
-        final_primary_content_str = self._ai_add_bridge_phrases(
-            primary_filename, json.dumps(refactored_primary_data, indent=2),
-            supporting_filename, json.dumps(refactored_supporting_data, indent=2),
-            model
+        prompt = DEFAULT_AI_CHECK_COMPATIBILITY_PROMPT.format(
+            file1_filename=file1_filename,
+            file1_content=file1_content,
+            file1_description=file1_description,
+            file2_filename=file2_filename,
+            file2_content=file2_content,
+            file2_description=file2_description
         )
 
-        # --- Step 3: Sanitize and return the final state of both files ---
-        def process_file_data(filename: str, content: Any) -> str:
-            file_data = content
-            if isinstance(file_data, str):
-                try:
-                    file_data = json.loads(file_data)
-                except json.JSONDecodeError:
-                    raise Exception(f"AI returned a string for {filename} that is not valid JSON.")
-            if not isinstance(file_data, dict):
-                raise Exception(f"The content for {filename} returned by the AI was not a JSON object.")
-            if 'choices' in file_data and isinstance(file_data.get('choices'), list):
-                file_data['choices'] = sanitize_wildcard_choices(file_data['choices'])
-            return json.dumps(file_data, indent=2)
+        messages = [{'role': 'user', 'content': prompt}]
+        raw_response = self.chat_with_model(model, messages, timeout=config.BRAINSTORM_TIMEOUT)
+        
+        # --- Custom Parsing Logic for this specific task ---
+        json_str = None
+        match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+        else:
+            start = raw_response.find('{')
+            end = raw_response.rfind('}')
+            if start != -1 and end != -1 and start < end:
+                json_str = raw_response[start:end+1]
 
-        return {
-            primary_filename: process_file_data(primary_filename, final_primary_content_str),
-            supporting_filename: process_file_data(supporting_filename, refactored_supporting_data)
-        }
+        if not json_str:
+            raise Exception(f"AI response did not contain a recognizable JSON object. Raw response:\n{raw_response[:500]}")
+        
+        try:
+            ai_data = json.loads(json_str)
+            # Use the robust parsing from the previous fix to handle cases where the AI omits a file.
+            final_file1_content = ai_data.get(file1_filename, json.loads(file1_content))
+            final_file2_content = ai_data.get(file2_filename, json.loads(file2_content))
+
+            def process_file_data(content: Any) -> str:
+                if 'choices' in content and isinstance(content.get('choices'), list):
+                    content['choices'] = sanitize_wildcard_choices(content['choices'])
+                return json.dumps(content, indent=2)
+
+            return {
+                file1_filename: process_file_data(final_file1_content),
+                file2_filename: process_file_data(final_file2_content)
+            }
+        except (json.JSONDecodeError, Exception) as e:
+            raise Exception(f"AI failed to return valid refactored JSON for both files. Error: {e}\nResponse: {json_str[:500]}")
 
     def process_enhancement_batch(self, 
                                 prompts: List[str], 
@@ -1741,8 +1746,80 @@ class PromptProcessor:
         return {'prompt': var_prompt}
 
     def cleanup_prompt_string(self, prompt: str) -> str:
-        """Pass-through to the template engine's cleanup method."""
-        return self.template_engine.cleanup_prompt_string(prompt)
+        """Cleans up a generated prompt string to fix common grammatical issues and apply post-processing rules."""
+        if not prompt:
+            return ""
+
+        # --- Rule 1: Deduplication ---
+        # Use a regex to find and replace repeated words (case-insensitive)
+        # e.g., "blue blue car" -> "blue car"
+        # \b matches a word boundary, (\w+) captures a word, \s+ matches space, \1 is a backreference to the captured word.
+        prompt = re.sub(r'\b(\w+)\b(?:\s+\1\b)+', r'\1', prompt, flags=re.IGNORECASE)
+
+        # --- Rule 2: Blacklist conflicting combos ---
+        from .default_content import CONFLICTING_KEYWORDS
+        
+        # Split prompt into a list of parts for easier manipulation
+        parts = [part.strip() for part in prompt.split(',') if part.strip()]
+        
+        for conflict_set in CONFLICTING_KEYWORDS:
+            # Find which keywords from the current conflict set are in the prompt
+            present_keywords = []
+            for part in parts:
+                # Check words within each part
+                words_in_part = set(re.findall(r'\b\w+\b', part.lower()))
+                for keyword in conflict_set:
+                    if keyword in words_in_part:
+                        present_keywords.append(keyword)
+            
+            # If more than one keyword from a conflict set is found...
+            if len(set(present_keywords)) > 1:
+                # Keep the first one found, and create a set of others to remove
+                first_found = present_keywords[0]
+                keywords_to_remove = set(present_keywords) - {first_found}
+                
+                # Create a regex pattern to remove the other conflicting keywords
+                # e.g., r'\b(anime|cartoon)\b'
+                pattern_to_remove = r'\b(' + '|'.join(re.escape(k) for k in keywords_to_remove) + r')\b'
+                
+                # Filter parts by removing the conflicting keywords
+                new_parts = []
+                for part in parts:
+                    # Remove the keyword, then clean up any resulting empty parts or extra commas
+                    cleaned_part = re.sub(pattern_to_remove, '', part, flags=re.IGNORECASE).strip()
+                    cleaned_part = re.sub(r'\s*,\s*', ', ', cleaned_part).strip(' ,')
+                    if cleaned_part:
+                        new_parts.append(cleaned_part)
+                parts = new_parts
+
+        # --- Final Cleanup ---
+        # Join the potentially modified parts back together.
+        return ", ".join(parts)
+
+    def _get_rich_wildcard_sample_str(self, wildcard_names: Optional[List[str]] = None, count: int = 15, samples_per_wildcard: int = 3) -> str:
+        """
+        Gets a formatted string of wildcard names with example values for AI context.
+        If `wildcard_names` is provided, it uses that list. Otherwise, it takes a random sample.
+        """
+        if self.all_wildcards_cache is None:
+            self._load_all_wildcards_into_cache()
+        
+        if not self.all_wildcards_cache:
+            return "none"
+
+        if wildcard_names:
+            source_wildcards = {name: self.all_wildcards_cache[name] for name in wildcard_names if name in self.all_wildcards_cache}
+        else:
+            sample_size = min(count, len(self.all_wildcards_cache))
+            sampled_keys = self.rng.sample(list(self.all_wildcards_cache.keys()), sample_size)
+            source_wildcards = {key: self.all_wildcards_cache[key] for key in sampled_keys}
+
+        parts = []
+        for wc_name, wc_data in sorted(source_wildcards.items()):
+            choices = [str(c.get('value') if isinstance(c, dict) else c) for c in wc_data.get('choices', [])]
+            sample_choices = self.rng.sample(choices, min(samples_per_wildcard, len(choices))) if choices else []
+            parts.append(f"- __{wc_name}__: (e.g., \"{', '.join(sample_choices)}\")")
+        return "\n".join(parts) if parts else "none"
 
     def _get_wildcards_with_descriptions_str(self) -> str:
         """Gets a formatted string of all wildcards and their descriptions for AI context."""

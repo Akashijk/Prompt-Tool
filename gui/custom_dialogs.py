@@ -13,7 +13,7 @@ import difflib
 import re
 import os
 from typing import TYPE_CHECKING, Callable, Tuple, Any, Optional, List, Dict
-from .common import Tooltip, TextContextMenu
+from .common import Tooltip, TextContextMenu, SmartWindowMixin
 
 if TYPE_CHECKING:
     from core.prompt_processor import PromptProcessor
@@ -36,7 +36,7 @@ def is_valid_filename_component(name: str) -> Tuple[bool, str]:
     
     return True, ""
 
-class _CustomDialog(tk.Toplevel):
+class _CustomDialog(tk.Toplevel, SmartWindowMixin):
     """Base class for custom dialogs, handling window positioning and setup."""
     def __init__(self, parent, title: str, modal: bool = True):
         super().__init__(parent)
@@ -51,16 +51,8 @@ class _CustomDialog(tk.Toplevel):
 
     def _center_window(self):
         """Centers the dialog over its parent window."""
-        self.withdraw()
-        self.update_idletasks()
-        parent_x = self.master.winfo_x()
-        parent_y = self.master.winfo_y()
-        parent_w = self.master.winfo_width()
-        parent_h = self.master.winfo_height()
-        dialog_w = self.winfo_width()
-        dialog_h = self.winfo_height()
-        self.geometry(f"+{parent_x + (parent_w // 2) - (dialog_w // 2)}+{parent_y + (parent_h // 2) - (dialog_h // 2)}")
-        self.deiconify()
+        # Use smart_geometry with smaller defaults suitable for simple dialogs.
+        self.smart_geometry(min_width=300, min_height=100, padding=20)
 
     def _on_ok(self, event=None):
         # To be implemented by subclasses
@@ -242,8 +234,7 @@ class _CopyableErrorDialog(_CustomDialog):
         ok_button.pack(side=tk.RIGHT)
         self.bind("<Return>", self._on_ok)
 
-        self.geometry("600x300") # Give it a decent default size
-        self._center_window()
+        self.smart_geometry(min_width=600, min_height=300)
         self.wait_window(self)
 
 def ask_string(parent, title, prompt, **kwargs) -> str | None:
@@ -421,6 +412,228 @@ class _PerModelNegativePromptDialog(_CustomDialog):
         self.result = {name: var.get().strip() for name, var in self.entries.items() if var.get().strip()}
         self.destroy()
 
+class _PerModelLoraDialog(_CustomDialog):
+    """A dialog to set LoRA overrides for selected models using a dropdown selector."""
+    def __init__(self, parent, processor: 'PromptProcessor', selected_models: List[str], all_loras: Dict[str, Any], global_loras: List[Dict[str, Any]], current_overrides: Dict[str, List[Dict[str, Any]]]):
+        super().__init__(parent, "Per-Model LoRA Overrides")
+        self.processor = processor
+        self.all_loras = all_loras
+        self.selected_models = selected_models
+        self.global_loras = global_loras
+        
+        # Make a deep copy to work with, so we can cancel without affecting the original
+        self.temp_overrides = copy.deepcopy(current_overrides)
+
+        # UI widget storage for the single active view
+        self.model_lora_vars: Dict[str, Dict[str, tk.BooleanVar]] = {}
+        self.model_lora_weight_vars: Dict[str, Dict[str, tk.StringVar]] = {}
+        self.lora_vars: Dict[str, tk.BooleanVar] = {}
+        self.lora_weight_vars: Dict[str, tk.StringVar] = {}
+        self.lora_widgets: Dict[str, ttk.Frame] = {}
+        self.search_var = tk.StringVar()
+        self.current_model_var = tk.StringVar()
+        self.previous_model_name: Optional[str] = None
+
+        self._create_widgets()
+
+        # Set initial model and load its data
+        if self.selected_models:
+            initial_model = self.selected_models[0]
+            self.current_model_var.set(initial_model)
+            self.previous_model_name = initial_model
+            self._load_loras_for_model(initial_model)
+            self._update_copy_menu()
+
+        self.smart_geometry(min_width=600, min_height=700)
+        self.wait_window(self)
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- Top Control Bar ---
+        top_bar = ttk.Frame(main_frame)
+        top_bar.pack(fill=tk.X, pady=(0, 10))
+        top_bar.columnconfigure(1, weight=1)
+
+        ttk.Label(top_bar, text="Configure LoRAs for Model:").grid(row=0, column=0, padx=(0, 5))
+        self.model_combo = ttk.Combobox(top_bar, textvariable=self.current_model_var, values=self.selected_models, state="readonly")
+        self.model_combo.grid(row=0, column=1, sticky='ew')
+        self.model_combo.bind("<<ComboboxSelected>>", self._on_model_select)
+
+        # --- Main LoRA Configuration Area ---
+        self.lora_config_frame = ttk.LabelFrame(main_frame, text="LoRA Configuration", padding=10)
+        self.lora_config_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Toolbar inside the config area
+        toolbar = ttk.Frame(self.lora_config_frame)
+        toolbar.pack(fill=tk.X, pady=(0, 5))
+
+        self.copy_menu_button = ttk.Menubutton(toolbar, text="Copy LoRAs From...")
+        self.copy_menu = tk.Menu(self.copy_menu_button, tearoff=0)
+        self.copy_menu_button["menu"] = self.copy_menu
+        self.copy_menu_button.pack(side=tk.LEFT)
+
+        clear_button = ttk.Button(toolbar, text="Clear All", command=self._clear_lora_selections)
+        clear_button.pack(side=tk.LEFT, padx=5)
+
+        copy_to_all_button = ttk.Button(toolbar, text="Copy to All", command=self._copy_lora_settings_to_all)
+        copy_to_all_button.pack(side=tk.LEFT, padx=5)
+        if len(self.selected_models) < 2:
+            copy_to_all_button.config(state=tk.DISABLED)
+
+        search_frame = ttk.Frame(toolbar)
+        search_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+        self.search_var.trace_add("write", self._filter_loras)
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5,0))
+
+        # Scrollable area for LoRAs
+        from .common import ScrollableFrame, VerticalSpinbox # Local import
+        scroll_frame = ScrollableFrame(self.lora_config_frame)
+        scroll_frame.pack(fill=tk.BOTH, expand=True)
+        container = scroll_frame.scrollable_frame
+
+        # Create the LoRA widgets once
+        for lora_name, lora_object in sorted(self.all_loras.items(), key=lambda item: item[0].lower()):
+            lora_row_frame = ttk.Frame(container)
+            # Don't pack yet, _filter_loras will handle it
+
+            lora_var = tk.BooleanVar(value=False)
+            cb = ttk.Checkbutton(lora_row_frame, text=lora_name, variable=lora_var)
+            cb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            
+            weight_var = tk.StringVar(value="0.75")
+            spinbox = VerticalSpinbox(lora_row_frame, from_=-1.0, to=2.0, increment=0.05, textvariable=weight_var, width=4)
+            spinbox.pack(side=tk.RIGHT)
+
+            self.lora_vars[lora_name] = lora_var
+            self.lora_weight_vars[lora_name] = weight_var
+            self.lora_widgets[lora_name] = lora_row_frame
+
+        # --- Bottom Buttons ---
+        bottom_button_frame = ttk.Frame(main_frame)
+        bottom_button_frame.pack(fill=tk.X, pady=(10, 0))
+        ok_button = ttk.Button(bottom_button_frame, text="OK", command=self._on_ok, style="Accent.TButton")
+        ok_button.pack(side=tk.RIGHT, padx=(5, 0))
+        cancel_button = ttk.Button(bottom_button_frame, text="Cancel", command=self._on_cancel)
+        cancel_button.pack(side=tk.RIGHT)
+
+    def _on_model_select(self, event=None):
+        new_model = self.current_model_var.get()
+        if new_model == self.previous_model_name:
+            return
+
+        self._save_loras_for_model(self.previous_model_name)
+        self._load_loras_for_model(new_model)
+        self._update_copy_menu()
+        self.previous_model_name = new_model
+
+    def _save_loras_for_model(self, model_name: str):
+        """Saves the current UI state into the temp_overrides dictionary for the given model."""
+        if not model_name: return
+        
+        loras_for_model = []
+        for lora_name, var in self.lora_vars.items():
+            if var.get():
+                lora_object = self.all_loras.get(lora_name)
+                if lora_object:
+                    try:
+                        weight = float(self.lora_weight_vars[lora_name].get())
+                    except (ValueError, KeyError):
+                        weight = 0.75
+                    loras_for_model.append({'lora_object': lora_object, 'weight': weight})
+        
+        self.temp_overrides[model_name] = loras_for_model
+
+    def _load_loras_for_model(self, model_name: str):
+        """Loads the LoRA settings for the given model into the UI widgets."""
+        self.lora_config_frame.config(text=f"LoRA Configuration for: {model_name}")
+        
+        # Get the settings for the model, falling back to global settings if no override exists.
+        loras_for_model = self.temp_overrides.get(model_name, self.global_loras)
+        lora_map = {l['lora_object']['name']: l['weight'] for l in loras_for_model}
+
+        for lora_name, lora_var in self.lora_vars.items():
+            is_selected = lora_name in lora_map
+            lora_var.set(is_selected)
+            
+            weight = lora_map.get(lora_name, 0.75)
+            self.lora_weight_vars[lora_name].set(str(weight))
+        
+        # Apply filter after loading
+        self._filter_loras()
+
+    def _update_copy_menu(self):
+        """Updates the 'Copy From...' menu to exclude the current model."""
+        current_model = self.current_model_var.get()
+        self.copy_menu.delete(0, tk.END)
+        
+        other_models = [m for m in self.selected_models if m != current_model]
+        if not other_models:
+            self.copy_menu_button.config(state=tk.DISABLED)
+        else:
+            self.copy_menu_button.config(state=tk.NORMAL)
+            for source_model in other_models:
+                self.copy_menu.add_command(label=source_model, command=lambda src=source_model: self._copy_lora_settings(src))
+
+    def _copy_lora_settings(self, source_model: str):
+        """Copies settings from a source model to the currently selected model."""
+        dest_model = self.current_model_var.get()
+        
+        # The source model's state is already saved in temp_overrides from when we switched away from it.
+        source_settings = self.temp_overrides.get(source_model, self.global_loras)
+        
+        # Apply these settings to the destination model's data
+        self.temp_overrides[dest_model] = copy.deepcopy(source_settings)
+        
+        # Reload the UI to show the new settings for the destination model
+        self._load_loras_for_model(dest_model)
+
+    def _copy_lora_settings_to_all(self):
+        """Copies the LoRA settings from the current model to all other models."""
+        source_model = self.current_model_var.get()
+        if not ask_yes_no(
+            self, 
+            "Confirm Copy to All", 
+            f"This will overwrite the LoRA settings for all other models with the settings from '{source_model}'.\n\nAre you sure?"
+        ):
+            return
+
+        # First, save the current UI state to the source model's data
+        self._save_loras_for_model(source_model)
+        
+        # Get the settings we just saved
+        source_settings = self.temp_overrides.get(source_model, [])
+
+        # Apply to all other models
+        for dest_model in self.selected_models:
+            if dest_model != source_model:
+                self.temp_overrides[dest_model] = copy.deepcopy(source_settings)
+        
+        show_info(self, "Success", f"Settings from '{source_model}' copied to all other models.")
+
+    def _clear_lora_selections(self):
+        """Clears all LoRA selections for the currently displayed model."""
+        for lora_var in self.lora_vars.values():
+            lora_var.set(False)
+
+    def _filter_loras(self, *args):
+        """Filters the LoRA list based on the search term."""
+        search_term = self.search_var.get().lower()
+        for lora_name, widget in self.lora_widgets.items():
+            if search_term in lora_name.lower():
+                widget.pack(fill=tk.X, expand=True, pady=1)
+            else:
+                widget.pack_forget()
+
+    def _on_ok(self, event=None):
+        # Save the state of the currently displayed model before closing
+        self._save_loras_for_model(self.current_model_var.get())
+        self.result = self.temp_overrides
+        self.destroy()
+
 class _DiffConfirmationDialog(_CustomDialog):
     """A dialog to show a side-by-side diff of text changes and ask for confirmation."""
     def __init__(self, parent, title: str, original_text: str, new_text: str):
@@ -507,7 +720,7 @@ class MassEditDialog(_CustomDialog):
         text_frame = ttk.Frame(main_frame)
         text_frame.pack(fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL)
-        self.text_widget = tk.Text(text_frame, wrap=tk.WORD, yscrollcommand=scrollbar.set, undo=True)
+        self.text_widget = tk.Text(text_frame, wrap=tk.WORD, yscrollcommand=scrollbar.set, undo=True, exportselection=False)
         scrollbar.config(command=self.text_widget.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -613,7 +826,7 @@ class AddRequirementDialog(_CustomDialog):
         self.wildcard_var = tk.StringVar()
         ttk.Label(self.value_frame, text="Wildcard Name:").grid(row=0, column=0, sticky='w', pady=2)
         self.wildcard_combo = ttk.Combobox(self.value_frame, textvariable=self.wildcard_var, state="readonly", width=30)
-        self.wildcard_combo['values'] = sorted(self.processor.get_wildcard_names())
+        self.wildcard_combo['values'] = sorted(self.processor.get_wildcard_names(), key=str.lower)
         self.wildcard_combo.grid(row=0, column=1, sticky='ew', pady=2)
         self.wildcard_combo.bind("<<ComboboxSelected>>", self._on_wildcard_select)
 
@@ -647,8 +860,7 @@ class AddRequirementDialog(_CustomDialog):
         self.bind("<Return>", self._on_ok)
         self._update_ui() # Set initial visibility
         self._center_window()
-        self.wait_window(self)
-
+        
     def _update_ui(self):
         """Shows the relevant frame based on the selected requirement type."""
         req_type = self.req_type_var.get()
@@ -865,7 +1077,7 @@ class WildcardSelectorDialog(_CustomDialog):
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Populate with wildcards
-        self.all_wildcards = sorted(processor.get_wildcard_names())
+        self.all_wildcards = sorted(processor.get_wildcard_names(), key=str.lower)
         for wildcard in self.all_wildcards:
             self.listbox.insert(tk.END, wildcard)
         
@@ -893,8 +1105,7 @@ class WildcardSelectorDialog(_CustomDialog):
                   command=self._on_cancel).pack(side=tk.RIGHT)
         
         # Center the dialog
-        self.geometry("300x400")
-        self._center_window()
+        self.smart_geometry(min_width=300, min_height=400)
 
         # Make dialog modal
         self.wait_window(self)

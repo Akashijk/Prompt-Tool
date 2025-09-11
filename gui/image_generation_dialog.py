@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 import queue
 import random
+import re
 import sys
 import threading
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable, Tuple
@@ -12,34 +13,26 @@ from .common import SmartWindowMixin, Tooltip, VerticalSpinbox, ScrollableFrame
 from . import custom_dialogs
 from .common import TextContextMenu
 from core.prompt_processor import PromptProcessor
+from .model_usage_manager import ModelUsageManager
 if TYPE_CHECKING:
     from core.invokeai_client import InvokeAIClient
+
+def _sanitize_for_widget_name(name: str) -> str:
+    """
+    Sanitizes a string to be a valid Tkinter widget name by removing
+    any characters that are not alphanumeric or underscores.
+    """
+    return re.sub(r'[^a-zA-Z0-9_]', '', name)
 
 class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixin):
     """A dialog for selecting image generation options for InvokeAI."""
     def _randomize_seed(self):
         self.seed_var.set(str(random.randint(0, 2**32 - 1)))
 
-    def _on_text_widget_scroll(self, event):
-        """Handles mouse wheel scrolling for a text widget, preventing event propagation."""
-        # This allows the text widget's default scroll behavior to work
-        # without the event propagating to the parent scrollable frame.
-        return "break"
-
-    def _on_model_mouse_wheel(self, event):
-        """Handles mouse wheel scrolling for the model list."""
-        # The sys import is necessary for platform-specific delta calculation.
-        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
-        self.model_canvas.yview_scroll(delta, "units")
-
-    def _on_lora_mouse_wheel(self, event):
-        """Handles mouse wheel scrolling for the LoRA list."""
-        delta = -1 * (event.delta if sys.platform == 'darwin' else event.delta // 120)
-        self.lora_canvas.yview_scroll(delta, "units")
-
     def __init__(self, parent, processor: 'PromptProcessor', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None):
         super().__init__(parent, "Image Generation Options")
         self.processor = processor
+        self.model_usage_manager: 'ModelUsageManager' = parent.model_usage_manager
         self.client = processor.invokeai_client
         self.models: Dict[str, List[Dict[str, Any]]] = {}
         self.model_data: Dict[str, Dict[str, Any]] = {}  # name -> full model object
@@ -48,8 +41,11 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.disabled_models = disabled_models or []
         self.initial_params = initial_params or {}
         self.model_vars: Dict[str, tk.BooleanVar] = {}
+        self.model_widgets: Dict[str, ttk.Checkbutton] = {}
         self.lora_vars: Dict[str, tk.BooleanVar] = {}
+        self.lora_widgets: Dict[str, ttk.Frame] = {}
         self.lora_weight_vars: Dict[str, tk.StringVar] = {}
+        self.model_search_var = tk.StringVar()
         self.save_to_gallery_var = tk.BooleanVar(value=False)
         self.lora_overrides: Dict[str, List[Dict[str, Any]]] = {}
         self.total_images_var = tk.StringVar()
@@ -57,11 +53,11 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.neg_prompt_overrides: Dict[str, str] = {}
         self.original_negative_prompt_text: str = ""
         self.after_id: Optional[str] = None
+        self.is_destroyed = False
 
         self._create_widgets()
         self._start_model_fetch()
 
-        self.smart_geometry(min_width=500, min_height=600)
         self.wait_window(self)
 
     def _start_model_fetch(self):
@@ -92,18 +88,26 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 self.models['main'] = result['main']
                 self.models['lora'] = result['lora']
                 self._populate_widgets()
+                # Defer smart_geometry to allow widgets to render and calculate their required size first.
+                self.after(10, lambda: self.smart_geometry(min_width=600, min_height=700, width_percent=0.4, height_percent=0.85))
             else:
+                if self.is_destroyed: return
                 # Show the error and close the dialog, as it's unusable.
                 custom_dialogs.show_error(self, "Error", f"Could not fetch models from InvokeAI:\n{result['error']}")
                 self.destroy()
         except queue.Empty:
-            self.after_id = self.after(100, self._check_model_queue)
+            if not self.is_destroyed:
+                self.after_id = self.after(100, self._check_model_queue)
         except tk.TclError:
             # This can happen if the window is destroyed while the after() job is pending.
             pass
+    
+    def destroy(self):
+        self.is_destroyed = True
+        super().destroy()
 
-    def _populate_widgets(self):
-        """Populates the widgets with fetched model data."""
+    def _do_populate_widgets(self):
+        """The actual widget population logic. Called after the window is drawn."""
         self.loading_model_label.pack_forget()
         self.loading_lora_label.pack_forget()
         self.ok_button.config(state=tk.NORMAL)
@@ -111,7 +115,6 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         # Handle main models - store both name and key
         main_models = self.models.get('main', [])
         if main_models:
-            # Create mapping from display name to model key
             self.model_data = {m['name']: m for m in main_models}
             main_model_names = sorted(list(self.model_data.keys()))
             
@@ -129,113 +132,122 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                     var.set(True)
                 
                 var.trace_add("write", self._on_model_checkbox_change)
+                
                 cb = ttk.Checkbutton(self.model_container, text=model_name, variable=var)
                 
                 if model_name in self.disabled_models:
                     cb.config(state=tk.DISABLED)
                     Tooltip(cb, "This model is already in the current generation batch.")
 
-                cb.pack(anchor='w', fill='x')
-                cb.bind("<MouseWheel>", self._on_model_mouse_wheel)
+                cb.pack(anchor='w', fill='x', padx=5)
                 self.model_vars[model_name] = var
+                self.model_widgets[model_name] = cb
         else:
             ttk.Label(self.model_container, text="No SDXL models found").pack()
 
         # Handle LoRA models - store both name and key
         lora_models = self.models.get('lora', [])
+        if self.processor.verbose:
+            print(f"DEBUG: Found {len(lora_models)} LoRA models to populate.")
+
         if lora_models:
             # Create mapping from display name to model key
             self.lora_data = {m['name']: m for m in lora_models}
             initial_loras = self.initial_params.get('loras', [])
             # Create a map for easy lookup of initial weights
-            initial_lora_weights = {l['lora_object']['name']: l['weight'] for l in initial_loras}
+            initial_lora_map = {l['lora_object']['name']: l['weight'] for l in initial_loras}
 
             for lora_name in sorted(self.lora_data.keys(), key=str.lower):
+                if self.processor.verbose:
+                    print(f"DEBUG: Creating widget for LoRA: {lora_name}")
                 lora_frame = ttk.Frame(self.lora_container)
-                lora_frame.pack(fill='x', expand=True, pady=1)
-                lora_frame.bind("<MouseWheel>", self._on_lora_mouse_wheel)
-
+                self.lora_widgets[lora_name] = lora_frame
+                # Pack the frame immediately to ensure it's part of the layout
+                lora_frame.pack(fill='x', expand=True, pady=1, padx=5)
                 var = tk.BooleanVar()
-                if lora_name in initial_lora_weights:
+                if lora_name in initial_lora_map:
                     var.set(True)
-                
-                cb = ttk.Checkbutton(lora_frame, text=lora_name, variable=var)
+
+                sanitized_name = _sanitize_for_widget_name(lora_name)
+                cb = ttk.Checkbutton(lora_frame, text=lora_name, variable=var, name=f"cb_{sanitized_name}")
                 cb.pack(side='left', fill='x', expand=True)
-                cb.bind("<MouseWheel>", self._on_lora_mouse_wheel)
                 self.lora_vars[lora_name] = var
 
                 # Add weight spinbox
-                # Default LoRA weight is 0.75 if not otherwise specified.
-                weight_var = tk.StringVar(value=str(initial_lora_weights.get(lora_name, 0.75)))
-                spinbox = VerticalSpinbox(lora_frame, from_=-1.0, to=2.0, increment=0.05, textvariable=weight_var, width=4)
+                weight_var = tk.StringVar(value=str(initial_lora_map.get(lora_name, 0.75))) # type: ignore
+                spinbox = VerticalSpinbox(lora_frame, from_=-1.0, to=2.0, increment=0.05, textvariable=weight_var, width=4, name=f"spin_{sanitized_name}") # type: ignore
                 spinbox.pack(side='right')
                 self.lora_weight_vars[lora_name] = weight_var
         else:
             ttk.Label(self.lora_container, text="No LoRAs found").pack()
         
+        if self.processor.verbose:
+            # This will show the container's height *before* the UI has a chance to fully update it.
+            # It will likely be small (e.g., 1).
+            print(f"DEBUG: Immediately after packing, lora_container reqheight: {self.lora_container.winfo_reqheight()}")
+
+        # --- FIX: Force an update to ensure the scrollable frame calculates its full size ---
+        self.update_idletasks()
+
+        if self.processor.verbose:
+            # After update_idletasks(), this should show the full, correct height of all packed widgets.
+            print(f"DEBUG: After update_idletasks, lora_container reqheight: {self.lora_container.winfo_reqheight()}")
+        
         self._update_override_button_state()
         self._update_total_images_label()
 
-    def _create_widgets(self):
-        # Create a scrollable container that fills the dialog
-        scroll_view = ScrollableFrame(self)
-        scroll_view.pack(fill=tk.BOTH, expand=True)
+    def _populate_widgets(self):
+        """Schedules the actual widget population to run after the window is drawn."""
+        self.after(50, self._do_populate_widgets)
 
-        # This is the frame that will hold all the content and be scrolled
-        main_frame = scroll_view.scrollable_frame
+    def _filter_models(self, *args):
+        """Filters the model list based on the search term."""
+        search_term = self.model_search_var.get().lower()
+        for model_name, widget in self.model_widgets.items():
+            if search_term in model_name.lower():
+                widget.pack(anchor='w', fill='x', padx=5)
+            else:
+                widget.pack_forget()
+
+    def _create_widgets(self):
+        # The main_frame is the top-level container within the dialog.
+        # It should not be scrolled itself; only its internal lists are scrollable.
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.config(padding=15) # Apply padding to the content frame
 
-        # Main Model
-        model_frame = ttk.LabelFrame(main_frame, text="Main Model (SDXL)", padding=10)
-        model_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        # --- NEW: Paned window for side-by-side layout ---
+        model_lora_pane = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+        model_lora_pane.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        # Main Model (Left Pane)
+        model_frame = ttk.LabelFrame(model_lora_pane, text="Main Model (SDXL)", padding=10)
+        model_lora_pane.add(model_frame, weight=1)
 
         model_select_frame = ttk.Frame(model_frame)
         model_select_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Button(model_select_frame, text="Select All", command=self._select_all_models).pack(side=tk.LEFT)
         ttk.Button(model_select_frame, text="Select None", command=self._select_none_models).pack(side=tk.LEFT, padx=5)
 
-        self.model_canvas = tk.Canvas(model_frame, borderwidth=0, highlightthickness=0)
-        model_scrollbar = ttk.Scrollbar(model_frame, orient="vertical", command=self.model_canvas.yview)
-        self.model_container = ttk.Frame(self.model_canvas)
-        self.model_canvas.configure(yscrollcommand=model_scrollbar.set)
-        model_scrollbar.pack(side="right", fill="y")
-        self.model_canvas.pack(side="left", fill="both", expand=True)
-        model_canvas_window = self.model_canvas.create_window((0, 0), window=self.model_container, anchor="nw")
+        # Add search entry for models
+        search_model_frame = ttk.Frame(model_frame)
+        search_model_frame.pack(fill=tk.X, pady=(5, 5))
+        ttk.Label(search_model_frame, text="Search:").pack(side=tk.LEFT)
+        self.model_search_var.trace_add("write", self._filter_models)
+        model_search_entry = ttk.Entry(search_model_frame, textvariable=self.model_search_var)
+        model_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5,0))
 
-        def on_model_frame_configure(event):
-            self.model_canvas.configure(scrollregion=self.model_canvas.bbox("all"))
-        def on_model_canvas_configure(event):
-            self.model_canvas.itemconfig(model_canvas_window, width=event.width)
+        model_scroll_view = ScrollableFrame(model_frame)
+        model_scroll_view.pack(fill=tk.BOTH, expand=True)
+        self.model_container = model_scroll_view.scrollable_frame
 
-        self.model_container.bind("<Configure>", on_model_frame_configure)
-        self.model_canvas.bind("<Configure>", on_model_canvas_configure)
+        # LoRAs (Right Pane)
+        lora_frame = ttk.LabelFrame(model_lora_pane, text="LoRAs", padding=10)
+        model_lora_pane.add(lora_frame, weight=1)
 
-        # Add mouse wheel scrolling
-        self.model_canvas.bind("<MouseWheel>", self._on_model_mouse_wheel)
-        self.model_container.bind("<MouseWheel>", self._on_model_mouse_wheel)
-
-        # LoRAs
-        lora_frame = ttk.LabelFrame(main_frame, text="LoRAs", padding=10)
-        lora_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        self.lora_canvas = tk.Canvas(lora_frame, borderwidth=0, highlightthickness=0)
-        lora_scrollbar = ttk.Scrollbar(lora_frame, orient="vertical", command=self.lora_canvas.yview)
-        self.lora_container = ttk.Frame(self.lora_canvas)
-        self.lora_canvas.configure(yscrollcommand=lora_scrollbar.set)
-        lora_scrollbar.pack(side="right", fill="y")
-        self.lora_canvas.pack(side="left", fill="both", expand=True)
-        lora_canvas_window = self.lora_canvas.create_window((0, 0), window=self.lora_container, anchor="nw")
-
-        def on_lora_frame_configure(event):
-            self.lora_canvas.configure(scrollregion=self.lora_canvas.bbox("all"))
-        def on_lora_canvas_configure(event):
-            self.lora_canvas.itemconfig(lora_canvas_window, width=event.width)
-
-        self.lora_container.bind("<Configure>", on_lora_frame_configure)
-        self.lora_canvas.bind("<Configure>", on_lora_canvas_configure)
-
-        # Add mouse wheel scrolling
-        self.lora_canvas.bind("<MouseWheel>", self._on_lora_mouse_wheel)
-        self.lora_container.bind("<MouseWheel>", self._on_lora_mouse_wheel)
+        lora_scroll_view = ScrollableFrame(lora_frame)
+        lora_scroll_view.pack(fill=tk.BOTH, expand=True)
+        self.lora_container = lora_scroll_view.scrollable_frame
 
         # Negative Prompt
         neg_prompt_frame = ttk.LabelFrame(main_frame, text="Negative Prompt", padding=10)
@@ -247,6 +259,11 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
         self.override_button = ttk.Button(neg_prompt_controls, text="Set Per-Model Overrides...", command=self._set_overrides, state=tk.DISABLED)
         self.override_button.pack(side=tk.RIGHT)
+
+        self.lora_override_button = ttk.Button(neg_prompt_controls, text="Set Per-Model LoRAs...", command=self._set_lora_overrides, state=tk.DISABLED)
+        self.lora_override_button.pack(side=tk.RIGHT, padx=(0, 5))
+
+
 
         self.negative_prompts = self.processor.get_available_negative_prompts()
         self.neg_prompt_names = [p['name'] for p in self.negative_prompts]
@@ -262,7 +279,6 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         initial_neg_prompt = self.initial_params.get('negative_prompt', '')
         self.neg_prompt_text.insert("1.0", initial_neg_prompt)
         TextContextMenu(self.neg_prompt_text)
-        self.neg_prompt_text.bind("<MouseWheel>", self._on_text_widget_scroll)
         self.neg_prompt_text.bind("<KeyRelease>", self._on_neg_prompt_text_change)
         self._set_initial_negative_prompt_preset(initial_neg_prompt)
 
@@ -355,6 +371,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
     def _update_override_button_state(self):
         num_selected = sum(1 for var in self.model_vars.values() if var.get())
         self.override_button.config(state=tk.NORMAL if num_selected > 1 else tk.DISABLED)
+        self.lora_override_button.config(state=tk.NORMAL if num_selected > 1 else tk.DISABLED)
 
     def _update_total_images_label(self, *args):
         """Calculates and updates the label showing the total number of images to be generated."""
@@ -372,14 +389,6 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         except (ValueError, tk.TclError):
             # This can happen if the num_images_var is empty or contains non-numeric text
             self.total_images_var.set("")
-
-    def _refresh_negative_prompts(self):
-        """Reloads the negative prompt presets from the processor and updates the combobox."""
-        # Preserve the current selection if it still exists after refresh
-        current_selection = self.neg_prompt_var.get()
-        self.negative_prompts = self.processor.get_available_negative_prompts()
-        self.neg_prompt_names = ["Custom"] + [p['name'] for p in self.negative_prompts]
-        self.neg_prompt_combo['values'] = self.neg_prompt_names
 
     def _on_negative_prompt_select(self, event=None):
         selected_name = self.neg_prompt_var.get()
@@ -423,12 +432,45 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         if dialog.result is not None:
             self.neg_prompt_overrides = dialog.result
 
+    def _set_lora_overrides(self):
+        """Opens the dialog to set per-model LoRA overrides."""
+        selected_model_names = [name for name, var in self.model_vars.items() if var.get()]
+        if len(selected_model_names) < 2:
+            custom_dialogs.show_info(self, "Not Applicable", "Select at least two models to set per-model LoRA overrides.")
+            return
+
+        # Get the current global LoRA selection to pass as a default
+        global_selected_lora_names = [name for name, var in self.lora_vars.items() if var.get()]
+        global_loras = []
+        if global_selected_lora_names and self.lora_data:
+            for lora_name in global_selected_lora_names:
+                lora_object = self.lora_data.get(lora_name)
+                if lora_object:
+                    try:
+                        weight = float(self.lora_weight_vars[lora_name].get())
+                    except (ValueError, KeyError):
+                        weight = 0.75
+                    global_loras.append({'lora_object': lora_object, 'weight': weight})
+
+        dialog = custom_dialogs._PerModelLoraDialog(self, self.processor, selected_model_names, self.lora_data, global_loras, self.lora_overrides)
+        if dialog.result is not None:
+            self.lora_overrides = dialog.result
+
     def _save_new_negative_prompt(self, prompt_text: str):
         """Handles the dialog and logic for saving a new negative prompt preset."""
         filename = custom_dialogs.ask_string(self, "Save New Preset", "Enter a filename for the new negative prompt preset:", validator=custom_dialogs.is_valid_filename_component)
         if not filename:
             return
         
+        # Refresh the list of presets before saving to avoid race conditions
+        self.negative_prompts = self.processor.get_available_negative_prompts()
+        self.neg_prompt_names = ["Custom"] + [p['name'] for p in self.negative_prompts]
+        
+        # Check if a preset with this name already exists
+        if filename in [p['key'] for p in self.negative_prompts]:
+            custom_dialogs.show_error(self, "Save Error", f"A negative prompt preset named '{filename}' already exists.")
+            return False
+
         filename = filename.replace(' ', '_').lower()
         
         content_data = {
@@ -439,7 +481,10 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         try:
             self.processor.create_system_prompt(filename, 'negative_prompt', content_data=content_data)
             custom_dialogs.show_info(self, "Preset Saved", f"Saved new preset '{filename}'.")
-            self._refresh_negative_prompts()
+            # Manually update the combobox after saving
+            self.negative_prompts = self.processor.get_available_negative_prompts()
+            self.neg_prompt_names = ["Custom"] + [p['name'] for p in self.negative_prompts]
+            self.neg_prompt_combo['values'] = self.neg_prompt_names
             self.neg_prompt_var.set(content_data["name"])
             self.original_negative_prompt_text = prompt_text
             return True
@@ -456,7 +501,10 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         try:
             self.processor.save_system_prompt_content(filename, new_prompt_text)
             custom_dialogs.show_info(self, "Preset Updated", f"Updated preset '{preset_name}'.")
-            self._refresh_negative_prompts()
+            # Manually update the combobox after saving
+            self.negative_prompts = self.processor.get_available_negative_prompts()
+            self.neg_prompt_names = ["Custom"] + [p['name'] for p in self.negative_prompts]
+            self.neg_prompt_combo['values'] = self.neg_prompt_names
             self.original_negative_prompt_text = new_prompt_text
             return True
         except Exception as e:
@@ -467,12 +515,52 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         if self.after_id:
             self.after_cancel(self.after_id)
             self.after_id = None
+        self.is_destroyed = True
         super()._on_cancel(event)
+
+    def _unload_ollama_models_for_vram(self) -> bool:
+        """
+        Checks for running Ollama models and asks the user to unload them to free VRAM.
+        Returns True if it's okay to proceed, False if the user cancelled.
+        """
+        active_ollama_models = self.model_usage_manager.get_active_models()
+        if not active_ollama_models:
+            return True # No models to unload
+        
+        try:
+            running_models = self.processor.ollama_client.get_running_models()
+        except Exception as e:
+            # If we can't check, it's safer to assume all active models are running and ask the user.
+            print(f"Warning: Could not check for running Ollama models. Will ask to unload all active models. Error: {e}")
+            running_models = [{'name': model_name} for model_name in active_ollama_models]
+
+        # The `running_models` can be a list of strings (on success) or a list of dicts (on exception).
+        # We need to handle both cases to get a set of names.
+        if running_models and isinstance(running_models[0], dict):
+            running_model_names = {m.get('name') for m in running_models}
+        else:
+            running_model_names = set(running_models)
+        
+        # Find the intersection between the models our app is using and the models actually loaded in VRAM.
+        models_to_unload = [model for model in active_ollama_models if model in running_model_names]
+
+        if models_to_unload:
+            if custom_dialogs.ask_yes_no(
+                self, "Free VRAM?", 
+                f"This will temporarily unload the following Ollama model(s) to free VRAM for image generation:\n\n- {', '.join(models_to_unload)}\n\nThe model(s) will be reloaded automatically on their next use. Continue?"
+            ):
+                for model in models_to_unload:
+                    thread = threading.Thread(target=self.processor.cleanup_model, args=(model,), daemon=True)
+                    thread.start()
+                return True
+            return False # User cancelled
+        return True # No models were actually loaded, so we can proceed.
 
     def _on_ok(self, event=None):
         if self.after_id:
             self.after_cancel(self.after_id)
             self.after_id = None
+        self.is_destroyed = True
         
         # --- Check for negative prompt changes before proceeding ---
         current_neg_prompt_text = self.neg_prompt_text.get("1.0", "end-1c").strip()
@@ -500,6 +588,11 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 elif res is False:
                     if not self._save_new_negative_prompt(current_neg_prompt_text):
                         return # Abort if user cancels the save dialog
+        
+        # --- VRAM Management ---
+        # This is the correct place to check and unload models, right before generation starts.
+        if not self._unload_ollama_models_for_vram():
+            return # User cancelled the VRAM unload, so we abort the whole process.
         
         # Get selected models
         selected_model_names = [name for name, var in self.model_vars.items() if var.get()]

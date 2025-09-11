@@ -118,6 +118,14 @@ DEFAULT_NSFW_NEGATIVE_PROMPTS = {
     "photorealistic_anime_nsfw": "3d, cgi, render, text, watermark, signature, username, artist name, logo, patreon, pixiv, child, loli, shota, cub, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
 }
 
+# --- Post-Processing Rules ---
+CONFLICTING_KEYWORDS = [
+    # A set of terms that are generally mutually exclusive in style.
+    {"photograph", "realistic", "photorealistic", "anime", "manga", "cartoon", "illustration", "3d", "render"},
+    # Another set of conflicting terms.
+    {"painting", "drawing", "sketch", "photo"}
+]
+
 # --- DEFAULT BRAINSTORMING PROMPTS ---
 
 # --- Mechanical AI Task Prompts (Hardcoded for stability) ---
@@ -143,79 +151,47 @@ DEFAULT_PLANNER_SELECT_WILDCARDS_PROMPT = """You are an expert AI prompt enginee
 Now, provide the comma-separated list of the best wildcard names for the theme.
 """
 
-DEFAULT_AI_REFACTOR_CHOICES_PROMPT = """You are a JSON sorting AI. Your task is to analyze two wildcard files and move any choice that is thematically in the wrong file.
+DEFAULT_AI_CHECK_COMPATIBILITY_PROMPT = """You are an expert AI assistant specializing in refactoring and refining Stable Diffusion wildcards for compatibility. You will be given two wildcard files. Your goal is to modify **both** files so that a choice from the first file can be grammatically and thematically combined with a choice from the second file.
 
 **CONTEXT:**
-- You are given two files: a "Primary File" and a "Supporting File".
-- Each file has a `description` explaining its purpose.
-- Each file has a `choices` array containing prompt fragments.
+- File 1 Description: {file1_description}
+- File 2 Description: {file2_description}
+- During prompt generation, a choice from File 1 will be immediately followed by a choice from File 2. Example: `(a choice from File 1), (a choice from File 2)`
 
 **YOUR TASK:**
-1.  Read the `description` of both files to understand their themes.
-2.  Analyze the `choices` in the **Primary File**. If a choice is **entirely** about the theme of the Supporting File, you MUST move the entire choice object to the Supporting File's `choices` array.
-3.  Analyze the `choices` in the **Supporting File**. If a choice is **entirely** about the theme of the Primary File, you MUST move the entire choice object to the Primary File's `choices` array.
-4.  If a choice is already in the correct file, or if it contains mixed themes, you MUST leave it untouched in its original file.
+
+1.  **Refactor and Relocate Content:**
+    - Examine each choice in **both** files.
+    - If a choice in one file contains concepts that belong in the other file, you MUST move those concepts.
+    - **Example:** If File 1 is for characters and File 2 is for clothing:
+        - A choice `{{"value": "a tall woman wearing a red dress"}}` in File 1 should be split. The `value` in File 1 becomes `"a tall woman"`. The concept `"a red dress"` should be added as a new choice to File 2 if it doesn't already exist.
+        - A choice `{{"value": "a man with a sword"}}` in File 2 (clothing) should be moved to File 1 (characters).
+    - If a choice is purely about the other file's theme, move the entire choice object.
+
+2.  **Ensure Grammatical Flow:**
+    - After refactoring, review the choices in **File 1**.
+    - Modify the `value` of each choice in File 1 by appending a suitable grammatical "bridge" phrase (like "wearing a", "in a", "with") so it flows naturally into a choice from File 2.
+    - **Example:** After refactoring "a tall woman wearing a red dress" to "a tall woman", you would then add a bridge phrase, resulting in `{{"value": "a tall woman wearing a"}}`.
+    - **Do NOT add bridge phrases to File 2.** Its choices should be standalone concepts.
 
 **CRITICAL INSTRUCTIONS:**
-1.  **YOUR ONLY ALLOWED OPERATION IS MOVING ENTIRE ENTRIES.** Do not split entries. Do not combine entries. Do not rewrite or rephrase text.
-2.  **PRESERVE DATA.** When moving a choice object, you must move it exactly as-is, with all its properties (`value`, `weight`, `tags`, etc.).
-3.  **RETURN FULL JSON FOR BOTH FILES.** You MUST return a single JSON object with two keys matching the original filenames. The value for each key must be the complete, valid JSON content for that file after you have moved the misplaced entries.
-4.  **NO EXTRA TEXT.** Do not add any commentary outside of the main JSON object.
+1.  **You can modify BOTH files.**
+2.  **Preserve Metadata:** When moving or modifying choices, preserve other properties like `weight`, `tags`, or `requires` where it makes sense. If you split a choice, the metadata should stay with the primary part of the choice in its original file.
+3.  **Avoid Duplicates:** When moving a concept to a file, do not add it if a choice with the same `value` already exists.
+4.  **Return Full JSON for BOTH Files:** You MUST return a single JSON object with two keys matching the original filenames. The value for each key must be the complete, valid JSON content for that file after your modifications.
+5.  **No Extra Text:** Do not add any commentary outside of the main JSON object.
 
-**EXAMPLE:**
-- Primary File (appearance.json) Description: "Describes the character's body and face."
-- Supporting File (outfits.json) Description: "Describes the character's clothing."
-- A choice `{{"value": "wearing a leather corset"}}` found in `appearance.json` MUST be moved to `outfits.json`.
-- A choice `{{"value": "a woman with green eyes"}}` found in `outfits.json` MUST be moved to `appearance.json`.
-- A choice `{{"value": "a woman with green eyes wearing a leather corset"}}` found in `appearance.json` MUST be **left untouched** because it contains mixed themes.
-
-**PRIMARY FILE ({primary_filename}):**
+**FILE 1 ({file1_filename}):**
 ```json
-{primary_content}
+{file1_content}
 ```
 
-**SUPPORTING FILE TO RECEIVE MOVED CHOICES ({supporting_filename}):**
+**FILE 2 ({file2_filename}):**
 ```json
-{supporting_content}
+{file2_content}
 ```
 
 Now, provide the full, refactored JSON object containing the content for both files.
-"""
-
-DEFAULT_AI_ADD_BRIDGE_PHRASES_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion wildcards for grammatical correctness. Your task is to analyze a "Primary" wildcard file and a "Supporting" wildcard file, then **unconditionally modify every choice** in the Primary file so it flows naturally when followed by a choice from the Supporting File.
-
-**CONTEXT:**
-- The Primary File has already been cleaned of misplaced content.
-- During prompt generation, a choice from the Primary File will be immediately followed by a choice from the Supporting File.
-- Example: `(a choice from Primary File), (a choice from Supporting File)`
-- The goal is to make this combination grammatically sound.
-
-**THE TASK:**
-You MUST modify every `value` in the Primary File by appending a short, grammatical "bridge" phrase (like "wearing a", "in a", "with", "who has").
-
-**EXAMPLE:**
-- **Primary File (character.json):** `{{"value": "a beautiful vampiress"}}`
-- **Supporting File (clothing.json):** `{{"value": "black lace bra"}}`
-- **CORRECT MODIFICATION:** The `value` in `character.json` MUST be changed to `"a beautiful vampiress wearing a"`.
-
-**CRITICAL INSTRUCTIONS:**
-1.  **MODIFY EVERY CHOICE:** You are required to append a suitable bridge phrase to **every single choice** in the Primary File. Do not leave any unmodified.
-2.  **ADD ONLY BRIDGE WORDS:** Your ONLY task is to add short connecting words. Do not add new descriptive concepts, actions, or objects.
-3.  **MODIFY ONLY THE PRIMARY FILE:** You MUST NOT change the Supporting File.
-4.  **PRESERVE ALL OTHER DATA:** Do not change any other properties in the Primary File, such as `weight`, `tags`, or `requires`.
-5.  **RETURN FULL JSON:** You MUST return the complete, valid JSON content for the **Primary File only**. Do not return the supporting file's content or any commentary. Your entire response must be a single JSON object.
-
-**PRIMARY FILE TO MODIFY ({primary_filename}):**
-```json
-{primary_content}
-```
-
-**SUPPORTING FILE FOR CONTEXT ({supporting_filename}):**
-```json
-{supporting_content}
-```
-
-Now, provide the full, corrected JSON content for the Primary File.
 """
 
 DEFAULT_AI_FIX_GRAMMAR_PROMPT = """You are an expert AI assistant specializing in refining Stable Diffusion wildcards for grammatical correctness. Your task is to analyze a wildcard's JSON content and fix grammatical issues that occur when a `value` is combined with its `includes`.

@@ -3,6 +3,7 @@
 import tkinter as tk
 from tkinter import ttk
 import json
+import traceback
 import queue
 import random
 import threading
@@ -38,18 +39,20 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.current_offset = 0
         # --- Attributes for the new Canvas-based list ---
         self.history_canvas: Optional[tk.Canvas] = None
+        self.regen_prompt_queue = queue.Queue()
+        self.image_gen_queue = queue.Queue()
         self.thumbnail_work_queue = queue.Queue()
         self.history_container: Optional[ttk.Frame] = None
         self.history_widgets: List[Dict[str, Any]] = [] # Stores {'frame': widget, 'label': widget, 'data': row_data}
         self.history_load_queue = queue.Queue()
         self.thumbnail_queue = queue.Queue()
         self.history_load_after_id: Optional[str] = None
+        self.image_gen_after_id: Optional[str] = None
         self.history_loading_animation: Optional[LoadingAnimation] = None
         self.selected_widget_info: Optional[Dict[str, Any]] = None
         self.selected_row_data: Optional[Dict[str, Any]] = None
 
         self.image_favorite_var = tk.BooleanVar()
-        self.current_pil_image: Optional[Image.Image] = None
         self.show_favorites_only_var = tk.BooleanVar(value=False)
         self.cancellation_event = threading.Event()
         self.details_notebook: Optional[ttk.Notebook] = None
@@ -61,16 +64,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.image_tooltip_after_id: Optional[str] = None
         self.current_images: List[Dict[str, Any]] = []
         self._resize_debounce_id: Optional[str] = None
-        self._pagination_reflow_id: Optional[str] = None
-        self.current_image_index: int = 0
-        self.regen_prompt_queue = queue.Queue()
-        self.regen_prompt_after_id: Optional[str] = None
-        self.image_gen_queue = queue.Queue()
-        self.image_gen_after_id: Optional[str] = None
-        self.image_gen_after_id: Optional[str] = None
-        self.thumbnail_after_id: Optional[str] = None
-        self.available_variations_map = {v['key']: v['name'] for v in self.processor.get_available_variations()}
-        self.context_menu = tk.Menu(self, tearoff=0)
+        self._pagination_reflow_debounce_id: Optional[str] = None
         self.image_context_menu = tk.Menu(self, tearoff=0)
 
         # Start the single thumbnail worker thread
@@ -99,17 +93,30 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             self.after_cancel(self.thumbnail_after_id)
             self.thumbnail_after_id = None
         self.close_preview_on_destroy()
-        self.cancellation_event.set()
-        if self.image_gen_after_id:
-            self.after_cancel(self.image_gen_after_id)
-            self.image_gen_after_id = None
         if self._resize_debounce_id:
             self.after_cancel(self._resize_debounce_id)
             self._resize_debounce_id = None
+        if self._pagination_reflow_debounce_id:
+            self.after_cancel(self._pagination_reflow_debounce_id)
+            self._pagination_reflow_debounce_id = None
         if self.regen_prompt_after_id:
             self.after_cancel(self.regen_prompt_after_id)
             self.regen_prompt_after_id = None
+        if self.image_gen_after_id:
+            self.after_cancel(self.image_gen_after_id)
+            self.image_gen_after_id = None
+        
+        # Clear InvokeAI cache on close, as generations might have happened.
+        if self.processor.is_invokeai_connected():
+            self.processor.clear_invokeai_cache_async()
+
         self.destroy()
+
+    def _schedule_pagination_reflow(self, event=None):
+        """Schedules a reflow of pagination controls to avoid excessive updates."""
+        if self._pagination_reflow_debounce_id:
+            self.after_cancel(self._pagination_reflow_debounce_id)
+        self._pagination_reflow_debounce_id = self.after(100, self._reflow_pagination_controls)
 
     def _update_visible_thumbnails(self):
         """Loads thumbnails only for the items currently visible in the history list."""
@@ -261,20 +268,21 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         v_pane_right.pack(fill=tk.BOTH, expand=True)
 
         # --- Image Preview (Top of Right Pane) ---
-        image_frame = ttk.LabelFrame(v_pane_right, text="Image Preview", padding=5)
-        v_pane_right.add(image_frame, weight=3) # Give more space to the image
+        self.image_frame = ttk.LabelFrame(v_pane_right, text="Image Preview", padding=5)
+        v_pane_right.add(self.image_frame, weight=3) # Give more space to the image
 
         # Create a frame for pagination controls at the bottom of the image frame and pack it first.
-        self.pagination_frame = ttk.Frame(image_frame)
+        self.pagination_frame = ttk.Frame(self.image_frame)
         self.pagination_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
         self.pagination_frame.bind("<Configure>", lambda e: self._schedule_pagination_reflow())
 
-        # Create a container for the image itself to center it
-        image_container = ttk.Frame(image_frame)
-        image_container.pack(fill=tk.BOTH, expand=True)
-        self.image_label = ttk.Label(image_container, text="No image generated for this entry.", anchor=tk.CENTER)
+        self.image_label = ttk.Label(self.image_frame, text="No image generated for this entry.", anchor=tk.CENTER)
         self.image_label.pack(fill=tk.BOTH, expand=True)
-        image_container.bind("<Configure>", self._on_image_container_resize)
+
+        # Add a spinner for when the image is regenerating
+        self.main_image_spinner = LoadingAnimation(self.image_frame, size=48)
+        # Don't pack it yet.
+
         self.image_tooltip = Tooltip(self.image_label)
         self.image_label.bind("<Enter>", self._schedule_image_tooltip)
         self.image_label.bind("<Leave>", self._hide_image_tooltip)
@@ -304,12 +312,6 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.details_notebook = ttk.Notebook(details_frame)
         self.details_notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self.details_notebook.pack(fill=tk.BOTH, expand=True)
-
-    def _schedule_pagination_reflow(self):
-        """Schedules a reflow of pagination controls to avoid excessive updates during resize."""
-        if self._pagination_reflow_id:
-            self.after_cancel(self._pagination_reflow_id)
-        self._pagination_reflow_id = self.after(100, self._reflow_pagination_controls)
 
         # Create the static tabs that are always present.
         # Variation tabs will be created dynamically as needed.
@@ -453,10 +455,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             original_prompt = row.get('original_prompt', 'No original prompt found.')
             is_fav = row.get('favorite', False)
 
-            # Get the correct workflow source for this specific entry.
-            # FIX: The history viewer only ever loads from the current workflow, so we
-            # must use the global config. The row data doesn't contain 'workflow_source'.
-            workflow_tag = config.workflow.upper()
+            # Get the correct workflow source for this specific entry from the data.
+            workflow_tag = row.get('workflow_source', 'SFW')
 
             # Create a frame for each item for better layout and binding
             item_frame = ttk.Frame(self.history_container, style="HistoryItem.TFrame", relief="groove", borderwidth=1)
@@ -480,7 +480,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             info_text = f"Date: {timestamp.split('T')[0]}"
             if template_name:
                 info_text += f" | Template: {os.path.basename(template_name)}"
-            info_label = ttk.Label(text_frame, text=info_text, style="SFW.History.TLabel") # Use a muted style
+            
+            info_style = "SFW.History.TLabel" if workflow_tag == "SFW" else "NSFW.History.TLabel"
+            info_label = ttk.Label(text_frame, text=info_text, style=info_style)
             info_label.pack(fill=tk.X, expand=True, padx=5, pady=(0,5))
 
             # Store widget and data together
@@ -1087,9 +1089,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         initial_dialog_params['negative_prompt'] = negative_prompt
 
         # --- Start of async logic ---
+        self.main_image_spinner.place(in_=self.image_label, relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.main_image_spinner.start()
         self.regen_image_button.config(state=tk.DISABLED)
-        self.regen_image_spinner.pack(side=tk.LEFT)
-        self.regen_image_spinner.start()
 
         # Create a copy of params and set a new seed
         new_gen_params = copy.deepcopy(gen_params)
@@ -1108,6 +1110,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
                     "scheduler": new_gen_params.get("scheduler", "dpmpp_2m"),
                     "cfg_rescale_multiplier": new_gen_params.get("cfg_rescale_multiplier", 0.0),
                     "save_to_gallery": False,
+                    "cancellation_event": self.cancellation_event,
                 }
                 image_bytes = self.processor.generate_image_with_invokeai(**gen_args)
                 result_data = {'bytes': image_bytes, 'prompt': prompt, 'generation_params': new_gen_params}
@@ -1124,17 +1127,17 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         try:
             result = self.image_gen_queue.get_nowait()
             
-            self.regen_image_spinner.stop()
-            self.regen_image_spinner.pack_forget()
-            self.regen_image_button.config(state=tk.NORMAL)
+            self.main_image_spinner.place_forget() # Hide the spinner
+            self.regen_image_button.config(state=tk.NORMAL) # Re-enable the button
 
             if not result['success']:
                 custom_dialogs.show_error(self, "Image Regeneration Error", result['error'])
+                # On failure, the spinner is hidden and the old image remains.
                 return
 
-            # --- This is the on_success logic from the old method ---
-            new_image_data = result['data']
-            current_tab_key = result['tab_key']
+            new_image_data = result.get('data')
+            if not new_image_data: return
+            current_tab_key = result.get('tab_key')
 
             if not self.selected_row_data: return
             
@@ -1448,6 +1451,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         
         self.image_ref = ImageTk.PhotoImage(img_copy)
         self.image_label.config(image=self.image_ref, text="")
+        self.image_label.image = self.image_ref # Keep a reference
 
     def _update_ui_after_image_delete(self, updated_row: Dict[str, Any]):
         """Updates the UI after an image has been successfully deleted."""

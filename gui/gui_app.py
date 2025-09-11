@@ -103,6 +103,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.clear_cache_after_id: Optional[str] = None
         self.missing_wildcards_container: Optional[ttk.Frame] = None
         self.enhancement_windows: List[EnhancementResultWindow] = []
+        self.generation_dialogs: List['MultiImagePreviewDialog'] = []
         self.last_saved_entry_id_from_preview: Optional[str] = None
         self.generation_total_jobs = 0
         self.generation_completed_jobs = 0
@@ -1021,6 +1022,19 @@ class GUIApp(tk.Tk, SmartWindowMixin):
     def _on_select_for_enhancement(self):
         """Handles the 'Enhance This Prompt' button click."""
         prompt_text = self._get_current_prompt_string()
+        
+        # --- NEW: Length Normalization Check ---
+        word_count = len(prompt_text.split())
+        if not (50 <= word_count <= 120):
+            message = (
+                f"The current prompt has {word_count} words. For best enhancement results, a length of 50-120 words is recommended.\n\n"
+                "Do you want to proceed with enhancement anyway?"
+            )
+            if not custom_dialogs.ask_yes_no(self, "Prompt Length Warning", message):
+                self.status_var.set("Enhancement cancelled due to prompt length.")
+                return # User chose not to proceed
+        # --- End of new check ---
+
         template_name = self.current_template_file
         context = self.last_generation_result.get('context')
         existing_entry_id = self.last_saved_entry_id_from_preview
@@ -1448,31 +1462,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self._update_prompt_preview()
         self.status_var.set(f"Reloaded template '{template_name}' from history with its original choices.")
 
-    def _unload_ollama_models_for_vram(self) -> bool:
-        """
-        Unloads all active Ollama models to free VRAM. Asks for user confirmation.
-        Returns True if models were unloaded or not present, False if user cancelled.
-        """
-        active_ollama_models = self.model_usage_manager.get_active_models()
-        if active_ollama_models:
-            if custom_dialogs.ask_yes_no(
-                self, 
-                "Free VRAM?", 
-                f"This will temporarily unload the following Ollama model(s) to free VRAM for image generation:\n\n- {', '.join(active_ollama_models)}\n\nThe model(s) will be reloaded automatically on their next use. Continue?"
-            ):
-                for model in active_ollama_models:
-                    self.processor.cleanup_model(model)
-                return True
-            else:
-                return False # User cancelled
-        return True # No models to unload
-
     def _start_image_generation_workflow(self, parent_window: tk.Widget, prompt: str, initial_dialog_params: Dict[str, Any], button_to_manage: Optional[ttk.Button], spinner_to_manage: Optional[LoadingAnimation], on_success_callback: Optional[Callable[[List[Dict[str, Any]]], None]]):
         """A centralized method to handle the entire image generation process."""
-        # --- NEW: Unload Ollama models to free VRAM for InvokeAI ---
-        if not self._unload_ollama_models_for_vram():
-            return # User cancelled
-
         try:
             from .image_generation_dialog import ImageGenerationOptionsDialog
             dialog = ImageGenerationOptionsDialog(parent_window, self.processor, initial_params=initial_dialog_params)
@@ -1520,6 +1511,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 spinner_to_manage.pack_forget()
             if button_to_manage:
                 button_to_manage.config(state=tk.NORMAL, text=original_button_text)
+            if dialog in self.generation_dialogs:
+                self.generation_dialogs.remove(dialog)
             if images_to_save and on_success_callback:
                 on_success_callback(images_to_save)
 
@@ -1536,7 +1529,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 button_to_manage.config(text=f"Generating ({self.generation_completed_jobs}/{self.generation_total_jobs})...")
 
         from .multi_image_preview_dialog import MultiImagePreviewDialog
-        MultiImagePreviewDialog(
+        dialog = MultiImagePreviewDialog(
             parent=parent_window,
             generation_jobs=generation_jobs,
             processor=self.processor,
@@ -1544,6 +1537,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             completion_callback=on_preview_dialog_close,
             save_to_gallery=options.get("save_to_gallery", False)
         )
+        self.generation_dialogs.append(dialog)
 
     def _brainstorm_with_template(self):
         """Sends the current template content to the brainstorming window."""
@@ -1755,8 +1749,21 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         for window in list(self.enhancement_windows):
             if window.winfo_exists():
                 window.close()
+        for dialog in self.generation_dialogs:
+            if dialog.winfo_exists():
+                dialog._cancel_all_jobs() # Explicitly cancel jobs before closing
+                dialog.close()
         # Unregister the main window's model. The manager will handle unloading if needed.
         self.model_usage_manager.unregister_usage(self.main_window_model)
+
+        # --- NEW: Force unload all remaining active Ollama models on exit ---
+        # This ensures that even if usage counts are > 0, models are unloaded.
+        active_ollama_models = self.model_usage_manager.get_active_models()
+        if active_ollama_models:
+            print(f"INFO: Unloading all active Ollama models on exit: {', '.join(active_ollama_models)}")
+            for model in active_ollama_models:
+                self.processor.cleanup_model(model)
+
         if self.processor.is_invokeai_connected():
             print("INFO: Clearing InvokeAI model cache on exit (async)...")
             self.processor.clear_invokeai_cache_async()
