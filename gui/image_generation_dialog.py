@@ -44,6 +44,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.model_widgets: Dict[str, ttk.Checkbutton] = {}
         self.lora_vars: Dict[str, tk.BooleanVar] = {}
         self.lora_widgets: Dict[str, ttk.Frame] = {}
+        self.lora_search_var = tk.StringVar()
         self.lora_weight_vars: Dict[str, tk.StringVar] = {}
         self.model_search_var = tk.StringVar()
         self.save_to_gallery_var = tk.BooleanVar(value=False)
@@ -162,8 +163,6 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                     print(f"DEBUG: Creating widget for LoRA: {lora_name}")
                 lora_frame = ttk.Frame(self.lora_container)
                 self.lora_widgets[lora_name] = lora_frame
-                # Pack the frame immediately to ensure it's part of the layout
-                lora_frame.pack(fill='x', expand=True, pady=1, padx=5)
                 var = tk.BooleanVar()
                 if lora_name in initial_lora_map:
                     var.set(True)
@@ -193,6 +192,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             # After update_idletasks(), this should show the full, correct height of all packed widgets.
             print(f"DEBUG: After update_idletasks, lora_container reqheight: {self.lora_container.winfo_reqheight()}")
         
+        # Apply initial filter to show all LoRAs
+        self._filter_loras()
+
         self._update_override_button_state()
         self._update_total_images_label()
 
@@ -208,6 +210,15 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 widget.pack(anchor='w', fill='x', padx=5)
             else:
                 widget.pack_forget()
+
+    def _filter_loras(self, *args):
+        """Filters the LoRA list based on the search term."""
+        search_term = self.lora_search_var.get().lower()
+        for lora_name, widget_frame in self.lora_widgets.items():
+            if search_term in lora_name.lower():
+                widget_frame.pack(fill='x', expand=True, pady=1, padx=5)
+            else:
+                widget_frame.pack_forget()
 
     def _create_widgets(self):
         # The main_frame is the top-level container within the dialog.
@@ -244,6 +255,16 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         # LoRAs (Right Pane)
         lora_frame = ttk.LabelFrame(model_lora_pane, text="LoRAs", padding=10)
         model_lora_pane.add(lora_frame, weight=1)
+
+        # Add search entry for LoRAs
+        search_lora_frame = ttk.Frame(lora_frame)
+        search_lora_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(search_lora_frame, text="Search:").pack(side=tk.LEFT)
+        self.lora_search_var.trace_add("write", self._filter_loras)
+        lora_search_entry = ttk.Entry(search_lora_frame, textvariable=self.lora_search_var)
+        lora_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5,0))
+
+
 
         lora_scroll_view = ScrollableFrame(lora_frame)
         lora_scroll_view.pack(fill=tk.BOTH, expand=True)
