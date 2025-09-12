@@ -40,6 +40,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def __init__(self, verbose: bool = False):
         super().__init__()
+
+        # Initialize the model variable and add the trace here, after super().__init__()
+        self.enhancement_model_var = tk.StringVar()
+        # Defer adding the trace until the event loop is idle, ensuring 'self' is fully constructed.
+        self.after_idle(lambda: self.enhancement_model_var.trace_add("write", self._on_enhancement_model_change))
         if verbose:
             print("--- VERBOSE MODE ENABLED ---", flush=True)
         self.geometry("900x700")
@@ -75,6 +80,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.wildcard_tooltip: Optional[Tooltip] = None
         self.wildcard_tooltip_after_id: Optional[str] = None
         self.last_hovered_segment_index: int = -1
+        self.model_tooltip: Optional[Tooltip] = None
         self.debounce_timer: Optional[str] = None
         self.main_window_model: Optional[str] = None
         self.brainstorming_window: Optional[BrainstormingWindow] = None
@@ -84,12 +90,10 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.history_viewer_window: Optional[HistoryViewerWindow] = None
         self.favorite_images_viewer_window: Optional[FavoriteImagesViewer] = None
         self.loading_animation: Optional[LoadingAnimation] = None
-        self.template_editor: Optional[TemplateEditor] = None
-        self.wildcard_inserter: Optional[WildcardInserter] = None
-        self.menubar: Optional[MenuBar] = None
         self.wildcard_swap_menu: tk.Menu = tk.Menu(self, tearoff=0)
         self.settings_window: Optional[SettingsWindow] = None
-        self.enhancement_model_var = tk.StringVar()
+        # This variable will now hold the display string (e.g., "model - 1.23 GB"),
+        # while the rest of the app will use `get_selected_model_name()` to get the pure name.
         self.font_size_var = tk.IntVar(value=config.font_size)
         self.workflow_var = tk.StringVar(value=config.workflow)
         self.enhancement_queue = queue.Queue()
@@ -109,6 +113,11 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.generation_completed_jobs = 0
         self.seed_var = tk.StringVar()
         self.random_seed_var = tk.BooleanVar(value=True) # Start with random ON
+        
+        # Initialize UI component holders
+        self.template_editor: Optional[TemplateEditor] = None
+        self.wildcard_inserter: Optional[WildcardInserter] = None
+        self.menubar: Optional[MenuBar] = None
 
         # Create widgets
         self._create_widgets()
@@ -185,9 +194,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # Model Dropdown
         ttk.Label(control_frame, text="Model:").pack(side=tk.LEFT, padx=(0, 5))
-        self.enhancement_model_var.trace_add("write", self._on_enhancement_model_change)
         self.model_dropdown = ttk.OptionMenu(control_frame, self.enhancement_model_var, "Select a model")
         self.model_dropdown.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # --- NEW: Add tooltip for model size ---
+        self.model_tooltip = Tooltip(self.model_dropdown, "")
+        self.model_dropdown.bind("<Enter>", self._show_model_tooltip)
+        self.model_dropdown.bind("<Leave>", lambda e: self.model_tooltip.hide())
 
         # --- Status Bar ---
         status_frame = ttk.Frame(self, relief=tk.SUNKEN)
@@ -223,14 +236,15 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 self.processor.set_callbacks(status_callback=self._update_status_bar_from_event)
                 templates = self.processor.get_available_templates()
                 wildcard_files = self.processor.get_wildcard_files()
-                models = self.processor.get_available_models()
-                recommendations = self.processor.get_model_recommendations(models)
+                models_with_details = self.processor.get_available_models()
+                model_names = [m['name'] for m in models_with_details]
+                recommendations = self.processor.get_model_recommendations(model_names)
                 
                 self.initial_load_queue.put({
                     "success": True,
                     "templates": templates,
                     "wildcard_files": wildcard_files,
-                    "models": models,
+                    "models": models_with_details,
                     "recommendations": recommendations
                 })
             except Exception as e:
@@ -253,7 +267,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
             # --- Populate UI with loaded data ---
             self._populate_template_dropdown(result['templates'])
-            self._populate_model_dropdown(result['models'], result['recommendations'])
+            self._populate_model_dropdown(result.get('models', []), result.get('recommendations', []))
             self._populate_wildcard_lists(result['wildcard_files'])
             
             self.status_var.set("Ready")
@@ -455,9 +469,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         variations = self.processor.get_available_variations()
         self.action_bar.rebuild_variations(variations)
 
-    def _populate_model_dropdown(self, models: List[str], recommendations: List[tuple]):
+    def _populate_model_dropdown(self, models_with_details: List[Dict[str, Any]], recommendations: List[tuple]):
         """Populates the model dropdown menu with a list of models and recommendations."""
-        if not models:
+        if not models_with_details:
             custom_dialogs.show_warning(
                 self,
                 "No Models Found",
@@ -465,18 +479,31 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                 "Please pull a model using 'ollama run <model_name>' to enable AI features.")
             self.enhancement_model_var.set("No models available")
             self.model_dropdown.config(state=tk.DISABLED)
+            if self.model_tooltip: self.model_tooltip.text = ""
             return
 
         self.model_dropdown.config(state=tk.NORMAL)
         menu = self.model_dropdown["menu"]
         menu.delete(0, "end")
-        for model in models:
-            menu.add_command(label=model, command=lambda value=model: self.enhancement_model_var.set(value))
+        
+        # --- NEW: Bind events to the menu for status bar updates ---
+        # When the user's mouse moves over the menu, update the status bar.
+        menu.bind("<Motion>", self._on_model_menu_hover)
+        # When the menu is closed, reset the status bar.
+        menu.bind("<Unmap>", self._on_model_menu_close)
+        
+        # --- NEW: Store model details for the tooltip ---
+        self.model_details_map = {m['name']: m for m in models_with_details}
+        model_names = list(self.model_details_map.keys())
 
+        for model_name in model_names:
+            menu.add_command(label=model_name, command=lambda value=model_name: self.enhancement_model_var.set(value))
+
+        # Set a default model
         if recommendations:
             default_model = recommendations[0][1]
         else:
-            default_model = models[0]
+            default_model = model_names[0]
 
         self.enhancement_model_var.set(default_model)
         self.main_window_model = default_model
@@ -485,15 +512,13 @@ class GUIApp(tk.Tk, SmartWindowMixin):
     def _load_models(self):
         """Loads available Ollama models into the dropdown menu."""
         try:
-            models = self.processor.get_available_models()
-            menu = self.model_dropdown["menu"]
-            menu.delete(0, "end")
-            for model in models:
-                menu.add_command(label=model, command=lambda value=model: self.enhancement_model_var.set(value))
-
-            # Set a default model by finding the highest-priority recommended model.
-            recommendations = self.processor.get_model_recommendations(models)
-            self._populate_model_dropdown(models, recommendations)
+            # Fetch models and their details
+            models_with_details = self.processor.get_available_models()
+            model_names = [m['name'] for m in models_with_details]
+            # Get recommendations to determine the default selection
+            recommendations = self.processor.get_model_recommendations(model_names)
+            # Delegate all UI population to the dedicated function
+            self._populate_model_dropdown(models_with_details, recommendations)
 
         except Exception as e:
             self._handle_initialization_error(e)
@@ -513,6 +538,42 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, suggest=tk.DISABLED)
         if self.menubar:
             self.menubar.entryconfig("Tools", state=tk.DISABLED)
+
+    def _on_model_menu_hover(self, event):
+        """Updates the status bar with the details of the hovered model in the dropdown."""
+        menu = self.model_dropdown["menu"]
+        try:
+            # Get the index of the menu item under the cursor's y-position
+            index = menu.index(f"@{event.y}")
+            if index is not None:
+                model_name = menu.entrycget(index, "label")
+                model_details = self.model_details_map.get(model_name)
+                if model_details:
+                    size_gb = model_details.get('size', 0) / (1024**3)
+                    self.status_var.set(f"Model: {model_name} | Size: {size_gb:.2f} GB")
+                else:
+                    self.status_var.set(f"Model: {model_name}")
+        except tk.TclError:
+            # This can happen if the cursor is not over an active item.
+            pass
+
+    def _on_model_menu_close(self, event):
+        """Resets the status bar when the model menu is closed."""
+        self.status_var.set("Ready")
+
+    def _show_model_tooltip(self, event):
+        """Updates and shows the tooltip for the model dropdown."""
+        if not self.model_tooltip: return
+        
+        current_model_name = self.enhancement_model_var.get()
+        model_details = self.model_details_map.get(current_model_name)
+        
+        if model_details:
+            size_gb = model_details.get('size', 0) / (1024**3)
+            self.model_tooltip.text = f"Size: {size_gb:.2f} GB"
+        else:
+            self.model_tooltip.text = "Model details not found."
+        self.model_tooltip.show(event)
 
     def _switch_workflow(self):
         """Handles the logic for switching between SFW and NSFW modes."""
@@ -588,25 +649,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if new_template_name and new_template_name != self.current_template_file:
             self._on_template_select(new_template_name)
 
-    def _on_enhancement_model_change(self, *args):
-        """Handles when the user selects a new model for enhancement."""
-        new_model = self.enhancement_model_var.get()
-        old_model = self.main_window_model
-        if new_model and "model" not in new_model.lower() and new_model != old_model:
-            self.model_usage_manager.unregister_usage(old_model)
-            self.model_usage_manager.register_usage(new_model)
-            self.main_window_model = new_model
-            # Notify the wildcard manager if it's open
-            if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
-                self.wildcard_manager_window.update_active_model(old_model, new_model)
-            # Notify the prompt evolver if it's open
-            if self.prompt_evolver_window and self.prompt_evolver_window.winfo_exists():
-                self.prompt_evolver_window.update_active_model(old_model, new_model)
-            if self.brainstorming_window and self.brainstorming_window.winfo_exists():
-                self.brainstorming_window.update_active_model(old_model, new_model)
-            if self.image_interrogator_window and self.image_interrogator_window.winfo_exists():
-                self.image_interrogator_window.update_active_model(old_model, new_model)
-
     def _on_template_select(self, template_name: str):
         """Callback for when a template is selected from the dropdown."""
         self.current_template_file = template_name
@@ -655,7 +697,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _suggest_template_additions(self):
         """Uses AI to suggest additions for the current prompt template."""
-        model = self.enhancement_model_var.get()
+        model = self.get_selected_model_name()
         if not model or "model" in model.lower():
             custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
             return
@@ -976,6 +1018,17 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             "Save as New Template",
             "Enter a filename for the new template:"
         )
+        """Saves the content of the preview pane as a new template file."""
+        prompt_text = self.prompt_text.get("1.0", "end-1c").strip()
+        if not prompt_text:
+            self.status_var.set("No prompt in preview to save.")
+            return
+
+        filename = custom_dialogs.ask_string(
+            self,
+            "Save as New Template",
+            "Enter a filename for the new template:"
+        )
         if not filename:
             return
         
@@ -987,6 +1040,26 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.template_var.set(filename) # This will trigger the update via trace
         self.status_var.set(f"Saved and loaded new template: {filename}")
 
+    def _on_enhancement_model_change(self, *args):
+        """Callback for when the enhancement_model_var changes."""
+        new_model_name = self.enhancement_model_var.get()
+
+        # Ignore placeholder text to prevent errors
+        if "model" in new_model_name.lower():
+            return
+
+        # Prevent redundant updates if the value is set to the same thing
+        if new_model_name and new_model_name != self.main_window_model:
+            self.model_usage_manager.unregister_usage(self.main_window_model)
+            self.main_window_model = new_model_name
+            self.model_usage_manager.register_usage(self.main_window_model)
+
+    def get_selected_model_name(self) -> Optional[str]:
+        """
+        Returns the pure name of the currently selected enhancement model,
+        or None if no valid model is selected.
+        """
+        return self.main_window_model
     def _copy_generated_prompt(self):
         """Copies the current generated prompt text to the clipboard."""
         # If the structured prompt is empty, it means the preview pane is showing
@@ -1043,7 +1116,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def start_enhancement_for_prompt(self, prompt_text: str, template_name: Optional[str] = None, context: Optional[Dict] = None, existing_entry_id: Optional[str] = None):
         """Handles starting an enhancement process for a given prompt string."""
-        model = self.enhancement_model_var.get()
+        model = self.get_selected_model_name()
         if not model or "model" in model.lower():
             custom_dialogs.show_error(self, "Error", "Please select a valid Ollama model first.")
             return
@@ -1212,8 +1285,9 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.image_interrogator_window.focus_force()
         else:
             try:
-                models = self.processor.get_available_models()
-                default_model = self.enhancement_model_var.get()
+                models_with_details = self.processor.get_available_models()
+                models = [m['name'] for m in models_with_details] # Keep this as names for the interrogator
+                default_model = self.get_selected_model_name()
                 self.image_interrogator_window = ImageInterrogatorWindow(self, self.processor, models, default_model, self.load_prompt_from_history)
                 self.image_interrogator_window.protocol("WM_DELETE_WINDOW", self._on_image_interrogator_close)
             except Exception as e:
@@ -1323,15 +1397,16 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.brainstorming_window.focus_force()
         else:
             try:
-                models = self.processor.get_available_models()
-                if not models:
+                models_with_details = self.processor.get_available_models()
+                model_names = [m['name'] for m in models_with_details]
+                if not model_names:
                     custom_dialogs.show_error(self, "Error", "No Ollama models available for brainstorming.")
                     return
-                default_model = self.enhancement_model_var.get()
-                if default_model not in models:
-                    default_model = models[0]
+                default_model = self.get_selected_model_name()
+                if default_model not in model_names:
+                    default_model = model_names[0]
                 
-                self.brainstorming_window = BrainstormingWindow(self, self.processor, models, default_model, self.model_usage_manager, self._handle_ai_content_update)
+                self.brainstorming_window = BrainstormingWindow(self, self.processor, model_names, default_model, self.model_usage_manager, self._handle_ai_content_update)
                 self.brainstorming_window.protocol("WM_DELETE_WINDOW", self._on_brainstorming_window_close)
             except Exception as e:
                 custom_dialogs.show_error(self, "Error", f"Could not open brainstorming window:\n{e}")
@@ -1578,7 +1653,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
     def _generate_template_from_all_wildcards(self):
         """Asks for a theme and generates a template using all available wildcards."""
-        theme = custom_dialogs.ask_string(self, "Generate Template from Wildcards", "Enter a theme or concept for the new template:")
+        theme = custom_dialogs.ask_string(self, "Generate Template from Wildcards", "Enter a theme or concept for the new template:") # type: ignore
         if not theme:
             return
 

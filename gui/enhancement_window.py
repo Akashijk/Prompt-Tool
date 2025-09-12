@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
     """A pop-up window to display enhancement results."""
-    def __init__(self, parent: 'GUIApp', result_data: dict, processor: PromptProcessor, model: str, models: List[str], selected_variations: List[str], cancel_callback: Callable, api_call_finish_callback: Callable, existing_entry_id: Optional[str] = None):
+    def __init__(self, parent: 'GUIApp', result_data: dict, processor: PromptProcessor, model: str, models: List[Dict[str, Any]], selected_variations: List[str], cancel_callback: Callable, api_call_finish_callback: Callable, existing_entry_id: Optional[str] = None):
         super().__init__(parent)
         self.title("Enhancement Result")
         self.transient(parent)
@@ -63,7 +63,10 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         top_controls_frame.grid(row=0, column=0, sticky='ew', pady=(0, 10))
         ttk.Label(top_controls_frame, text="AI Model:").pack(side=tk.LEFT, padx=(0, 5))
         self.model_var = tk.StringVar(value=self.model)
-        model_menu = ttk.OptionMenu(top_controls_frame, self.model_var, self.model, *self.models, command=self._on_model_change)
+
+        # Extract just the names for the OptionMenu, which expects strings.
+        model_names = [m['name'] for m in self.models]
+        model_menu = ttk.OptionMenu(top_controls_frame, self.model_var, self.model, *model_names, command=self._on_model_change)
         model_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # --- Action Buttons ---

@@ -568,6 +568,12 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         if model_name_being_edited in current_model_names:
             current_model_names.remove(model_name_being_edited)
 
+        # Determine the base model type from the image being edited to set the dialog's default.
+        base_model_type = model_being_edited.get('base', 'sdxl')
+        # The API returns 'sd-1', but the UI uses 'sd-1.5' for display and logic.
+        if base_model_type == 'sd-1':
+            base_model_type = 'sd-1.5'
+
         # Prepare params for the dialog
         initial_dialog_params = copy.deepcopy(image_data['generation_params'])
         # Pre-select the original model in the dialog
@@ -580,7 +586,8 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             self.processor,
             initial_params=initial_dialog_params, 
             is_editing=True,
-            disabled_models=list(current_model_names)
+            disabled_models=list(current_model_names),
+            base_model_type=base_model_type
         )
         new_options = dialog.result
 

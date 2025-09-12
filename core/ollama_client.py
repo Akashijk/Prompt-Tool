@@ -35,8 +35,8 @@ class OllamaClient:
         self._last_check_time = current_time
         return self._is_running_cache
 
-    def list_models(self) -> List[str]:
-        """Get list of installed Ollama models."""
+    def list_models(self) -> List[Dict[str, Any]]:
+        """Get list of installed Ollama models with their details."""
         if not self._is_ollama_running():
             raise Exception("Ollama server is not running. Please start it to continue.")
 
@@ -44,8 +44,8 @@ class OllamaClient:
             res = requests.get(f"{self.base_url}/api/tags")
             res.raise_for_status()
             models_data = res.json().get('models', [])
-            # Sort model names alphabetically, case-insensitively
-            return sorted([model['name'] for model in models_data], key=str.lower)
+            # Sort models by name alphabetically, case-insensitively
+            return sorted(models_data, key=lambda m: m['name'].lower())
         except requests.RequestException as e:
             raise Exception(f"Error getting Ollama models from API: {e}")
     

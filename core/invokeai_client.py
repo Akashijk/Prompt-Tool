@@ -92,7 +92,12 @@ class InvokeAIClient:
         
         params = {}
         if base_model:
-            params[self.base_model_param_name] = [base_model]
+            # Map the internal 'sd-1.5' convention to the 'sd-1' that the InvokeAI API expects.
+            api_base_model = base_model
+            if base_model == 'sd-1.5':
+                api_base_model = 'sd-1'
+            
+            params[self.base_model_param_name] = [api_base_model]
         if model_type:
             params['model_type'] = model_type
         
@@ -114,31 +119,152 @@ class InvokeAIClient:
     def _get_vae_override(self, model_object: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Determines if a VAE override is needed and returns the VAE model object if so.
-        This is a robust workaround for models that produce black images with their built-in fp16 VAE.
+        This is a robust workaround for models that produce black or distorted images.
         """
-        compatible_vae = None
+        if not self.available_vaes:
+            return None
+
         main_model_base = model_object.get('base')
 
-        if self.available_vaes and main_model_base:
-            # Priority 1: Look for the well-known 'fp16-fix' VAE.
-            for vae in self.available_vaes:
-                if 'sdxl-vae-fp16-fix' in vae.get('name', '').lower():
-                    compatible_vae = vae
-                    if self.verbose:
-                        print(f"INFO: Found high-priority '{vae.get('name')}'. Overriding diffusers model's default VAE.")
-                    return compatible_vae
+        if main_model_base == 'sdxl':
+            # For SDXL, prioritize the fp16-fix VAE, then any other non-fp16 SDXL VAE.
+            sdxl_vaes = [v for v in self.available_vaes if v.get('base') == 'sdxl']
             
-            # Priority 2: If the fix VAE isn't found, look for any other compatible VAE that is NOT fp16.
-            for vae in self.available_vaes:
-                if vae.get('base') == main_model_base and 'fp16' not in vae.get('name', '').lower():
-                    compatible_vae = vae
-                    return compatible_vae
-
-        # Add a warning if no compatible VAE was found, as this can lead to black images.
-        if not compatible_vae and main_model_base == 'sdxl':
+            # Priority 1: Look for the well-known 'fp16-fix' VAE.
+            for vae in sdxl_vaes:
+                if 'sdxl-vae-fp16-fix' in vae.get('name', '').lower():
+                    if self.verbose: print(f"INFO: Found high-priority 'sdxl-vae-fp16-fix'. Overriding model's default VAE.")
+                    return vae
+            
+            # Priority 2: Look for any other non-fp16 SDXL VAE.
+            for vae in sdxl_vaes:
+                if 'fp16' not in vae.get('name', '').lower():
+                    if self.verbose: print(f"INFO: Found compatible non-fp16 SDXL VAE '{vae.get('name')}'. Overriding model's default VAE.")
+                    return vae
+            
+            # If we reach here, no suitable override was found for SDXL.
             print("\n" + "="*80 + "\nWARNING: No compatible FP32 VAE was found for your SDXL model.\nThis can cause black or distorted images with certain models.\nSOLUTION: Download 'sdxl-vae.safetensors' and place it in your InvokeAI 'models/sdxl/vae' directory.\n" + "="*80 + "\n")
         
+        elif main_model_base in ['sd-1', 'sd-1.5']:
+            # For SD-1.5, look for the standard 'sd-vae-ft-mse' VAE.
+            sd15_vaes = [v for v in self.available_vaes if v.get('base') in ['sd-1', None]]
+            for vae in sd15_vaes:
+                if 'sd-vae-ft-mse' in vae.get('name', '').lower():
+                    if self.verbose: print(f"INFO: Found standard 'sd-vae-ft-mse'. Applying VAE override for SD-1.5 model.")
+                    return vae
+            
+            print("\n" + "="*80 + "\nWARNING: No standard 'sd-vae-ft-mse' VAE was found for your SD-1.5 model.\nThis can cause distorted images with certain models.\nSOLUTION: Ensure 'sd-vae-ft-mse.safetensors' is in your InvokeAI 'models/sd-1/vae' directory.\n" + "="*80 + "\n")
+
         return None
+
+    def _build_sd15_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, save_to_gallery: bool) -> Dict[str, Any]:
+        """
+        Builds the complete node graph for a standard SD-1.5 text-to-image generation.
+        """
+        vae_source_node_id = "main_model_loader"
+        compatible_vae = self._get_vae_override(model_object)
+
+        nodes = {
+            "main_model_loader": {
+                "type": "main_model_loader",
+                "id": "main_model_loader",
+                "model": model_object,
+            },
+            "positive_prompt": {
+                "type": "string",
+                "id": "positive_prompt",
+                "value": prompt
+            },
+            "negative_prompt": {
+                "type": "string",
+                "id": "negative_prompt",
+                "value": negative_prompt
+            },
+            "positive_conditioning": {
+                "type": "compel",
+                "id": "positive_conditioning",
+            },
+            "negative_conditioning": {
+                "type": "compel",
+                "id": "negative_conditioning",
+            },
+            "noise": {
+                "type": "noise",
+                "id": "noise",
+                "seed": seed,
+                "width": model_object.get("default_settings", {}).get("width", 512),
+                "height": model_object.get("default_settings", {}).get("height", 512),
+            },
+            "denoise_latents": {
+                "type": "denoise_latents",
+                "id": "denoise_latents",
+                "steps": steps,
+                "cfg_scale": cfg_scale,
+                "scheduler": scheduler,
+                "denoising_start": 0.0,
+                "denoising_end": 1.0,
+            },
+            "l2i": {
+                "type": "l2i",
+                "id": "l2i",
+                "is_intermediate": True,
+            },
+            "save_image": {
+                "id": "save_image",
+                "type": "save_image",
+                "is_intermediate": not save_to_gallery,
+                "use_cache": False,
+            },
+        }
+
+        if compatible_vae:
+            nodes['sd15_fp32_vae_loader'] = {
+                "type": "vae_loader",
+                "id": "sd15_fp32_vae_loader",
+                "vae_model": compatible_vae
+            }
+            vae_source_node_id = "sd15_fp32_vae_loader"
+
+        last_unet_source_node = "main_model_loader"
+        last_clip_source_node = "main_model_loader"
+
+        lora_edges = []
+        for i, lora_info in enumerate(loras):
+            lora_node_id = f"lora_loader_{i}"
+            lora_object = lora_info['lora_object']
+            nodes[lora_node_id] = {"id": lora_node_id, "type": "lora_loader", "lora": lora_object, "weight": lora_info['weight']}
+            
+            submodels = lora_object.get('submodels')
+            if submodels is None:
+                submodel_types = {'unet', 'text_encoder'}
+            else:
+                submodel_types = {sub.get('type') for sub in submodels}
+
+            if 'unet' in submodel_types:
+                lora_edges.append({"source": {"node_id": last_unet_source_node, "field": "unet"}, "destination": {"node_id": lora_node_id, "field": "unet"}})
+                last_unet_source_node = lora_node_id
+            
+            if 'text_encoder' in submodel_types:
+                lora_edges.append({"source": {"node_id": last_clip_source_node, "field": "clip"}, "destination": {"node_id": lora_node_id, "field": "clip"}})
+                last_clip_source_node = lora_node_id
+
+        edges = [
+            {"source": {"node_id": "positive_prompt", "field": "value"}, "destination": {"node_id": "positive_conditioning", "field": "prompt"}},
+            {"source": {"node_id": "negative_prompt", "field": "value"}, "destination": {"node_id": "negative_conditioning", "field": "prompt"}},
+            {"source": {"node_id": last_clip_source_node, "field": "clip"}, "destination": {"node_id": "positive_conditioning", "field": "clip"}},
+            {"source": {"node_id": last_clip_source_node, "field": "clip"}, "destination": {"node_id": "negative_conditioning", "field": "clip"}},
+            {"source": {"node_id": last_unet_source_node, "field": "unet"}, "destination": {"node_id": "denoise_latents", "field": "unet"}},
+            {"source": {"node_id": "positive_conditioning", "field": "conditioning"}, "destination": {"node_id": "denoise_latents", "field": "positive_conditioning"}},
+            {"source": {"node_id": "negative_conditioning", "field": "conditioning"}, "destination": {"node_id": "denoise_latents", "field": "negative_conditioning"}},
+            {"source": {"node_id": vae_source_node_id, "field": "vae"}, "destination": {"node_id": "l2i", "field": "vae"}},
+            {"source": {"node_id": "denoise_latents", "field": "latents"}, "destination": {"node_id": "l2i", "field": "latents"}},
+            {"source": {"node_id": "noise", "field": "noise"}, "destination": {"node_id": "denoise_latents", "field": "latents"}},
+            {"source": {"node_id": "l2i", "field": "image"}, "destination": {"node_id": "save_image", "field": "image"}},
+        ]
+
+        edges.extend(lora_edges)
+
+        return {"nodes": nodes, "edges": edges}
 
     def _build_sdxl_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool) -> Dict[str, Any]:
         """
@@ -359,11 +485,17 @@ class InvokeAIClient:
 
     def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> bytes:
         """Generates an image using the queue API and returns the raw image bytes."""
-        
-        graph = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, cfg_rescale_multiplier, save_to_gallery)
+        model_base = model_object.get('base')
+        if model_base == 'sdxl':
+            graph = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, cfg_rescale_multiplier, save_to_gallery)
+        elif model_base in ['sd-1.5', 'sd-1']:
+            # Note: cfg_rescale_multiplier is not used for SD-1.5
+            graph = self._build_sd15_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, save_to_gallery)
+        else:
+            raise ValueError(f"Unsupported model base type: '{model_base}'. This tool currently supports 'sdxl' and 'sd-1.5'.")
         
         if verbose:
-            print("\n--- VERBOSE: InvokeAI Generation Graph ---", flush=True)
+            print(f"\n--- VERBOSE: InvokeAI Generation Graph (Base: {model_base}) ---", flush=True)
             print(json.dumps(graph, indent=2), flush=True)
             print("----------------------------------------\n", flush=True)
 

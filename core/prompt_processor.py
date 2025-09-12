@@ -193,8 +193,8 @@ class PromptProcessor:
             return True
         return False
 
-    def get_available_models(self) -> List[str]:
-        """Get list of available Ollama models."""
+    def get_available_models(self) -> List[Dict[str, Any]]:
+        """Get list of available Ollama models with their details."""
         return self.ollama_client.list_models()
     
     def is_invokeai_connected(self) -> bool:

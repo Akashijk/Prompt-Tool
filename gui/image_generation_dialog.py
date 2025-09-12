@@ -29,7 +29,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
     def _randomize_seed(self):
         self.seed_var.set(str(random.randint(0, 2**32 - 1)))
 
-    def __init__(self, parent, processor: 'PromptProcessor', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None):
+    def __init__(self, parent, processor: 'PromptProcessor', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None, base_model_type: str = 'sdxl'):
         super().__init__(parent, "Image Generation Options")
         self.processor = processor
         self.model_usage_manager: 'ModelUsageManager' = parent.model_usage_manager
@@ -54,6 +54,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.neg_prompt_overrides: Dict[str, str] = {}
         self.original_negative_prompt_text: str = ""
         self.after_id: Optional[str] = None
+        self.base_model_type_var = tk.StringVar(value=base_model_type)
         self.is_destroyed = False
 
         self._create_widgets()
@@ -71,8 +72,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
         def task():
             try:
-                main_models = self.client.get_models(base_model='sdxl', model_type='main')
-                lora_models = self.client.get_models(base_model='sdxl', model_type='lora')
+                base_model_type = self.base_model_type_var.get()
+                main_models = self.client.get_models(base_model=base_model_type, model_type='main')
+                lora_models = self.client.get_models(base_model=base_model_type, model_type='lora')
                 self.model_queue.put({'success': True, 'main': main_models, 'lora': lora_models})
             except Exception as e:
                 self.model_queue.put({'success': False, 'error': e})
@@ -135,6 +137,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 var.trace_add("write", self._on_model_checkbox_change)
                 
                 cb = ttk.Checkbutton(self.model_container, text=model_name, variable=var)
+                cb.bind("<MouseWheel>", self.model_scroll_view._on_mouse_wheel)
                 
                 if model_name in self.disabled_models:
                     cb.config(state=tk.DISABLED)
@@ -162,6 +165,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 if self.processor.verbose:
                     print(f"DEBUG: Creating widget for LoRA: {lora_name}")
                 lora_frame = ttk.Frame(self.lora_container)
+                lora_frame.bind("<MouseWheel>", self.lora_scroll_view._on_mouse_wheel)
                 self.lora_widgets[lora_name] = lora_frame
                 var = tk.BooleanVar()
                 if lora_name in initial_lora_map:
@@ -169,12 +173,14 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
                 sanitized_name = _sanitize_for_widget_name(lora_name)
                 cb = ttk.Checkbutton(lora_frame, text=lora_name, variable=var, name=f"cb_{sanitized_name}")
+                cb.bind("<MouseWheel>", self.lora_scroll_view._on_mouse_wheel)
                 cb.pack(side='left', fill='x', expand=True)
                 self.lora_vars[lora_name] = var
 
                 # Add weight spinbox
                 weight_var = tk.StringVar(value=str(initial_lora_map.get(lora_name, 0.75))) # type: ignore
                 spinbox = VerticalSpinbox(lora_frame, from_=-1.0, to=2.0, increment=0.05, textvariable=weight_var, width=4, name=f"spin_{sanitized_name}") # type: ignore
+                spinbox.bind("<MouseWheel>", self.lora_scroll_view._on_mouse_wheel)
                 spinbox.pack(side='right')
                 self.lora_weight_vars[lora_name] = weight_var
         else:
@@ -223,41 +229,48 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
     def _create_widgets(self):
         # The main_frame is the top-level container within the dialog.
         # It should not be scrolled itself; only its internal lists are scrollable.
-        main_frame = ttk.Frame(self)
+        main_frame = ttk.Frame(self, padding=15)
         main_frame.pack(fill=tk.BOTH, expand=True)
-        main_frame.config(padding=15) # Apply padding to the content frame
+
+        # --- NEW: Base Model Type Selector ---
+        base_model_frame = ttk.Frame(main_frame)
+        base_model_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(base_model_frame, text="Base Model Type:").pack(side=tk.LEFT, padx=(0, 5))
+        base_model_combo = ttk.Combobox(base_model_frame, textvariable=self.base_model_type_var, values=['sdxl', 'sd-1.5'], state="readonly")
+        base_model_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        base_model_combo.bind("<<ComboboxSelected>>", self._on_base_model_change)
 
         # --- NEW: Paned window for side-by-side layout ---
         model_lora_pane = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
         model_lora_pane.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         # Main Model (Left Pane)
-        model_frame = ttk.LabelFrame(model_lora_pane, text="Main Model (SDXL)", padding=10)
-        model_lora_pane.add(model_frame, weight=1)
+        self.model_frame = ttk.LabelFrame(model_lora_pane, text="Main Model (SDXL)", padding=10)
+        model_lora_pane.add(self.model_frame, weight=1)
 
-        model_select_frame = ttk.Frame(model_frame)
+        model_select_frame = ttk.Frame(self.model_frame)
         model_select_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Button(model_select_frame, text="Select All", command=self._select_all_models).pack(side=tk.LEFT)
         ttk.Button(model_select_frame, text="Select None", command=self._select_none_models).pack(side=tk.LEFT, padx=5)
 
         # Add search entry for models
-        search_model_frame = ttk.Frame(model_frame)
+        search_model_frame = ttk.Frame(self.model_frame)
         search_model_frame.pack(fill=tk.X, pady=(5, 5))
         ttk.Label(search_model_frame, text="Search:").pack(side=tk.LEFT)
         self.model_search_var.trace_add("write", self._filter_models)
         model_search_entry = ttk.Entry(search_model_frame, textvariable=self.model_search_var)
         model_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5,0))
 
-        model_scroll_view = ScrollableFrame(model_frame)
-        model_scroll_view.pack(fill=tk.BOTH, expand=True)
-        self.model_container = model_scroll_view.scrollable_frame
+        self.model_scroll_view = ScrollableFrame(self.model_frame)
+        self.model_scroll_view.pack(fill=tk.BOTH, expand=True)
+        self.model_container = self.model_scroll_view.scrollable_frame
 
         # LoRAs (Right Pane)
-        lora_frame = ttk.LabelFrame(model_lora_pane, text="LoRAs", padding=10)
-        model_lora_pane.add(lora_frame, weight=1)
+        self.lora_frame = ttk.LabelFrame(model_lora_pane, text="LoRAs", padding=10)
+        model_lora_pane.add(self.lora_frame, weight=1)
 
         # Add search entry for LoRAs
-        search_lora_frame = ttk.Frame(lora_frame)
+        search_lora_frame = ttk.Frame(self.lora_frame)
         search_lora_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(search_lora_frame, text="Search:").pack(side=tk.LEFT)
         self.lora_search_var.trace_add("write", self._filter_loras)
@@ -265,10 +278,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         lora_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5,0))
 
 
-
-        lora_scroll_view = ScrollableFrame(lora_frame)
-        lora_scroll_view.pack(fill=tk.BOTH, expand=True)
-        self.lora_container = lora_scroll_view.scrollable_frame
+        self.lora_scroll_view = ScrollableFrame(self.lora_frame)
+        self.lora_scroll_view.pack(fill=tk.BOTH, expand=True)
+        self.lora_container = self.lora_scroll_view.scrollable_frame
 
         # Negative Prompt
         neg_prompt_frame = ttk.LabelFrame(main_frame, text="Negative Prompt", padding=10)
@@ -371,6 +383,32 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         
         self.cancel_button = ttk.Button(self.button_frame, text="Cancel", command=self._on_cancel)
         self.cancel_button.grid(row=0, column=1, sticky='e')
+
+    def _on_base_model_change(self, event=None):
+        """Handles when the user switches between SDXL and SD-1.5."""
+        # Update frame labels
+        base_type_display = self.base_model_type_var.get().upper().replace('-', '.')
+        self.model_frame.config(text=f"Main Model ({base_type_display})")
+        self.lora_frame.config(text=f"LoRAs ({base_type_display})")
+
+        # Clear existing widgets and data
+        for widget in self.model_container.winfo_children():
+            widget.destroy()
+        for widget in self.lora_container.winfo_children():
+            widget.destroy()
+        
+        self.model_vars.clear()
+        self.model_widgets.clear()
+        self.lora_vars.clear()
+        self.lora_widgets.clear()
+        self.lora_weight_vars.clear()
+        self.model_data.clear()
+        self.lora_data.clear()
+        self.lora_overrides.clear()
+        self.neg_prompt_overrides.clear()
+        
+        # Restart the fetch process
+        self._start_model_fetch()
 
     def _select_all_models(self):
         """Sets all enabled model checkboxes to True."""
