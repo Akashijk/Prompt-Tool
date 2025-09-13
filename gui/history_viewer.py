@@ -31,6 +31,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.title("Prompt History Viewer")
 
         self.processor = processor
+        self.model_usage_manager = parent.model_usage_manager
         TaskRunnerMixin.__init__(self)
         self.parent_app = parent
         self.all_history_data: List[Dict[str, str]] = []
@@ -54,7 +55,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
 
         self.image_favorite_var = tk.BooleanVar()
         self.show_favorites_only_var = tk.BooleanVar(value=False)
-        self.cancellation_event = threading.Event()
+        self.thumbnail_cancellation_event = threading.Event()
         self.details_notebook: Optional[ttk.Notebook] = None
         self.filter_debounce_timer: Optional[str] = None
         self.detail_tabs: Dict[str, Dict[str, Any]] = {}
@@ -93,6 +94,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             self.after_cancel(self.thumbnail_after_id)
             self.thumbnail_after_id = None
         self.close_preview_on_destroy()
+        self.thumbnail_cancellation_event.set()
         if self._resize_debounce_id:
             self.after_cancel(self._resize_debounce_id)
             self._resize_debounce_id = None
@@ -1303,13 +1305,10 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.detail_tabs[key].update({'model_label': model_label, 'button_container': button_container})
 
         # Special handling for the 'enhanced' and 'negative' tab's edit buttons
-        if key == 'enhanced':
+        if key != 'original':
             edit_button = ttk.Button(button_container, text="Edit", command=lambda k=key: self._enter_edit_mode(k))
             update_button = ttk.Button(button_container, text="Update", style="Accent.TButton", command=lambda k=key: self._update_edited_prompt(k))
             cancel_button = ttk.Button(button_container, text="Cancel", command=lambda k=key: self._cancel_edit_mode(k))
-            
-            self.detail_tabs[key]['negative_prompt_text'] = neg_prompt_text
-
             self.detail_tabs[key].update({'edit_button': edit_button, 'update_button': update_button, 'cancel_button': cancel_button})
             edit_button.pack(side=tk.LEFT)
 
@@ -1409,7 +1408,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
 
     def _thumbnail_worker(self):
         """A single worker thread to process all thumbnail generation tasks."""
-        while not self.cancellation_event.is_set():
+        while not self.thumbnail_cancellation_event.is_set():
             try:
                 label_widget, image_path, workflow = self.thumbnail_work_queue.get(timeout=1)
                 base_history_dir = config.HISTORY_DIR
@@ -1811,8 +1810,12 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         if key == 'enhanced':
             if 'enhanced' not in updated_row: updated_row['enhanced'] = {}
             updated_row['enhanced']['prompt'] = new_text
+        elif 'variations' in updated_row and key in updated_row['variations']:
+            updated_row['variations'][key]['prompt'] = new_text
         else:
-            return # Should not happen
+            # This case should not be reached if edit buttons are only on valid tabs
+            custom_dialogs.show_error(self, "Error", f"Could not find data for '{key}' to update.")
+            return
 
         success = self.processor.update_history_entry(original_row, updated_row)
         if success:

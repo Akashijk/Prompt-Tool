@@ -9,6 +9,7 @@ import sys
 import re
 import json
 import copy
+import tkinter.font as tkfont
 import difflib
 import re
 import os
@@ -307,32 +308,78 @@ class _CreateSystemPromptDialog(_CustomDialog):
         }
         self.destroy()
 
+class _BoldLabelFrame(ttk.Frame):
+    """
+    A custom LabelFrame that allows for a bold title, bypassing ttk styling issues.
+    It's a ttk.Frame with a manually placed bold ttk.Label and an internal spacer
+    to correctly position child widgets.
+    """
+    def __init__(self, parent, text="", *args, **kwargs):
+        # Initialize the main frame with a border
+        super().__init__(parent, relief="groove", borderwidth=1, *args, **kwargs)
+
+        # Create the bold label
+        self.bold_font = tkfont.Font(family=tkfont.nametofont("TkDefaultFont").cget("family"),
+                                size=tkfont.nametofont("TkDefaultFont").cget("size"),
+                                weight="bold")
+        self.label = ttk.Label(self, text=text, font=self.bold_font)
+        
+        # Place the label over the top border of the frame
+        label_y_offset = -self.bold_font.metrics('linespace') // 2
+        self.label.place(in_=self, x=10, y=label_y_offset)
+
+        # Add a spacer frame at the top to push content down, clearing the label.
+        spacer_height = self.bold_font.metrics('linespace') // 2 + 2
+        ttk.Frame(self, height=spacer_height).pack(side=tk.TOP)
+
+        # Bind the configure event to update the label's wraplength
+        self.bind("<Configure>", self._on_configure)
+
+    def _on_configure(self, event):
+        # Update wraplength of the label, subtracting padding
+        self.label.config(wraplength=max(1, event.width - 20))
+
 class _PerModelNegativePromptDialog(_CustomDialog):
     """A dialog to set negative prompt overrides for selected models."""
     def __init__(self, parent, processor: 'PromptProcessor', selected_models: List[str], overrides: Dict[str, str]):
+        # This dialog's parent is ImageGenerationOptionsDialog. We pass it directly
+        # to the superclass to ensure correct modal behavior and focus return.
         super().__init__(parent, "Per-Model Negative Prompt Overrides")
         self.processor = processor
         self.entries: Dict[str, tk.StringVar] = {}
         self.combo_vars: Dict[str, tk.StringVar] = {}
         self.text_widgets: Dict[str, tk.Entry] = {}
+        
+        # The parent of this dialog is ImageGenerationOptionsDialog, which has a parent_app attribute.
+        # This is a robust way to get the root GUIApp instance for font information.
+        root_app = parent.parent_app
 
-        # Get presets once
+        # Get presets once before creating widgets that use them
         self.negative_prompts = self.processor.get_available_negative_prompts()
         self.neg_prompt_names = ["(Use Default)"] + [p['name'] for p in self.negative_prompts]
 
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(main_frame, text="Select a preset or enter a custom negative prompt for specific models. Leave blank to use the main negative prompt.", wraplength=480).pack(pady=(0, 10))
+        ttk.Label(main_frame, text="Select a preset or enter a custom negative prompt for specific models. Leave blank to use the main negative prompt.", wraplength=780).pack(pady=(0, 10))
 
         from .common import ScrollableFrame # Local import
         scroll_frame = ScrollableFrame(main_frame)
         scroll_frame.pack(fill=tk.BOTH, expand=True)
         container = scroll_frame.scrollable_frame
 
-        for model_name in selected_models:
-            row_frame = ttk.LabelFrame(container, text=model_name, padding=5)
-            row_frame.pack(fill=tk.X, pady=3, padx=3)
+        # --- NEW: Use grid layout for columns ---
+        max_cols = 2
+        for i in range(max_cols):
+            container.columnconfigure(i, weight=1, uniform="group1")
+
+        for i, model_name in enumerate(selected_models):
+            row = i // max_cols
+            col = i % max_cols
+
+            # The _BoldLabelFrame now handles its own top padding. We just provide standard padding for the content.
+            row_frame = _BoldLabelFrame(container, text=model_name, padding=10)
+            row_frame.grid(row=row, column=col, sticky='nsew', padx=3, pady=3)
             row_frame.columnconfigure(0, weight=1)
 
             # Preset Combobox
@@ -341,7 +388,7 @@ class _PerModelNegativePromptDialog(_CustomDialog):
             combo.pack(fill=tk.X, pady=(0, 5))
             combo.bind("<<ComboboxSelected>>", lambda event, m=model_name: self._on_preset_select(event, m))
             self.combo_vars[model_name] = combo_var
-            
+
             # Text Entry
             string_var = tk.StringVar(value=overrides.get(model_name, ""))
             entry = ttk.Entry(row_frame, textvariable=string_var)
@@ -360,8 +407,7 @@ class _PerModelNegativePromptDialog(_CustomDialog):
         cancel_button = ttk.Button(button_frame, text="Cancel", command=self._on_cancel)
         cancel_button.pack(side=tk.RIGHT)
 
-        self.geometry("500x400")
-        self._center_window()
+        self.smart_geometry(min_width=800, min_height=500)
         self.wait_window(self)
 
     def _on_preset_select(self, event, model_name: str):

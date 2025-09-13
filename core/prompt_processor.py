@@ -31,6 +31,8 @@ class PromptProcessor:
         self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL)
         self.invokeai_client = InvokeAIClient(base_url=config.INVOKEAI_BASE_URL)
         self.history_manager: 'HistoryManager' = HistoryManager()
+        self.model_prefixes: Dict[str, Dict[str, str]] = {}
+        self.lora_prefixes: Dict[str, Dict[str, str]] = {}
         self.all_wildcards_cache: Optional[Dict[str, Dict]] = None
         self.verbose = verbose
         self.rng = random.Random()
@@ -62,6 +64,8 @@ class PromptProcessor:
 
         self._update_status("Loading templates...")
         self.template_engine.list_templates(config.get_template_dir())
+        self.model_prefixes = self.load_model_prefixes()
+        self.lora_prefixes = self.load_lora_prefixes()
         
         self.available_variations_map = {v['key']: v['name'] for v in self.get_available_variations()}
         
@@ -181,6 +185,10 @@ class PromptProcessor:
         """Reloads wildcards based on the current workflow."""
         self._update_status("Reloading wildcards...")
         self.template_engine.load_wildcards(self._get_wildcard_load_order())
+        # --- FIX: Also reload templates to reflect the new workflow ---
+        self._update_status("Reloading templates...")
+        self.template_engine.list_templates(config.get_template_dir())
+        # --- End of fix ---
         self._used_wildcards_cache = None
         self._load_all_wildcards_into_cache()
         self.available_variations_map = {v['key']: v['name'] for v in self.get_available_variations()}
@@ -196,6 +204,50 @@ class PromptProcessor:
     def get_available_models(self) -> List[Dict[str, Any]]:
         """Get list of available Ollama models with their details."""
         return self.ollama_client.list_models()
+
+    def get_invokeai_models(self, base_model: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Gets a list of main models from InvokeAI."""
+        self.invokeai_client.check_server_compatibility()
+        return self.invokeai_client.get_models(model_type='main', base_model=base_model)
+
+    def get_invokeai_loras(self, base_model: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Gets a list of LoRA models from InvokeAI."""
+        self.invokeai_client.check_server_compatibility()
+        return self.invokeai_client.get_models(model_type='lora', base_model=base_model)
+    def load_model_prefixes(self) -> Dict[str, Dict[str, str]]:
+        """Loads model-specific prompt prefixes from a JSON file."""
+        try:
+            with open(config.MODEL_PREFIXES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def save_model_prefixes(self, prefixes: Dict[str, Dict[str, str]]):
+        """Saves the model prefixes to a JSON file."""
+        try:
+            with open(config.MODEL_PREFIXES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(prefixes, f, indent=2)
+            # Reload the prefixes into the processor's state
+            self.model_prefixes = prefixes
+        except IOError as e:
+            raise Exception(f"Could not write to model prefixes file: {e}")
+
+    def load_lora_prefixes(self) -> Dict[str, Dict[str, str]]:
+        """Loads LoRA-specific prompt prefixes from a JSON file."""
+        try:
+            with open(config.LORA_PREFIXES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def save_lora_prefixes(self, prefixes: Dict[str, Dict[str, str]]):
+        """Saves the LoRA prefixes to a JSON file."""
+        try:
+            with open(config.LORA_PREFIXES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(prefixes, f, indent=2)
+            self.lora_prefixes = prefixes
+        except IOError as e:
+            raise Exception(f"Could not write to LoRA prefixes file: {e}")
     
     def is_invokeai_connected(self) -> bool:
         """Checks if the InvokeAI client is configured and likely connected."""
@@ -254,8 +306,10 @@ class PromptProcessor:
         return all_history
     
     def get_available_templates(self) -> List[str]:
-        """Get a fresh, sorted list of available templates."""
-        return self.template_engine.list_templates(config.get_template_dir())
+        """Get a sorted list of available templates from the cache."""
+        # This is designed to be called *after* initialize() or list_templates()
+        # has populated the cache.
+        return sorted(list(self.template_engine.templates.keys()), key=str.lower)
 
     def get_wildcard_names(self) -> List[str]:
         """Get the names (keys) of all loaded wildcards."""
@@ -1996,7 +2050,47 @@ class PromptProcessor:
 
     def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> bytes:
         """Generates an image with InvokeAI and returns the raw image bytes."""
-        self.invokeai_client.check_server_compatibility() # This will raise a specific error if there's a problem.
+
+        # --- NEW: Apply model-specific prefixes ---
+        model_name = model_object.get('name')
+        if model_name and model_name in self.model_prefixes:
+            prefixes = self.model_prefixes[model_name]
+            
+            pos_prefix = prefixes.get('positive_prefix', '').strip()
+            if pos_prefix:
+                prompt = f"{pos_prefix}, {prompt}"
+
+            neg_prefix = prefixes.get('negative_prefix', '').strip()
+            if neg_prefix:
+                # Prepend to existing negative prompt, handling the case where it's empty
+                negative_prompt = f"{neg_prefix}, {negative_prompt}" if negative_prompt else neg_prefix
+
+        # --- NEW: Apply LoRA-specific prefixes with deduplication ---
+        all_pos_lora_prefixes = set()
+        all_neg_lora_prefixes = set()
+
+        for lora_info in loras:
+            lora_name = lora_info.get('lora_object', {}).get('name')
+            if lora_name and lora_name in self.lora_prefixes:
+                lora_prefixes = self.lora_prefixes[lora_name]
+
+                pos_prefix = lora_prefixes.get('positive_prefix', '').strip()
+                if pos_prefix:
+                    # Split by comma and add to set to handle duplicates
+                    all_pos_lora_prefixes.update([p.strip() for p in pos_prefix.split(',') if p.strip()])
+
+                neg_prefix = lora_prefixes.get('negative_prefix', '').strip()
+                if neg_prefix:
+                    all_neg_lora_prefixes.update([p.strip() for p in neg_prefix.split(',') if p.strip()])
+        
+        # Combine and prepend the unique prefixes
+        if all_pos_lora_prefixes:
+            prompt = f"{', '.join(sorted(list(all_pos_lora_prefixes)))}, {prompt}"
+
+        if all_neg_lora_prefixes:
+            combined_neg_prefix = ", ".join(sorted(list(all_neg_lora_prefixes)))
+            negative_prompt = f"{combined_neg_prefix}, {negative_prompt}" if negative_prompt else combined_neg_prefix
+        # --- END of new logic ---
 
         return self.invokeai_client.generate_image(
             prompt=prompt, 

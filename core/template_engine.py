@@ -66,9 +66,7 @@ class TemplateEngine:
     def load_wildcards(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
         """Load all wildcard files from a list of directories, with later directories overriding earlier ones."""
         self.wildcards = self.get_all_wildcards_data_from_dirs(wildcard_dirs)
-        # Invalidate the file list cache whenever we reload wildcards.
-        self.wildcard_files_cache = None
-        self.wildcard_dirs_for_cache = None
+        # The file list cache is now populated by get_all_wildcards_data_from_dirs.
         return self.wildcards
     
     def get_all_wildcards_data_from_dirs(self, wildcard_dirs: List[str]) -> Dict[str, Dict]:
@@ -97,10 +95,15 @@ class TemplateEngine:
                         # Prioritize .json over .txt. Later dirs override earlier ones.
                         if basename not in found_files or \
                            (ext == '.json' and found_files[basename]['ext'] == '.txt') or \
-                           (ext == found_files[basename]['ext']):
-                            found_files[basename] = {'ext': ext, 'path': path, 'mtime': mtime}
+                           (ext == found_files[basename]['ext']): # Add filename for caching
+                            found_files[basename] = {'ext': ext, 'path': path, 'mtime': mtime, 'filename': filename}
                     except FileNotFoundError:
                         continue # File might have been deleted during the scan
+
+        # Populate the file list cache here since we already have the file list.
+        file_list = sorted([data['filename'] for data in found_files.values()], key=str.lower)
+        self.wildcard_files_cache = file_list
+        self.wildcard_dirs_for_cache = wildcard_dirs
 
         # 2. Process files, using cache where possible.
         current_cache = {}

@@ -26,6 +26,7 @@ from .settings_window import SettingsWindow
 from .wildcard_manager import WildcardManagerWindow
 from .prompt_evolver import PromptEvolverWindow
 from .image_interrogator import ImageInterrogatorWindow
+from .asset_prefix_editor import AssetPrefixEditorWindow
 from .menu_bar import MenuBar
 from .template_editor import TemplateEditor
 from .wildcard_inserter import WildcardInserter
@@ -81,6 +82,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.wildcard_tooltip_after_id: Optional[str] = None
         self.last_hovered_segment_index: int = -1
         self.model_tooltip: Optional[Tooltip] = None
+        self.model_details_map: Dict[str, Any] = {}
         self.debounce_timer: Optional[str] = None
         self.main_window_model: Optional[str] = None
         self.brainstorming_window: Optional[BrainstormingWindow] = None
@@ -88,6 +90,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.image_interrogator_window: Optional[ImageInterrogatorWindow] = None
         self.prompt_evolver_window: Optional[PromptEvolverWindow] = None
         self.history_viewer_window: Optional[HistoryViewerWindow] = None
+        self.asset_prefix_editor_window: Optional[AssetPrefixEditorWindow] = None
         self.favorite_images_viewer_window: Optional[FavoriteImagesViewer] = None
         self.loading_animation: Optional[LoadingAnimation] = None
         self.wildcard_swap_menu: tk.Menu = tk.Menu(self, tearoff=0)
@@ -1788,6 +1791,21 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.settings_window:
             self.settings_window.destroy()
             self.settings_window = None
+    
+    def _open_asset_prefix_editor(self):
+        """Opens the unified InvokeAI asset prefix editor window."""
+        if self.asset_prefix_editor_window and self.asset_prefix_editor_window.winfo_exists():
+            self.asset_prefix_editor_window.lift()
+            self.asset_prefix_editor_window.focus_force()
+        else:
+            self.asset_prefix_editor_window = AssetPrefixEditorWindow(self, self.processor)
+            self.asset_prefix_editor_window.protocol("WM_DELETE_WINDOW", self._on_asset_prefix_editor_close)
+
+    def _on_asset_prefix_editor_close(self):
+        """Callback for when the asset prefix editor is closed."""
+        if self.asset_prefix_editor_window:
+            self.asset_prefix_editor_window.destroy()
+            self.asset_prefix_editor_window = None
 
     def _on_settings_saved(self):
         """Called when settings are saved, to reload necessary resources."""
@@ -1819,6 +1837,10 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.prompt_evolver_window.close()
         if self.favorite_images_viewer_window and self.favorite_images_viewer_window.winfo_exists():
             self.favorite_images_viewer_window.close()
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.destroy()
+        if self.asset_prefix_editor_window and self.asset_prefix_editor_window.winfo_exists():
+            self.asset_prefix_editor_window.destroy()
         if self.image_interrogator_window and self.image_interrogator_window.winfo_exists():
             self.image_interrogator_window.close()
         for window in list(self.enhancement_windows):

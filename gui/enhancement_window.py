@@ -42,6 +42,10 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         self.sd_model_labels: Dict[str, ttk.Label] = {}
         self.loading_animations: Dict[str, LoadingAnimation] = {}
         self.image_gen_spinners: Dict[str, LoadingAnimation] = {}
+        self.edit_buttons: Dict[str, ttk.Button] = {}
+        self.save_edit_buttons: Dict[str, ttk.Button] = {}
+        self.cancel_edit_buttons: Dict[str, ttk.Button] = {}
+        self.original_edit_content: Dict[str, str] = {}
         self.image_gen_buttons: Dict[str, ttk.Button] = {}
         self.copy_buttons: Dict[str, ttk.Button] = {}
         self.regen_buttons: Dict[str, ttk.Button] = {}
@@ -162,6 +166,18 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         copy_button = ttk.Button(button_container, text="Copy", command=lambda key=prompt_key: self._copy_current_prompt(key))
         copy_button.pack(fill=tk.X)
         self.copy_buttons[prompt_key] = copy_button
+
+        # --- NEW: Edit Button ---
+        if prompt_key != 'original':
+            edit_button = ttk.Button(button_container, text="Edit", command=lambda key=prompt_key: self._enter_edit_mode(key))
+            edit_button.pack(fill=tk.X, pady=(5,0))
+            self.edit_buttons[prompt_key] = edit_button
+
+            save_edit_button = ttk.Button(button_container, text="Save", style="Accent.TButton", command=lambda key=prompt_key: self._save_edit(key))
+            self.save_edit_buttons[prompt_key] = save_edit_button
+
+            cancel_edit_button = ttk.Button(button_container, text="Cancel", command=lambda key=prompt_key: self._cancel_edit(key))
+            self.cancel_edit_buttons[prompt_key] = cancel_edit_button
 
         # Add Generate Image button for prompts that can be generated (not negative)
         if prompt_key != 'negative':
@@ -470,3 +486,65 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         
         if not is_any_loading:
             self.regen_all_button.config(state=tk.NORMAL)
+
+    def _enter_edit_mode(self, prompt_key: str):
+        """Enables editing for a specific prompt text widget."""
+        text_widget = self.text_widgets.get(prompt_key)
+        if not text_widget: return
+
+        # Store original content for cancellation
+        self.original_edit_content[prompt_key] = text_widget.get("1.0", "end-1c")
+        
+        text_widget.config(state=tk.NORMAL)
+        text_widget.focus_set()
+
+        # Swap buttons
+        self.edit_buttons[prompt_key].pack_forget()
+        self.save_edit_buttons[prompt_key].pack(fill=tk.X, pady=(5,0))
+        self.cancel_edit_buttons[prompt_key].pack(fill=tk.X, pady=(2,0))
+
+    def _save_edit(self, prompt_key: str):
+        """Saves the edited prompt to the internal data structure."""
+        text_widget = self.text_widgets.get(prompt_key)
+        if not text_widget: return
+
+        new_text = text_widget.get("1.0", "end-1c").strip()
+        
+        # Update internal data
+        if prompt_key == 'enhanced':
+            if 'enhanced' not in self.result_data: self.result_data['enhanced'] = {}
+            self.result_data['enhanced']['prompt'] = new_text
+        elif prompt_key in self.result_data.get('variations', {}):
+            self.result_data['variations'][prompt_key]['prompt'] = new_text
+        
+        # Exit edit mode
+        self._exit_edit_mode(prompt_key)
+
+    def _cancel_edit(self, prompt_key: str):
+        """Cancels editing and reverts the text."""
+        text_widget = self.text_widgets.get(prompt_key)
+        original_text = self.original_edit_content.get(prompt_key)
+        if not text_widget or original_text is None: return
+
+        text_widget.config(state=tk.NORMAL)
+        text_widget.delete("1.0", tk.END)
+        text_widget.insert("1.0", original_text)
+        
+        # Exit edit mode
+        self._exit_edit_mode(prompt_key)
+
+    def _exit_edit_mode(self, prompt_key: str):
+        """Helper to revert UI state after editing is done."""
+        text_widget = self.text_widgets.get(prompt_key)
+        if not text_widget: return
+
+        text_widget.config(state=tk.DISABLED)
+
+        # Swap buttons back
+        self.save_edit_buttons[prompt_key].pack_forget()
+        self.cancel_edit_buttons[prompt_key].pack_forget()
+        self.edit_buttons[prompt_key].pack(fill=tk.X, pady=(5,0))
+
+        # Clean up stored original content
+        if prompt_key in self.original_edit_content:
+            del self.original_edit_content[prompt_key]

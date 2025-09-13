@@ -30,6 +30,12 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.seed_var.set(str(random.randint(0, 2**32 - 1)))
 
     def __init__(self, parent, processor: 'PromptProcessor', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None, base_model_type: str = 'sdxl'):
+        # The parent could be the main app or another Toplevel window.
+        # We need to find the root GUIApp instance for context.
+        if hasattr(parent, 'parent_app'):
+            self.parent_app = parent.parent_app
+        else:
+            self.parent_app = parent
         super().__init__(parent, "Image Generation Options")
         self.processor = processor
         self.model_usage_manager: 'ModelUsageManager' = parent.model_usage_manager
@@ -54,6 +60,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.neg_prompt_overrides: Dict[str, str] = {}
         self.original_negative_prompt_text: str = ""
         self.after_id: Optional[str] = None
+        self.lora_tooltip: Optional[Tooltip] = None
+        self.lora_tooltip_after_id: Optional[str] = None
+        self.last_hovered_lora: Optional[str] = None
         self.base_model_type_var = tk.StringVar(value=base_model_type)
         self.is_destroyed = False
 
@@ -165,6 +174,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 if self.processor.verbose:
                     print(f"DEBUG: Creating widget for LoRA: {lora_name}")
                 lora_frame = ttk.Frame(self.lora_container)
+                # Bind events to the frame for tooltip functionality
+                lora_frame.bind("<Motion>", lambda e, ln=lora_name: self._schedule_lora_tooltip(e, ln))
+                lora_frame.bind("<Leave>", self._hide_lora_tooltip)
                 lora_frame.bind("<MouseWheel>", self.lora_scroll_view._on_mouse_wheel)
                 self.lora_widgets[lora_name] = lora_frame
                 var = tk.BooleanVar()
@@ -281,6 +293,8 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.lora_scroll_view = ScrollableFrame(self.lora_frame)
         self.lora_scroll_view.pack(fill=tk.BOTH, expand=True)
         self.lora_container = self.lora_scroll_view.scrollable_frame
+        # Initialize the tooltip, attached to the container that holds the LoRAs
+        self.lora_tooltip = Tooltip(self.lora_container, "")
 
         # Negative Prompt
         neg_prompt_frame = ttk.LabelFrame(main_frame, text="Negative Prompt", padding=10)
@@ -355,7 +369,10 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
         # Row 2: Scheduler
         ttk.Label(params_frame, text="Scheduler:").grid(row=2, column=0, sticky='w', pady=(5, 0))
-        schedulers = ["euler", "dpmpp_2m", "dpmpp_2m_karras", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_2s_ancestral", "lms", "pndm"]
+        # Corrected scheduler names to match InvokeAI's expected values.
+        # 'dpmpp_2m_karras' -> 'dpmpp_2m_k'
+        # 'dpmpp_2s_ancestral' -> 'dpmpp_2s'
+        schedulers = ["euler", "dpmpp_2m", "dpmpp_2m_k", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_2s", "lms", "pndm"]
         self.scheduler_var = tk.StringVar(value=self.initial_params.get('scheduler', 'dpmpp_2m'))
         ttk.Combobox(params_frame, textvariable=self.scheduler_var, values=schedulers, state="readonly").grid(row=2, column=1, columnspan=5, sticky='ew', pady=(5,0))
 
@@ -383,6 +400,44 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         
         self.cancel_button = ttk.Button(self.button_frame, text="Cancel", command=self._on_cancel)
         self.cancel_button.grid(row=0, column=1, sticky='e')
+
+    def _schedule_lora_tooltip(self, event, lora_name: str):
+        """Schedules a tooltip to appear over a LoRA after a delay."""
+        if self.lora_tooltip_after_id:
+            self.after_cancel(self.lora_tooltip_after_id)
+
+        if lora_name != self.last_hovered_lora:
+            if self.lora_tooltip: self.lora_tooltip.hide()
+
+        self.last_hovered_lora = lora_name
+        self.lora_tooltip_after_id = self.after(500, lambda: self._display_lora_tooltip(lora_name, event))
+
+    def _display_lora_tooltip(self, lora_name: str, event):
+        """Fetches prefix content and displays the tooltip."""
+        if not self.lora_tooltip: return
+
+        prefix_data = self.processor.lora_prefixes.get(lora_name, {})
+        positive_prefix = prefix_data.get("positive_prefix", "").strip()
+        negative_prefix = prefix_data.get("negative_prefix", "").strip()
+
+        tooltip_parts = []
+        if positive_prefix:
+            tooltip_parts.append(f"Positive Prefix:\n- {positive_prefix}")
+        if negative_prefix:
+            tooltip_parts.append(f"Negative Prefix:\n- {negative_prefix}")
+
+        if tooltip_parts:
+            self.lora_tooltip.text = "\n\n".join(tooltip_parts)
+            self.lora_tooltip.show(event)
+
+    def _hide_lora_tooltip(self, event=None):
+        """Hides the LoRA tooltip and cancels any scheduled appearance."""
+        self.last_hovered_lora = None
+        if self.lora_tooltip_after_id:
+            self.after_cancel(self.lora_tooltip_after_id)
+            self.lora_tooltip_after_id = None
+        if self.lora_tooltip:
+            self.lora_tooltip.hide(event)
 
     def _on_base_model_change(self, event=None):
         """Handles when the user switches between SDXL and SD-1.5."""

@@ -78,4 +78,5 @@ class TaskRunnerMixin:
             else:
                 on_error(result['error'])
         except queue.Empty:
-            self.task_after_id = self.after(100, lambda: self._check_task_queue(on_success, on_error))
+            if self.winfo_exists():
+                self.task_after_id = self.after(100, lambda: self._check_task_queue(on_success, on_error))

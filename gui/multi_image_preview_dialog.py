@@ -31,6 +31,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             self.parent_app = parent.parent_app
         else: # Assume the parent is the main app
             self.parent_app = parent
+        self.model_usage_manager = self.parent_app.model_usage_manager
 
         self.processor = processor
         self.generation_jobs = generation_jobs
@@ -42,7 +43,6 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         self.image_widgets: List[Dict[str, Any]] = []
         self.progress_callback = progress_callback
         self.image_context_menu = tk.Menu(self, tearoff=0)
-        self.context_menu_widget_info: Optional[Dict[str, Any]] = None
         self.completion_callback = completion_callback
         
         # Queues for async operations
@@ -57,7 +57,8 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         
         # Threading controls
         self.cancellation_event = threading.Event()
-        self.last_used_model: Optional[str] = None
+        self.model_switch_lock = threading.Lock()
+        self.last_used_model_in_queue: Optional[str] = None
         
         self.thumbnail_size = (256, 256)
         self.item_width = self.thumbnail_size[0] + 20 # Approx width for layout calculation
@@ -68,19 +69,19 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         self.thumbnail_worker_thread.start()
 
         self._create_widgets()
-        self.image_context_menu.add_command(label="Edit & Regenerate...", command=self._edit_and_regenerate_image)
-        self.image_context_menu.add_command(label="Regenerate with New Seed", command=self._regenerate_with_new_seed_from_menu)
+        self.image_context_menu.add_command(label="Edit & Regenerate...", command=lambda: None) # Placeholder
+        self.image_context_menu.add_command(label="Regenerate with New Seed", command=lambda: None) # Placeholder
 
         self._populate_grid()
 
         # --- Smart Sizing Logic ---
         num_images = len(self.generation_jobs)
-        min_width = 800 # Default minimum
+        min_width = 1200 # Default minimum, increased to better fit 4 images.
         if num_images > 1:
             # Calculate width needed for up to 4 items
             cols_to_show = min(num_images, 4)
             # Add a bit more padding for scrollbar and window chrome
-            calculated_width = (self.item_width * cols_to_show) + 60
+            calculated_width = (self.item_width * cols_to_show) + 80
             min_width = max(min_width, calculated_width)
 
         self.smart_geometry(min_width=min_width, min_height=600)
@@ -122,6 +123,11 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
     def _start_worker_pool(self):
         """Starts a pool of worker threads to process jobs from the job_queue."""
+        # --- NEW: Perform a single compatibility check before starting workers ---
+        if self.processor.is_invokeai_connected():
+            self.processor.invokeai_client.check_server_compatibility()
+        # --- End of new logic ---
+
         num_workers = 4 # Concurrency limit
         for _ in range(num_workers):
             thread = threading.Thread(target=self._worker_loop, daemon=True)
@@ -158,9 +164,20 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 break
 
             job_id = job['id']
-            self.last_used_model = job.get('gen_params', {}).get('model', {}).get('name')
 
             try:
+                # --- Model Cache Clearing Logic ---
+                current_model_name = job.get('gen_params', {}).get('model', {}).get('name')
+                with self.model_switch_lock:
+                    # If the model for this job is different from the last one processed...
+                    if self.last_used_model_in_queue and current_model_name != self.last_used_model_in_queue:
+                        if self.processor.is_invokeai_connected():
+                            # Asynchronously clear the cache to prepare for the new model.
+                            self.processor.clear_invokeai_cache_async()
+                    # Update the last used model to the current one.
+                    self.last_used_model_in_queue = current_model_name
+                # --- End of Cache Logic ---
+
                 self.generation_queue.put({'status': 'generating', 'job_id': job_id})
                 prompt = job['prompt']
                 gen_params = job['gen_params']
@@ -185,11 +202,14 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 result_data = {'bytes': image_bytes, 'prompt': prompt, 'generation_params': gen_params}
                 self.generation_queue.put({'status': 'completed', 'job_id': job_id, 'data': result_data})
             except Exception as e:
+                # --- NEW: Distinguish between timeout and other errors ---
                 if not self.cancellation_event.is_set():
                     print(f"\n--- ERROR during image generation for job ID {job_id} ---", file=sys.stderr, flush=True)
                     traceback.print_exc(file=sys.stderr)
                     print("-----------------------------------------------------\n", file=sys.stderr, flush=True)
-                    self.generation_queue.put({'status': 'error', 'job_id': job_id, 'error': f"Error: {e}"})
+                    # Check if the error message indicates a timeout.
+                    error_type = 'timeout' if 'timeout' in str(e).lower() else 'generic'
+                    self.generation_queue.put({'status': 'error', 'job_id': job_id, 'error': f"Error: {e}", 'error_type': error_type})
 
     def _check_thumbnail_queue(self):
         """Checks for processed thumbnails and updates the UI."""
@@ -238,8 +258,20 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                     widget_info['spinner'].stop()
                     widget_info['spinner'].grid_forget()
                     widget_info['image_label'].grid(row=0, column=0, sticky='nsew')
-                    widget_info['image_label'].config(text=result['error'], image='')
-                    widget_info['regen_button'].config(state=tk.NORMAL)
+                    
+                    # --- FIX: Logic to show 'Retry' or 'Regen' button ---
+                    error_type = result.get('error_type', 'generic')
+                    error_message = result.get('error', 'An unknown error occurred.')
+                    widget_info['image_label'].config(text=error_message, image='')
+
+                    regen_button = widget_info['regen_button']
+                    # Always reset to the default 'Regen' state first.
+                    regen_button.config(text="Regen", command=lambda info=widget_info: self._regenerate_image(info))
+                    # Then, if it's a timeout, specifically reconfigure it to be a 'Retry' button.
+                    if error_type == 'timeout':
+                        regen_button.config(text="Retry", command=lambda info=widget_info: self._retry_image(info))
+
+                    regen_button.config(state=tk.NORMAL)
             
             self._update_save_button_state() # Update button state after each processed item
 
@@ -539,17 +571,12 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         # This dialog already has the full PIL image in memory.
         return widget_info.get('full_pil_image')
 
-    def _regenerate_with_new_seed_from_menu(self):
+    def _regenerate_with_new_seed_from_menu(self, widget_info: Dict[str, Any]):
         """Wrapper to call the standard regeneration from the context menu."""
-        if self.context_menu_widget_info:
-            self._regenerate_image(self.context_menu_widget_info)
+        self._regenerate_image(widget_info)
 
-    def _edit_and_regenerate_image(self): # noqa: C901
+    def _edit_and_regenerate_image(self, widget_info: Dict[str, Any]): # noqa: C901
         """Handles the 'Edit & Regenerate' action, including adding new previews for multiple selected models."""
-        if not self.context_menu_widget_info:
-            return
-        
-        widget_info = self.context_menu_widget_info
         image_data = widget_info.get('image_data')
         if not image_data or not image_data.get('generation_params'):
             custom_dialogs.show_error(self, "Error", "No generation parameters found for this image.")
@@ -582,7 +609,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         
         from .image_generation_dialog import ImageGenerationOptionsDialog
         dialog = ImageGenerationOptionsDialog(
-            self.parent_app, # Pass the main app instance as the parent
+            self, # Pass self as the parent to keep focus within this workflow
             self.processor,
             initial_params=initial_dialog_params, 
             is_editing=True,
@@ -643,12 +670,34 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         
         self._regenerate_image_with_new_params(widget_info_to_regen, new_gen_params)
 
+    def _retry_image(self, widget_info_to_retry: Dict[str, Any]):
+        """Retries a failed job by putting it back in the queue with the same parameters."""
+        if self.progress_callback:
+            self.progress_callback('retrying')
+
+        # Reset the button state and show the spinner, just like a regeneration
+        widget_info_to_retry['regen_button'].config(state=tk.DISABLED, text="Retry")
+        widget_info_to_retry['image_label'].grid_forget()
+        widget_info_to_retry['spinner'].grid(row=0, column=0, sticky='nsew')
+        widget_info_to_retry['spinner'].start()
+
+        # Get the original job data from the widget
+        job_to_retry = widget_info_to_retry['job_data']
+
+        # Re-queue the job with a high priority to run next
+        self.job_queue.put((0, time.time(), job_to_retry))
+        self.completed_jobs -= 1 # Decrement so the "Save" button text is accurate
+
     def _show_context_menu(self, event, widget_info: Dict[str, Any]):
         """Shows the context menu for an image card."""
         # Only show if an image has been generated for this slot
         if not widget_info.get('image_data'):
             return
-        self.context_menu_widget_info = widget_info
+
+        # --- FIX: Reconfigure menu commands each time to capture the correct widget_info ---
+        self.image_context_menu.entryconfig("Edit & Regenerate...", command=lambda: self._edit_and_regenerate_image(widget_info))
+        self.image_context_menu.entryconfig("Regenerate with New Seed", command=lambda: self._regenerate_with_new_seed_from_menu(widget_info))
+
         self.image_context_menu.tk_popup(event.x_root, event.y_root)
 
     def _regenerate_image_with_new_params(self, widget_info_to_regen: Dict[str, Any], new_gen_params: Dict[str, Any]):
@@ -682,10 +731,10 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
         # --- NEW: Intelligently prioritize this job to minimize model switching ---
         regen_model_name = new_gen_params.get('model', {}).get('name')
-
+        
         # Check if the regenerated model is the one we are currently working on.
-        # self.last_used_model is a good heuristic for the "current batch model".
-        if regen_model_name and regen_model_name == self.last_used_model:
+        # self.last_used_model_in_queue is a good heuristic for the "current batch model".
+        if regen_model_name and regen_model_name == self.last_used_model_in_queue:
             # The model matches the current one. Give it top priority to run next.
             priority = 0
         else:

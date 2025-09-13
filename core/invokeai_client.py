@@ -7,6 +7,7 @@ import threading
 import base64
 import copy
 from typing import Dict, Any, Optional, List, Tuple, Callable
+from .config import config
 from packaging.version import Version, parse as parse_version
 
 class IncompatibleVersionError(Exception):
@@ -33,6 +34,11 @@ class InvokeAIClient:
 
     def check_server_compatibility(self):
         """Checks for connection, compatible version, and a working models endpoint by probing."""
+        # If we've already successfully configured, don't re-check.
+        # This avoids repeated API calls for every image generation.
+        if self.models_endpoint and self.server_version:
+            return
+
         try:
             # Check version first
             version_str = self.get_version()
@@ -53,7 +59,7 @@ class InvokeAIClient:
                     try:
                         # We test with a dummy parameter to ensure the endpoint handles filtering.
                         params = {param_name: ["sdxl"]}
-                        response = requests.get(f"{self.base_url}{endpoint}", params=params, timeout=3)
+                        response = requests.get(f"{self.base_url}{endpoint}", params=params, timeout=10)
                         if response.status_code == 200:
                             # Success! We found a working combination.
                             self.models_endpoint = endpoint
@@ -78,7 +84,7 @@ class InvokeAIClient:
 
     def get_version(self) -> str:
         """Gets the InvokeAI server version."""
-        response = requests.get(f"{self.base_url}/api/v1/app/version", timeout=3)
+        response = requests.get(f"{self.base_url}/api/v1/app/version", timeout=10)
         response.raise_for_status()
         return response.json().get('version', '0.0.0')
 
@@ -146,14 +152,24 @@ class InvokeAIClient:
             print("\n" + "="*80 + "\nWARNING: No compatible FP32 VAE was found for your SDXL model.\nThis can cause black or distorted images with certain models.\nSOLUTION: Download 'sdxl-vae.safetensors' and place it in your InvokeAI 'models/sdxl/vae' directory.\n" + "="*80 + "\n")
         
         elif main_model_base in ['sd-1', 'sd-1.5']:
-            # For SD-1.5, look for the standard 'sd-vae-ft-mse' VAE.
+            # For SD-1.5, find a suitable VAE override.
             sd15_vaes = [v for v in self.available_vaes if v.get('base') in ['sd-1', None]]
+            
+            # If no compatible VAEs are found at all, warn the user and return.
+            if not sd15_vaes:
+                print("\n" + "="*80 + "\nWARNING: No standard 'sd-vae-ft-mse' VAE was found for your SD-1.5 model.\nThis can cause distorted images with certain models.\nSOLUTION: Ensure 'sd-vae-ft-mse.safetensors' is in your InvokeAI 'models/sd-1/vae' directory.\n" + "="*80 + "\n")
+                return None
+
+            # Priority 1: Look for the well-known 'ft-mse' VAE.
             for vae in sd15_vaes:
                 if 'sd-vae-ft-mse' in vae.get('name', '').lower():
                     if self.verbose: print(f"INFO: Found standard 'sd-vae-ft-mse'. Applying VAE override for SD-1.5 model.")
                     return vae
             
-            print("\n" + "="*80 + "\nWARNING: No standard 'sd-vae-ft-mse' VAE was found for your SD-1.5 model.\nThis can cause distorted images with certain models.\nSOLUTION: Ensure 'sd-vae-ft-mse.safetensors' is in your InvokeAI 'models/sd-1/vae' directory.\n" + "="*80 + "\n")
+            # Priority 2: If the standard one isn't found, use the first available compatible VAE as a fallback.
+            first_available_vae = sd15_vaes[0]
+            if self.verbose: print(f"INFO: Standard 'sd-vae-ft-mse' not found. Using first available compatible VAE as fallback: '{first_available_vae.get('name')}'")
+            return first_available_vae
 
         return None
 
@@ -473,14 +489,24 @@ class InvokeAIClient:
         Sends a request to the InvokeAI server to empty the model cache, freeing VRAM.
         Returns True on success, False on failure.
         """
+        if not self.models_endpoint:
+            # If we haven't determined the endpoint, we can't clear the cache.
+            # This is a safe fallback, though check_server_compatibility should have run.
+            print("WARNING: Cannot empty model cache, InvokeAI client not fully configured.")
+            return False
+            
+        # The endpoint path should be constructed dynamically based on the discovered models endpoint.
+        # e.g., /api/v1/models/ or /api/v2/models/
+        cache_clear_url = f"{self.base_url}{self.models_endpoint}empty_model_cache"
+
         try:
-            response = requests.post(f"{self.base_url}/api/v2/models/empty_model_cache", timeout=30)
+            response = requests.post(cache_clear_url, timeout=30)
             response.raise_for_status()
             if self.verbose:
                 print("INFO: Successfully requested model cache to be emptied.")
             return True
         except requests.RequestException as e:
-            print(f"ERROR: Failed to send request to empty model cache: {e}") # type: ignore
+            print(f"ERROR: Failed to send request to empty model cache: {e}")
             return False
 
     def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> bytes:
@@ -518,7 +544,7 @@ class InvokeAIClient:
         except (KeyError, IndexError) as e:
             raise Exception(f"Could not parse queue item ID from InvokeAI response. Response was: {json.dumps(queue_item, indent=2)}") from e
 
-        timeout = 300  # Increased timeout for slower GPUs or complex generations
+        timeout = config.INVOKEAI_TIMEOUT
         start_time = time.time()
         while time.time() - start_time < timeout:
             if cancellation_event and cancellation_event.is_set():

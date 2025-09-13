@@ -13,6 +13,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # --- User Settings Management ---
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".prompt_tool_v2")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
+MODEL_PREFIXES_FILE = os.path.join(CONFIG_DIR, "model_prefixes.json")
+LORA_PREFIXES_FILE = os.path.join(CONFIG_DIR, "lora_prefixes.json")
 WILDCARD_CACHE_FILE = os.path.join(CONFIG_DIR, "wildcards.cache.json")
 CACHE_DIR = os.path.join(CONFIG_DIR, "cache")
 
@@ -57,12 +59,15 @@ class Config:
     HISTORY_DIR: str = _user_settings.get("history_dir", os.path.join(PROJECT_ROOT, 'history'))
     SYSTEM_PROMPT_BASE_DIR: str = _user_settings.get("system_prompt_base_dir", os.path.join(PROJECT_ROOT, 'system_prompts'))
     CACHE_DIR: str = CACHE_DIR
+    MODEL_PREFIXES_FILE: str = MODEL_PREFIXES_FILE
+    LORA_PREFIXES_FILE: str = LORA_PREFIXES_FILE
     
     # Default settings
     DEFAULT_FONT_SIZE: int = 11
     DEFAULT_TIMEOUT: int = 45
     BRAINSTORM_TIMEOUT: int = 90
     VARIATION_TIMEOUT: int = 30
+    DEFAULT_INVOKEAI_TIMEOUT: int = 300
     
     # Ollama settings
     OLLAMA_BASE_URL: str = _user_settings.get("ollama_base_url", "http://localhost:11434")
@@ -70,6 +75,7 @@ class Config:
     # InvokeAI settings
     INVOKEAI_BASE_URL: str = _user_settings.get("invokeai_base_url", "http://127.0.0.1:9090")
     DEFAULT_NEGATIVE_PROMPT: str = _user_settings.get("default_negative_prompt", "ugly, deformed, bad quality, cartoon, 3d, disfigured, bad anatomy")
+    INVOKEAI_TIMEOUT: int = _user_settings.get("invokeai_timeout", DEFAULT_INVOKEAI_TIMEOUT)
     
     # Workflow setting
     workflow: str = _user_settings.get("workflow", "sfw")

@@ -27,7 +27,8 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
             "history_dir": tk.StringVar(value=config.HISTORY_DIR),
             "system_prompt_base_dir": tk.StringVar(value=config.SYSTEM_PROMPT_BASE_DIR),
             "ollama_base_url": tk.StringVar(value=config.OLLAMA_BASE_URL),
-            "invokeai_base_url": tk.StringVar(value=config.INVOKEAI_BASE_URL)
+            "invokeai_base_url": tk.StringVar(value=config.INVOKEAI_BASE_URL),
+            "invokeai_timeout": tk.StringVar(value=config.INVOKEAI_TIMEOUT)
         }
 
         self._create_widgets()
@@ -70,6 +71,11 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
         invokeai_entry = ttk.Entry(conn_group, textvariable=self.setting_vars["invokeai_base_url"], width=60)
         invokeai_entry.grid(row=1, column=1, sticky='ew', pady=5)
         Tooltip(invokeai_entry, "The base URL for your InvokeAI server (e.g., http://127.0.0.1:9090)")
+
+        ttk.Label(conn_group, text="InvokeAI Timeout (s):").grid(row=2, column=0, sticky='w', padx=(0, 10), pady=5)
+        invokeai_timeout_entry = ttk.Entry(conn_group, textvariable=self.setting_vars["invokeai_timeout"], width=10)
+        invokeai_timeout_entry.grid(row=2, column=1, sticky='w', pady=5)
+        Tooltip(invokeai_timeout_entry, "Timeout in seconds for waiting for an image from InvokeAI. Increase this for slow GPUs or complex generations.")
 
         # --- Buttons ---
         button_frame = ttk.Frame(main_frame)
