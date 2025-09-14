@@ -103,7 +103,10 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.enhancement_suggestion_queue = queue.Queue()
         self.enhancement_suggestion_after_id: Optional[str] = None
         self.generate_from_wildcards_queue = queue.Queue()
-        self.initial_load_queue = queue.Queue()
+        # --- FIX: Split initial load for faster perceived startup ---
+        self.initial_load_queue = queue.Queue() # This will be removed
+        self.initial_fs_load_queue = queue.Queue()
+        self.initial_network_load_queue = queue.Queue()
         self.initial_load_after_id: Optional[str] = None
         self.generate_from_wildcards_after_id: Optional[str] = None
         self.clear_cache_queue = queue.Queue()
@@ -114,6 +117,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.last_saved_entry_id_from_preview: Optional[str] = None
         self.generation_total_jobs = 0
         self.generation_completed_jobs = 0
+        self.fs_load_complete = False
+        self.network_load_complete = False
         self.seed_var = tk.StringVar()
         self.random_seed_var = tk.BooleanVar(value=True) # Start with random ON
         
@@ -226,57 +231,92 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self._create_main_view(self)
 
     def _start_initial_load(self):
-        """Starts the initial loading of data in a background thread."""
+        """
+        Starts the initial loading of data in parallel background threads
+        to improve perceived startup time.
+        """
         self.status_var.set("Initializing...")
         self.loading_animation.start()
         self.template_dropdown.config(state=tk.DISABLED)
         self.model_dropdown.config(state=tk.DISABLED)
         self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, suggest=tk.DISABLED)
 
-        def task():
+        # --- Filesystem Task (templates, wildcards) ---
+        def fs_task():
             try:
                 self.processor.initialize()
                 self.processor.set_callbacks(status_callback=self._update_status_bar_from_event)
                 templates = self.processor.get_available_templates()
                 wildcard_files = self.processor.get_wildcard_files()
-                models_with_details = self.processor.get_available_models()
-                model_names = [m['name'] for m in models_with_details]
-                recommendations = self.processor.get_model_recommendations(model_names)
-                
-                self.initial_load_queue.put({
+                self.initial_fs_load_queue.put({
                     "success": True,
                     "templates": templates,
                     "wildcard_files": wildcard_files,
+                })
+            except Exception as e:
+                self.initial_fs_load_queue.put({"success": False, "error": e})
+
+        # --- Network Task (Ollama models) ---
+        def network_task():
+            try:
+                models_with_details = self.processor.get_available_models()
+                model_names = [m['name'] for m in models_with_details]
+                recommendations = self.processor.get_model_recommendations(model_names)
+                self.initial_network_load_queue.put({
+                    "success": True,
                     "models": models_with_details,
                     "recommendations": recommendations
                 })
             except Exception as e:
-                self.initial_load_queue.put({"success": False, "error": e})
+                self.initial_network_load_queue.put({"success": False, "error": e})
 
-        thread = threading.Thread(target=task, daemon=True)
-        thread.start()
-        self.initial_load_after_id = self.after(100, self._check_initial_load_queue)
+        # Start both threads
+        threading.Thread(target=fs_task, daemon=True).start()
+        threading.Thread(target=network_task, daemon=True).start()
 
-    def _check_initial_load_queue(self):
-        """Checks for the result of the initial data load and populates the UI."""
-        try:
-            result = self.initial_load_queue.get_nowait()
-            
+        # Start a single checker for both queues
+        self.initial_load_after_id = self.after(100, self._check_initial_load_queues)
+
+    def _check_initial_load_queues(self):
+        """Checks both filesystem and network queues to populate the UI as data arrives."""
+        # Check filesystem queue
+        if not self.fs_load_complete:
+            try:
+                result = self.initial_fs_load_queue.get_nowait()
+                self.fs_load_complete = True
+                
+                if not result['success']:
+                    self.loading_animation.stop()
+                    self._handle_initialization_error(result['error'])
+                    if self.initial_load_after_id: self.after_cancel(self.initial_load_after_id); self.initial_load_after_id = None
+                    return
+
+                self._populate_template_dropdown(result['templates'])
+                self._populate_wildcard_lists(result['wildcard_files'])
+                self.status_var.set("Ready for prompt generation. Loading AI models...")
+
+            except queue.Empty: pass
+
+        # Check network queue
+        if not self.network_load_complete:
+            try:
+                result = self.initial_network_load_queue.get_nowait()
+                self.network_load_complete = True
+
+                if not result['success']:
+                    custom_dialogs.show_warning(self, "Ollama Connection Error", f"Could not connect to Ollama or fetch models:\n{result['error']}")
+                    self.model_dropdown.config(state=tk.DISABLED)
+                    self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, suggest=tk.DISABLED)
+                else:
+                    self._populate_model_dropdown(result.get('models', []), result.get('recommendations', []))
+            except queue.Empty: pass
+
+        if self.fs_load_complete and self.network_load_complete:
             self.loading_animation.stop()
-            
-            if not result['success']:
-                self._handle_initialization_error(result['error'])
-                return
-
-            # --- Populate UI with loaded data ---
-            self._populate_template_dropdown(result['templates'])
-            self._populate_model_dropdown(result.get('models', []), result.get('recommendations', []))
-            self._populate_wildcard_lists(result['wildcard_files'])
-            
             self.status_var.set("Ready")
-
-        except queue.Empty:
-            self.initial_load_after_id = self.after(100, self._check_initial_load_queue)
+            if self.initial_load_after_id: self.after_cancel(self.initial_load_after_id); self.initial_load_after_id = None
+        elif self.winfo_exists():
+            self.initial_load_after_id = self.after(100, self._check_initial_load_queues)
 
     def _generate_new_template(self):
         """Opens a dialog to generate a new template with AI."""
@@ -1868,6 +1908,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.after_cancel(self.debounce_timer)
         if self.initial_load_after_id:
             self.after_cancel(self.initial_load_after_id)
+            self.initial_load_after_id = None
         if self.enhancement_suggestion_after_id:
             self.after_cancel(self.enhancement_suggestion_after_id)
         if self.clear_cache_after_id:

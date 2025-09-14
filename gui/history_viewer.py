@@ -67,6 +67,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self._resize_debounce_id: Optional[str] = None
         self._pagination_reflow_debounce_id: Optional[str] = None
         self.image_context_menu = tk.Menu(self, tearoff=0)
+        self.context_menu = tk.Menu(self, tearoff=0)
+
+        # --- FIX: Initialize the variations map ---
+        variations = self.processor.get_available_variations()
+        self.available_variations_map = {v['key']: v['name'] for v in variations}
 
         # Start the single thumbnail worker thread
         self.thumbnail_worker_thread = threading.Thread(target=self._thumbnail_worker, daemon=True)
@@ -1214,7 +1219,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         button = self.detail_tabs.get(key, {}).get('generate_image_button')
         self.parent_app._start_image_generation_workflow(
             parent_window=self,
-            prompt=prompt, initial_dialog_params={'negative_prompt': negative_prompt},
+            prompt=prompt, 
+            initial_dialog_params={'negative_prompt': negative_prompt},
             button_to_manage=button, spinner_to_manage=self.detail_tabs.get(key, {}).get('image_gen_spinner'),
             on_success_callback=on_success
         )

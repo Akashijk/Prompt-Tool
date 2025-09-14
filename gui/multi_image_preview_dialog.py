@@ -54,6 +54,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         # After job IDs
         self.thumbnail_after_id: Optional[str] = None
         self.generation_after_id: Optional[str] = None
+        self._resize_debounce_id: Optional[str] = None
         
         # Threading controls
         self.cancellation_event = threading.Event()
@@ -101,6 +102,8 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             self.after_cancel(self.generation_after_id)
         if self.thumbnail_after_id:
             self.after_cancel(self.thumbnail_after_id)
+        if self._resize_debounce_id:
+            self.after_cancel(self._resize_debounce_id)
         self.close_preview_on_destroy()
 
         if self.completion_callback:
@@ -144,15 +147,19 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         while not self.cancellation_event.is_set():
             try:
                 # Wait for a task. Timeout allows the thread to check for cancellation.
-                label_widget, image_bytes = self.thumbnail_work_queue.get(timeout=1)
+                widget_info, image_bytes = self.thumbnail_work_queue.get(timeout=1)
                 
                 if image_bytes:
                     try:
                         with Image.open(io.BytesIO(image_bytes)) as img:
+                            full_image = img.copy()
                             img.thumbnail(self.thumbnail_size, Image.Resampling.LANCZOS)
-                            self.thumbnail_queue.put((label_widget, img.copy()))
+                            # Pre-create the PhotoImage in the worker thread
+                            tk_photo_image = ImageTk.PhotoImage(img)
+                            # Pass the widget info, the PhotoImage, and the full PIL image
+                            self.thumbnail_queue.put((widget_info, tk_photo_image, full_image))
                     except Exception as e:
-                        self.thumbnail_queue.put((label_widget, e))
+                        self.thumbnail_queue.put((widget_info, e, None))
             except queue.Empty:
                 continue # Loop again to check for cancellation or new tasks
 
@@ -214,13 +221,16 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
     def _check_thumbnail_queue(self):
         """Checks for processed thumbnails and updates the UI."""
         try:
-            # Process one item from the queue per call to keep the UI responsive.
-            label_widget, result = self.thumbnail_queue.get_nowait()
-            if label_widget.winfo_exists(): # Check if widget is still alive
-                if isinstance(result, Image.Image):
-                    img_ref = ImageTk.PhotoImage(result)
-                    label_widget.config(image=img_ref, text="")
-                    label_widget.image = img_ref # Keep a reference
+            # The queue now provides the widget_info, the pre-made PhotoImage, and the full PIL image
+            widget_info, result, full_pil_image = self.thumbnail_queue.get_nowait()
+            
+            label_widget = widget_info['image_label']
+            if widget_info['frame'].winfo_exists(): # Check if the parent frame is still alive
+                if isinstance(result, ImageTk.PhotoImage):
+                    label_widget.config(image=result, text="")
+                    label_widget.image = result # Keep a reference
+                    # Store the full-resolution PIL image for the preview mixin
+                    widget_info['full_pil_image'] = full_pil_image
                 elif isinstance(result, Exception):
                     label_widget.config(text=f"Load Error:\n{result}", image='')
         except queue.Empty:
@@ -338,7 +348,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
         def on_canvas_configure(event):
             self.canvas.itemconfig(canvas_window, width=event.width)
-            self._reflow_grid()
+            self._schedule_reflow()
             _update_scrollbar_visibility()
 
         self.container.bind("<Configure>", on_frame_configure)
@@ -356,6 +366,13 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         
         self.button_frame.bind("<Configure>", self._reflow_buttons)
         self.after(10, self._reflow_buttons)
+
+    def _schedule_reflow(self):
+        """Schedules a grid reflow to avoid performance issues during rapid resizing."""
+        if self._resize_debounce_id:
+            self.after_cancel(self._resize_debounce_id)
+        # A 200ms delay should be enough to feel responsive without being laggy.
+        self._resize_debounce_id = self.after(200, self._reflow_grid)
 
     def _reflow_buttons(self, event=None):
         if not hasattr(self, 'button_frame') or not self.button_frame.winfo_exists():
@@ -522,12 +539,11 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         widget_info['image_data'] = new_image_data
         widget_info['image_label'].config(text="Loading Thumb...")
 
-        # Store the full-resolution image in memory
         image_bytes = new_image_data.get('bytes')
         if image_bytes:
-            widget_info['full_pil_image'] = Image.open(io.BytesIO(image_bytes))
-            # Instead of starting a new thread, put the task on the work queue.
-            self.thumbnail_work_queue.put((widget_info['image_label'], image_bytes))
+            # Offload all image processing to the thumbnail worker thread.
+            # Pass the entire widget_info dict to associate the result later.
+            self.thumbnail_work_queue.put((widget_info, image_bytes))
 
         widget_info['regen_button'].config(state=tk.NORMAL)
         
