@@ -44,6 +44,9 @@ class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
         self.rename_button = ttk.Button(file_actions_frame, text="Rename...", command=self._rename_prompt, state=tk.DISABLED)
         self.rename_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
 
+        self.set_default_button = ttk.Button(file_actions_frame, text="Set as Default", command=self._set_as_default_negative_prompt, state=tk.DISABLED)
+        self.set_default_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+
         self.archive_button = ttk.Button(file_actions_frame, text="Archive", command=self._archive_prompt, state=tk.DISABLED)
         self.archive_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
@@ -75,6 +78,7 @@ class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
         self.save_button.config(state=tk.DISABLED)
         self.reset_button.config(state=tk.DISABLED)
         self.rename_button.config(state=tk.DISABLED)
+        self.set_default_button.config(state=tk.DISABLED)
         self.archive_button.config(state=tk.DISABLED)
 
     def _populate_file_list(self):
@@ -127,6 +131,17 @@ class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
             self.rename_button.config(state=tk.DISABLED if has_default else tk.NORMAL)
             self.archive_button.config(state=tk.DISABLED if has_default else tk.NORMAL)
             self.reset_button.config(state=tk.NORMAL if has_default else tk.DISABLED)
+
+            # --- NEW: Handle "Set as Default" button state ---
+            is_negative_prompt = self.selected_file.startswith('negative_prompts/')
+            self.set_default_button.config(state=tk.NORMAL if is_negative_prompt else tk.DISABLED)
+            if is_negative_prompt:
+                key = os.path.splitext(os.path.basename(self.selected_file))[0]
+                if key == config.DEFAULT_NEGATIVE_PROMPT_KEY:
+                    self.set_default_button.config(text="Remove Default")
+                else:
+                    self.set_default_button.config(text="Set as Default")
+
         except Exception as e:
             custom_dialogs.show_error(self, "Error", f"Could not load system prompt:\n{e}")
 
@@ -148,6 +163,30 @@ class SystemPromptEditorWindow(tk.Toplevel, SmartWindowMixin):
         self.editor_text.delete("1.0", tk.END)
         self.editor_text.insert("1.0", default_content)
         self._save_file()
+
+    def _set_as_default_negative_prompt(self):
+        """Sets the selected negative prompt as the default, or removes the default."""
+        if not self.selected_file or not self.selected_file.startswith('negative_prompts/'):
+            return
+
+        key = os.path.splitext(os.path.basename(self.selected_file))[0]
+        
+        # If it's already the default, we're un-setting it.
+        if key == config.DEFAULT_NEGATIVE_PROMPT_KEY:
+            new_default_key = "" # Set to empty to remove the default
+            message = f"'{key}' is no longer the default negative prompt."
+        else:
+            new_default_key = key
+            message = f"'{key}' is now the default negative prompt."
+
+        try:
+            from core.config import update_and_save_settings
+            update_and_save_settings({'default_negative_prompt_key': new_default_key})
+            self.processor.clear_default_negative_prompt_cache() # Invalidate the cache
+            self._populate_file_list() # Refresh the list to show the new (Default) tag
+            custom_dialogs.show_info(self, "Default Set", message)
+        except Exception as e:
+            custom_dialogs.show_error(self, "Error", f"Could not set default negative prompt:\n{e}")
 
     def _create_new_prompt(self):
         dialog = custom_dialogs._CreateSystemPromptDialog(self)

@@ -7,6 +7,8 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **Prompt Evolver & Conceptual Breeding:** A dedicated window for "breeding" new prompts. Select two or more "parent" prompts, and an advanced AI will deconstruct their core concepts (subject, style, mood) to generate unique, creative "child" prompts. The UI features selectable, word-wrapping prompt cards for a superior user experience.
 *   **Full-Featured Wildcard Manager:** A comprehensive tool for managing your wildcard library with a structured editor, AI-powered suggestions and refinement, intelligent refactoring, dependency graphs, and an interactive validator to find and fix errors.
 *   **Advanced AI Brainstorming:** A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine them, or generate new content from scratch, including linked wildcards and templates based on your entire library.
+*   **Advanced Image Permutations:** Right-click any generated image to instantly create variations with different LoRAs or new random seeds, allowing for rapid, targeted refinement.
+*   **Model Usage Statistics:** Get valuable insights into your creative process with detailed statistics and charts on which models you use most and which are the fastest.
 *   **Direct Image Generation & History:** Generate images directly from any prompt using a local InvokeAI server. All generations, prompts, and images are saved to a detailed, searchable history viewer with favoriting and image management.
 *   **Image to Prompt (Interrogator):** Generate a detailed Stable Diffusion prompt directly from an image using a local vision model (e.g., LLaVA).
 
@@ -63,18 +65,29 @@ A quick look at some of the key tool windows:
     *   **AI Assistant:** Use AI to suggest new choices, automatically add tags, refine choices with metadata, fix grammar, or check for compatibility between two files.
 *   **SFW/NSFW Workflows:** Keep your SFW and NSFW content completely separate. The app dynamically switches template, wildcard, and system prompt directories.
 *   **Customizable System Prompts:** Edit the underlying instructions given to the AI for enhancement and variations to tailor its output to your needs.
-*   **Comprehensive History Viewer:** Browse, search, and reuse all your past enhanced prompts. The viewer is filtered by the current workflow, showing only SFW history in SFW mode and only NSFW history in NSFW mode.
+*   **Comprehensive History Viewer:** Browse, search, and reuse all your past prompts and images. The viewer is filtered by the current workflow, showing only SFW history in SFW mode and only NSFW history in NSFW mode.
     *   Tracks which template was used for each generation.
-    *   View generated images with pagination and full generation parameters.
+    *   View generated images with pagination and full generation parameters, including how long each image took to generate.
     *   Mark entries and individual images as favorites.
     *   Set cover images for history entries for easier browsing.
     *   Saves multiple image generations for the same prompt instead of overwriting, allowing for easy comparison.
-    *   Regenerate images or prompts directly from history.
+    *   Directly enhance prompts or regenerate images from the history context menu.
     *   Edit prompts directly in the history view.
-*   **Direct Image Generation (InvokeAI):** Generate an image directly from any prompt using a local InvokeAI server (v3+). Select your main model, LoRAs, and other parameters for full creative control.
+    *   **Organized Image Saving:** All images for a history entry are saved into a dedicated subfolder, making them easy to find and manage on your file system.
+*   **Direct Image Generation (InvokeAI):** Generate images directly from any prompt using a local InvokeAI server (v3+).
+    *   Select multiple models and LoRAs to generate a batch of images for comparison.
+    *   **Generate LoRA Permutations:** Right-click any generated image to quickly create and compare variations with different LoRAs and weights in a dedicated preview window.
+    *   **Generate Seed Variations:** Right-click any image to generate multiple new versions with different random seeds, and keep as many as you like.
+*   **Model Performance Insights:**
+    *   View detailed statistics on your model usage, including generation counts and average, minimum, and maximum generation times.
+    *   An interactive chart helps you visualize which models are your workhorses and which are the fastest.
+    *   Get at-a-glance performance data with tooltips in the image generation dialog showing the average time per model.
 *   **Seed Management:** Easily switch between a fixed seed for reproducible results and random seeds for variety.
 *   **Modern UI:** Features a clean, modern interface with light and dark themes and adjustable font sizes.
-*   **Resource Management:** Automatically unloads AI models from VRAM when they are no longer active. This includes unloading Ollama models and clearing the InvokeAI model cache to free up GPU memory after image generation.
+*   **Resource Management:**
+    *   Automatically unloads AI models from VRAM when they are no longer active to free up GPU memory.
+    *   Proactively cleans up temporary images *and* their thumbnails from the InvokeAI server when you choose not to save them to the gallery, keeping your output directory clean.
+    *   Efficient UI: Loading animations and long, filterable lists are optimized to use minimal CPU, keeping the app responsive and your laptop cool.
 
 ## Requirements
 
@@ -149,7 +162,7 @@ A quick look at some of the key tool windows:
     *   **Interact:** In the preview pane, click on any highlighted text to see a menu of other options from that wildcard file. If your template uses a wildcard that doesn't exist, a link will appear below the preview allowing you to generate it.
     *   **Cleanup (Optional):** Click "AI Cleanup ✨" to have an AI refine the grammar and flow of the generated prompt in the preview pane.
     *   **Enhance:** When you're happy with the preview, click "Enhance This Prompt". A new window will appear showing the AI's enhanced version and any selected variations.
-    *   **Generate Image:** From the main window or the enhancement results window, click "Generate Image". A dialog will appear allowing you to select your InvokeAI model, LoRAs, and other settings. The generated image and its parameters will be saved to your history.
+    *   **Generate Image:** From the main window or the enhancement results window, click "Generate Image". A dialog will appear allowing you to select your InvokeAI model(s), LoRAs, and other settings. The generated images and their parameters will be saved to your history. In the image preview dialog, you can right-click any image to generate further LoRA or seed variations.
 
 3.  **AI Brainstorming (`Tools -> AI Brainstorming`):**
     *   Chat directly with the AI for general ideas or to generate new files from scratch.
@@ -171,6 +184,9 @@ A quick look at some of the key tool windows:
     *   Select two or more "parent" prompts from your entire generation history.
     *   The AI will "breed" them, blending their core concepts, subjects, and styles to create a new generation of unique "child" prompts.
     *   Use the generated children as new parents for further evolution, send them to the main editor, or right-click to copy, enhance, generate an image, or save them to your history.
+
+6.  **Model Statistics (`Tools -> Model Usage Statistics...`):**
+    *   View a detailed table and interactive chart showing which models you use most often and how long they take to generate images.
 
 6.  **Image Interrogator (`Tools -> Image Interrogator...`):**
     *   Select an image from your computer.

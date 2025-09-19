@@ -367,20 +367,6 @@ class _MultiWildcardEditorWindow(custom_dialogs._CustomDialog):
         self.editor1.pack(fill=tk.BOTH, expand=True)
         self.editor2.pack(fill=tk.BOTH, expand=True)
 
-    def _sort_treeview_column(self, tv, col, reverse):
-        """Sort treeview contents when a column is clicked on."""
-        l = [(tv.set(k, col), k) for k in tv.get_children('')]
-        try:
-            # Try to sort numerically if possible
-            l.sort(key=lambda t: float(t[0]), reverse=reverse)
-        except ValueError:
-            # Fallback to case-insensitive string sort
-            l.sort(key=lambda t: t[0].lower(), reverse=reverse)
-
-        for index, (val, k) in enumerate(l):
-            tv.move(k, '', index)
-        tv.heading(col, command=lambda: self._sort_treeview_column(tv, col, not reverse))
-
     def _save_pane(self, editor_num: int) -> bool:
         editor = self.editor1 if editor_num == 1 else self.editor2
         filename = self.file1_name if editor_num == 1 else self.file2_name
@@ -1144,28 +1130,46 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin, TaskRunnerMixin):
 
             # --- Handle pending value refactors ---
             if self.pending_value_refactors:
-                # Make a copy to iterate over, as the background tasks might take a while
                 refactors_to_process = self.pending_value_refactors[:]
                 self.pending_value_refactors.clear()
 
+                # Consolidate all refactors into a single confirmation dialog for better UX.
+                message = "You have changed values that other wildcards may depend on. Would you like to scan and update these dependencies now?\n\nChanges:\n"
                 for basename, old_value, new_value in refactors_to_process:
-                    if custom_dialogs.ask_yes_no(
-                        self,
-                        "Refactor Value Change?",
-                        f"You changed the value '{old_value}' to '{new_value}' in '{basename}'.\n\n"
-                        f"Would you like to scan all other wildcards and update any 'requires' clauses that depend on the old value?"
-                    ):
-                        def on_value_refactor_complete(modified_count, ov=old_value):
-                            custom_dialogs.show_info(self, "Refactor Complete", f"Updated {modified_count} file(s) that required the value '{ov}'.")
-                            self.update_callback()
+                    # Truncate long values for display in the dialog
+                    old_display = (old_value[:30] + '...') if len(old_value) > 30 else old_value
+                    new_display = (new_value[:30] + '...') if len(new_value) > 30 else new_value
+                    message += f"- In '{basename}': '{old_display}' → '{new_display}'\n"
+                
+                message += "\n(This will scan all wildcards and templates for 'requires' clauses that use the old values.)"
 
-                        self.run_task(
-                            task_callable=lambda: self.processor.refactor_wildcard_value_references(basename, old_value, new_value),
-                            on_success=on_value_refactor_complete,
-                            on_error=lambda e: custom_dialogs.show_error(self, "Refactor Error", f"Could not refactor value references:\n{e}"),
-                            loading_dialog_title="Refactoring Value",
-                            loading_dialog_message=f"Scanning for dependencies on '{old_value}'..."
+                if custom_dialogs.ask_yes_no(self, "Refactor Value Changes?", message):
+                    
+                    def combined_refactor_task():
+                        """A single task to run all refactoring operations sequentially."""
+                        total_modified_count = 0
+                        for basename, old_value, new_value in refactors_to_process:
+                            # The processor method returns the count of modified files for a single refactor.
+                            modified_count = self.processor.refactor_wildcard_value_references(basename, old_value, new_value)
+                            total_modified_count += modified_count
+                        return total_modified_count
+
+                    def on_all_refactors_complete(total_modified_count: int):
+                        custom_dialogs.show_info(
+                            self, 
+                            "Refactor Complete", 
+                            f"Finished refactoring. Updated {total_modified_count} file(s) in total."
                         )
+                        self.update_callback()
+
+                    self.run_task(
+                        task_callable=combined_refactor_task,
+                        on_success=on_all_refactors_complete,
+                        on_error=lambda e: custom_dialogs.show_error(self, "Refactor Error", f"Could not refactor value references:\n{e}"),
+                        loading_dialog_title="Refactoring Values",
+                        loading_dialog_message="Scanning all files for dependencies..."
+                    )
+
             # The filename might have changed from .txt to .json
             basename, _ = os.path.splitext(self.selected_wildcard_file)
             new_filename = f"{basename}.json"

@@ -450,6 +450,10 @@ class TemplateEditorContextMenu(TextContextMenu):
 
 class LoadingAnimation(ttk.Frame):
     """A smooth, spinning arc loading animation widget."""
+    # --- NEW: Class-level variables for a shared animation loop ---
+    _active_animations: List['LoadingAnimation'] = []
+    _animation_job_id: Optional[str] = None
+
     def __init__(self, parent, size=16):
         super().__init__(parent, width=size, height=size)
         self.canvas = tk.Canvas(self, width=size, height=size, highlightthickness=0)
@@ -458,7 +462,6 @@ class LoadingAnimation(ttk.Frame):
         self.size = size
         self.color = "gray"
         self.is_running = False
-        self.animation_job = None
         
         self.angle = 0
         self.arc_id = None
@@ -473,35 +476,75 @@ class LoadingAnimation(ttk.Frame):
     def start(self):
         if not self.is_running:
             self.is_running = True
-            self.angle = 0
-            self._animate()
+            self.angle = 0 # Reset angle on start
 
+            # --- OPTIMIZATION: Create the arc object once on start ---
+            if self.arc_id is None:
+                padding = 2
+                box = (padding, padding, self.size - padding, self.size - padding)
+                self.arc_id = self.canvas.create_arc(box, start=self.angle, extent=self.extent, style=tk.ARC, outline=self.color, width=2)
+
+            if self not in LoadingAnimation._active_animations:
+                LoadingAnimation._active_animations.append(self)
+            
+            # If the master loop isn't already running, start it.
+            if not LoadingAnimation._animation_job_id:
+                LoadingAnimation._master_animate_loop()
     def stop(self):
         if self.is_running:
             self.is_running = False
-            if self.animation_job:
-                self.after_cancel(self.animation_job)
-                self.animation_job = None
+            # Use a try-except block in case the item was already removed
+            try:
+                LoadingAnimation._active_animations.remove(self)
+            except ValueError:
+                pass
+            
+            # If this was the last active animation, stop the master loop.
+            if not LoadingAnimation._active_animations and LoadingAnimation._animation_job_id:
+                # Need a widget to cancel the job. `self` is fine.
+                self.after_cancel(LoadingAnimation._animation_job_id)
+                LoadingAnimation._animation_job_id = None
+            # --- OPTIMIZATION: Delete the arc object on stop ---
             if self.arc_id:
                 self.canvas.delete(self.arc_id)
                 self.arc_id = None
 
-    def _animate(self):
-        if not self.is_running:
+    def _draw_single_frame(self):
+        """Draws one frame of the animation. Called by the master loop."""
+        if not self.is_running or not self.arc_id:
             return
 
-        if self.arc_id:
-            self.canvas.delete(self.arc_id)
-
-        padding = 2
-        box = (padding, padding, self.size - padding, self.size - padding)
-        
-        self.arc_id = self.canvas.create_arc(
-            box, start=self.angle, extent=self.extent, style=tk.ARC, outline=self.color, width=2
-        )
+        # --- OPTIMIZATION: Use itemconfig to modify the existing arc instead of recreating it ---
+        self.canvas.itemconfig(self.arc_id, start=self.angle)
 
         self.angle = (self.angle - self.speed) % 360
-        self.animation_job = self.after(30, self._animate)  # ~33 FPS for a smooth spin
+        
+    @classmethod
+    def _master_animate_loop(cls):
+        """The single, shared loop that updates all active animations."""
+        # --- FIX: Check for active animations *before* stopping the loop ---
+        # This prevents a race condition where the loop stops before new animations are added.
+        if not cls._active_animations:
+            cls._animation_job_id = None
+            return
+
+        # Find a valid, existing widget to schedule the next call.
+        # This is important because some animations might be destroyed while the loop is running.
+        widget_for_after = next((anim for anim in cls._active_animations if anim.winfo_exists()), None)
+        
+        if not widget_for_after:
+            # All animations were destroyed. Stop the loop.
+            cls._animation_job_id = None
+            return
+
+        # Update all active and existing animations
+        for anim in cls._active_animations:
+            if anim.winfo_exists():
+                anim._draw_single_frame()
+        
+        # Schedule the next iteration
+        cls._animation_job_id = widget_for_after.after(30, cls._master_animate_loop)
+
 
 class SmartWindowMixin:
     """Mixin class to add smart window sizing behavior."""

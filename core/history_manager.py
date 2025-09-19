@@ -18,8 +18,10 @@ class HistoryManager:
     def load_full_history(self) -> List[Dict[str, str]]:
         """Load the entire prompt history from the JSONL file, migrating from CSV if needed."""
         jsonl_path = config.get_history_file()
+        history_dir = config.get_history_file_dir() # Get the base dir for the current workflow
 
         history = []
+        needs_rewrite = False # Flag to check if we need to rewrite the history file after migration
         if not os.path.isfile(jsonl_path):
             return history
         try:
@@ -27,6 +29,46 @@ class HistoryManager:
                 for line in f:
                     if line.strip():
                         entry = json.loads(line)
+
+                        # --- MIGRATION: Ensure entry has a UUID ---
+                        if 'id' not in entry:
+                            entry['id'] = str(uuid.uuid4())
+                            needs_rewrite = True
+
+                        # --- MIGRATION: Old flat image path format to new subfolder format ---
+                        def migrate_image_list(images: List[Dict[str, Any]], entry_id: str) -> bool:
+                            """Moves images from flat structure to subfolder and updates paths."""
+                            list_updated = False
+                            if not images: return False
+                            for img in images:
+                                relative_path = img.get('image_path')
+                                # An old-style path is 'images/uuid.png' (2 parts). A new one is 'images/entry_id/uuid.png' (3 parts).
+                                if relative_path and len(os.path.normpath(relative_path).split(os.sep)) == 2:
+                                    old_full_path = os.path.join(history_dir, relative_path)
+                                    if os.path.exists(old_full_path):
+                                        new_relative_dir = os.path.join('images', entry_id)
+                                        new_full_dir = os.path.join(history_dir, new_relative_dir)
+                                        os.makedirs(new_full_dir, exist_ok=True)
+                                        
+                                        image_filename = os.path.basename(relative_path)
+                                        new_relative_path = os.path.join(new_relative_dir, image_filename)
+                                        new_full_path = os.path.join(history_dir, new_relative_path)
+                                        
+                                        try:
+                                            os.rename(old_full_path, new_full_path)
+                                            img['image_path'] = new_relative_path
+                                            list_updated = True
+                                            if self.verbose: print(f"INFO: Migrated image '{old_full_path}' to '{new_full_path}'")
+                                        except OSError as e:
+                                            print(f"WARNING: Could not migrate image file {relative_path}. Error: {e}")
+                            return list_updated
+
+                        if migrate_image_list(entry.get('original_images', []), entry['id']): needs_rewrite = True
+                        if 'enhanced' in entry and migrate_image_list(entry.get('enhanced', {}).get('images', []), entry['id']): needs_rewrite = True
+                        if 'variations' in entry:
+                            for var_data in entry.get('variations', {}).values():
+                                if migrate_image_list(var_data.get('images', []), entry['id']): needs_rewrite = True
+
                         # --- MIGRATION LOGIC ---
                         if 'enhanced_prompt' in entry and isinstance(entry['enhanced_prompt'], str):
                             # This is the old format. Convert it.
@@ -37,6 +79,7 @@ class HistoryManager:
                             # Move top-level image/params into the new enhanced object
                             if 'image_path' in entry: entry['enhanced']['image_path'] = entry.pop('image_path')
                             if 'generation_params' in entry: entry['enhanced']['generation_params'] = entry.pop('generation_params')
+                            needs_rewrite = True
                         
                         # New migration for single image paths to lists
                         if entry.get('original_image_path'):
@@ -44,6 +87,7 @@ class HistoryManager:
                                 'image_path': entry.pop('original_image_path'),
                                 'generation_params': entry.pop('original_generation_params', {})
                             }]
+                            needs_rewrite = True
                         
                         if entry.get('enhanced', {}).get('image_path'):
                             enhanced_data = entry['enhanced']
@@ -51,14 +95,26 @@ class HistoryManager:
                                 'image_path': enhanced_data.pop('image_path'),
                                 'generation_params': enhanced_data.pop('generation_params', {})
                             }]
+                            needs_rewrite = True
 
                         for var_data in entry.get('variations', {}).values():
                             if var_data.get('image_path'):
                                 var_data['images'] = [{'image_path': var_data.pop('image_path'), 'generation_params': var_data.pop('generation_params', {})}]
+                                needs_rewrite = True
 
                         history.append(entry)
         except Exception as e:
             print(f"Error loading full history: {e}")
+        
+        # If any migrations occurred, rewrite the entire history file with the updated data.
+        if needs_rewrite:
+            print("INFO: Migrating history file to new format...")
+            try:
+                with open(jsonl_path, 'w', encoding='utf-8') as f:
+                    for entry in history:
+                        f.write(json.dumps(entry) + '\n')
+            except IOError as e:
+                print(f"ERROR: Could not rewrite history file after migration: {e}")
         return history
 
     def _get_all_image_paths_from_entry(self, data: Dict[str, Any]) -> Set[str]:

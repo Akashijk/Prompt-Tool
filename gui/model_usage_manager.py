@@ -28,10 +28,12 @@ class ModelUsageManager:
         if model_name in self.active_models:
             self.active_models[model_name] -= 1
             if self.active_models[model_name] <= 0:
-                # We don't need to join this thread; it can clean up on its own.
-                # This prevents the UI from hanging if the unload takes time.
-                thread = threading.Thread(target=self.processor.cleanup_model, args=(model_name,), daemon=True)
-                thread.start()
+                # Only unload if we're actually connected to the server.
+                if self.processor.is_ollama_connected():
+                    # We don't need to join this thread; it can clean up on its own.
+                    # This prevents the UI from hanging if the unload takes time.
+                    thread = threading.Thread(target=self.processor.cleanup_model, args=(model_name,), daemon=True)
+                    thread.start()
                 del self.active_models[model_name]
 
     def get_active_models(self) -> List[str]:

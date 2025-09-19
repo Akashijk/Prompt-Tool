@@ -89,6 +89,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.wildcard_manager_window: Optional[WildcardManagerWindow] = None
         self.image_interrogator_window: Optional[ImageInterrogatorWindow] = None
         self.prompt_evolver_window: Optional[PromptEvolverWindow] = None
+        self.model_usage_viewer_window: Optional['ModelUsageViewer'] = None
         self.history_viewer_window: Optional[HistoryViewerWindow] = None
         self.asset_prefix_editor_window: Optional[AssetPrefixEditorWindow] = None
         self.favorite_images_viewer_window: Optional[FavoriteImagesViewer] = None
@@ -240,35 +241,41 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.template_dropdown.config(state=tk.DISABLED)
         self.model_dropdown.config(state=tk.DISABLED)
         self.action_bar.set_button_states(generate=tk.DISABLED, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, suggest=tk.DISABLED)
-
-        # --- Filesystem Task (templates, wildcards) ---
+        
         def fs_task():
+            """Handles loading local files like templates and wildcards."""
             try:
                 self.processor.initialize()
                 self.processor.set_callbacks(status_callback=self._update_status_bar_from_event)
                 templates = self.processor.get_available_templates()
                 wildcard_files = self.processor.get_wildcard_files()
-                self.initial_fs_load_queue.put({
-                    "success": True,
-                    "templates": templates,
-                    "wildcard_files": wildcard_files,
-                })
+                self.initial_fs_load_queue.put({"success": True, "templates": templates, "wildcard_files": wildcard_files})
             except Exception as e:
                 self.initial_fs_load_queue.put({"success": False, "error": e})
-
-        # --- Network Task (Ollama models) ---
+        
         def network_task():
+            """Handles network-dependent tasks like fetching models and checking server status."""
+            # --- Ollama Check ---
             try:
                 models_with_details = self.processor.get_available_models()
                 model_names = [m['name'] for m in models_with_details]
                 recommendations = self.processor.get_model_recommendations(model_names)
-                self.initial_network_load_queue.put({
-                    "success": True,
-                    "models": models_with_details,
-                    "recommendations": recommendations
-                })
+                self.initial_network_load_queue.put({"type": "ollama", "success": True, "models": models_with_details, "recommendations": recommendations})
             except Exception as e:
-                self.initial_network_load_queue.put({"success": False, "error": e})
+                self.initial_network_load_queue.put({"type": "ollama", "success": False, "error": e})
+
+            # --- InvokeAI Check ---
+            if config.INVOKEAI_BASE_URL:
+                try:
+                    # This call will probe the server and set the internal state of the client.
+                    self.processor.invokeai_client.check_server_compatibility()
+                    # We don't need to pass data, just signal that the check is done.
+                    self.initial_network_load_queue.put({"type": "invokeai", "success": True})
+                except Exception as e:
+                    self.initial_network_load_queue.put({"type": "invokeai", "success": False, "error": e})
+            else:
+                # If no URL is set, we can immediately say it's not connected.
+                self.initial_network_load_queue.put({"type": "invokeai", "success": False, "error": "No URL configured."})
 
         # Start both threads
         threading.Thread(target=fs_task, daemon=True).start()
@@ -300,21 +307,32 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Check network queue
         if not self.network_load_complete:
             try:
-                result = self.initial_network_load_queue.get_nowait()
-                self.network_load_complete = True
+                # Process all available network results in the queue
+                while not self.initial_network_load_queue.empty():
+                    result = self.initial_network_load_queue.get_nowait()
+                    result_type = result.get("type")
 
-                if not result['success']:
-                    custom_dialogs.show_warning(self, "Ollama Connection Error", f"Could not connect to Ollama or fetch models:\n{result['error']}")
-                    self.model_dropdown.config(state=tk.DISABLED)
-                    self.action_bar.set_button_states(generate=tk.NORMAL, enhance=tk.DISABLED, copy=tk.DISABLED, save_as_template=tk.DISABLED, suggest=tk.DISABLED)
-                else:
-                    self._populate_model_dropdown(result.get('models', []), result.get('recommendations', []))
+                    if result_type == "ollama":
+                        if not result['success']:
+                            custom_dialogs.show_warning(self, "Ollama Connection Error", f"Could not connect to Ollama or fetch models:\n{result['error']}")
+                            self.model_dropdown.config(state=tk.DISABLED)
+                        else:
+                            self._populate_model_dropdown(result.get('models', []), result.get('recommendations', []))
+                    
+                    elif result_type == "invokeai":
+                        # The check is complete. We can now update any UI that depends on it.
+                        # The button state will be updated automatically when the prompt preview is generated.
+                        if not result['success'] and "No URL" not in str(result.get('error')):
+                             custom_dialogs.show_warning(self, "InvokeAI Connection Error", f"Could not connect to InvokeAI server:\n{result['error']}")
+                
+                # Assume network load is complete after checking the queue, even if some parts failed.
+                self.network_load_complete = True
             except queue.Empty: pass
 
         if self.fs_load_complete and self.network_load_complete:
             self.loading_animation.stop()
             self.status_var.set("Ready")
-            if self.initial_load_after_id: self.after_cancel(self.initial_load_after_id); self.initial_load_after_id = None
+            if self.initial_load_after_id: self.after_cancel(self.initial_load_after_id); self.initial_load_after_id = None # type: ignore
         elif self.winfo_exists():
             self.initial_load_after_id = self.after(100, self._check_initial_load_queues)
 
@@ -800,7 +818,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """Update the prompt preview with the latest generation."""
         self._display_structured_prompt()
         self._check_and_display_missing_includes()
-        is_prompt_available = bool(self.current_structured_prompt)
+        
+        # A prompt is available if we have a structured preview OR if there's text in the editor.
+        has_structured_prompt = bool(self.current_structured_prompt)
+        has_editor_text = bool(self.template_editor.get_content().strip())
+        is_prompt_available = has_structured_prompt or has_editor_text
+
         is_template_available = bool(self.current_template_file)
         self.action_bar.set_button_states(
             generate=tk.NORMAL, 
@@ -1473,6 +1496,21 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.history_viewer_window.close()
             self.history_viewer_window = None
 
+    def _open_model_usage_viewer(self):
+        """Opens the model usage statistics window."""
+        if self.model_usage_viewer_window and self.model_usage_viewer_window.winfo_exists():
+            self.model_usage_viewer_window.lift()
+            self.model_usage_viewer_window.focus_force()
+        else:
+            from .model_usage_viewer import ModelUsageViewer
+            self.model_usage_viewer_window = ModelUsageViewer(self, self.processor)
+            self.model_usage_viewer_window.protocol("WM_DELETE_WINDOW", self._on_model_usage_viewer_close)
+
+    def _on_model_usage_viewer_close(self):
+        if self.model_usage_viewer_window:
+            self.model_usage_viewer_window.destroy()
+            self.model_usage_viewer_window = None
+
     def _open_favorite_images_viewer(self):
         """Opens the favorite images viewer window."""
         if self.favorite_images_viewer_window and self.favorite_images_viewer_window.winfo_exists():
@@ -1487,14 +1525,14 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.favorite_images_viewer_window.close()
             self.favorite_images_viewer_window = None
 
-    def load_prompt_from_history(self, prompt_text: str):
+    def load_prompt_from_history(self, prompt_text: str, history_entry_id: Optional[str] = None):
         """Loads a prompt from the history viewer into the main UI for re-enhancement."""
         # Clear template-related state and UI
         self.template_var.set("") # Clear dropdown selection
         self.current_template_file = None
         self.current_template_content = None
         self.current_structured_prompt = []
-        self.last_saved_entry_id_from_preview = None
+        self.last_saved_entry_id_from_preview = history_entry_id
         self.menubar.update_file_menu_state(save_enabled=False, archive_enabled=False)
         self.action_bar.generate_button.config(state=tk.DISABLED) # Can't generate from a non-template
         self.prompt_text.config(state=tk.NORMAL)
@@ -1525,12 +1563,22 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         def on_success(images_to_save: List[Dict[str, Any]]):
             """Callback to handle saving a new history entry."""
-            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
-            entry = {'original_prompt': images_to_save[0]['prompt'], 'status': 'generated_only', 'original_images': saved_images_data, 'template_name': self.current_template_file, 'context': self.last_generation_result.get('context')}
+            # --- NEW: Generate entry ID first ---
+            entry_id = str(uuid.uuid4())
+            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes'], entry_id), 'generation_params': img.get('generation_params')} for img in images_to_save]
+            entry = {
+                'id': entry_id, # Add the ID here
+                'original_prompt': images_to_save[0]['prompt'], 
+                'status': 'generated_only', 
+                'original_images': saved_images_data, 
+                'template_name': self.current_template_file, 
+                'context': self.last_generation_result.get('context')
+            }
 
             saved_entry = self.processor.history_manager.save_result(**entry)
             if saved_entry:
                 self.last_saved_entry_id_from_preview = saved_entry.get('id')
+                self.processor.clear_avg_gen_times_cache()
             custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) and prompt saved to history.")
 
         self._start_image_generation_workflow(
@@ -1597,7 +1645,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if button_to_manage:
             button_to_manage.config(state=tk.DISABLED)
         if spinner_to_manage:
-            spinner_to_manage.pack(side=tk.LEFT, padx=(0, 5))
+            spinner_to_manage.grid() # Use grid to show
             spinner_to_manage.start()
         
         generation_jobs = []
@@ -1626,7 +1674,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             """Called when the preview dialog is closed."""
             if spinner_to_manage:
                 spinner_to_manage.stop()
-                spinner_to_manage.pack_forget()
+                spinner_to_manage.grid_remove() # Use grid_remove to hide
             if button_to_manage:
                 button_to_manage.config(state=tk.NORMAL, text=original_button_text)
             if dialog in self.generation_dialogs:
@@ -1862,6 +1910,38 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self._populate_wildcard_lists()
         self._load_models() # Reload models in case the server changed
 
+    def _unload_ollama_models_for_vram(self) -> bool:
+        """
+        Checks for running Ollama models and asks the user to unload them to free VRAM.
+        Returns True if it's okay to proceed, False if the user cancelled.
+        """
+        active_ollama_models = self.model_usage_manager.get_active_models()
+        if not active_ollama_models:
+            return True # No models to unload
+        
+        try:
+            running_models = self.processor.ollama_client.get_running_models()
+            # The API returns a list of dicts with a 'name' key.
+            running_model_names = {m.get('name') for m in running_models}
+            # Find the intersection between the models our app is using and the models actually loaded in VRAM.
+            models_to_unload = [model for model in active_ollama_models if model in running_model_names]
+        except Exception as e:
+            print(f"Warning: Could not check for running Ollama models. Will ask to unload all active models. Error: {e}")
+            # --- FIX: On failure, fall back to asking to unload all models the app has used. ---
+            models_to_unload = active_ollama_models
+
+        if models_to_unload:
+            if custom_dialogs.ask_yes_no(
+                self, "Free VRAM?", 
+                f"This will temporarily unload the following Ollama model(s) to free VRAM for image generation:\n\n- {', '.join(models_to_unload)}\n\nThe model(s) will be reloaded automatically on their next use. Continue?"
+            ):
+                for model in models_to_unload:
+                    thread = threading.Thread(target=self.processor.cleanup_model, args=(model,), daemon=True)
+                    thread.start()
+                return True
+            return False # User cancelled
+        return True # No models were actually loaded, so we can proceed.
+
     def _on_closing(self):
         """Handles the main window closing event to clean up resources."""
         # Explicitly close child windows first to allow them to unregister their models.
@@ -1875,6 +1955,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.history_viewer_window.close()
         if self.prompt_evolver_window and self.prompt_evolver_window.winfo_exists():
             self.prompt_evolver_window.close()
+        if self.model_usage_viewer_window and self.model_usage_viewer_window.winfo_exists():
+            self.model_usage_viewer_window.destroy()
         if self.favorite_images_viewer_window and self.favorite_images_viewer_window.winfo_exists():
             self.favorite_images_viewer_window.close()
         if self.settings_window and self.settings_window.winfo_exists():
@@ -1895,13 +1977,16 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # --- NEW: Force unload all remaining active Ollama models on exit ---
         # This ensures that even if usage counts are > 0, models are unloaded.
-        active_ollama_models = self.model_usage_manager.get_active_models()
-        if active_ollama_models:
-            print(f"INFO: Unloading all active Ollama models on exit: {', '.join(active_ollama_models)}")
-            for model in active_ollama_models:
-                self.processor.cleanup_model(model)
+        if self.processor.is_ollama_connected():
+            active_ollama_models = self.model_usage_manager.get_active_models()
+            if active_ollama_models:
+                print(f"INFO: Unloading all active Ollama models on exit: {', '.join(active_ollama_models)}")
+                for model in active_ollama_models:
+                    self.processor.cleanup_model(model)
 
-        if self.processor.is_invokeai_connected():
+        # Only attempt to clear the cache if the client was successfully configured during the session.
+        # The `models_endpoint` is only set after a successful version and endpoint check.
+        if self.processor.invokeai_client and self.processor.invokeai_client.models_endpoint:
             print("INFO: Clearing InvokeAI model cache on exit (async)...")
             self.processor.clear_invokeai_cache_async()
         if self.debounce_timer:

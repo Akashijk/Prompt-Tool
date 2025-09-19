@@ -5,6 +5,7 @@ from tkinter import ttk
 import random
 import threading
 import queue
+import uuid
 from typing import List, Optional, Dict, Callable, TYPE_CHECKING, Any
 
 from . import custom_dialogs
@@ -182,16 +183,18 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
         # Add Generate Image button for prompts that can be generated (not negative)
         if prompt_key != 'negative':
             image_gen_frame = ttk.Frame(button_container)
+            image_gen_frame.columnconfigure(1, weight=1) # Let the button expand
             image_gen_frame.pack(fill=tk.X, pady=(5,0))
 
             image_gen_spinner = LoadingAnimation(image_gen_frame, size=20)
-            # Don't pack yet
+            image_gen_spinner.grid(row=0, column=0, padx=(0, 5))
+            image_gen_spinner.grid_remove() # Hide initially
             self.image_gen_spinners[prompt_key] = image_gen_spinner
 
             # The button should be enabled if the content is already loaded (i.e., not in a loading state).
             button_state = tk.DISABLED if is_loading else tk.NORMAL
             gen_image_button = ttk.Button(image_gen_frame, text="Generate Image", command=lambda key=prompt_key: self._generate_image(key), state=button_state)
-            gen_image_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+            gen_image_button.grid(row=0, column=1, sticky='ew')
             self.image_gen_buttons[prompt_key] = gen_image_button
 
         if is_loading:
@@ -232,12 +235,17 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             else:
                 # Merge the new data into the old entry.
                 updated_entry = original_entry.copy()
-                updated_entry['enhanced'] = self.result_data.get('enhanced', {})
-                updated_entry['variations'] = self.result_data.get('variations', {})
-                updated_entry['favorite'] = self.result_data.get('favorite', False)
+                if 'enhanced' in self.result_data:
+                    updated_entry['enhanced'] = self.result_data['enhanced']
+                if 'variations' not in updated_entry: updated_entry['variations'] = {}
+                updated_entry['variations'].update(self.result_data.get('variations', {}))
+                updated_entry['favorite'] = self.is_favorite.get()
                 updated_entry['status'] = 'enhanced'
                 self.processor.update_history_entry(original_entry, updated_entry)
         else:
+            # It's a new entry. Ensure it has an ID before saving.
+            if 'id' not in self.result_data:
+                self.result_data['id'] = str(uuid.uuid4())
             self.processor.history_manager.save_result(**self.result_data)
 
         custom_dialogs.show_info(self, "Saved", "Result saved to history.")
@@ -278,7 +286,17 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
 
         def on_success(images_to_save: List[Dict[str, Any]]):
             """Callback to handle saving image data to the result_data object."""
-            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
+            # --- NEW: Determine the entry ID ---
+            # If we are updating an existing entry, use its ID. Otherwise, ensure one exists for a new entry.
+            if self.existing_entry_id:
+                entry_id = self.existing_entry_id
+            else:
+                # If it's a new entry, it might not have an ID yet.
+                if 'id' not in self.result_data:
+                    self.result_data['id'] = str(uuid.uuid4())
+                entry_id = self.result_data['id']
+
+            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes'], entry_id), 'generation_params': img.get('generation_params')} for img in images_to_save]
             
             if prompt_key == 'original':
                 self.result_data['original_images'] = saved_images_data
@@ -288,6 +306,7 @@ class EnhancementResultWindow(tk.Toplevel, SmartWindowMixin):
             elif prompt_key in self.result_data.get('variations', {}):
                 self.result_data['variations'][prompt_key]['images'] = saved_images_data
             
+            self.processor.clear_avg_gen_times_cache()
             custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) saved for '{prompt_key}' prompt.\n\nPath(s) will be stored when you save to history.")
             button = self.image_gen_buttons.get(prompt_key)
             if button: button.config(text=f"Regen Image(s) ({len(saved_images_data)})")

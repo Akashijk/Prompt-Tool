@@ -18,6 +18,7 @@ class OllamaClient:
         self._is_running_cache: Optional[bool] = None
         self._last_check_time: float = 0
         self._cache_duration: int = 5  # Cache for 5 seconds
+        self.has_successfully_connected: bool = False
 
     def _is_ollama_running(self) -> bool:
         """Check if the Ollama server is running, with caching."""
@@ -43,10 +44,12 @@ class OllamaClient:
         try:
             res = requests.get(f"{self.base_url}/api/tags")
             res.raise_for_status()
+            self.has_successfully_connected = True
             models_data = res.json().get('models', [])
             # Sort models by name alphabetically, case-insensitively
             return sorted(models_data, key=lambda m: m['name'].lower())
         except requests.RequestException as e:
+            self.has_successfully_connected = False
             raise Exception(f"Error getting Ollama models from API: {e}")
     
     def get_model_recommendations(self, models: List[str]) -> List[Tuple[int, str, str]]:
@@ -117,6 +120,7 @@ class OllamaClient:
             try:
                 res = requests.post(api_url, json=payload, timeout=timeout)
                 res.raise_for_status()  # Raises HTTPError for bad responses (4xx or 5xx)
+                self.has_successfully_connected = True
                 return res.json()
             except (requests.Timeout, requests.ConnectionError) as e:
                 last_exception = e
@@ -125,6 +129,7 @@ class OllamaClient:
                     print(f"WARNING: Connection error ({type(e).__name__}) on attempt {attempt + 1}/{max_retries}. Retrying in {sleep_time:.2f}s...")
                     time.sleep(sleep_time)
             except requests.HTTPError as e:
+                self.has_successfully_connected = False
                 last_exception = e
                 status_code = e.response.status_code
                 # Retry on server-side errors (5xx) which might be transient
@@ -147,6 +152,7 @@ class OllamaClient:
                     error_message = f"{error_message} {e.response.text}"
                 raise Exception(error_message) # Fail fast
             except requests.RequestException as e:
+                self.has_successfully_connected = False
                 raise Exception(f"An unexpected network error occurred when communicating with Ollama: {e}")
 
         # If the loop completes, all retries have failed. Raise an informative exception.

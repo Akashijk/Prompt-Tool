@@ -51,10 +51,6 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
         self.active_model = self.parent_app.enhancement_model_var.get()
         self.model_usage_manager.register_usage(self.active_model)
 
-        self._create_widgets()
-        self.refresh_data() # Initial population
-        self.smart_geometry(min_width=1200, min_height=700)
-
         # Define a custom style for selected labels
         style = ttk.Style()
         is_dark = self.parent_app.theme_manager.current_theme == "dark"
@@ -73,10 +69,10 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
         style.configure("Favorite.History.TLabel", font=tkfont.Font(family="Helvetica", size=config.font_size, weight="bold"), foreground=favorite_color)
         style.configure("Prompt.History.TLabel")
 
-        # Start the single thumbnail worker thread
-        self.thumbnail_worker_thread = threading.Thread(target=self._thumbnail_worker, daemon=True)
-        self.thumbnail_worker_thread.start()
-
+        self._create_widgets()
+        self.refresh_data() # Initial population
+        self.smart_geometry(min_width=1200, min_height=700)
+        
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
         if self.after_id:
@@ -245,25 +241,18 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
             if self.winfo_exists():
                 self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
 
-    def _thumbnail_worker(self):
-        """A single worker thread to process all thumbnail generation tasks."""
-        while not self.cancellation_event.is_set():
-            try:
-                label_widget, image_path, workflow = self.thumbnail_work_queue.get(timeout=1)
-                base_history_dir = config.HISTORY_DIR
-                workflow_sub_dir = workflow.lower()
-                workflow_history_dir = os.path.join(base_history_dir, workflow_sub_dir)
-                full_path = os.path.join(workflow_history_dir, image_path)
-                if os.path.exists(full_path):
-                    with Image.open(full_path) as img:
-                        img.thumbnail((100, 100), Image.Resampling.LANCZOS)
-                        self.thumbnail_queue.put((label_widget, img.copy()))
-            except queue.Empty:
-                continue
-
     def _load_history_thumbnail(self, label_widget: ttk.Label, image_path: str, workflow: str):
-        """Starts a background thread to load a thumbnail for the history list."""
-        self.thumbnail_work_queue.put((label_widget, image_path, workflow))
+        """Starts a background thread to load a thumbnail using the ThumbnailManager."""
+        def task():
+            try:
+                thumbnail_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow)
+                if thumbnail_image:
+                    self.thumbnail_queue.put((label_widget, thumbnail_image))
+            except Exception as e:
+                print(f"Error in thumbnail task for {image_path}: {e}")
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
 
     def _load_next_history_batch(self):
         """Loads the next batch of history items into the view."""
@@ -570,16 +559,27 @@ class PromptEvolverWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
         def on_success(images_to_save: List[Dict[str, Any]]):
             if not images_to_save: return
             
+            # --- NEW: Generate entry ID first ---
+            entry_id = str(uuid.uuid4())
             # Use the current app workflow for saving.
-            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
+            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes'], entry_id), 'generation_params': img.get('generation_params')} for img in images_to_save]
             
+            parent_prompts = [p['prompt'] for p in self.parent_widgets]
+            parent_preview = ""
+            if parent_prompts:
+                parent_preview = (parent_prompts[0][:20] + '...') if len(parent_prompts[0]) > 20 else parent_prompts[0]
+                if len(parent_prompts) > 1:
+                    parent_preview += f" + {len(parent_prompts) - 1} more"
+
             entry = {
+                'id': entry_id, # Add the ID here
                 'original_prompt': images_to_save[0]['prompt'],
                 'status': 'generated_only',
                 'original_images': saved_images_data,
-                'template_name': "Evolved from Prompt Evolver"
+                'template_name': f"Evolved from: \"{parent_preview}\"" if parent_preview else "Evolved from Prompt Evolver"
             }
             self.processor.history_manager.save_result(**entry)
+            self.processor.clear_avg_gen_times_cache()
             custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) and prompt saved to history.")
             # After saving, refresh the history list in the evolver
             self.refresh_data()

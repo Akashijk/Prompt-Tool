@@ -27,21 +27,28 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
         self.title("Favorite Images")
         self.parent_app = parent
         self.processor = processor
-        self.load_queue = queue.Queue()
-        self.after_id: Optional[str] = None
+        self.model_usage_manager = parent.model_usage_manager
+        self.load_queue = queue.Queue() # For the main data
+        self.thumbnail_queue = queue.Queue() # For loaded thumbnails
+        self.load_after_id: Optional[str] = None
+        self.thumbnail_after_id: Optional[str] = None
         self.favorite_widgets: List[Dict[str, Any]] = []
 
         self._create_widgets()
         self._start_loading_favorites()
 
         self.smart_geometry(min_width=1000, min_height=700)
+        self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
     def close(self):
         """Safely close the window, cancelling any pending after() jobs."""
-        if self.after_id:
-            self.after_cancel(self.after_id)
-            self.after_id = None
+        if self.load_after_id:
+            self.after_cancel(self.load_after_id)
+            self.load_after_id = None
+        if self.thumbnail_after_id:
+            self.after_cancel(self.thumbnail_after_id)
+            self.thumbnail_after_id = None
         self.close_preview_on_destroy()
         self.destroy()
 
@@ -59,7 +66,7 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
 
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
-        self.after_id = self.after(100, self._check_load_queue)
+        self.load_after_id = self.after(100, self._check_load_queue)
 
     def _check_load_queue(self):
         """Checks for loaded data and populates the view."""
@@ -73,8 +80,24 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
             else:
                 custom_dialogs.show_error(self, "Error Loading Favorites", result['error'])
         except queue.Empty:
-            self.after_id = self.after(100, self._check_load_queue)
+            self.load_after_id = self.after(100, self._check_load_queue)
 
+    def _check_thumbnail_queue(self):
+        """Checks for loaded thumbnails and updates the UI."""
+        try:
+            label_widget, result = self.thumbnail_queue.get_nowait()
+            if label_widget.winfo_exists():
+                if isinstance(result, Image.Image):
+                    img_ref = ImageTk.PhotoImage(result)
+                    label_widget.config(image=img_ref)
+                    label_widget.image = img_ref
+                else: # It's an error
+                    label_widget.config(text="Load\nError", image='')
+        except queue.Empty:
+            pass
+        finally:
+            if self.winfo_exists():
+                self.thumbnail_after_id = self.after(100, self._check_thumbnail_queue)
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -162,29 +185,26 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
             return None
 
     def _load_thumbnail(self, label_widget: ttk.Label, image_path: Optional[str], workflow: str):
-        """Loads an image thumbnail into a label."""
+        """Loads an image thumbnail in a background thread using the ThumbnailManager."""
         if not image_path:
             label_widget.config(text="Path\nMissing")
             return
 
-        try:
-            original_workflow = config.workflow
-            config.workflow = workflow.lower()
-            full_path = os.path.join(config.get_history_file_dir(), image_path)
-            config.workflow = original_workflow
+        label_widget.config(text="...") # Placeholder while loading
 
-            if not os.path.exists(full_path):
-                label_widget.config(text="Image\nNot Found")
-                return
+        def task():
+            try:
+                thumbnail_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow)
+                if thumbnail_image:
+                    self.thumbnail_queue.put((label_widget, thumbnail_image))
+                else:
+                    self.thumbnail_queue.put((label_widget, "Error"))
+            except Exception as e:
+                print(f"Error in thumbnail task for {image_path}: {e}")
+                self.thumbnail_queue.put((label_widget, "Error"))
 
-            img = Image.open(full_path)
-            img.thumbnail((128, 128))
-            img_ref = ImageTk.PhotoImage(img)
-            label_widget.config(image=img_ref)
-            label_widget.image = img_ref  # Keep a reference
-        except Exception as e:
-            label_widget.config(text="Load\nError")
-            print(f"Error loading thumbnail {image_path}: {e}")
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
 
     def _unfavorite_image(self, fav_data: Dict[str, Any], item_frame: ttk.Frame):
         """Finds the original history entry and removes the favorite flag."""
@@ -245,15 +265,24 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
 
         def on_success(images_to_save: List[Dict[str, Any]]):
             """Callback to handle saving a new history entry for the permutation."""
-            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes']), 'generation_params': img.get('generation_params')} for img in images_to_save]
-            original_history_id = fav_data.get('history_id')
+            # --- NEW: Generate entry ID first ---
+            entry_id = str(uuid.uuid4())
+            saved_images_data = [{'image_path': self.processor.save_generated_image(img['bytes'], entry_id), 'generation_params': img.get('generation_params')} for img in images_to_save]
+            
+            prompt_type = fav_data.get('prompt_type', 'favorite')
+            original_prompt_text = fav_data.get('prompt', '')
+            prompt_preview = (original_prompt_text[:30] + '...') if len(original_prompt_text) > 30 else original_prompt_text
+            template_name = f"Permutation of '{prompt_type}' prompt: \"{prompt_preview}\""
+
             entry = {
-                'original_prompt': images_to_save[0]['prompt'], 
+                'id': entry_id, # Add the ID here
+                'original_prompt': images_to_save[0]['prompt'],
                 'status': 'generated_only', 
                 'original_images': saved_images_data, 
-                'template_name': f"Permutation of history ID {original_history_id}" if original_history_id else "Permutation from favorite"
+                'template_name': template_name
             }
             self.processor.history_manager.save_result(**entry)
+            self.processor.clear_avg_gen_times_cache()
             custom_dialogs.show_info(self, "Image Saved", f"{len(saved_images_data)} image(s) and prompt saved to history.")
 
         self.parent_app._start_image_generation_workflow(

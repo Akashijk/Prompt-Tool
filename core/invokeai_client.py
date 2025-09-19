@@ -1,6 +1,7 @@
 """Client for interacting with the InvokeAI REST API."""
 
 import requests
+import os
 import json
 import time
 import threading
@@ -223,13 +224,9 @@ class InvokeAIClient:
             "l2i": {
                 "type": "l2i",
                 "id": "l2i",
-                "is_intermediate": True,
-            },
-            "save_image": {
-                "id": "save_image",
-                "type": "save_image",
-                "is_intermediate": not save_to_gallery,
+                "is_intermediate": False,
                 "use_cache": False,
+                "image_category": "general",
             },
         }
 
@@ -274,8 +271,7 @@ class InvokeAIClient:
             {"source": {"node_id": "negative_conditioning", "field": "conditioning"}, "destination": {"node_id": "denoise_latents", "field": "negative_conditioning"}},
             {"source": {"node_id": vae_source_node_id, "field": "vae"}, "destination": {"node_id": "l2i", "field": "vae"}},
             {"source": {"node_id": "denoise_latents", "field": "latents"}, "destination": {"node_id": "l2i", "field": "latents"}},
-            {"source": {"node_id": "noise", "field": "noise"}, "destination": {"node_id": "denoise_latents", "field": "latents"}},
-            {"source": {"node_id": "l2i", "field": "image"}, "destination": {"node_id": "save_image", "field": "image"}},
+            {"source": {"node_id": "noise", "field": "noise"}, "destination": {"node_id": "denoise_latents", "field": "latents"}}
         ]
 
         edges.extend(lora_edges)
@@ -393,13 +389,9 @@ class InvokeAIClient:
             "l2i": {
                 "type": "l2i",
                 "id": "l2i",
-                "is_intermediate": True,
-            },
-            "save_image": {
-                "id": "save_image",
-                "type": "save_image",
-                "is_intermediate": not save_to_gallery,
+                "is_intermediate": False,
                 "use_cache": False,
+                "image_category": "general",
             },
         }
 
@@ -477,7 +469,6 @@ class InvokeAIClient:
             {"source": {"node_id": vae_source_node_id, "field": "vae"}, "destination": {"node_id": "l2i", "field": "vae"}},
             {"source": {"node_id": "sdxl_denoise_latents", "field": "latents"}, "destination": {"node_id": "l2i", "field": "latents"}},
             {"source": {"node_id": "noise", "field": "noise"}, "destination": {"node_id": "sdxl_denoise_latents", "field": "latents"}},
-            {"source": {"node_id": "l2i", "field": "image"}, "destination": {"node_id": "save_image", "field": "image"}},
         ]
 
         edges.extend(lora_edges)
@@ -509,7 +500,53 @@ class InvokeAIClient:
             print(f"ERROR: Failed to send request to empty model cache: {e}")
             return False
 
-    def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> bytes:
+    def _delete_api_generated_image(self, image_name: str):
+        """
+        Deletes an image and its thumbnail from InvokeAI's disk, with verification and retries.
+        """
+        def task():
+            base_name, _ = os.path.splitext(image_name)
+            thumbnail_name = f"{base_name}.thumbnail.webp"
+            delete_url = f"{self.base_url}/api/v1/images/delete"
+            image_verify_url = f"{self.base_url}/api/v1/images/i/{image_name}/full"
+            
+            max_retries = 3
+            retry_delay = 5  # seconds
+
+            for attempt in range(max_retries):
+                # 1. Attempt deletion
+                try:
+                    payload = {"image_names": [image_name, thumbnail_name]}
+                    response = requests.post(delete_url, json=payload, timeout=10)
+                    if self.verbose:
+                        print(f"INFO (Attempt {attempt + 1}): Delete request for {image_name} sent. Status: {response.status_code}")
+                except requests.RequestException as e:
+                    if self.verbose:
+                        print(f"WARNING (Attempt {attempt + 1}): Delete request for {image_name} failed: {e}")
+                    time.sleep(retry_delay)
+                    continue
+
+                # 2. Verify deletion by trying to fetch the image
+                time.sleep(1.5)  # Give server a moment to process deletion
+                try:
+                    verify_response = requests.get(image_verify_url, timeout=5)
+                    if verify_response.status_code == 404:
+                        if self.verbose: print(f"INFO: Deletion of {image_name} confirmed.")
+                        return  # Success, exit the loop and thread
+                    else:
+                        if self.verbose: print(f"WARNING (Attempt {attempt + 1}): Verification failed. Image {image_name} still exists (Status: {verify_response.status_code}). Retrying...")
+                except requests.RequestException as e:
+                    if self.verbose: print(f"WARNING: Verification request for {image_name} failed: {e}. Assuming deletion was successful.")
+                    return
+
+                time.sleep(retry_delay)
+
+            print(f"ERROR: Failed to verify deletion of image {image_name} after {max_retries} attempts.")
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+
+    def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
         """Generates an image using the queue API and returns the raw image bytes."""
         model_base = model_object.get('base')
         if model_base == 'sdxl':
@@ -562,28 +599,36 @@ class InvokeAIClient:
             response.raise_for_status()
             status_data = response.json()
 
+            duration = time.time() - start_time
             if status_data.get("status") == "completed":
                 output_data = status_data
                 try:
                     session_data = output_data.get("session")
                     if not session_data: raise KeyError("'session' object not found")
-                    target_node_id = session_data['source_prepared_mapping']['save_image'][0]
+                    target_node_id = session_data['source_prepared_mapping']['l2i'][0]
                     results = session_data.get("results")
                     if not results: raise KeyError("'results' key missing from session data")
                     output_node = results.get(target_node_id)
-                    if not output_node: raise KeyError(f"Node output for 'save_image' (id: {target_node_id}) not found in results")
+                    if not output_node: raise KeyError(f"Node output for 'l2i' (id: {target_node_id}) not found in results")
                 except (KeyError, IndexError) as e:
                     raise Exception(f"Could not parse final image from InvokeAI response. Error: {e}\nResponse was: {json.dumps(output_data, indent=2)}") from e
                 
                 image_output = output_node.get("image")
-                if not image_output: raise Exception(f"Generation completed, but no 'image' key found in the output node: {json.dumps(output_node, indent=2)}")
+                if not image_output: raise Exception(f"Generation completed, but no 'image' key found in the 'l2i' output node: {json.dumps(output_node, indent=2)}")
 
                 image_name = image_output.get("image_name")
-                if not image_name: raise Exception(f"Generation completed, but no 'image_name' found in the image output: {json.dumps(image_output, indent=2)}")
+                if not image_name: raise Exception(f"Generation completed, but no 'image_name' found in the 'l2i' image output: {json.dumps(image_output, indent=2)}")
 
                 response = requests.get(f"{self.base_url}/api/v1/images/i/{image_name}/full")
                 response.raise_for_status()
-                return response.content
+                image_bytes = response.content
+
+                # --- NEW: Auto-delete intermediate images ---
+                # If the image was not meant to be saved to the main gallery, delete it from disk.
+                if not save_to_gallery:
+                    self._delete_api_generated_image(image_name)
+
+                return {'bytes': image_bytes, 'image_name': image_name, 'duration': duration}
             elif status_data.get("status") in ["failed", "canceled"]:
                 error_msg = "Unknown error"
                 try:

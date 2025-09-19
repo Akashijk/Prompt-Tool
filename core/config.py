@@ -67,6 +67,7 @@ class Config:
     DEFAULT_TIMEOUT: int = 45
     BRAINSTORM_TIMEOUT: int = 90
     VARIATION_TIMEOUT: int = 30
+    DEFAULT_NEGATIVE_PROMPT_KEY: str = _user_settings.get("default_negative_prompt_key", "standard")
     DEFAULT_INVOKEAI_TIMEOUT: int = 300
     
     # Ollama settings

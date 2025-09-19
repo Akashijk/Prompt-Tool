@@ -58,6 +58,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.total_images_var = tk.StringVar()
         self.model_queue = queue.Queue()
         self.neg_prompt_overrides: Dict[str, str] = {}
+        self.avg_gen_times: Dict[str, float] = {}
         self.original_negative_prompt_text: str = ""
         self.after_id: Optional[str] = None
         self.lora_tooltip: Optional[Tooltip] = None
@@ -84,7 +85,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 base_model_type = self.base_model_type_var.get()
                 main_models = self.client.get_models(base_model=base_model_type, model_type='main')
                 lora_models = self.client.get_models(base_model=base_model_type, model_type='lora')
-                self.model_queue.put({'success': True, 'main': main_models, 'lora': lora_models})
+                model_stats = self.processor.get_model_stats()
+                avg_times = {model: data['avg_duration'] for model, data in model_stats.items()}
+                self.model_queue.put({'success': True, 'main': main_models, 'lora': lora_models, 'avg_times': avg_times})
             except Exception as e:
                 self.model_queue.put({'success': False, 'error': e})
 
@@ -99,6 +102,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             if result['success']:
                 self.models['main'] = result['main']
                 self.models['lora'] = result['lora']
+                self.avg_gen_times = result.get('avg_times', {})
                 self._populate_widgets()
                 # Defer smart_geometry to allow widgets to render and calculate their required size first.
                 self.after(10, lambda: self.smart_geometry(min_width=600, min_height=700, width_percent=0.4, height_percent=0.85))
@@ -124,41 +128,47 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.loading_lora_label.pack_forget()
         self.ok_button.config(state=tk.NORMAL)
 
-        # Handle main models - store both name and key
+        # Handle main models
+        self.model_container.columnconfigure(0, weight=1)
         main_models = self.models.get('main', [])
         if main_models:
             self.model_data = {m['name']: m for m in main_models}
             main_model_names = sorted(list(self.model_data.keys()))
-            
+
             initial_model_name = self.initial_params.get('model', {}).get('name')
             initial_model_names = {m['name'] for m in self.initial_params.get('models', [])}
             if initial_model_name:
                 initial_model_names.add(initial_model_name)
 
-            for model_name in main_model_names:
+            for i, model_name in enumerate(main_model_names):
                 var = tk.BooleanVar()
                 if model_name in initial_model_names:
                     var.set(True)
                 # If no initial models are specified, check the first one by default.
-                elif not initial_model_names and model_name == main_model_names[0]:
+                elif not initial_model_names and i == 0:
                     var.set(True)
                 
                 var.trace_add("write", self._on_model_checkbox_change)
                 
                 cb = ttk.Checkbutton(self.model_container, text=model_name, variable=var)
                 cb.bind("<MouseWheel>", self.model_scroll_view._on_mouse_wheel)
+
+                avg_time = self.avg_gen_times.get(model_name)
+                tooltip_text = f"Average generation time: {avg_time:.2f}s" if avg_time else "No generation time data available."
+                Tooltip(cb, tooltip_text)
                 
                 if model_name in self.disabled_models:
                     cb.config(state=tk.DISABLED)
                     Tooltip(cb, "This model is already in the current generation batch.")
 
-                cb.pack(anchor='w', fill='x', padx=5)
+                cb.grid(row=i, column=0, sticky='ew', padx=5)
                 self.model_vars[model_name] = var
                 self.model_widgets[model_name] = cb
         else:
             ttk.Label(self.model_container, text="No SDXL models found").pack()
 
         # Handle LoRA models - store both name and key
+        self.lora_container.columnconfigure(0, weight=1)
         lora_models = self.models.get('lora', [])
         if self.processor.verbose:
             print(f"DEBUG: Found {len(lora_models)} LoRA models to populate.")
@@ -170,7 +180,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             # Create a map for easy lookup of initial weights
             initial_lora_map = {l['lora_object']['name']: l['weight'] for l in initial_loras}
 
-            for lora_name in sorted(self.lora_data.keys(), key=str.lower):
+            for i, lora_name in enumerate(sorted(self.lora_data.keys(), key=str.lower)):
                 if self.processor.verbose:
                     print(f"DEBUG: Creating widget for LoRA: {lora_name}")
                 lora_frame = ttk.Frame(self.lora_container)
@@ -178,6 +188,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 lora_frame.bind("<Motion>", lambda e, ln=lora_name: self._schedule_lora_tooltip(e, ln))
                 lora_frame.bind("<Leave>", self._hide_lora_tooltip)
                 lora_frame.bind("<MouseWheel>", self.lora_scroll_view._on_mouse_wheel)
+                lora_frame.grid(row=i, column=0, sticky='ew', pady=1, padx=5)
                 self.lora_widgets[lora_name] = lora_frame
                 var = tk.BooleanVar()
                 if lora_name in initial_lora_map:
@@ -222,21 +233,23 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
     def _filter_models(self, *args):
         """Filters the model list based on the search term."""
+        self.model_scroll_view.canvas.yview_moveto(0)
         search_term = self.model_search_var.get().lower()
-        for model_name, widget in self.model_widgets.items():
+        for i, (model_name, widget) in enumerate(self.model_widgets.items()):
             if search_term in model_name.lower():
-                widget.pack(anchor='w', fill='x', padx=5)
+                widget.grid(row=i, column=0, sticky='ew', padx=5)
             else:
-                widget.pack_forget()
+                widget.grid_remove()
 
     def _filter_loras(self, *args):
         """Filters the LoRA list based on the search term."""
+        self.lora_scroll_view.canvas.yview_moveto(0)
         search_term = self.lora_search_var.get().lower()
-        for lora_name, widget_frame in self.lora_widgets.items():
+        for i, (lora_name, widget_frame) in enumerate(self.lora_widgets.items()):
             if search_term in lora_name.lower():
-                widget_frame.pack(fill='x', expand=True, pady=1, padx=5)
+                widget_frame.grid(row=i, column=0, sticky='ew', pady=1, padx=5)
             else:
-                widget_frame.pack_forget()
+                widget_frame.grid_remove()
 
     def _create_widgets(self):
         # The main_frame is the top-level container within the dialog.
@@ -295,35 +308,45 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.lora_container = self.lora_scroll_view.scrollable_frame
         # Initialize the tooltip, attached to the container that holds the LoRAs
         self.lora_tooltip = Tooltip(self.lora_container, "")
-
+        
         # Negative Prompt
         neg_prompt_frame = ttk.LabelFrame(main_frame, text="Negative Prompt", padding=10)
         neg_prompt_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         neg_prompt_controls = ttk.Frame(neg_prompt_frame)
         neg_prompt_controls.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(neg_prompt_controls, text="Preset:").pack(side=tk.LEFT, padx=(0, 5))
-
-        self.override_button = ttk.Button(neg_prompt_controls, text="Set Per-Model Overrides...", command=self._set_overrides, state=tk.DISABLED)
-        self.override_button.pack(side=tk.RIGHT)
-
-        self.lora_override_button = ttk.Button(neg_prompt_controls, text="Set Per-Model LoRAs...", command=self._set_lora_overrides, state=tk.DISABLED)
-        self.lora_override_button.pack(side=tk.RIGHT, padx=(0, 5))
-
-
-
+        neg_prompt_controls.columnconfigure(1, weight=1) # Let the combobox expand
+        
+        ttk.Label(neg_prompt_controls, text="Preset:").grid(row=0, column=0, sticky='w', padx=(0, 5))
+        
         self.negative_prompts = self.processor.get_available_negative_prompts()
         self.neg_prompt_names = [p['name'] for p in self.negative_prompts]
         self.neg_prompt_var = tk.StringVar()
-
         self.neg_prompt_names.insert(0, "Custom")
         self.neg_prompt_combo = ttk.Combobox(neg_prompt_controls, textvariable=self.neg_prompt_var, values=self.neg_prompt_names, state="readonly")
-        self.neg_prompt_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.neg_prompt_combo.grid(row=0, column=1, sticky='ew')
         self.neg_prompt_combo.bind("<<ComboboxSelected>>", self._on_negative_prompt_select)
+
+        self.save_preset_button = ttk.Button(neg_prompt_controls, text="Save...", command=self._save_negative_prompt_preset, state=tk.DISABLED)
+        self.save_preset_button.grid(row=0, column=2, sticky='w', padx=(5, 0))
+
+        override_controls = ttk.Frame(neg_prompt_frame)
+        override_controls.pack(fill=tk.X, pady=(5, 0))
+        self.override_button = ttk.Button(override_controls, text="Set Per-Model Negative Prompts...", command=self._set_overrides, state=tk.DISABLED)
+        self.override_button.pack(side=tk.RIGHT)
+        self.lora_override_button = ttk.Button(override_controls, text="Set Per-Model LoRAs...", command=self._set_lora_overrides, state=tk.DISABLED)
+        self.lora_override_button.pack(side=tk.RIGHT, padx=(0, 5))
 
         self.neg_prompt_text = tk.Text(neg_prompt_frame, height=4, wrap=tk.WORD, undo=True, exportselection=False)
         self.neg_prompt_text.pack(fill=tk.BOTH, expand=True)
-        initial_neg_prompt = self.initial_params.get('negative_prompt', '')
+        
+        # If a negative prompt is passed, use it. Otherwise, get the user's default.
+        initial_neg_prompt = self.initial_params.get('negative_prompt')
+        # If no negative prompt is provided, or if an empty one is provided,
+        # fall back to the user's configured default.
+        if not initial_neg_prompt:
+            initial_neg_prompt = self.processor.get_default_negative_prompt_text()
+
         self.neg_prompt_text.insert("1.0", initial_neg_prompt)
         TextContextMenu(self.neg_prompt_text)
         self.neg_prompt_text.bind("<KeyRelease>", self._on_neg_prompt_text_change)
@@ -523,10 +546,13 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         
         if matching_preset:
             if self.neg_prompt_var.get() != matching_preset:
+                self.save_preset_button.config(state=tk.DISABLED)
                 self.neg_prompt_var.set(matching_preset)
         else:
             if self.neg_prompt_var.get() != "Custom":
                 self.neg_prompt_var.set("Custom")
+            # Enable save button only if there is text to save
+            self.save_preset_button.config(state=tk.NORMAL if current_text else tk.DISABLED)
 
     def _set_initial_negative_prompt_preset(self, initial_text: str):
         """Sets the initial value of the combobox based on the initial text."""
@@ -569,6 +595,27 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         dialog = custom_dialogs._PerModelLoraDialog(self, self.processor, selected_model_names, self.lora_data, global_loras, self.lora_overrides)
         if dialog.result is not None:
             self.lora_overrides = dialog.result
+
+    def _save_negative_prompt_preset(self):
+        """Handles the logic for saving a new or updated negative prompt preset."""
+        current_neg_prompt_text = self.neg_prompt_text.get("1.0", "end-1c").strip()
+        if not current_neg_prompt_text:
+            return
+
+        selected_preset_name = self.neg_prompt_var.get()
+
+        if selected_preset_name == "Custom":
+            if self._save_new_negative_prompt(current_neg_prompt_text):
+                self.save_preset_button.config(state=tk.DISABLED)
+        else: # An existing preset was modified
+            res = custom_dialogs.ask_yes_no_cancel(self, "Save Negative Prompt Changes", f"You have modified the '{selected_preset_name}' preset. Would you like to save the changes?\n\nYes: Update the existing preset.\nNo: Save as a new preset.")
+            if res is True:
+                if self._update_existing_negative_prompt(selected_preset_name, current_neg_prompt_text):
+                    self.save_preset_button.config(state=tk.DISABLED)
+            elif res is False:
+                if self._save_new_negative_prompt(current_neg_prompt_text):
+                    self.save_preset_button.config(state=tk.DISABLED)
+            # If res is None (Cancel), do nothing.
 
     def _save_new_negative_prompt(self, prompt_text: str):
         """Handles the dialog and logic for saving a new negative prompt preset."""
@@ -632,82 +679,18 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.is_destroyed = True
         super()._on_cancel(event)
 
-    def _unload_ollama_models_for_vram(self) -> bool:
-        """
-        Checks for running Ollama models and asks the user to unload them to free VRAM.
-        Returns True if it's okay to proceed, False if the user cancelled.
-        """
-        active_ollama_models = self.model_usage_manager.get_active_models()
-        if not active_ollama_models:
-            return True # No models to unload
-        
-        try:
-            running_models = self.processor.ollama_client.get_running_models()
-        except Exception as e:
-            # If we can't check, it's safer to assume all active models are running and ask the user.
-            print(f"Warning: Could not check for running Ollama models. Will ask to unload all active models. Error: {e}")
-            running_models = [{'name': model_name} for model_name in active_ollama_models]
-
-        # The `running_models` can be a list of strings (on success) or a list of dicts (on exception).
-        # We need to handle both cases to get a set of names.
-        if running_models and isinstance(running_models[0], dict):
-            running_model_names = {m.get('name') for m in running_models}
-        else:
-            running_model_names = set(running_models)
-        
-        # Find the intersection between the models our app is using and the models actually loaded in VRAM.
-        models_to_unload = [model for model in active_ollama_models if model in running_model_names]
-
-        if models_to_unload:
-            if custom_dialogs.ask_yes_no(
-                self, "Free VRAM?", 
-                f"This will temporarily unload the following Ollama model(s) to free VRAM for image generation:\n\n- {', '.join(models_to_unload)}\n\nThe model(s) will be reloaded automatically on their next use. Continue?"
-            ):
-                for model in models_to_unload:
-                    thread = threading.Thread(target=self.processor.cleanup_model, args=(model,), daemon=True)
-                    thread.start()
-                return True
-            return False # User cancelled
-        return True # No models were actually loaded, so we can proceed.
-
     def _on_ok(self, event=None):
         if self.after_id:
             self.after_cancel(self.after_id)
             self.after_id = None
         self.is_destroyed = True
         
-        # --- Check for negative prompt changes before proceeding ---
-        current_neg_prompt_text = self.neg_prompt_text.get("1.0", "end-1c").strip()
-        selected_preset_name = self.neg_prompt_var.get()
-
-        is_dirty = False
-        if selected_preset_name == "Custom":
-            # Only prompt to save if there's actually text to save.
-            if current_neg_prompt_text:
-                is_dirty = True
-        else:
-            # Check if the text for an existing preset has been modified.
-            if current_neg_prompt_text != self.original_negative_prompt_text:
-                is_dirty = True
-        
-        if is_dirty:
-            if selected_preset_name == "Custom":
-                if custom_dialogs.ask_yes_no(self, "Save Negative Prompt", "You have a custom negative prompt. Would you like to save it as a new preset?"):
-                    if not self._save_new_negative_prompt(current_neg_prompt_text):
-                        return # Abort if user cancels the save dialog
-            else: # An existing preset was modified
-                res = custom_dialogs.ask_yes_no_cancel(self, "Save Negative Prompt Changes", f"You have modified the '{selected_preset_name}' preset. Would you like to save the changes?\n\nYes: Update the existing preset.\nNo: Save as a new preset.")
-                if res is True:
-                    self._update_existing_negative_prompt(selected_preset_name, current_neg_prompt_text)
-                elif res is False:
-                    if not self._save_new_negative_prompt(current_neg_prompt_text):
-                        return # Abort if user cancels the save dialog
-        
         # --- VRAM Management ---
         # This is the correct place to check and unload models, right before generation starts.
-        if not self._unload_ollama_models_for_vram():
-            return # User cancelled the VRAM unload, so we abort the whole process.
-        
+        if not self.parent_app._unload_ollama_models_for_vram():
+            self._on_cancel() # This will set result to None and destroy the window
+            return
+
         # Get selected models
         selected_model_names = [name for name, var in self.model_vars.items() if var.get()]
         default_neg_prompt = self.neg_prompt_text.get("1.0", "end-1c").strip()

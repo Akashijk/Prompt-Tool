@@ -36,6 +36,8 @@ class PromptProcessor:
         self.all_wildcards_cache: Optional[Dict[str, Dict]] = None
         self.verbose = verbose
         self.rng = random.Random()
+        self._avg_gen_times_cache: Optional[Dict[str, float]] = None
+        self._default_negative_prompt_cache: Optional[str] = None
         self._used_wildcards_cache: Optional[Set[str]] = None
         self.available_variations_map: Dict[str, str] = {}
         
@@ -214,51 +216,10 @@ class PromptProcessor:
         """Gets a list of LoRA models from InvokeAI."""
         self.invokeai_client.check_server_compatibility()
         return self.invokeai_client.get_models(model_type='lora', base_model=base_model)
-    def load_model_prefixes(self) -> Dict[str, Dict[str, str]]:
-        """Loads model-specific prompt prefixes from a JSON file."""
-        try:
-            with open(config.MODEL_PREFIXES_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
 
-    def save_model_prefixes(self, prefixes: Dict[str, Dict[str, str]]):
-        """Saves the model prefixes to a JSON file."""
-        try:
-            with open(config.MODEL_PREFIXES_FILE, 'w', encoding='utf-8') as f:
-                json.dump(prefixes, f, indent=2)
-            # Reload the prefixes into the processor's state
-            self.model_prefixes = prefixes
-        except IOError as e:
-            raise Exception(f"Could not write to model prefixes file: {e}")
-
-    def load_lora_prefixes(self) -> Dict[str, Dict[str, str]]:
-        """Loads LoRA-specific prompt prefixes from a JSON file."""
-        try:
-            with open(config.LORA_PREFIXES_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
-
-    def save_lora_prefixes(self, prefixes: Dict[str, Dict[str, str]]):
-        """Saves the LoRA prefixes to a JSON file."""
-        try:
-            with open(config.LORA_PREFIXES_FILE, 'w', encoding='utf-8') as f:
-                json.dump(prefixes, f, indent=2)
-            self.lora_prefixes = prefixes
-        except IOError as e:
-            raise Exception(f"Could not write to LoRA prefixes file: {e}")
-    
-    def is_invokeai_connected(self) -> bool:
-        """Checks if the InvokeAI client is configured and likely connected."""
-        # The client is initialized in the GUI. If the URL in the config is empty,
-        # the client exists but won't be able to connect.
-        return self.invokeai_client is not None and config.INVOKEAI_BASE_URL != ""
-    
     def get_model_recommendations(self, models: List[str]) -> List[tuple]:
         """Get recommended models with reasons."""
         return self.ollama_client.get_model_recommendations(models)
-    
     def delete_history_entry(self, row_to_delete: Dict[str, str]) -> bool:
         """Pass-through to delete a history entry."""
         return self.history_manager.delete_history_entry(row_to_delete)
@@ -266,12 +227,18 @@ class PromptProcessor:
     def update_history_entry(self, original_row: Dict[str, str], updated_row: Dict[str, str]) -> bool:
         """Pass-through to update a history entry."""
         return self.history_manager.update_history_entry(original_row, updated_row)
-    
+
     def get_full_history(self) -> List[Dict[str, str]]:
         """Pass-through to get the full history data, sorted newest first."""
         history = self.history_manager.load_full_history()
         history.sort(key=lambda x: x.get('timestamp', '0'), reverse=True)
         return history
+
+    def clear_invokeai_cache(self):
+        """Clears the InvokeAI model cache synchronously."""
+        if not self.is_invokeai_connected():
+            return
+        self.invokeai_client.empty_model_cache()
 
     def prune_missing_image_entries(self) -> int:
         """Pass-through to prune missing image entries from the history."""
@@ -280,10 +247,98 @@ class PromptProcessor:
     def garbage_collect_orphaned_images(self) -> int:
         """Pass-through to garbage collect orphaned images."""
         return self.history_manager.garbage_collect_orphaned_images()
+    def load_model_prefixes(self) -> Dict[str, Dict[str, str]]:
+        """Loads model-specific prompt prefixes."""
+        return self._load_prefixes(config.MODEL_PREFIXES_FILE)
+
+    def save_model_prefixes(self, prefixes: Dict[str, Dict[str, str]]):
+        """Saves the model prefixes."""
+        self._save_prefixes(config.MODEL_PREFIXES_FILE, prefixes)
+        self.model_prefixes = prefixes
+
+    def load_lora_prefixes(self) -> Dict[str, Dict[str, str]]:
+        """Loads LoRA-specific prompt prefixes."""
+        return self._load_prefixes(config.LORA_PREFIXES_FILE)
+
+    def save_lora_prefixes(self, prefixes: Dict[str, Dict[str, str]]):
+        """Saves the LoRA prefixes."""
+        self._save_prefixes(config.LORA_PREFIXES_FILE, prefixes)
+        self.lora_prefixes = prefixes
+
+    def _load_prefixes(self, file_path: str) -> Dict[str, Dict[str, str]]:
+        """Generic method to load prefixes from a JSON file."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_prefixes(self, file_path: str, prefixes: Dict[str, Dict[str, str]]):
+        """Generic method to save prefixes to a JSON file."""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(prefixes, f, indent=2)
+        except IOError as e:
+            raise Exception(f"Could not write to prefixes file at {file_path}: {e}")
+    
+    def is_ollama_connected(self) -> bool:
+        """Checks if the Ollama client is configured and can connect to the server."""
+        # A robust check is to see if a successful API call has been made,
+        # indicated by the `has_successfully_connected` flag.
+        return self.ollama_client is not None and self.ollama_client.has_successfully_connected
+    
+    def is_invokeai_connected(self) -> bool:
+        """Checks if the InvokeAI client is configured and likely connected."""
+        # A robust check is to see if the models_endpoint has been successfully determined
+        # by the check_server_compatibility method. This confirms a successful handshake
+        # with a compatible server.
+        return self.invokeai_client is not None and self.invokeai_client.models_endpoint is not None
+
+    def get_model_stats(self) -> Dict[str, Dict[str, float]]:
+        """Calculates usage and performance stats per model from history."""
+        all_history = self.get_all_history_across_workflows()
+        # {model_name: {'count': int, 'total_duration': float, 'min_duration': float, 'max_duration': float}}
+        model_stats: Dict[str, Dict[str, float]] = {}
+
+        def process_images(images: List[Dict[str, Any]]):
+            if not images: return
+            for img in images:
+                params = img.get('generation_params', {})
+                if not params: continue
+                
+                duration = params.get('duration')
+                model_name = params.get('model', {}).get('name')
+
+                if model_name:
+                    if model_name not in model_stats:
+                        model_stats[model_name] = {'count': 0, 'total_duration': 0.0, 'min_duration': float('inf'), 'max_duration': 0.0}
+                    
+                    model_stats[model_name]['count'] += 1
+                    
+                    if duration is not None:
+                        model_stats[model_name]['total_duration'] += duration
+                        model_stats[model_name]['min_duration'] = min(model_stats[model_name]['min_duration'], duration)
+                        model_stats[model_name]['max_duration'] = max(model_stats[model_name]['max_duration'], duration)
+
+        for entry in all_history:
+            for image_list_key in ['original_images', 'enhanced.images'] + [f'variations.{k}.images' for k in entry.get('variations', {})]:
+                parts = image_list_key.split('.')
+                data = entry
+                for part in parts: data = data.get(part, {})
+                process_images(data if isinstance(data, list) else [])
+
+        final_stats = {}
+        for model_name, stats in model_stats.items():
+            count = stats['count']
+            final_stats[model_name] = {'count': count, 'avg_duration': (stats['total_duration'] / count) if count > 0 and stats['total_duration'] > 0 else 0.0, 'min_duration': stats['min_duration'] if stats['min_duration'] != float('inf') else 0.0, 'max_duration': stats['max_duration']}
+        return final_stats
+
+    def clear_avg_gen_times_cache(self):
+        """Clears the cached average generation times. Should be called when history is updated with new images."""
+        self._avg_gen_times_cache = None
 
     def get_all_history_across_workflows(self) -> List[Dict[str, str]]:
         """Loads and returns history data from all workflows (SFW and NSFW), sorted by timestamp."""
-        
         def load_from_path(path: str, workflow_tag: str) -> List[Dict[str, str]]:
             history = []
             if not os.path.exists(path):
@@ -304,7 +359,6 @@ class PromptProcessor:
         all_history = load_from_path(os.path.join(config.HISTORY_DIR, 'sfw', 'history.jsonl'), 'SFW') + load_from_path(os.path.join(config.HISTORY_DIR, 'nsfw', 'history.jsonl'), 'NSFW')
         all_history.sort(key=lambda x: x.get('timestamp', '0'), reverse=True)
         return all_history
-    
     def get_available_templates(self) -> List[str]:
         """Get a sorted list of available templates from the cache."""
         # This is designed to be called *after* initialize() or list_templates()
@@ -1068,18 +1122,17 @@ class PromptProcessor:
         if os.path.exists(neg_prompts_dir):
             for filename in sorted(os.listdir(neg_prompts_dir)):
                 if filename.endswith('.txt'):
-                    try:
-                        display_name = os.path.splitext(filename)[0].replace('_', ' ').title()
-                        files_by_category["Negative Prompts"].append({
-                            'display_name': display_name,
-                            'relative_path': os.path.join('negative_prompts', filename)
-                        })
-                    except Exception: # Should not happen, but for safety
-                        display_name = os.path.splitext(filename)[0]
-                        files_by_category["Negative Prompts"].append({
-                            'display_name': display_name,
-                            'relative_path': os.path.join('negative_prompts', filename)
-                        })
+                    key = os.path.splitext(filename)[0]
+                    display_name = key.replace('_', ' ').title()
+                    
+                    # --- NEW: Add default indicator ---
+                    if key == config.DEFAULT_NEGATIVE_PROMPT_KEY:
+                        display_name += " (Default)"
+
+                    files_by_category["Negative Prompts"].append({
+                        'display_name': display_name,
+                        'relative_path': os.path.join('negative_prompts', filename)
+                    })
 
         return files_by_category
 
@@ -1130,10 +1183,29 @@ class PromptProcessor:
                     print(f"Warning: Could not load or parse negative prompt file {filename}: {e}")
         return prompts
 
+    def clear_default_negative_prompt_cache(self):
+        """Clears the cached default negative prompt text."""
+        self._default_negative_prompt_cache = None
+
     def get_default_negative_prompt_text(self) -> str:
-        """Gets the prompt text from the first available negative prompt preset."""
+        """Gets the prompt text from the user-defined default negative prompt preset, with caching."""
+        if self._default_negative_prompt_cache is not None:
+            return self._default_negative_prompt_cache
+
         available_prompts = self.get_available_negative_prompts()
-        return available_prompts[0].get('prompt', '') if available_prompts else ""
+        if not available_prompts:
+            self._default_negative_prompt_cache = ""
+            return ""
+
+        default_key = config.DEFAULT_NEGATIVE_PROMPT_KEY
+        
+        for p in available_prompts:
+            if p.get('key') == default_key:
+                self._default_negative_prompt_cache = p.get('prompt', '')
+                return self._default_negative_prompt_cache
+        
+        self._default_negative_prompt_cache = available_prompts[0].get('prompt', '')
+        return self._default_negative_prompt_cache
 
     def load_system_prompt_content(self, filename: str) -> str:
         """Load the content of a system prompt file."""
@@ -2048,14 +2120,14 @@ class PromptProcessor:
         # The response should be a JSON array.
         return self.ollama_client.parse_json_array_from_response(raw_response)
 
-    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> bytes:
+    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
         """Generates an image with InvokeAI and returns the raw image bytes."""
 
-        # --- NEW: Apply model-specific prefixes ---
+        # --- Apply model-specific prefixes ---
         model_name = model_object.get('name')
         if model_name and model_name in self.model_prefixes:
             prefixes = self.model_prefixes[model_name]
-            
+
             pos_prefix = prefixes.get('positive_prefix', '').strip()
             if pos_prefix:
                 prompt = f"{pos_prefix}, {prompt}"
@@ -2065,7 +2137,7 @@ class PromptProcessor:
                 # Prepend to existing negative prompt, handling the case where it's empty
                 negative_prompt = f"{neg_prefix}, {negative_prompt}" if negative_prompt else neg_prefix
 
-        # --- NEW: Apply LoRA-specific prefixes with deduplication ---
+        # --- Apply LoRA-specific prefixes with deduplication ---
         all_pos_lora_prefixes = set()
         all_neg_lora_prefixes = set()
 
@@ -2076,7 +2148,7 @@ class PromptProcessor:
 
                 pos_prefix = lora_prefixes.get('positive_prefix', '').strip()
                 if pos_prefix:
-                    # Split by comma and add to set to handle duplicates
+                    # Split by comma and add to set to handle duplicates within a single prefix string
                     all_pos_lora_prefixes.update([p.strip() for p in pos_prefix.split(',') if p.strip()])
 
                 neg_prefix = lora_prefixes.get('negative_prefix', '').strip()
@@ -2090,7 +2162,6 @@ class PromptProcessor:
         if all_neg_lora_prefixes:
             combined_neg_prefix = ", ".join(sorted(list(all_neg_lora_prefixes)))
             negative_prompt = f"{combined_neg_prefix}, {negative_prompt}" if negative_prompt else combined_neg_prefix
-        # --- END of new logic ---
 
         return self.invokeai_client.generate_image(
             prompt=prompt, 
@@ -2107,17 +2178,23 @@ class PromptProcessor:
             cancellation_event=cancellation_event
         )
 
-    def save_generated_image(self, image_bytes: bytes) -> str:
-        """Saves image bytes to the history folder and returns the relative path."""
-        # Save the image to the correct history subfolder
-        image_dir = os.path.join(config.get_history_file_dir(), 'images')
+    def save_generated_image(self, image_bytes: bytes, entry_id: str) -> str:
+        """Saves image bytes to a dedicated folder for the history entry and returns the relative path."""
+        # Create a dedicated directory for this history entry's images
+        entry_image_dir_name = entry_id
+        # The full path to the specific entry's image folder
+        full_entry_image_dir = os.path.join(config.get_history_file_dir(), 'images', entry_image_dir_name)
+        os.makedirs(full_entry_image_dir, exist_ok=True)
+
         image_filename = f"{uuid.uuid4()}.png"
-        image_path = os.path.join(image_dir, image_filename)
+        image_path = os.path.join(full_entry_image_dir, image_filename)
 
         with open(image_path, 'wb') as f:
             f.write(image_bytes)
             
-        return os.path.join('images', image_filename)
+        # The path stored in history should be relative to the workflow's history directory
+        # e.g., 'images/entry_id_uuid/image_uuid.png'
+        return os.path.join('images', entry_image_dir_name, image_filename)
 
     def ai_interrogate_image(self, base64_image: str, model: str, prompt: str) -> str:
         """Pass-through to the Ollama client to generate a prompt from an image."""

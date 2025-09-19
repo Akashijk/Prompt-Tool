@@ -105,16 +105,20 @@ class ActionBar(ttk.Frame):
         
         # Right side: Image generation
         self.image_gen_frame = ttk.Frame(button_container)
+        # --- FIX: Use grid layout to prevent spinner from being pushed out ---
+        self.image_gen_frame.columnconfigure(1, weight=1) # Let the button expand
         self.image_gen_frame.pack(side='left')
         
         # The spinner will be packed to the left of the button when active
         from .common import LoadingAnimation  # Local import to avoid circular dependency
         self.image_gen_spinner = LoadingAnimation(self.image_gen_frame, size=20)
-        
+        self.image_gen_spinner.grid(row=0, column=0, padx=(0, 5))
+        self.image_gen_spinner.grid_remove() # Hide it initially
+
         self.generate_image_button = ttk.Button(self.image_gen_frame, text="Generate Image", 
                                               command=self.generate_image_callback, 
                                               state=tk.DISABLED)
-        self.generate_image_button.pack(side='left')
+        self.generate_image_button.grid(row=0, column=1, sticky='ew')
         
     def _create_seed_controls(self):
         """Create seed input and randomization controls"""
