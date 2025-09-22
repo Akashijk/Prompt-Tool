@@ -50,14 +50,20 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         self.thumbnail_work_queue = queue.Queue()
         self.thumbnail_queue = queue.Queue()
         self.generation_queue = queue.Queue()
-        self.job_queue = queue.PriorityQueue()
+        # --- NEW: Two-level queue system for intelligent batching ---
+        self.model_queues: Dict[str, queue.Queue] = {} # Holds jobs per model
+        self.worker_queue = queue.Queue() # Workers pull from this
+        self.scheduler_queue = queue.Queue() # Signals the scheduler
         self._resize_debounce_id: Optional[str] = None
         
         # Threading controls
         self.cancellation_event = threading.Event()
-        self.generation_lock = threading.Lock()
-        self.model_switch_lock = threading.Lock()
-        self.last_used_model_in_queue: Optional[str] = None
+        # --- NEW: State for the new scheduler ---
+        self.current_gpu_model: Optional[str] = None
+        self.absorption_count = 0
+        self.ABSORPTION_LIMIT = 8 # Max regens to absorb before forcing a model switch
+        self.active_invokeai_jobs = set()
+        self.active_jobs_lock = threading.Lock()
         
         self.thumbnail_size = (256, 256)
         self.item_width = self.thumbnail_size[0] + 20 # Approx width for layout calculation
@@ -139,16 +145,29 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
         self.destroy()
 
-    def _cancel_all_jobs(self):
+    def _cancel_all_jobs(self) -> List[threading.Thread]:
         """Cancels all ongoing and pending generation jobs."""
         if not self.cancellation_event.is_set():
             self.cancellation_event.set()
             # Add sentinel values to unblock any worker threads waiting on the queue
-            for _ in range(4): # Assuming a max of 4 workers
-                self.job_queue.put((float('inf'), None, None))
+            for _ in range(4): # Unblock workers
+                self.worker_queue.put(None)
+            self.scheduler_queue.put(None) # Unblock scheduler
             # Also clear the InvokeAI cache since we are stopping generation.
+            cleanup_threads = []
             if self.processor.is_invokeai_connected():
+                # --- NEW: Explicitly cancel any jobs that are already running on the server ---
+                with self.active_jobs_lock:
+                    if self.active_invokeai_jobs:
+                        print(f"INFO: Cancelling and cleaning up {len(self.active_invokeai_jobs)} active InvokeAI jobs...")
+                        for item_id in list(self.active_invokeai_jobs):
+                            thread = self.processor.invokeai_client.cancel_and_cleanup_item(item_id, self.save_to_gallery_for_batch)
+                            if thread:
+                                cleanup_threads.append(thread)
+                        self.active_invokeai_jobs.clear()
                 self.processor.clear_invokeai_cache_async()
+            return cleanup_threads
+        return []
 
     def _start_worker_pool(self):
         """Starts a pool of worker threads to process jobs from the job_queue."""
@@ -158,15 +177,29 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         # --- End of new logic ---
 
         num_workers = 4 # Concurrency limit
+        # Start the scheduler thread
+        scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+        scheduler_thread.start()
+
+        # Start worker threads
         for _ in range(num_workers):
             thread = threading.Thread(target=self._worker_loop, daemon=True)
             thread.start()
         
-        # Add initial jobs to the queue with medium priority
-        for i, job in enumerate(self.generation_jobs):
-            if self.cancellation_event.is_set():
-                break
-            self.job_queue.put((1, time.time() + i, job)) # Priority 1, timestamp for FIFO tie-breaking
+        # --- NEW: Group initial jobs by model ---
+        jobs_by_model: Dict[str, List[Dict]] = {}
+        for job in self.generation_jobs:
+            model_name = job.get('gen_params', {}).get('model', {}).get('name', '')
+            if model_name not in jobs_by_model:
+                jobs_by_model[model_name] = []
+            jobs_by_model[model_name].append(job)
+
+        # --- NEW: Populate the model-specific queues and signal the scheduler ---
+        for model_name, jobs in sorted(jobs_by_model.items()):
+            self.model_queues[model_name] = queue.Queue()
+            for job in jobs:
+                self.model_queues[model_name].put(job)
+            self.scheduler_queue.put(model_name)
 
     def _thumbnail_worker(self):
         """A single worker thread to process all thumbnail generation tasks."""
@@ -191,67 +224,82 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             except queue.Empty:
                 continue # Loop again to check for cancellation or new tasks
 
+    def _scheduler_loop(self):
+        """The main loop for the scheduler thread, which orchestrates model batches."""
+        while not self.cancellation_event.is_set():
+            model_name = self.scheduler_queue.get()
+            if model_name is None: break # Sentinel
+
+            if self.current_gpu_model != model_name:
+                # Wait for all workers to finish with the previous model.
+                self.worker_queue.join()
+                if self.processor.verbose: print(f"INFO: All workers finished. Switching model from '{self.current_gpu_model}' to '{model_name}'.")
+                
+                # Clear the server cache AFTER waiting, just before the new model is used.
+                if self.processor.is_invokeai_connected():
+                    self.processor.clear_invokeai_cache()
+                
+                self.current_gpu_model = model_name
+                self.absorption_count = 0 # Reset absorption count for the new model
+
+            model_job_queue = self.model_queues.get(model_name)
+            if model_job_queue:
+                while not model_job_queue.empty():
+                    job = model_job_queue.get()
+                    self.worker_queue.put(job)
+
     def _worker_loop(self):
         """The main loop for worker threads, pulling jobs from the priority queue."""
         while not self.cancellation_event.is_set():
-            _priority, _timestamp, job = self.job_queue.get()
+            job = self.worker_queue.get()
             if job is None: # Sentinel value to exit
                 break
 
-            # --- NEW: Serialize generation to prevent server overload ---
-            with self.generation_lock:
-                if self.cancellation_event.is_set():
-                    break
+            job_id = job['id']
 
-                job_id = job['id']
-                try:
-                    # --- Model Cache Clearing Logic ---
-                    current_model_name = job.get('gen_params', {}).get('model', {}).get('name')
-                    with self.model_switch_lock:
-                        if self.last_used_model_in_queue and current_model_name != self.last_used_model_in_queue:
-                            if self.processor.is_invokeai_connected():
-                                # Synchronously clear the cache to prepare for the new model.
-                                # This is now safe because of the outer generation_lock.
-                                self.processor.clear_invokeai_cache()
-                        # Update the last used model to the current one.
-                        self.last_used_model_in_queue = current_model_name
-                    # --- End of Cache Logic ---
+            try:
+                if self.cancellation_event.is_set(): break
 
-                    self.generation_queue.put({'status': 'generating', 'job_id': job_id})
-                    self.event_generate("<<GenerationQueueUpdated>>") # Notify UI to show spinner
-                    prompt = job['prompt']
-                    gen_params = job['gen_params']
+                self.generation_queue.put({'status': 'generating', 'job_id': job_id})
+                self.event_generate("<<GenerationQueueUpdated>>")
+                prompt = job['prompt']
+                gen_params = job['gen_params']
 
-                    gen_args = {
-                        "prompt": prompt,
-                        "negative_prompt": gen_params.get("negative_prompt", ""),
-                        "seed": gen_params.get("seed"),
-                        "model_object": gen_params.get("model"),
-                        "loras": gen_params.get("loras", []),
-                        "steps": gen_params.get("steps", 30),
-                        "cfg_scale": gen_params.get("cfg_scale", 7.5),
-                        "scheduler": gen_params.get("scheduler", "dpmpp_2m"),
-                        "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier", 0.0),
-                        "save_to_gallery": self.save_to_gallery_for_batch,
-                        "cancellation_event": self.cancellation_event
-                    }
-                    image_data = self.processor.generate_image_with_invokeai(**gen_args)
-                    
-                    if self.cancellation_event.is_set(): continue
+                gen_args = {
+                    "prompt": prompt, "negative_prompt": gen_params.get("negative_prompt", ""),
+                    "seed": gen_params.get("seed"), "model_object": gen_params.get("model"),
+                    "loras": gen_params.get("loras", []), "steps": gen_params.get("steps", 30),
+                    "cfg_scale": gen_params.get("cfg_scale", 7.5), "scheduler": gen_params.get("scheduler", "dpmpp_2m"),
+                    "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier", 0.0),
+                    "save_to_gallery": self.save_to_gallery_for_batch, "cancellation_event": self.cancellation_event
+                }
+                image_data = self.processor.generate_image_with_invokeai(**gen_args)
+                item_id = image_data.get('item_id')
+                if item_id:
+                    with self.active_jobs_lock:
+                        self.active_invokeai_jobs.add(item_id)
 
-                    gen_params['duration'] = image_data.get('duration')
-                    result_data = {'bytes': image_data['bytes'], 'prompt': prompt, 'generation_params': gen_params}
+                if self.cancellation_event.is_set(): continue
 
-                    self.generation_queue.put({'status': 'completed', 'job_id': job_id, 'data': result_data})
+                gen_params['duration'] = image_data.get('duration')
+                result_data = {'bytes': image_data['bytes'], 'prompt': prompt, 'generation_params': gen_params}
+                self.generation_queue.put({'status': 'completed', 'job_id': job_id, 'data': result_data})
+                
+                if item_id:
+                    with self.active_jobs_lock:
+                        if item_id in self.active_invokeai_jobs:
+                            self.active_invokeai_jobs.remove(item_id)
+                self.event_generate("<<GenerationQueueUpdated>>")
+            except Exception as e:
+                if not self.cancellation_event.is_set():
+                    print(f"\n--- ERROR during image generation for job ID {job_id} ---", file=sys.stderr, flush=True)
+                    traceback.print_exc(file=sys.stderr)
+                    print("-----------------------------------------------------\n", file=sys.stderr, flush=True)
+                    error_type = 'timeout' if 'timeout' in str(e).lower() else 'generic'
+                    self.generation_queue.put({'status': 'error', 'job_id': job_id, 'error': f"Error: {e}", 'error_type': error_type})
                     self.event_generate("<<GenerationQueueUpdated>>")
-                except Exception as e:
-                    if not self.cancellation_event.is_set():
-                        print(f"\n--- ERROR during image generation for job ID {job_id} ---", file=sys.stderr, flush=True)
-                        traceback.print_exc(file=sys.stderr)
-                        print("-----------------------------------------------------\n", file=sys.stderr, flush=True)
-                        error_type = 'timeout' if 'timeout' in str(e).lower() else 'generic'
-                        self.generation_queue.put({'status': 'error', 'job_id': job_id, 'error': f"Error: {e}", 'error_type': error_type})
-                        self.event_generate("<<GenerationQueueUpdated>>")
+            finally:
+                self.worker_queue.task_done()
 
     def _process_thumbnail_queue(self, event=None):
         """Checks for processed thumbnails and updates the UI."""
@@ -733,7 +781,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 new_job = {'prompt': original_job['prompt'], 'gen_params': new_gen_params, 'id': str(uuid.uuid4())}
                 self.generation_jobs.insert(insertion_index, new_job)
                 self._add_placeholder_to_grid(new_job, index=insertion_index)
-                self.job_queue.put((1, time.time(), new_job)) # Add to queue with medium priority
+                self._add_job_to_model_queue(new_job)
             self._reflow_grid()
 
     def _regenerate_image(self, widget_info_to_regen: Dict[str, Any]):
@@ -764,9 +812,23 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         # Get the original job data from the widget
         job_to_retry = widget_info_to_retry['job_data']
 
-        # Re-queue the job with a high priority to run next
-        self.job_queue.put((0, time.time(), job_to_retry))
+        # --- NEW: Add job back to the correct model queue ---
+        self._add_job_to_model_queue(job_to_retry)
         self.completed_jobs -= 1 # Decrement so the "Save" button text is accurate
+
+    def _add_job_to_model_queue(self, job: Dict[str, Any]):
+        """Adds a job to the appropriate model's queue and signals the scheduler if needed."""
+        model_name = job.get('gen_params', {}).get('model', {}).get('name', '')
+        
+        # Ensure a queue exists for this model.
+        if model_name not in self.model_queues:
+            self.model_queues[model_name] = queue.Queue()
+        
+        # Add the job to its model-specific queue.
+        self.model_queues[model_name].put(job)
+        # Always signal the scheduler that this model now has work to do.
+        # This will add it to the end of the current schedule.
+        self.scheduler_queue.put(model_name)
 
     def _show_context_menu(self, event, widget_info: Dict[str, Any]):
         """Shows the context menu for an image card."""
@@ -817,23 +879,22 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
         widget_info_to_regen['spinner'].grid_forget()
         widget_info_to_regen['image_label'].grid(row=0, column=0, sticky='nsew')
 
-        # --- NEW: Intelligently prioritize this job to minimize model switching ---
+        # --- NEW: Intelligent job queuing to minimize model switching ---
         regen_model_name = new_gen_params.get('model', {}).get('name')
         
-        # Check if the regenerated model is the one we are currently working on.
-        # self.last_used_model_in_queue is a good heuristic for the "current batch model".
-        if regen_model_name and regen_model_name == self.last_used_model_in_queue:
-            # The model matches the current one. Give it top priority to run next.
-            priority = 0
+        # Check if the regenerated model is the one we are currently processing on the GPU
+        # and if we haven't hit the absorption limit.
+        if regen_model_name and regen_model_name == self.current_gpu_model and self.absorption_count < self.ABSORPTION_LIMIT:
+            # The model matches the one on the GPU. Absorb it into the current batch.
+            # Add it directly to the worker queue to be processed next.
+            if self.processor.verbose: print(f"INFO: Absorbing regen for active model '{regen_model_name}'.")
+            self.worker_queue.put(new_job)
+            self.absorption_count += 1
         else:
-            # The model is different. Give it a high priority, but one that is lower
-            # than any currently running batch. This ensures the current model's
-            # jobs finish first before switching.
-            priority = 1
-
-        # The timestamp is used as a tie-breaker. A slightly earlier timestamp
-        # ensures it runs before other jobs of the same priority level.
-        self.job_queue.put((priority, time.time() - 1, new_job))
+            # The model is different, or the absorption limit was reached.
+            # Add it to its own model queue to be scheduled later.
+            if self.processor.verbose: print(f"INFO: Queuing regen for inactive model '{regen_model_name}'.")
+            self._add_job_to_model_queue(new_job)
 
         widget_info_to_regen['image_label'].grid_forget()
         widget_info_to_regen['spinner'].grid(row=0, column=0, sticky='nsew')
@@ -902,12 +963,30 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
         # Define the completion callback for the new dialog
         def on_permutation_dialog_close(images_to_save: Optional[List[Dict[str, Any]]]):
-            if not images_to_save:
-                return # User cancelled or kept no images
+            if not images_to_save: return
 
-            # Get the first selected image and update the original widget
-            selected_image_data = images_to_save[0]
-            self._update_widget_with_new_image_data(widget_info, selected_image_data)
+            try:
+                # Find the index of the original widget so we can insert after it.
+                index_to_insert_after = self.image_widgets.index(widget_info)
+            except ValueError:
+                custom_dialogs.show_error(self, "Error", "Could not find the original image to insert permutations after.")
+                return
+
+            # Insert new jobs and widgets for each saved image from the permutation dialog.
+            for i, image_data in enumerate(images_to_save):
+                insertion_index = index_to_insert_after + 1 + i
+                
+                # Create a new job dictionary from the result data.
+                new_job = {
+                    'prompt': image_data['prompt'], 
+                    'gen_params': image_data['generation_params'],
+                    'id': str(uuid.uuid4()) # A new unique ID for this new slot
+                }
+                
+                self.generation_jobs.insert(insertion_index, new_job)
+                self._add_placeholder_to_grid(new_job, index=insertion_index)
+                self._update_image_in_grid(self.image_widgets[insertion_index], image_data)
+            self._reflow_grid()
 
         # Create and show the new modal dialog for permutations
         MultiImagePreviewDialog(
@@ -990,14 +1069,13 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
 
     def _on_ok(self, event=None):
         kept_images = [info['image_data'] for info in self.image_widgets if info.get('image_data') and info['keep_var'].get()]
-        
-        if self.dialog_mode == 'lora_permutation' and len(kept_images) > 1:
-            custom_dialogs.show_warning(self, "Select One Image", "Please select only one image to use for the update.")
-            return
-        elif self.dialog_mode != 'batch' and len(kept_images) == 0:
+
+        # For any non-batch mode (permutations, variations), if the user clicks OK,
+        # they must have selected at least one image.
+        if self.dialog_mode != 'batch' and not kept_images:
             custom_dialogs.show_warning(self, "Select Image(s)", "Please select at least one image to use, or click Cancel.")
             return
-        
+
         self.result = kept_images
         self.close() # close will handle the callback
 

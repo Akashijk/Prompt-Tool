@@ -41,6 +41,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.model_usage_manager: 'ModelUsageManager' = parent.model_usage_manager
         self.client = processor.invokeai_client
         self.models: Dict[str, List[Dict[str, Any]]] = {}
+        self.schedulers: List[str] = []
         self.model_data: Dict[str, Dict[str, Any]] = {}  # name -> full model object
         self.lora_data: Dict[str, Dict[str, Any]] = {}   # name -> full lora object
         self.is_editing = is_editing
@@ -85,9 +86,10 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
                 base_model_type = self.base_model_type_var.get()
                 main_models = self.client.get_models(base_model=base_model_type, model_type='main')
                 lora_models = self.client.get_models(base_model=base_model_type, model_type='lora')
+                schedulers = self.client.get_schedulers()
                 model_stats = self.processor.get_model_stats()
                 avg_times = {model: data['avg_duration'] for model, data in model_stats.items()}
-                self.model_queue.put({'success': True, 'main': main_models, 'lora': lora_models, 'avg_times': avg_times})
+                self.model_queue.put({'success': True, 'main': main_models, 'lora': lora_models, 'avg_times': avg_times, 'schedulers': schedulers})
             except Exception as e:
                 self.model_queue.put({'success': False, 'error': e})
 
@@ -102,6 +104,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             if result['success']:
                 self.models['main'] = result['main']
                 self.models['lora'] = result['lora']
+                self.schedulers = result.get('schedulers', [])
                 self.avg_gen_times = result.get('avg_times', {})
                 self._populate_widgets()
                 # Defer smart_geometry to allow widgets to render and calculate their required size first.
@@ -133,7 +136,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         main_models = self.models.get('main', [])
         if main_models:
             self.model_data = {m['name']: m for m in main_models}
-            main_model_names = sorted(list(self.model_data.keys()))
+            main_model_names = sorted(list(self.model_data.keys()), key=str.lower)
 
             initial_model_name = self.initial_params.get('model', {}).get('name')
             initial_model_names = {m['name'] for m in self.initial_params.get('models', [])}
@@ -221,6 +224,16 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             # After update_idletasks(), this should show the full, correct height of all packed widgets.
             print(f"DEBUG: After update_idletasks, lora_container reqheight: {self.lora_container.winfo_reqheight()}")
         
+        # --- NEW: Update scheduler combobox with fetched values ---
+        self.scheduler_combo['values'] = self.schedulers
+        # Ensure the default value is valid.
+        default_scheduler = self.initial_params.get('scheduler', 'dpmpp_2m')
+        if self.schedulers and default_scheduler not in self.schedulers:
+            # If the old default isn't available, pick the first one from the new list
+            self.scheduler_var.set(self.schedulers[0])
+        else:
+            self.scheduler_var.set(default_scheduler)
+
         # Apply initial filter to show all LoRAs
         self._filter_loras()
 
@@ -392,12 +405,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
 
         # Row 2: Scheduler
         ttk.Label(params_frame, text="Scheduler:").grid(row=2, column=0, sticky='w', pady=(5, 0))
-        # Corrected scheduler names to match InvokeAI's expected values.
-        # 'dpmpp_2m_karras' -> 'dpmpp_2m_k'
-        # 'dpmpp_2s_ancestral' -> 'dpmpp_2s'
-        schedulers = ["euler", "dpmpp_2m", "dpmpp_2m_k", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_2s", "lms", "pndm"]
         self.scheduler_var = tk.StringVar(value=self.initial_params.get('scheduler', 'dpmpp_2m'))
-        ttk.Combobox(params_frame, textvariable=self.scheduler_var, values=schedulers, state="readonly").grid(row=2, column=1, columnspan=5, sticky='ew', pady=(5,0))
+        self.scheduler_combo = ttk.Combobox(params_frame, textvariable=self.scheduler_var, values=[], state="readonly")
+        self.scheduler_combo.grid(row=2, column=1, columnspan=5, sticky='ew', pady=(5,0))
 
         # New options frame
         options_frame = ttk.Frame(main_frame)
@@ -504,6 +514,20 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
     def _on_model_checkbox_change(self, *args):
         self._update_override_button_state()
         self._update_total_images_label()
+
+        selected_models = [name for name, var in self.model_vars.items() if var.get()]
+        
+        # If exactly one model is selected, try to set its default scheduler.
+        if len(selected_models) == 1:
+            model_name = selected_models[0]
+            model_prefix_data = self.processor.model_prefixes.get(model_name, {})
+            default_scheduler = model_prefix_data.get('scheduler')
+            
+            # Check if the scheduler is valid for the current context
+            if default_scheduler and default_scheduler in self.schedulers:
+                self.scheduler_var.set(default_scheduler)
+        # If no models are selected, or multiple are selected, we don't change the scheduler automatically.
+        # The user can set it manually. The last-selected model's scheduler will stick, which is fine.
 
     def _update_override_button_state(self):
         num_selected = sum(1 for var in self.model_vars.values() if var.get())

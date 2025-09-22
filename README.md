@@ -39,7 +39,6 @@ A quick look at some of the key tool windows:
     *   Automatically detects missing wildcards in your template and provides clickable links to generate them on the fly.
 *   **AI-Powered Enhancement & Variations:**
     *   Use a local LLM to enhance your base prompts, adding detail, style, and quality keywords.
-    *   With one click, use an AI to automatically fix grammar, remove redundancies, and improve the flow of a generated prompt.
     *   Generate cinematic, artistic, and photorealistic variations of your enhanced prompt.
 *   **Interactive Template Editor:**
     *   Right-click context menu to easily add or adjust prompt weighting `(like this)1.2`, de-emphasis `[like this]`, roll for unique values, or select multiple items from a wildcard.
@@ -109,7 +108,7 @@ A quick look at some of the key tool windows:
     Follow the instructions on ollama.com to install and start the Ollama server.
 
 3.  **Pull an AI Model:**
-    Pull a model to be used for enhancement and brainstorming.
+    Pull a model to be used for enhancement and brainstorming. `qwen` models are highly recommended.
     ```bash
     ollama run qwen:7b
     ```
@@ -123,6 +122,8 @@ A quick look at some of the key tool windows:
 5.  **Install Dependencies:**
     Install the required Python packages using the provided `requirements.txt` file.
     ```bash
+    # This will install libraries like Pillow, networkx, matplotlib, and thefuzz,
+    # which are needed for image handling, dependency graphs, and advanced wildcard tools.
     pip install -r requirements.txt
     ```
 
@@ -160,7 +161,6 @@ A quick look at some of the key tool windows:
     *   **Template:** Select a template file. The content will appear in the editor.
     *   **Generate:** Click "Generate Next Preview" to see a prompt with wildcards filled in.
     *   **Interact:** In the preview pane, click on any highlighted text to see a menu of other options from that wildcard file. If your template uses a wildcard that doesn't exist, a link will appear below the preview allowing you to generate it.
-    *   **Cleanup (Optional):** Click "AI Cleanup ✨" to have an AI refine the grammar and flow of the generated prompt in the preview pane.
     *   **Enhance:** When you're happy with the preview, click "Enhance This Prompt". A new window will appear showing the AI's enhanced version and any selected variations.
     *   **Generate Image:** From the main window or the enhancement results window, click "Generate Image". A dialog will appear allowing you to select your InvokeAI model(s), LoRAs, and other settings. The generated images and their parameters will be saved to your history. In the image preview dialog, you can right-click any image to generate further LoRA or seed variations.
 

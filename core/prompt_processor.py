@@ -29,7 +29,7 @@ class PromptProcessor:
         self.thumbnail_manager = ThumbnailManager()
         # Lazily import OllamaClient to avoid issues if it's not needed (e.g., in GUI)
         self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL)
-        self.invokeai_client = InvokeAIClient(base_url=config.INVOKEAI_BASE_URL)
+        self.invokeai_client = InvokeAIClient(base_url=config.INVOKEAI_BASE_URL, verbose=verbose)
         self.history_manager: 'HistoryManager' = HistoryManager()
         self.model_prefixes: Dict[str, Dict[str, str]] = {}
         self.lora_prefixes: Dict[str, Dict[str, str]] = {}
@@ -240,6 +240,11 @@ class PromptProcessor:
             return
         self.invokeai_client.empty_model_cache()
 
+    def clear_invokeai_data_cache(self):
+        """Clears the cached InvokeAI models, LoRAs, and schedulers."""
+        if self.is_invokeai_connected():
+            self.invokeai_client.clear_cache()
+
     def prune_missing_image_entries(self) -> int:
         """Pass-through to prune missing image entries from the history."""
         return self.history_manager.prune_missing_image_entries()
@@ -251,7 +256,7 @@ class PromptProcessor:
         """Loads model-specific prompt prefixes."""
         return self._load_prefixes(config.MODEL_PREFIXES_FILE)
 
-    def save_model_prefixes(self, prefixes: Dict[str, Dict[str, str]]):
+    def save_model_prefixes(self, prefixes: Dict[str, Dict[str, Any]]):
         """Saves the model prefixes."""
         self._save_prefixes(config.MODEL_PREFIXES_FILE, prefixes)
         self.model_prefixes = prefixes
@@ -265,7 +270,7 @@ class PromptProcessor:
         self._save_prefixes(config.LORA_PREFIXES_FILE, prefixes)
         self.lora_prefixes = prefixes
 
-    def _load_prefixes(self, file_path: str) -> Dict[str, Dict[str, str]]:
+    def _load_prefixes(self, file_path: str) -> Dict[str, Dict[str, Any]]:
         """Generic method to load prefixes from a JSON file."""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -273,7 +278,7 @@ class PromptProcessor:
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
 
-    def _save_prefixes(self, file_path: str, prefixes: Dict[str, Dict[str, str]]):
+    def _save_prefixes(self, file_path: str, prefixes: Dict[str, Dict[str, Any]]):
         """Generic method to save prefixes to a JSON file."""
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
@@ -297,25 +302,33 @@ class PromptProcessor:
     def get_model_stats(self) -> Dict[str, Dict[str, float]]:
         """Calculates usage and performance stats per model from history."""
         all_history = self.get_all_history_across_workflows()
-        # {model_name: {'count': int, 'total_duration': float, 'min_duration': float, 'max_duration': float}}
-        model_stats: Dict[str, Dict[str, float]] = {}
+        # {model_name: {'count': int, 'duration_count': int, 'total_duration': float, 'min_duration': float, 'max_duration': float}}
+        model_stats: Dict[str, Dict[str, Any]] = {}
 
         def process_images(images: List[Dict[str, Any]]):
             if not images: return
             for img in images:
                 params = img.get('generation_params', {})
                 if not params: continue
-                
+
                 duration = params.get('duration')
                 model_name = params.get('model', {}).get('name')
 
                 if model_name:
                     if model_name not in model_stats:
-                        model_stats[model_name] = {'count': 0, 'total_duration': 0.0, 'min_duration': float('inf'), 'max_duration': 0.0}
-                    
+                        model_stats[model_name] = {
+                            'count': 0,
+                            'duration_count': 0,
+                            'total_duration': 0.0,
+                            'min_duration': float('inf'),
+                            'max_duration': 0.0
+                        }
+
                     model_stats[model_name]['count'] += 1
-                    
-                    if duration is not None:
+
+                    # Only include images with a valid, positive duration in time-based calculations.
+                    if duration is not None and duration > 0:
+                        model_stats[model_name]['duration_count'] += 1
                         model_stats[model_name]['total_duration'] += duration
                         model_stats[model_name]['min_duration'] = min(model_stats[model_name]['min_duration'], duration)
                         model_stats[model_name]['max_duration'] = max(model_stats[model_name]['max_duration'], duration)
@@ -327,10 +340,12 @@ class PromptProcessor:
                 for part in parts: data = data.get(part, {})
                 process_images(data if isinstance(data, list) else [])
 
-        final_stats = {}
+        final_stats: Dict[str, Dict[str, float]] = {}
         for model_name, stats in model_stats.items():
             count = stats['count']
-            final_stats[model_name] = {'count': count, 'avg_duration': (stats['total_duration'] / count) if count > 0 and stats['total_duration'] > 0 else 0.0, 'min_duration': stats['min_duration'] if stats['min_duration'] != float('inf') else 0.0, 'max_duration': stats['max_duration']}
+            duration_count = stats['duration_count']
+            avg_duration = (stats['total_duration'] / duration_count) if duration_count > 0 else 0.0
+            final_stats[model_name] = {'count': count, 'avg_duration': avg_duration, 'min_duration': stats['min_duration'] if stats['min_duration'] != float('inf') else 0.0, 'max_duration': stats['max_duration']}
         return final_stats
 
     def clear_avg_gen_times_cache(self):
@@ -943,9 +958,8 @@ class PromptProcessor:
         try:
             filename_to_save = f"{wc_name}.json"
             save_dir = None
-            # This needs to check all possible directories to find where the file lives.
-            # The mode-agnostic cache doesn't store the file's original workflow.
-            all_possible_dirs = [config.WILDCARD_NSFW_DIR, config.WILDCARD_DIR]
+            # --- FIX: Use the correct search order to find the file's true location ---
+            all_possible_dirs = self._get_wildcard_search_order()
             for directory in all_possible_dirs:
                 if os.path.exists(os.path.join(directory, filename_to_save)):
                     save_dir = directory
@@ -2136,6 +2150,13 @@ class PromptProcessor:
             if neg_prefix:
                 # Prepend to existing negative prompt, handling the case where it's empty
                 negative_prompt = f"{neg_prefix}, {negative_prompt}" if negative_prompt else neg_prefix
+            
+            # --- FIX: Apply the model-specific scheduler if it exists ---
+            model_scheduler = prefixes.get('scheduler')
+            if model_scheduler:
+                if self.verbose:
+                    print(f"INFO: Overriding scheduler with model-specific setting for '{model_name}': '{model_scheduler}'")
+                scheduler = model_scheduler
 
         # --- Apply LoRA-specific prefixes with deduplication ---
         all_pos_lora_prefixes = set()

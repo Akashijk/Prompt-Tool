@@ -23,7 +23,18 @@ class InvokeAIClient:
         self.models_endpoint: Optional[str] = None
         self.base_model_param_name: str = "base_models"
         self.server_version: Optional[Version] = None
+        # --- NEW: Caching attributes ---
+        self.models_cache: Dict[str, List[Dict[str, Any]]] = {} # Key: f"{model_type}_{base_model}"
+        self.schedulers_cache: Optional[List[str]] = None
         self.available_vaes: Optional[List[Dict[str, Any]]] = None
+        self._init_lock = threading.Lock()
+
+    def clear_cache(self):
+        """Clears the cached models, LoRAs, VAEs, and schedulers."""
+        if self.verbose: print("INFO: Clearing InvokeAI data cache.")
+        self.models_cache.clear()
+        self.schedulers_cache = None
+        self.available_vaes = None
 
     def is_server_running(self) -> bool:
         """Checks if the InvokeAI server is running and responsive. Does not check version."""
@@ -35,53 +46,56 @@ class InvokeAIClient:
 
     def check_server_compatibility(self):
         """Checks for connection, compatible version, and a working models endpoint by probing."""
-        # If we've already successfully configured, don't re-check.
-        # This avoids repeated API calls for every image generation.
-        if self.models_endpoint and self.server_version:
-            return
+        # Use a lock to ensure this initialization logic is thread-safe.
+        with self._init_lock:
+            # If we've already successfully configured, don't re-check.
+            # This check is now inside the lock to prevent race conditions.
+            if self.models_endpoint and self.server_version:
+                return
 
-        try:
-            # Check version first
-            version_str = self.get_version()
-            self.server_version = parse_version(version_str)
-            if self.server_version.major < 3:
-                raise IncompatibleVersionError(f"Incompatible InvokeAI version. Found {version_str}, but this tool requires version 3.0.0 or higher.")
+            try:
+                # Check version first
+                version_str = self.get_version()
+                self.server_version = parse_version(version_str)
+                if self.server_version.major < 3:
+                    raise IncompatibleVersionError(f"Incompatible InvokeAI version. Found {version_str}, but this tool requires version 3.0.0 or higher.")
 
-            # Now, find a working models endpoint by probing known paths and parameter names
-            # The user's test script confirms /api/v2/models/ is a valid endpoint for some versions.
-            endpoints_to_try = [
-                "/api/v2/models/", # Newer versions
-                "/api/v1/models/", # Older v3 versions
-            ]
-            param_names_to_try = ["base_models", "base_model"]
+                # Now, find a working models endpoint by probing known paths and parameter names
+                endpoints_to_try = [
+                    "/api/v2/models/", # Newer versions
+                    "/api/v1/models/", # Older v3 versions
+                ]
+                param_names_to_try = ["base_models", "base_model"]
 
-            for endpoint in endpoints_to_try:
-                for param_name in param_names_to_try:
-                    try:
-                        # We test with a dummy parameter to ensure the endpoint handles filtering.
-                        params = {param_name: ["sdxl"]}
-                        response = requests.get(f"{self.base_url}{endpoint}", params=params, timeout=10)
-                        if response.status_code == 200:
-                            # Success! We found a working combination.
-                            self.models_endpoint = endpoint
-                            self.base_model_param_name = param_name
-                            # Now that we have a working endpoint, cache the VAEs
-                            try:
-                                self.available_vaes = self.get_models(model_type='vae')
-                            except Exception as e:
-                                print(f"Warning: Could not fetch VAE models: {e}")
-                                self.available_vaes = []
-                            if self.verbose:
-                                print(f"INFO: InvokeAI client configured to use endpoint '{self.models_endpoint}' with param '{self.base_model_param_name}'")
-                            return
-                    except requests.RequestException:
-                        continue # Try next combination
+                for endpoint in endpoints_to_try:
+                    for param_name in param_names_to_try:
+                        try:
+                            # We test with a dummy parameter to ensure the endpoint handles filtering.
+                            params = {param_name: ["sdxl"]}
+                            response = requests.get(f"{self.base_url}{endpoint}", params=params, timeout=10)
+                            if response.status_code == 200:
+                                # Success! We found a working combination.
+                                self.models_endpoint = endpoint
+                                self.base_model_param_name = param_name
+                                
+                                # Now that we have a working endpoint, cache the VAEs.
+                                # This call is safe because get_models has its own caching logic.
+                                try:
+                                    self.available_vaes = self.get_models(model_type='vae')
+                                except Exception as e:
+                                    print(f"Warning: Could not fetch VAE models: {e}")
+                                    self.available_vaes = []
+                                if self.verbose:
+                                    print(f"INFO: InvokeAI client configured to use endpoint '{self.models_endpoint}' with param '{self.base_model_param_name}'")
+                                return
+                        except requests.RequestException:
+                            continue # Try next combination
 
-            # If we get here, no endpoint worked
-            raise ConnectionError("Could not find a working models endpoint on the InvokeAI server. The server is running, but the API structure may have changed.")
-        except requests.RequestException as e:
-            # Re-raise as a more standard ConnectionError for the caller to handle.
-            raise ConnectionError(f"Could not connect to InvokeAI server. Is it running and is the URL correct? Error: {e}")
+                # If we get here, no endpoint worked
+                raise ConnectionError("Could not find a working models endpoint on the InvokeAI server. The server is running, but the API structure may have changed.")
+            except requests.RequestException as e:
+                # Re-raise as a more standard ConnectionError for the caller to handle.
+                raise ConnectionError(f"Could not connect to InvokeAI server. Is it running and is the URL correct? Error: {e}")
 
     def get_version(self) -> str:
         """Gets the InvokeAI server version."""
@@ -91,6 +105,14 @@ class InvokeAIClient:
 
     def get_models(self, base_model: Optional[str] = None, model_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Gets a list of models from the InvokeAI server, with optional filtering."""
+        # --- NEW: Caching logic ---
+        cache_key = f"{model_type or 'any'}_{base_model or 'any'}"
+        if cache_key in self.models_cache:
+            if self.verbose:
+                print(f"INFO: Returning cached models for key '{cache_key}'.")
+            return self.models_cache[cache_key]
+        # --- End of new logic ---
+
         if not self.models_endpoint:
             # This should be called by the settings window, but as a fallback...
             self.check_server_compatibility()
@@ -121,14 +143,88 @@ class InvokeAIClient:
             if 'key' not in model and 'model_name' in model:
                 model['key'] = model['model_name']
         
+        # --- NEW: Store in cache ---
+        if self.verbose:
+            print(f"INFO: Caching {len(models)} models for key '{cache_key}'.")
+        self.models_cache[cache_key] = models
+        # --- End of new logic ---
+        
         return models
+
+    def get_schedulers(self) -> List[str]:
+        """Gets a list of available schedulers from the InvokeAI server."""
+        if self.schedulers_cache is not None:
+            if self.verbose:
+                print("INFO: Returning schedulers from cache.")
+            return self.schedulers_cache
+
+        # Method 1: Try the modern schema endpoint (preferred for InvokeAI 3.1+)
+        if self.verbose: print("INFO: Attempting to fetch schedulers from schema endpoint...")
+        try:
+            response = requests.get(f"{self.base_url}/api/v1/schemas/scheduler", timeout=10)
+            if response.status_code == 200:
+                schema_data = response.json()
+                schedulers = schema_data.get('enum', [])
+                if schedulers:
+                    self.schedulers_cache = sorted(schedulers)
+                    if self.verbose: print(f"INFO: SUCCESS: Fetched {len(schedulers)} schedulers from schema endpoint.")
+                    return self.schedulers_cache
+        except requests.RequestException as e:
+            if self.verbose: print(f"INFO: Could not fetch schedulers from schema endpoint, trying next method. Error: {e}")
+
+        # Method 2: Try the denoise_latents node schema (very reliable)
+        if self.verbose: print("INFO: Attempting to fetch schedulers from denoise_latents node schema...")
+        try:
+            response = requests.get(f"{self.base_url}/api/v1/nodes/denoise_latents", timeout=10)
+            if response.status_code == 200:
+                node_data = response.json()
+                schedulers = node_data.get('inputs', {}).get('scheduler', {}).get('enum', [])
+                if schedulers:
+                    self.schedulers_cache = sorted(schedulers)
+                    if self.verbose: print(f"INFO: SUCCESS: Fetched {len(schedulers)} schedulers from denoise_latents node schema.")
+                    return self.schedulers_cache
+        except requests.RequestException as e:
+            if self.verbose: print(f"INFO: Could not fetch schedulers from denoise_latents node schema, trying next method. Error: {e}")
+
+        # Method 3: Try the older config endpoint
+        if self.verbose: print("INFO: Attempting to fetch schedulers from config endpoint...")
+        try:
+            response = requests.get(f"{self.base_url}/api/v1/app/config", timeout=10)
+            if response.status_code == 200:
+                config_data = response.json()
+                schedulers = config_data.get('scheduler_ids', [])
+                if schedulers:
+                    self.schedulers_cache = sorted(schedulers)
+                    if self.verbose: print(f"INFO: SUCCESS: Fetched {len(schedulers)} schedulers from config endpoint.")
+                    return self.schedulers_cache
+        except requests.RequestException as e:
+            if self.verbose: print(f"INFO: Could not fetch schedulers from config endpoint. Error: {e}")
+
+        # Method 4: Fallback to hardcoded list if all API calls fail
+        if self.verbose: print("INFO: FALLBACK: Using hardcoded list for schedulers.")
+        fallback_schedulers = sorted([
+            "ddim", "ddpm", "deis", "dpmpp_2m", "dpmpp_2m_karras", "dpmpp_2s_a", "dpmpp_2s_a_karras",
+            "dpmpp_sde", "dpmpp_sde_karras", "dpmpp_3m_sde", "dpmpp_3m_sde_karras", "euler", "euler_a",
+            "heun", "lms", "pndm", "lcm"
+        ])
+        # Cache the fallback so we don't keep trying the API on subsequent calls in the same session.
+        self.schedulers_cache = fallback_schedulers
+        return self.schedulers_cache
 
     def _get_vae_override(self, model_object: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Determines if a VAE override is needed and returns the VAE model object if so.
         This is a robust workaround for models that produce black or distorted images.
         """
-        if not self.available_vaes:
+        # --- NEW: Fetch VAEs if not already cached ---
+        if self.available_vaes is None:
+            try:
+                # This will use the new caching mechanism in get_models
+                self.available_vaes = self.get_models(model_type='vae')
+            except Exception as e:
+                print(f"Warning: Could not fetch VAE models for override check: {e}")
+                self.available_vaes = [] # Set to empty list to prevent re-fetching on every call
+        if not self.available_vaes: # Check again after attempting to fetch
             return None
 
         main_model_base = model_object.get('base')
@@ -226,6 +322,7 @@ class InvokeAIClient:
                 "id": "l2i",
                 "is_intermediate": False,
                 "use_cache": False,
+                "save_to_gallery": save_to_gallery,
                 "image_category": "general",
             },
         }
@@ -391,6 +488,7 @@ class InvokeAIClient:
                 "id": "l2i",
                 "is_intermediate": False,
                 "use_cache": False,
+                "save_to_gallery": save_to_gallery,
                 "image_category": "general",
             },
         }
@@ -500,51 +598,133 @@ class InvokeAIClient:
             print(f"ERROR: Failed to send request to empty model cache: {e}")
             return False
 
-    def _delete_api_generated_image(self, image_name: str):
+    def delete_images(self, image_names: List[str]):
         """
-        Deletes an image and its thumbnail from InvokeAI's disk, with verification and retries.
+        Best-effort deletion of images and their thumbnails from InvokeAI's disk,
+        with verification and retries. This runs in a background thread.
         """
+        if not image_names:
+            return
+
         def task():
-            base_name, _ = os.path.splitext(image_name)
-            thumbnail_name = f"{base_name}.thumbnail.webp"
-            delete_url = f"{self.base_url}/api/v1/images/delete"
-            image_verify_url = f"{self.base_url}/api/v1/images/i/{image_name}/full"
-            
-            max_retries = 3
-            retry_delay = 5  # seconds
+            for image_name in image_names:
+                base_name, _ = os.path.splitext(image_name)
+                thumbnail_name = f"{base_name}.thumbnail.webp"
+                delete_url = f"{self.base_url}/api/v1/images/delete"
+                image_verify_url = f"{self.base_url}/api/v1/images/i/{image_name}/full"
+                
+                max_retries = 3
+                retry_delay = 5  # seconds
 
-            for attempt in range(max_retries):
-                # 1. Attempt deletion
-                try:
-                    payload = {"image_names": [image_name, thumbnail_name]}
-                    response = requests.post(delete_url, json=payload, timeout=10)
-                    if self.verbose:
-                        print(f"INFO (Attempt {attempt + 1}): Delete request for {image_name} sent. Status: {response.status_code}")
-                except requests.RequestException as e:
-                    if self.verbose:
-                        print(f"WARNING (Attempt {attempt + 1}): Delete request for {image_name} failed: {e}")
+                for attempt in range(max_retries):
+                    # 1. Attempt deletion
+                    try:
+                        # The delete endpoint takes a list of names to delete in bulk.
+                        payload = {"image_names": [image_name, thumbnail_name]}
+                        response = requests.post(delete_url, json=payload, timeout=10)
+                        if self.verbose:
+                            print(f"INFO (Attempt {attempt + 1}): Delete request for {image_name} sent. Status: {response.status_code}")
+                    except requests.RequestException as e:
+                        if self.verbose:
+                            print(f"WARNING (Attempt {attempt + 1}): Delete request for {image_name} failed: {e}")
+                        time.sleep(retry_delay)
+                        continue
+
+                    # 2. Verify deletion by trying to fetch the image
+                    time.sleep(1.5)  # Give server a moment to process deletion
+                    try:
+                        verify_response = requests.get(image_verify_url, timeout=5)
+                        if verify_response.status_code == 404:
+                            if self.verbose: print(f"INFO: Deletion of {image_name} confirmed.")
+                            break  # Success, move to the next image name
+                        else:
+                            if self.verbose: print(f"WARNING (Attempt {attempt + 1}): Verification failed. Image {image_name} still exists (Status: {verify_response.status_code}). Retrying...")
+                    except requests.RequestException as e:
+                        if self.verbose: print(f"WARNING: Verification request for {image_name} failed: {e}. Assuming deletion was successful.")
+                        break # Assume success and move on
+
                     time.sleep(retry_delay)
-                    continue
-
-                # 2. Verify deletion by trying to fetch the image
-                time.sleep(1.5)  # Give server a moment to process deletion
-                try:
-                    verify_response = requests.get(image_verify_url, timeout=5)
-                    if verify_response.status_code == 404:
-                        if self.verbose: print(f"INFO: Deletion of {image_name} confirmed.")
-                        return  # Success, exit the loop and thread
-                    else:
-                        if self.verbose: print(f"WARNING (Attempt {attempt + 1}): Verification failed. Image {image_name} still exists (Status: {verify_response.status_code}). Retrying...")
-                except requests.RequestException as e:
-                    if self.verbose: print(f"WARNING: Verification request for {image_name} failed: {e}. Assuming deletion was successful.")
-                    return
-
-                time.sleep(retry_delay)
-
-            print(f"ERROR: Failed to verify deletion of image {image_name} after {max_retries} attempts.")
+                else: # This 'else' belongs to the for loop
+                    print(f"ERROR: Failed to verify deletion of image {image_name} after {max_retries} attempts.")
 
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
+
+    def cancel_queue_item(self, item_id: int):
+        """Cancels a specific queue item by its ID."""
+        try:
+            requests.put(f"{self.base_url}/api/v1/queue/default/i/{item_id}/cancel", timeout=5)
+        except requests.RequestException as e:
+            if self.verbose:
+                print(f"WARNING: Failed to send cancellation for item {item_id}: {e}")
+
+    def cancel_and_cleanup_item(self, item_id: int, save_to_gallery: bool) -> Optional[threading.Thread]:
+        """
+        Cancels a queue item and, if save_to_gallery is False, polls for its
+        final state to delete any generated images. This runs in a background thread.
+        Returns the thread object so the caller can wait for it to complete if needed.
+        """
+        def task():
+            # Poll for the final status of the queue item to get the session data.
+            timeout = 30  # seconds to wait for the item to terminate
+            start_time = time.time()
+            final_status_data = None
+
+            while time.time() - start_time < timeout:
+                try:
+                    response = requests.get(f"{self.base_url}/api/v1/queue/default/i/{item_id}", timeout=5)
+                    if response.status_code == 404:
+                        if self.verbose: print(f"INFO: Queue item {item_id} not found during cleanup, assuming it was processed.")
+                        break
+                    response.raise_for_status()
+                    status_data = response.json()
+                    if status_data.get("status") not in ["in_progress", "pending"]:
+                        final_status_data = status_data
+                        break
+                except requests.RequestException as e:
+                    if self.verbose: print(f"WARNING: Could not poll status for queue item {item_id} during cleanup: {e}")
+                    break
+                time.sleep(1)
+            
+            if final_status_data:
+                image_names = self._extract_image_names_from_session(final_status_data)
+                if image_names:
+                    if self.verbose: print(f"INFO: Cleaning up {len(image_names)} image(s) from cancelled/closed job {item_id}.")
+                    self.delete_images(image_names)
+
+        # Always send the cancellation request immediately.
+        self.cancel_queue_item(item_id)
+
+        # If not saving to gallery, we need to start a cleanup thread.
+        if not save_to_gallery:
+            thread = threading.Thread(target=task, daemon=False) # Must be non-daemonic to be joinable on exit
+            thread.start()
+            return thread
+        
+        # If saving to gallery, no cleanup thread is needed, so we return None.
+        return None
+
+    def _extract_image_names_from_session(self, status_json: dict) -> list[str]:
+        """
+        Walk the execution result payload and collect any produced image names.
+        Structure varies by version; we defensively search.
+        """
+        names = []
+        try:
+            sess = status_json.get("session", {})
+            results = sess.get("results", {}) or {}
+            for node_out in results.values():
+                # common shapes: {"images": [{"image_name": "...", ...}, ...]} or {"image": {"image_name": "..."}}
+                imgs = node_out.get("images") or node_out.get("image") or []
+                if isinstance(imgs, dict):
+                    imgs = [imgs]
+                for im in imgs:
+                    name = (im.get("image_name") or im.get("name") or "").strip()
+                    if name:
+                        names.append(name)
+        except Exception:
+            pass # Defensive: if anything goes wrong, we just return what we have.
+        return names
 
     def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
         """Generates an image using the queue API and returns the raw image bytes."""
@@ -585,16 +765,7 @@ class InvokeAIClient:
         start_time = time.time()
         while time.time() - start_time < timeout:
             if cancellation_event and cancellation_event.is_set():
-                print(f"INFO: Cancellation requested for InvokeAI job ID: {item_id}")
-                try:
-                    # Attempt to tell the server to cancel the job.
-                    cancel_response = requests.put(f"{self.base_url}/api/v1/queue/default/i/{item_id}/cancel")
-                    cancel_response.raise_for_status()
-                    if self.verbose:
-                        print(f"INFO: Successfully sent cancellation request for job {item_id}.")
-                except requests.RequestException as cancel_err:
-                    print(f"WARNING: Failed to send cancellation request for job {item_id}. It may continue running on the server. Error: {cancel_err}")
-                raise Exception("Image generation cancelled by user.")
+                raise Exception("Image generation cancelled by user.") # The cancellation is now handled by the caller.
             response = requests.get(f"{self.base_url}/api/v1/queue/default/i/{item_id}")
             response.raise_for_status()
             status_data = response.json()
@@ -602,22 +773,14 @@ class InvokeAIClient:
             duration = time.time() - start_time
             if status_data.get("status") == "completed":
                 output_data = status_data
-                try:
-                    session_data = output_data.get("session")
-                    if not session_data: raise KeyError("'session' object not found")
-                    target_node_id = session_data['source_prepared_mapping']['l2i'][0]
-                    results = session_data.get("results")
-                    if not results: raise KeyError("'results' key missing from session data")
-                    output_node = results.get(target_node_id)
-                    if not output_node: raise KeyError(f"Node output for 'l2i' (id: {target_node_id}) not found in results")
-                except (KeyError, IndexError) as e:
-                    raise Exception(f"Could not parse final image from InvokeAI response. Error: {e}\nResponse was: {json.dumps(output_data, indent=2)}") from e
                 
-                image_output = output_node.get("image")
-                if not image_output: raise Exception(f"Generation completed, but no 'image' key found in the 'l2i' output node: {json.dumps(output_node, indent=2)}")
-
-                image_name = image_output.get("image_name")
-                if not image_name: raise Exception(f"Generation completed, but no 'image_name' found in the 'l2i' image output: {json.dumps(image_output, indent=2)}")
+                # --- NEW: Use the robust extraction method ---
+                image_names = self._extract_image_names_from_session(output_data)
+                if not image_names:
+                    raise Exception(f"Could not parse final image name from InvokeAI response.\nResponse was: {json.dumps(output_data, indent=2)}")
+                
+                # For text-to-image, we expect only one image.
+                image_name = image_names[0]
 
                 response = requests.get(f"{self.base_url}/api/v1/images/i/{image_name}/full")
                 response.raise_for_status()
@@ -626,9 +789,9 @@ class InvokeAIClient:
                 # --- NEW: Auto-delete intermediate images ---
                 # If the image was not meant to be saved to the main gallery, delete it from disk.
                 if not save_to_gallery:
-                    self._delete_api_generated_image(image_name)
+                    self.delete_images(image_names)
 
-                return {'bytes': image_bytes, 'image_name': image_name, 'duration': duration}
+                return {'bytes': image_bytes, 'image_name': image_name, 'duration': duration, 'item_id': item_id}
             elif status_data.get("status") in ["failed", "canceled"]:
                 error_msg = "Unknown error"
                 try:

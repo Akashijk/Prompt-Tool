@@ -527,9 +527,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.selected_row_data = selected_widget_info['data']
         full_row_data = self.selected_row_data
 
-        # Before doing anything, ensure we exit edit mode if it was active
-        if 'enhanced' in self.detail_tabs and 'edit_button' in self.detail_tabs['enhanced']:
-            self._cancel_edit_mode('enhanced', force=True)
+        # Before doing anything, ensure we exit any active edit mode
+        for key in self.detail_tabs:
+            self._cancel_edit_mode(key, force=True)
 
         # --- NEW: DYNAMIC DROPDOWN LOGIC ---
         # 1. Determine the available prompt versions for this entry

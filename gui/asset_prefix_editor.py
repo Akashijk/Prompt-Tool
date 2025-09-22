@@ -3,9 +3,11 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
+import json
+from datetime import datetime
 import queue
-from typing import Optional, Dict, TYPE_CHECKING, List
-
+from typing import TYPE_CHECKING, List, Dict, Optional
+from tkinter import filedialog
 from . import custom_dialogs
 from .common import SmartWindowMixin, TextContextMenu
 
@@ -29,6 +31,7 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
         self.after_id: Optional[str] = None
 
         # --- Data Storage ---
+        self.schedulers: List[str] = []
         self.model_asset_data: Dict[str, List[str]] = {'sdxl': [], 'sd1x': []}
         self.lora_asset_data: Dict[str, List[str]] = {'sdxl': [], 'sd1x': []}
         self.search_vars: Dict[str, tk.StringVar] = {}
@@ -38,6 +41,8 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
         self.trees: Dict[str, ttk.Treeview] = {}
         self.positive_texts: Dict[str, tk.Text] = {}
         self.negative_texts: Dict[str, tk.Text] = {}
+        self.scheduler_vars: Dict[str, tk.StringVar] = {}
+        self.scheduler_combos: Dict[str, ttk.Combobox] = {}
 
         self._create_widgets()
         self.smart_geometry(min_width=700, min_height=500)
@@ -47,6 +52,12 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- NEW: Add a refresh button to the top ---
+        top_controls = ttk.Frame(main_frame)
+        top_controls.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(top_controls, text="Refresh Assets from Server", command=self._refresh_assets).pack(side=tk.RIGHT)
+        # --- End of new ---
 
         self.notebook = ttk.Notebook(main_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
@@ -64,6 +75,13 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
         # --- Buttons ---
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X)
+
+        # --- NEW: Export/Import buttons ---
+        import_export_frame = ttk.Frame(button_frame)
+        import_export_frame.pack(side=tk.LEFT)
+        ttk.Button(import_export_frame, text="Export All...", command=self._export_all_prefixes).pack(side=tk.LEFT)
+        ttk.Button(import_export_frame, text="Import All...", command=self._import_all_prefixes).pack(side=tk.LEFT, padx=(5,0))
+
         self.save_button = ttk.Button(button_frame, text="Save", command=self._save_prefixes, style="Accent.TButton")
         self.save_button.pack(side=tk.RIGHT, padx=(5, 0))
         ttk.Button(button_frame, text="Close", command=self.destroy).pack(side=tk.RIGHT)
@@ -133,6 +151,15 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
         TextContextMenu(negative_text)
         self.negative_texts[asset_type] = negative_text
 
+        # --- NEW: Add scheduler dropdown only for models ---
+        if asset_type == 'model':
+            ttk.Label(editor_frame, text="Default Scheduler:", anchor='w').grid(row=4, column=0, sticky='ew', pady=(10, 5))
+            scheduler_var = tk.StringVar()
+            scheduler_combo = ttk.Combobox(editor_frame, textvariable=scheduler_var, state="readonly")
+            scheduler_combo.grid(row=5, column=0, sticky='ew')
+            self.scheduler_vars[asset_type] = scheduler_var
+            self.scheduler_combos[asset_type] = scheduler_combo
+
     def _fetch_assets(self):
         """Fetches both models and LoRAs in a background thread."""
         if not self.processor.is_invokeai_connected():
@@ -154,13 +181,29 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
                         'sd1x': self.processor.get_invokeai_loras(base_model='sd-1.5')
                     }
                 }
-                self.fetch_queue.put({'success': True, 'assets': assets})
+                schedulers = self.processor.invokeai_client.get_schedulers()
+                self.fetch_queue.put({'success': True, 'assets': assets, 'schedulers': schedulers})
             except Exception as e:
                 self.fetch_queue.put({'success': False, 'error': str(e)})
 
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
         self.after_id = self.after(100, self._check_fetch_queue)
+
+    def _refresh_assets(self):
+        """Clears the InvokeAI data cache and re-fetches all assets."""
+        if not custom_dialogs.ask_yes_no(self, "Confirm Refresh", "This will re-fetch all models and LoRAs from the InvokeAI server.\n\nContinue?"):
+            return
+        
+        # Clear the processor's cache
+        self.processor.clear_invokeai_data_cache()
+        
+        # Clear the UI
+        for asset_type, tree in self.trees.items():
+            for i in tree.get_children(): tree.delete(i)
+        
+        # Re-trigger the fetch
+        self._fetch_assets()
 
     def _check_fetch_queue(self):
         """Checks the queue for fetched assets and populates the UI."""
@@ -170,6 +213,11 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
                 for i in tree.get_children(): tree.delete(i)
 
             if result['success']:
+                # --- NEW: Store schedulers and populate combobox ---
+                self.schedulers = result.get('schedulers', [])
+                if 'model' in self.scheduler_combos:
+                    self.scheduler_combos['model']['values'] = ["(None)"] + self.schedulers
+
                 # Store the full lists of assets
                 self.model_asset_data['sdxl'] = sorted([m['name'] for m in result['assets']['model'].get('sdxl', [])], key=str.lower)
                 self.model_asset_data['sd1x'] = sorted([m['name'] for m in result['assets']['model'].get('sd1x', [])], key=str.lower)
@@ -220,6 +268,14 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
         self.negative_texts[asset_type].delete("1.0", tk.END)
         self.negative_texts[asset_type].insert("1.0", prefixes.get("negative_prefix", ""))
 
+        # --- NEW: Load scheduler for models ---
+        if asset_type == 'model':
+            scheduler_var = self.scheduler_vars.get(asset_type)
+            if scheduler_var:
+                default_scheduler = prefixes.get("scheduler", "(None)")
+                # Ensure the value is valid before setting
+                scheduler_var.set(default_scheduler if default_scheduler in self.scheduler_combos[asset_type]['values'] else "(None)")
+
     def _save_prefixes(self):
         """Saves the current prefixes for the selected asset and writes to file."""
         if not self.notebook: return
@@ -235,17 +291,103 @@ class AssetPrefixEditorWindow(tk.Toplevel, SmartWindowMixin):
         asset_name = tree.item(selection[0], "text")
         positive_prefix = self.positive_texts[asset_type].get("1.0", "end-1c").strip()
         negative_prefix = self.negative_texts[asset_type].get("1.0", "end-1c").strip()
+        
+        # --- NEW: Get scheduler value for models ---
+        scheduler_value = None
+        if asset_type == 'model':
+            scheduler_value = self.scheduler_vars.get(asset_type, tk.StringVar()).get()
+            if scheduler_value == "(None)":
+                scheduler_value = None
 
         prefix_map = self.model_prefixes if asset_type == 'model' else self.lora_prefixes
         save_func = self.processor.save_model_prefixes if asset_type == 'model' else self.processor.save_lora_prefixes
 
-        if not positive_prefix and not negative_prefix:
+        # --- NEW: Check scheduler value as well ---
+        if not positive_prefix and not negative_prefix and not scheduler_value:
             if asset_name in prefix_map: del prefix_map[asset_name]
         else:
             prefix_map[asset_name] = {"positive_prefix": positive_prefix, "negative_prefix": negative_prefix}
+            if scheduler_value:
+                prefix_map[asset_name]["scheduler"] = scheduler_value
 
         try:
             save_func(prefix_map)
             custom_dialogs.show_info(self, "Saved", f"Prefixes for '{asset_name}' have been saved.")
         except Exception as e:
             custom_dialogs.show_error(self, "Save Error", f"Could not save {asset_type} prefixes:\n{e}")
+
+    def _export_all_prefixes(self):
+        """Exports all model and LoRA prefixes to a single JSON file."""
+        # Reload from disk to ensure we're exporting the saved state, not unsaved editor changes.
+        model_prefixes = self.processor.load_model_prefixes()
+        lora_prefixes = self.processor.load_lora_prefixes()
+
+        if not model_prefixes and not lora_prefixes:
+            custom_dialogs.show_info(self, "Nothing to Export", "There are no saved model or LoRA prefixes to export.")
+            return
+
+        combined_data = {
+            "models": model_prefixes,
+            "loras": lora_prefixes
+        }
+
+        # Suggest a filename with the current date
+        timestamp = datetime.now().strftime("%Y%m%d")
+        filename = f"invokeai_asset_prefixes_backup_{timestamp}.json"
+
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export All Prefixes",
+            initialfile=filename,
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+
+        if not filepath:
+            return # User cancelled
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(combined_data, f, indent=2)
+            custom_dialogs.show_info(self, "Export Successful", f"All prefixes have been exported to:\n{filepath}")
+        except Exception as e:
+            custom_dialogs.show_error(self, "Export Error", f"Could not export prefixes:\n{e}")
+
+    def _import_all_prefixes(self):
+        """Imports model and LoRA prefixes from a backup JSON file."""
+        filepath = filedialog.askopenfilename(
+            parent=self,
+            title="Import Prefixes",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+
+        if not filepath:
+            return # User cancelled
+
+        # --- NEW: Add confirmation dialog ---
+        if not custom_dialogs.ask_yes_no(
+            self,
+            "Confirm Import",
+            "This will overwrite all existing model and LoRA prefixes with the content from the selected file.\n\nThis action cannot be undone. Are you sure you want to continue?"
+        ):
+            return # User cancelled the confirmation
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                imported_data = json.load(f)
+            
+            imported_models = imported_data.get("models", {})
+            imported_loras = imported_data.get("loras", {})
+
+            self.processor.save_model_prefixes(imported_models)
+            self.processor.save_lora_prefixes(imported_loras)
+
+            # Reload data into the editor to reflect the import
+            self.model_prefixes = self.processor.load_model_prefixes()
+            self.lora_prefixes = self.processor.load_lora_prefixes()
+            self._on_asset_select(None, 'model') # Refresh the view
+            self._on_asset_select(None, 'lora') # Refresh the view
+
+            custom_dialogs.show_info(self, "Import Successful", "Successfully imported and saved all prefixes.\nThe editor view has been updated.")
+        except Exception as e:
+            custom_dialogs.show_error(self, "Import Error", f"Could not read, parse, or save the imported prefixes:\n{e}")

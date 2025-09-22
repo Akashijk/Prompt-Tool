@@ -3,8 +3,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
 import base64
-import sys
-import os
 import threading
 import queue
 from typing import Optional, List, Callable, TYPE_CHECKING
@@ -120,17 +118,11 @@ class ImageInterrogatorWindow(tk.Toplevel, SmartWindowMixin):
 
     def _select_image(self):
         """Opens a file dialog to select an image."""
-        # Suppress a known harmless macOS stderr warning about NSOpenPanel.
-        original_stderr = sys.stderr
-        sys.stderr = open(os.devnull, 'w')
-        try:
-            file_path = filedialog.askopenfilename(
-                title="Select an Image",
-                filetypes=[("Image Files", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All files", "*.*")]
-            )
-        finally:
-            sys.stderr.close()
-            sys.stderr = original_stderr
+        file_path = filedialog.askopenfilename(
+            parent=self,
+            title="Select an Image",
+            filetypes=[("Image Files", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All files", "*.*")]
+        )
 
         if not file_path:
             return

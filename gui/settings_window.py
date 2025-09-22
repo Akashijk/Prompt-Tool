@@ -3,7 +3,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
 from typing import TYPE_CHECKING
-
 from core.config import config, update_and_save_settings
 from .common import SmartWindowMixin, Tooltip, TextContextMenu
 from . import custom_dialogs
@@ -94,6 +93,7 @@ class SettingsWindow(tk.Toplevel, SmartWindowMixin):
             title=f"Select Directory for {key.replace('_', ' ').title()}",
             initialdir=current_path
         )
+
         if new_path:
             self.setting_vars[key].set(new_path)
 

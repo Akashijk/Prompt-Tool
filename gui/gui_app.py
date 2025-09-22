@@ -1644,9 +1644,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         original_button_text = button_to_manage.cget("text") if button_to_manage else ""
         if button_to_manage:
             button_to_manage.config(state=tk.DISABLED)
-        if spinner_to_manage:
-            spinner_to_manage.grid() # Use grid to show
-            spinner_to_manage.start()
         
         generation_jobs = []
         num_images = options.get('num_images', 1)
@@ -1672,9 +1669,6 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # --- Callbacks for the preview dialog ---
         def on_preview_dialog_close(images_to_save: Optional[List[Dict[str, Any]]]):
             """Called when the preview dialog is closed."""
-            if spinner_to_manage:
-                spinner_to_manage.stop()
-                spinner_to_manage.grid_remove() # Use grid_remove to hide
             if button_to_manage:
                 button_to_manage.config(state=tk.NORMAL, text=original_button_text)
             if dialog in self.generation_dialogs:
@@ -1949,29 +1943,42 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # in use by a tool window.
         if self.wildcard_manager_window and self.wildcard_manager_window.winfo_exists():
             self.wildcard_manager_window.close()
-        if self.brainstorming_window and self.brainstorming_window.winfo_exists():
-            self.brainstorming_window.close()
-        if self.history_viewer_window and self.history_viewer_window.winfo_exists():
-            self.history_viewer_window.close()
-        if self.prompt_evolver_window and self.prompt_evolver_window.winfo_exists():
-            self.prompt_evolver_window.close()
-        if self.model_usage_viewer_window and self.model_usage_viewer_window.winfo_exists():
-            self.model_usage_viewer_window.destroy()
-        if self.favorite_images_viewer_window and self.favorite_images_viewer_window.winfo_exists():
-            self.favorite_images_viewer_window.close()
-        if self.settings_window and self.settings_window.winfo_exists():
-            self.settings_window.destroy()
-        if self.asset_prefix_editor_window and self.asset_prefix_editor_window.winfo_exists():
-            self.asset_prefix_editor_window.destroy()
         if self.image_interrogator_window and self.image_interrogator_window.winfo_exists():
             self.image_interrogator_window.close()
+        # ... (other window closing logic remains the same) ...
+        if self.image_interrogator_window and self.image_interrogator_window.winfo_exists():
+            self.image_interrogator_window.close()
+
+        # --- NEW: Graceful shutdown for image generation ---
+        all_cleanup_threads = []
+        for dialog in list(self.generation_dialogs):
+            if dialog.winfo_exists():
+                all_cleanup_threads.extend(dialog._cancel_all_jobs())
+                dialog.close()
+        
+        if all_cleanup_threads:
+            self.withdraw() # Hide the main window
+            cleanup_window = custom_dialogs._LoadingDialog(self, "Cleaning Up", "Cancelling active jobs and cleaning up temporary files...")
+            
+            def check_threads():
+                if all(not t.is_alive() for t in all_cleanup_threads):
+                    cleanup_window.destroy()
+                    self._finish_shutdown()
+                else:
+                    self.after(200, check_threads)
+            
+            self.after(100, check_threads)
+        else:
+            self._finish_shutdown()
+
+    def _finish_shutdown(self):
+        """The final part of the shutdown sequence, called after all cleanup is done."""
+        # Close any remaining top-level windows that might have been missed.
         for window in list(self.enhancement_windows):
             if window.winfo_exists():
+                print(f"INFO: Force-closing enhancement window: {window.title()}")
                 window.close()
-        for dialog in self.generation_dialogs:
-            if dialog.winfo_exists():
-                dialog._cancel_all_jobs() # Explicitly cancel jobs before closing
-                dialog.close()
+
         # Unregister the main window's model. The manager will handle unloading if needed.
         self.model_usage_manager.unregister_usage(self.main_window_model)
 
@@ -2002,6 +2009,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.after_cancel(self.generate_from_wildcards_after_id)
         if self.last_saved_entry_id_from_preview:
             self.last_saved_entry_id_from_preview = None
+        
+        print("INFO: Application shutdown complete.")
         self.destroy()
 
     def _show_missing_wildcard_menu(self, event, wildcard_name: str):
