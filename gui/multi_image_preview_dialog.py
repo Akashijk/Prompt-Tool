@@ -195,7 +195,7 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
             jobs_by_model[model_name].append(job)
 
         # --- NEW: Populate the model-specific queues and signal the scheduler ---
-        for model_name, jobs in sorted(jobs_by_model.items()):
+        for model_name, jobs in sorted(jobs_by_model.items(), key=lambda item: item[0].lower()):
             self.model_queues[model_name] = queue.Queue()
             for job in jobs:
                 self.model_queues[model_name].put(job)

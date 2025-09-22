@@ -697,7 +697,10 @@ class InvokeAIClient:
 
         # If not saving to gallery, we need to start a cleanup thread.
         if not save_to_gallery:
-            thread = threading.Thread(target=task, daemon=False) # Must be non-daemonic to be joinable on exit
+            # Make the thread daemonic so it doesn't block app exit if the caller
+            # doesn't explicitly wait for it (e.g., when called from generate_image).
+            # The main app's shutdown sequence will still wait for it via is_alive() checks.
+            thread = threading.Thread(target=task, daemon=True)
             thread.start()
             return thread
         
@@ -765,7 +768,10 @@ class InvokeAIClient:
         start_time = time.time()
         while time.time() - start_time < timeout:
             if cancellation_event and cancellation_event.is_set():
-                raise Exception("Image generation cancelled by user.") # The cancellation is now handled by the caller.
+                # We have an item_id, so we can cancel it on the server.
+                # The cleanup part will run in a background thread.
+                self.cancel_and_cleanup_item(item_id, save_to_gallery)
+                raise Exception("Image generation cancelled by user.")
             response = requests.get(f"{self.base_url}/api/v1/queue/default/i/{item_id}")
             response.raise_for_status()
             status_data = response.json()
@@ -803,8 +809,12 @@ class InvokeAIClient:
                             break
                 except Exception:
                     error_msg = status_data.get("error", "Unknown error")
+                # Also attempt cleanup on failure/cancellation from server, as files might have been created.
+                self.cancel_and_cleanup_item(item_id, save_to_gallery)
                 raise Exception(f"Image generation failed with status: {status_data['status']}. Error: {error_msg}")
 
             time.sleep(1)
 
+        # If we exit the loop, it's a timeout. Cancel the job on the server.
+        self.cancel_and_cleanup_item(item_id, save_to_gallery)
         raise Exception("Image generation timed out.")

@@ -286,6 +286,10 @@ Some SDXL models can produce black or garbled images if they are used with a low
     1.  The tool automatically tries to prevent this by finding a compatible high-precision (fp32) VAE on your system.
     2.  For the best results, ensure you have the standard `sdxl-vae.safetensors` file in your InvokeAI `models/sdxl/vae/` directory. The tool will prioritize using this VAE for maximum compatibility and image quality.
 
+### Platform-Specific Notes
+
+*   **macOS UI Quirks:** Due to the way `tkinter` integrates with native macOS widgets, some UI elements may behave differently. For example, the "Show/Hide Tab Bar" option is disabled on macOS because the native tab control does not support being hidden. The application aims to hide such non-functional options where possible to provide a clean experience.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a pull request or open an issue for any bugs or feature requests.

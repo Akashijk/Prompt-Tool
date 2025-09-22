@@ -11,6 +11,7 @@ import sys
 import queue
 from typing import Optional, List, Tuple, Dict, Any, Callable
 from tkinter import ttk
+from PIL import Image, ImageTk
 from core.prompt_processor import PromptProcessor
 from core.template_engine import PromptSegment
 from core.config import config, save_settings, load_settings
@@ -60,7 +61,12 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         try:
             icon_path = os.path.join(config.PROJECT_ROOT, 'assets', 'icon.png')
             if os.path.exists(icon_path):
-                self.iconphoto(True, tk.PhotoImage(file=icon_path))
+                # Load the image with Pillow
+                pil_img = Image.open(icon_path)
+                # Convert to a PhotoImage and store it as an instance attribute
+                # to prevent it from being garbage collected.
+                self.app_icon = ImageTk.PhotoImage(pil_img)
+                self.iconphoto(True, self.app_icon)
         except Exception as e:
             print(f"Warning: Could not load application icon: {e}")
 
@@ -144,6 +150,15 @@ class GUIApp(tk.Tk, SmartWindowMixin):
 
         # After creating all widgets, set smart geometry
         self.smart_geometry(min_width=900, min_height=700)
+
+    def _toggle_tab_bar(self):
+        """
+        Toggles the visibility of the tab bar in any focused tool window that supports it.
+        This is a placeholder as the actual implementation depends on which window is active.
+        """
+        # This is a placeholder. The actual logic would need to find the active
+        # tool window and call a method on it. For now, it does nothing.
+        print("DEBUG: Toggle tab bar called. This feature is not fully implemented.")
 
     def destroy(self):
         """

@@ -1,6 +1,7 @@
 """The main menu bar for the application."""
 
 import tkinter as tk
+import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -32,6 +33,12 @@ class MenuBar(tk.Menu):
         for size in [10, 11, 12, 13, 14, 16]:
             font_menu.add_radiobutton(label=f"{size}pt", variable=self.parent_app.font_size_var, value=size, command=self.parent_app._set_font_size)
         view_menu.add_cascade(label="Font Size", menu=font_menu)
+
+        # This feature does not work on macOS, so we hide the menu item on that platform
+        # to provide a consistent cross-platform experience.
+        if sys.platform != "darwin": # 'darwin' is the name for macOS
+            view_menu.add_command(label="Show/Hide Tab Bar", command=self.parent_app._toggle_tab_bar)
+
         self.add_cascade(label="View", menu=view_menu)
 
         # --- Workflow Menu ---
