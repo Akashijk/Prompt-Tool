@@ -167,6 +167,7 @@ class _DeduplicateSimilarChoicesDialog(custom_dialogs._CustomDialog):
 
         self._populate_groups()
         self.smart_geometry(min_width=800, min_height=500)
+        self.smart_geometry(min_width=800, min_height=500)
         self.wait_window(self)
 
     def _populate_groups(self):

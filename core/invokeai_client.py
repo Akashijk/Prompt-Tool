@@ -608,22 +608,21 @@ class InvokeAIClient:
 
         def task():
             for image_name in image_names:
-                base_name, _ = os.path.splitext(image_name)
-                thumbnail_name = f"{base_name}.thumbnail.webp"
-                delete_url = f"{self.base_url}/api/v1/images/delete"
+                # --- FIX: Use the correct DELETE endpoint for direct file deletion ---
+                delete_url = f"{self.base_url}/api/v1/images/i/{image_name}"
                 image_verify_url = f"{self.base_url}/api/v1/images/i/{image_name}/full"
                 
                 max_retries = 3
                 retry_delay = 5  # seconds
 
                 for attempt in range(max_retries):
-                    # 1. Attempt deletion
+                    # 1. Attempt deletion using requests.delete
                     try:
-                        # The delete endpoint takes a list of names to delete in bulk.
-                        payload = {"image_names": [image_name, thumbnail_name]}
-                        response = requests.post(delete_url, json=payload, timeout=10)
+                        response = requests.delete(delete_url, timeout=10)
                         if self.verbose:
                             print(f"INFO (Attempt {attempt + 1}): Delete request for {image_name} sent. Status: {response.status_code}")
+                        if response.status_code in [200, 204, 404]:
+                            break # Success or already deleted
                     except requests.RequestException as e:
                         if self.verbose:
                             print(f"WARNING (Attempt {attempt + 1}): Delete request for {image_name} failed: {e}")
@@ -729,7 +728,7 @@ class InvokeAIClient:
             pass # Defensive: if anything goes wrong, we just return what we have.
         return names
 
-    def generate_image(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+    def enqueue_image_generation(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
         """Generates an image using the queue API and returns the raw image bytes."""
         model_base = model_object.get('base')
         if model_base == 'sdxl':
@@ -764,6 +763,12 @@ class InvokeAIClient:
         except (KeyError, IndexError) as e:
             raise Exception(f"Could not parse queue item ID from InvokeAI response. Response was: {json.dumps(queue_item, indent=2)}") from e
 
+        # --- FIX: Return the item_id and the actual scheduler used ---
+        final_params = {'scheduler': scheduler}
+        return {'item_id': item_id, 'generation_params': final_params}
+
+    def wait_for_image_generation_result(self, item_id: int, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+        """Polls the InvokeAI server for the result of a specific queue item."""
         timeout = config.INVOKEAI_TIMEOUT
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -797,6 +802,8 @@ class InvokeAIClient:
                 if not save_to_gallery:
                     self.delete_images(image_names)
 
+                # The generation_params are now constructed at a higher level in the UI.
+                # We just return the core results here.
                 return {'bytes': image_bytes, 'image_name': image_name, 'duration': duration, 'item_id': item_id}
             elif status_data.get("status") in ["failed", "canceled"]:
                 error_msg = "Unknown error"

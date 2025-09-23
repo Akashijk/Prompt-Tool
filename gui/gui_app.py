@@ -6,7 +6,11 @@ import tkinter as tk
 import tkinter.font as tkfont
 import threading
 import re
+import uuid
 import random
+import subprocess
+from packaging.version import parse as parse_version
+import requests
 import sys
 import queue
 from typing import Optional, List, Tuple, Dict, Any, Callable
@@ -127,6 +131,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.fs_load_complete = False
         self.network_load_complete = False
         self.seed_var = tk.StringVar()
+        self.update_check_queue = queue.Queue()
+        self.update_check_after_id: Optional[str] = None
         self.random_seed_var = tk.BooleanVar(value=True) # Start with random ON
         
         # Initialize UI component holders
@@ -137,6 +143,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Create widgets
         self._create_widgets()
         self._start_initial_load()
+        self._check_for_updates()
         self.wildcard_tooltip = Tooltip(self.prompt_text)
         self._update_text_widget_colors() # Set initial theme-based colors
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -246,6 +253,63 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # --- Main View (packed last to fill remaining space) ---
         self._create_main_view(self)
 
+    def _check_for_updates(self):
+        """Starts a background thread to check for application updates from GitHub."""
+        
+        def task():
+            try:
+                # 1. Try git method first for developers/git users
+                local_hash_process = subprocess.run(
+                    ['git', 'rev-parse', 'HEAD'],
+                    capture_output=True, text=True, check=False, cwd=config.PROJECT_ROOT
+                )
+                
+                # If git command succeeds, it's a git install
+                if local_hash_process.returncode == 0:
+                    local_hash = local_hash_process.stdout.strip()
+
+                    repo_url = "https://api.github.com/repos/Akashijk/Prompt-Tool/branches/main"
+                    response = requests.get(repo_url, timeout=10)
+                    response.raise_for_status()
+                    remote_hash = response.json()['commit']['sha']
+
+                    if local_hash and remote_hash and local_hash != remote_hash:
+                        self.update_check_queue.put({'update_available': True, 'type': 'git'})
+                else:
+                    if self.processor.verbose: print("INFO: Not a git repository. Checking for updates via release tags.")
+                    version_file_path = os.path.join(config.PROJECT_ROOT, 'version.txt')
+                    if not os.path.exists(version_file_path):
+                        if self.processor.verbose: print("INFO: version.txt not found. Skipping update check for non-git install.")
+                        return
+
+                    with open(version_file_path, 'r') as f:
+                        local_version_str = f.read().strip()
+
+                    local_version = parse_version(local_version_str)
+
+                    # Get latest release tag from GitHub API
+                    release_url = "https://api.github.com/repos/Akashijk/Prompt-Tool/releases/latest"
+                    response = requests.get(release_url, timeout=10)
+                    response.raise_for_status()
+                    latest_release_tag = response.json()['tag_name']
+                    remote_version = parse_version(latest_release_tag)
+
+                    # Compare versions
+                    if remote_version > local_version:
+                        self.update_check_queue.put({
+                            'update_available': True, 
+                            'type': 'zip', 
+                            'version': latest_release_tag
+                        })
+            except Exception as e:
+                # Silently fail on any error (e.g., no internet, API rate limit)
+                if self.processor.verbose: print(f"INFO: Update check failed with error: {e}")
+
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        # Check the queue after a few seconds to let the main UI load first.
+        self.update_check_after_id = self.after(5000, self._check_update_queue)
+
     def _start_initial_load(self):
         """
         Starts the initial loading of data in parallel background threads
@@ -350,6 +414,32 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             if self.initial_load_after_id: self.after_cancel(self.initial_load_after_id); self.initial_load_after_id = None # type: ignore
         elif self.winfo_exists():
             self.initial_load_after_id = self.after(100, self._check_initial_load_queues)
+
+    def _check_update_queue(self):
+        """Checks the queue for update status and shows a dialog if an update is available."""
+        try:
+            result = self.update_check_queue.get_nowait()
+            if not result.get('update_available'):
+                return
+
+            update_type = result.get('type', 'git')
+            if update_type == 'git':
+                message = (
+                    "A new version is available!\n\n"
+                    "To update, please close the application and run the following command in your terminal from the project directory:\n\n"
+                    "git pull"
+                )
+            else: # 'zip'
+                version = result.get('version', 'latest')
+                message = (
+                    f"A new version ({version}) is available!\n\n"
+                    "To update, please download the latest release from the GitHub releases page."
+                )
+            custom_dialogs.show_info(self, "Update Available", message)
+        except queue.Empty:
+            pass # This is expected if there's no update.
+        except Exception as e:
+            if self.processor.verbose: print(f"ERROR: Unhandled exception in _check_update_queue: {e}")
 
     def _generate_new_template(self):
         """Opens a dialog to generate a new template with AI."""
@@ -1695,7 +1785,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         self.generation_completed_jobs = 0
         def on_generation_progress(status: str):
             """Called by the preview dialog as images are generated."""
-            if status == 'regenerating':
+            if status in ['regenerating', 'adding']:
                 self.generation_total_jobs += 1
             elif status in ['completed', 'error']:
                 self.generation_completed_jobs += 1
@@ -1930,9 +2020,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         
         try:
             running_models = self.processor.ollama_client.get_running_models()
-            # The API returns a list of dicts with a 'name' key.
-            running_model_names = {m.get('name') for m in running_models}
-            # Find the intersection between the models our app is using and the models actually loaded in VRAM.
+            # get_running_models returns a list of model name strings. Convert to a set for efficient lookup.
+            running_model_names = set(running_models)
             models_to_unload = [model for model in active_ollama_models if model in running_model_names]
         except Exception as e:
             print(f"Warning: Could not check for running Ollama models. Will ask to unload all active models. Error: {e}")
@@ -2020,6 +2109,8 @@ class GUIApp(tk.Tk, SmartWindowMixin):
             self.after_cancel(self.enhancement_suggestion_after_id)
         if self.clear_cache_after_id:
             self.after_cancel(self.clear_cache_after_id)
+        if self.update_check_after_id:
+            self.after_cancel(self.update_check_after_id)
         if self.generate_from_wildcards_after_id:
             self.after_cancel(self.generate_from_wildcards_after_id)
         if self.last_saved_entry_id_from_preview:

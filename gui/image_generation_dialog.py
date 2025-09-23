@@ -29,7 +29,24 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
     def _randomize_seed(self):
         self.seed_var.set(str(random.randint(0, 2**32 - 1)))
 
-    def __init__(self, parent, processor: 'PromptProcessor', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, disabled_models: Optional[List[str]] = None, base_model_type: str = 'sdxl'):
+    def _toggle_all_models(self):
+        """Toggles the selection state of all visible models."""
+        if not self.model_vars:
+            return
+
+        # Only consider visible models based on the search filter
+        visible_models = [name for name, widget in self.model_widgets.items() if widget.winfo_ismapped()]
+        if not visible_models:
+            return
+
+        # Determine the new state based on the visible models
+        any_unchecked = any(not self.model_vars[name].get() for name in visible_models)
+        new_state = any_unchecked
+
+        for model_name in visible_models:
+            self.model_vars[model_name].set(new_state)
+
+    def __init__(self, parent, processor: 'PromptProcessor', initial_params: Optional[Dict[str, Any]] = None, is_editing: bool = False, is_adding_more: bool = False, disabled_models: Optional[List[str]] = None, base_model_type: str = 'sdxl'):
         # The parent could be the main app or another Toplevel window.
         # We need to find the root GUIApp instance for context.
         if hasattr(parent, 'parent_app'):
@@ -46,6 +63,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.lora_data: Dict[str, Dict[str, Any]] = {}   # name -> full lora object
         self.is_editing = is_editing
         self.disabled_models = disabled_models or []
+        self.is_adding_more = is_adding_more
         self.initial_params = initial_params or {}
         self.model_vars: Dict[str, tk.BooleanVar] = {}
         self.model_widgets: Dict[str, ttk.Checkbutton] = {}
@@ -139,17 +157,18 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
             main_model_names = sorted(list(self.model_data.keys()), key=str.lower)
 
             initial_model_name = self.initial_params.get('model', {}).get('name')
-            initial_model_names = {m['name'] for m in self.initial_params.get('models', [])}
+            initial_model_names = {m.get('name') for m in self.initial_params.get('models', []) if m.get('name')}
             if initial_model_name:
                 initial_model_names.add(initial_model_name)
+
+            if self.is_adding_more:
+                initial_model_names.clear()
 
             for i, model_name in enumerate(main_model_names):
                 var = tk.BooleanVar()
                 if model_name in initial_model_names:
                     var.set(True)
-                # If no initial models are specified, check the first one by default.
-                elif not initial_model_names and i == 0:
-                    var.set(True)
+                # No default selection. User must explicitly choose.
                 
                 var.trace_add("write", self._on_model_checkbox_change)
                 
@@ -237,9 +256,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         # Apply initial filter to show all LoRAs
         self._filter_loras()
 
-        self._update_override_button_state()
-        self._update_total_images_label()
-
+        self._update_override_button_state()        
+        self._update_total_images_label()        
+    
     def _populate_widgets(self):
         """Schedules the actual widget population to run after the window is drawn."""
         self.after(50, self._do_populate_widgets)
@@ -286,10 +305,9 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.model_frame = ttk.LabelFrame(model_lora_pane, text="Main Model (SDXL)", padding=10)
         model_lora_pane.add(self.model_frame, weight=1)
 
-        model_select_frame = ttk.Frame(self.model_frame)
-        model_select_frame.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(model_select_frame, text="Select All", command=self._select_all_models).pack(side=tk.LEFT)
-        ttk.Button(model_select_frame, text="Select None", command=self._select_none_models).pack(side=tk.LEFT, padx=5)
+        model_select_frame = ttk.Frame(self.model_frame)        
+        model_select_frame.pack(fill=tk.X, pady=(0, 5))        
+        ttk.Button(model_select_frame, text="Toggle All", command=self._toggle_all_models).pack(side=tk.LEFT)
 
         # Add search entry for models
         search_model_frame = ttk.Frame(self.model_frame)
@@ -375,11 +393,18 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         # Row 0: Seed, Steps, Num Images
         ttk.Label(params_frame, text="Seed:").grid(row=0, column=0, sticky='w', pady=2)
         seed_frame = ttk.Frame(params_frame)
-        seed_frame.grid(row=0, column=1, sticky='w', pady=2)
+        seed_frame.grid(row=0, column=1, sticky='ew', pady=2)
         self.seed_var = tk.StringVar(value=str(int(self.initial_params.get('seed', random.randint(0, 2**32 - 1)))))
         VerticalSpinbox(seed_frame, from_=0, to=2**32 - 1, increment=1, textvariable=self.seed_var, width=10).pack(side=tk.LEFT)
-        ttk.Button(seed_frame, text="🎲", width=3, command=self._randomize_seed).pack(side=tk.LEFT, padx=(5,0))
 
+        # --- NEW: Always show the randomize button, but conditionally show the "New Seed on Regen" button ---
+        self.random_seed_button = ttk.Button(seed_frame, text="🎲", width=3, command=self._randomize_seed)
+        self.random_seed_button.pack(side=tk.LEFT, padx=(5,0))
+        Tooltip(self.random_seed_button, "Set a new random seed.")
+
+        if self.is_editing:
+            self.random_seed_button.pack(side=tk.LEFT, padx=(5,0))
+            
         ttk.Label(params_frame, text="Steps:").grid(row=0, column=2, sticky='w', padx=(10, 5), pady=2)
         self.steps_var = tk.StringVar(value=str(self.initial_params.get('steps', 30)))
         VerticalSpinbox(params_frame, from_=1, to=150, increment=1, textvariable=self.steps_var, width=3).grid(row=0, column=3, sticky='w', pady=2)
@@ -389,7 +414,7 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         self.num_images_var.trace_add("write", self._update_total_images_label)
         num_images_spinbox = VerticalSpinbox(params_frame, from_=1, to=100, increment=1, textvariable=self.num_images_var, width=3)
         num_images_spinbox.grid(row=0, column=5, sticky='w', pady=2)
-        if self.is_editing:
+        if self.is_editing and not self.is_adding_more:
             num_images_spinbox.entry.config(state=tk.DISABLED)
             num_images_spinbox.up_button.config(state=tk.DISABLED)
             num_images_spinbox.down_button.config(state=tk.DISABLED)
@@ -498,19 +523,6 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         # Restart the fetch process
         self._start_model_fetch()
 
-    def _select_all_models(self):
-        """Sets all enabled model checkboxes to True."""
-        for model_name, var in self.model_vars.items():
-            # Only select models that are not explicitly disabled (e.g., already in a batch)
-            if model_name not in self.disabled_models:
-                var.set(True)
-
-    def _select_none_models(self):
-        """Sets all model checkboxes to False."""
-        # This can clear even disabled models if needed, which is generally safe.
-        for var in self.model_vars.values():
-            var.set(False)
-
     def _on_model_checkbox_change(self, *args):
         self._update_override_button_state()
         self._update_total_images_label()
@@ -520,6 +532,11 @@ class ImageGenerationOptionsDialog(custom_dialogs._CustomDialog, SmartWindowMixi
         # If exactly one model is selected, try to set its default scheduler.
         if len(selected_models) == 1:
             model_name = selected_models[0]
+
+            # --- FIX: Do not override the scheduler if we are editing an existing generation ---
+            if self.is_editing:
+                return
+
             model_prefix_data = self.processor.model_prefixes.get(model_name, {})
             default_scheduler = model_prefix_data.get('scheduler')
             

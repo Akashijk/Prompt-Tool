@@ -345,12 +345,46 @@ class PromptProcessor:
             count = stats['count']
             duration_count = stats['duration_count']
             avg_duration = (stats['total_duration'] / duration_count) if duration_count > 0 else 0.0
-            final_stats[model_name] = {'count': count, 'avg_duration': avg_duration, 'min_duration': stats['min_duration'] if stats['min_duration'] != float('inf') else 0.0, 'max_duration': stats['max_duration']}
+            final_stats[model_name] = {
+                'count': count, 
+                'avg_duration': avg_duration, 
+                'total_duration': stats['total_duration'],
+                'min_duration': stats['min_duration'] if stats['min_duration'] != float('inf') else 0.0, 
+                'max_duration': stats['max_duration']
+            }
         return final_stats
 
     def clear_avg_gen_times_cache(self):
         """Clears the cached average generation times. Should be called when history is updated with new images."""
         self._avg_gen_times_cache = None
+
+    def get_lora_stats(self) -> Dict[str, int]:
+        """Calculates usage counts per LoRA from history."""
+        all_history = self.get_all_history_across_workflows()
+        lora_counts: Dict[str, int] = {}
+
+        def process_images(images: List[Dict[str, Any]]):
+            if not images: return
+            for img in images:
+                params = img.get('generation_params', {})
+                if not params: continue
+
+                loras = params.get('loras', [])
+                if not loras: continue
+
+                for lora_info in loras:
+                    lora_name = lora_info.get('lora_object', {}).get('name')
+                    if lora_name:
+                        lora_counts[lora_name] = lora_counts.get(lora_name, 0) + 1
+
+        for entry in all_history:
+            for image_list_key in ['original_images', 'enhanced.images'] + [f'variations.{k}.images' for k in entry.get('variations', {})]:
+                parts = image_list_key.split('.')
+                data = entry
+                for part in parts: data = data.get(part, {})
+                process_images(data if isinstance(data, list) else [])
+
+        return lora_counts
 
     def get_all_history_across_workflows(self) -> List[Dict[str, str]]:
         """Loads and returns history data from all workflows (SFW and NSFW), sorted by timestamp."""
@@ -2184,20 +2218,34 @@ class PromptProcessor:
             combined_neg_prefix = ", ".join(sorted(list(all_neg_lora_prefixes)))
             negative_prompt = f"{combined_neg_prefix}, {negative_prompt}" if negative_prompt else combined_neg_prefix
 
-        return self.invokeai_client.generate_image(
-            prompt=prompt, 
-            negative_prompt=negative_prompt, 
-            seed=seed, 
-            model_object=model_object,
-            loras=loras,
-            steps=steps,
-            cfg_scale=cfg_scale,
-            scheduler=scheduler,
-            cfg_rescale_multiplier=cfg_rescale_multiplier,
-            save_to_gallery=save_to_gallery, # This was being dropped before
-            verbose=self.verbose,
-            cancellation_event=cancellation_event
-        )
+        # --- FIX: Use the new two-step generation process ---
+        # Step 1: Enqueue the generation job
+        enqueue_args = {
+            "prompt": prompt, "negative_prompt": negative_prompt, "seed": seed,
+            "model_object": model_object, "loras": loras, "steps": steps,
+            "cfg_scale": cfg_scale, "scheduler": scheduler,
+            "cfg_rescale_multiplier": cfg_rescale_multiplier,
+            "save_to_gallery": save_to_gallery, "verbose": self.verbose,
+            "cancellation_event": cancellation_event
+        }
+        enqueue_data = self.invokeai_client.enqueue_image_generation(**enqueue_args)
+        item_id = enqueue_data.get('item_id')
+        if not item_id:
+            raise Exception("Failed to get a valid job ID from InvokeAI after enqueueing.")
+
+        # Step 2: Wait for the result
+        result_data = self.invokeai_client.wait_for_image_generation_result(item_id, save_to_gallery, cancellation_event)
+
+        # Step 3: Construct the final return dictionary, including the original generation parameters.
+        # This is what the calling UI components expect.
+        final_params = {
+            'negative_prompt': negative_prompt, 'seed': seed, 'model': model_object,
+            'loras': loras, 'steps': steps, 'cfg_scale': cfg_scale,
+            'scheduler': scheduler, 'cfg_rescale_multiplier': cfg_rescale_multiplier,
+            'duration': result_data.get('duration')
+        }
+
+        return {'bytes': result_data['bytes'], 'image_name': result_data['image_name'], 'duration': result_data.get('duration'), 'item_id': item_id, 'generation_params': final_params}
 
     def save_generated_image(self, image_bytes: bytes, entry_id: str) -> str:
         """Saves image bytes to a dedicated folder for the history entry and returns the relative path."""

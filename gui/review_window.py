@@ -90,6 +90,7 @@ class ReviewAndSaveWindow(tk.Toplevel, SmartWindowMixin):
             self.update_content(generated_content)
 
         self.smart_geometry(min_width=600, min_height=600)
+        self.smart_geometry(min_width=600, min_height=600)
 
     def _set_ui_loading(self, is_loading: bool, verb: str = "Generating"):
         """Centralized method to toggle the UI between loading and interactive states."""

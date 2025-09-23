@@ -36,8 +36,15 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.parent_app = parent
         self.all_history_data: List[Dict[str, str]] = []
         self.scrollable_list: Optional[ScrollableFrame] = None
+        # --- NEW: Attributes for the new grouped view ---
+        self.grouped_view_container: Optional[ScrollableFrame] = None
+        self.grouped_view_widgets: List[Dict[str, Any]] = []
+        self.grouped_data: Dict[str, List[Dict[str, Any]]] = {}
+        self.template_group_var = tk.StringVar()
         self.BATCH_SIZE = 50
         self.current_offset = 0
+        self.last_chrono_canvas_width = 0
+        self.last_grouped_canvas_width = 0
         # --- Attributes for the new Canvas-based list ---
         self.history_canvas: Optional[tk.Canvas] = None
         self.regen_prompt_queue = queue.Queue()
@@ -248,24 +255,9 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         list_frame = ttk.Frame(h_pane, padding=5)
         h_pane.add(list_frame, weight=2) # Give it less weight as it's narrower now
 
-        self.history_loading_animation = LoadingAnimation(list_frame, size=32)
-
-        # --- NEW: Use ScrollableFrame ---
-        self.scrollable_list = ScrollableFrame(list_frame, scroll_callback=self._update_visible_thumbnails)
-        self.scrollable_list.pack(fill=tk.BOTH, expand=True)
-        self.history_container = self.scrollable_list.scrollable_frame
-        self.history_canvas = self.scrollable_list.canvas
-
-        self.load_more_button = ttk.Button(list_frame, text="Load More", command=self._load_next_history_batch, style="Accent.TButton")
-        # The button is packed later by _load_next_history_batch
-
-        def on_history_canvas_configure(event):
-            # Adjust wraplength of all visible prompt labels
-            for widget_info in self.history_widgets:
-                if widget_info['frame'].winfo_ismapped():
-                    widget_info['label'].configure(wraplength=event.width - 20) # -20 for padding
-
-        self.history_canvas.bind("<Configure>", on_history_canvas_configure)
+        # --- NEW: The notebook will be created and packed after data is loaded ---
+        self.list_frame = list_frame
+        self.history_loading_animation = LoadingAnimation(self.list_frame, size=32)
 
         # --- Right Pane (for details and image) ---
         right_pane = ttk.Frame(h_pane)
@@ -331,6 +323,39 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self.detail_content_container = ttk.Frame(details_frame)
         self.detail_content_container.pack(fill=tk.BOTH, expand=True)
 
+    def _on_history_canvas_configure(self, event):
+        """Adjusts wraplength of all visible prompt labels in the chronological list."""
+        new_width = event.width
+        if new_width <= 1 or new_width == self.last_chrono_canvas_width:
+            return
+        self.last_chrono_canvas_width = new_width
+
+        if not self.history_widgets or not self.history_canvas or not self.history_canvas.winfo_exists(): return
+        canvas_top = self.history_canvas.canvasy(0)
+        canvas_bottom = self.history_canvas.canvasy(self.history_canvas.winfo_height())
+
+        for widget_info in self.history_widgets:
+            frame = widget_info['frame']
+            if frame.winfo_exists() and not (frame.winfo_y() + frame.winfo_reqheight() < canvas_top or frame.winfo_y() > canvas_bottom):
+                widget_info['label'].configure(wraplength=new_width - 150)
+
+    def _on_grouped_canvas_configure(self, event):
+        """Adjusts wraplength of all visible prompt labels in the grouped view list."""
+        new_width = event.width
+        if new_width <= 1 or new_width == self.last_grouped_canvas_width:
+            return
+        self.last_grouped_canvas_width = new_width
+
+        if not self.grouped_view_widgets or not self.grouped_view_container or not self.grouped_view_container.winfo_exists(): return
+        canvas = self.grouped_view_container.canvas
+        canvas_top = canvas.canvasy(0)
+        canvas_bottom = canvas.canvasy(canvas.winfo_height())
+
+        for widget_info in self.grouped_view_widgets:
+            frame = widget_info['frame']
+            if frame.winfo_exists() and not (frame.winfo_y() + frame.winfo_reqheight() < canvas_top or frame.winfo_y() > canvas_bottom):
+                widget_info['label'].configure(wraplength=new_width - 150)
+
     def _reflow_pagination_controls(self, event=None):
         if not hasattr(self, 'button_pagination_frame') or not self.button_pagination_frame.winfo_exists():
             return
@@ -380,9 +405,13 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         for widget_info in self.history_widgets:
             widget_info['frame'].destroy()
         self.history_widgets.clear()
+        # --- NEW: Clear the grouped view widgets as well ---
+        for widget_info in self.grouped_view_widgets:
+            widget_info['frame'].destroy()
+        self.grouped_view_widgets.clear()
         self.current_offset = 0
         self.all_history_data = []
-        self.load_more_button.pack_forget()
+        if hasattr(self, 'load_more_button'): self.load_more_button.pack_forget()
 
     def _check_history_load_queue(self):
         """Checks for loaded history data and populates the view."""
@@ -392,13 +421,61 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             self.history_loading_animation.pack_forget()
 
             if result['success']:
+                # --- FIX: Create the notebook and tabs only once ---
+                if not self.scrollable_list:
+                    view_notebook = ttk.Notebook(self.list_frame)
+                    view_notebook.pack(fill=tk.BOTH, expand=True)
+
+                    # Tab 1: Chronological
+                    chrono_tab = ttk.Frame(view_notebook)
+                    view_notebook.add(chrono_tab, text="Chronological")
+                    self.scrollable_list = ScrollableFrame(chrono_tab, scroll_callback=self._update_visible_thumbnails)
+                    self.scrollable_list.pack(fill=tk.BOTH, expand=True)
+                    self.history_container = self.scrollable_list.scrollable_frame
+                    self.history_canvas = self.scrollable_list.canvas
+                    self.load_more_button = ttk.Button(chrono_tab, text="Load More", command=self._load_next_history_batch, style="Accent.TButton")
+                    self.history_canvas.bind("<Configure>", self._on_history_canvas_configure)
+
+                    # Tab 2: Grouped by Template
+                    grouped_tab = ttk.Frame(view_notebook, padding=(0, 5, 0, 0))
+                    view_notebook.add(grouped_tab, text="Grouped by Template")
+                    
+                    # --- NEW: Dropdown for template selection ---
+                    group_selector_frame = ttk.Frame(grouped_tab)
+                    group_selector_frame.pack(fill=tk.X, pady=(0, 5))
+                    ttk.Label(group_selector_frame, text="Select Template:").pack(side=tk.LEFT, padx=(0, 5))
+                    self.template_group_combo = ttk.Combobox(group_selector_frame, textvariable=self.template_group_var, state="readonly")
+                    self.template_group_combo.pack(fill=tk.X, expand=True)
+                    self.template_group_combo.bind("<<ComboboxSelected>>", self._on_template_group_select)
+
+                    self.grouped_view_container = ScrollableFrame(grouped_tab, scroll_callback=self._update_grouped_view_visible_thumbnails)
+                    self.grouped_view_container.pack(fill=tk.BOTH, expand=True)
+                    self.grouped_view_container.canvas.bind("<Configure>", self._on_grouped_canvas_configure)
+
+                # Now populate the views
                 self.all_history_data = result['data']
-                self.current_offset = 0
-                self._load_next_history_batch()
+                self._populate_all_views()
             else:
                 custom_dialogs.show_error(self, "Error Loading History", result['error'])
         except queue.Empty:
             self.history_load_after_id = self.after(100, self._check_history_load_queue)
+
+    def _populate_all_views(self):
+        """Populates both the chronological and grouped views from the loaded data."""
+        # Clear existing widgets from both views
+        for widget_info in self.history_widgets:
+            widget_info['frame'].destroy()
+        self.history_widgets.clear()
+        for widget_info in self.grouped_view_widgets:
+            widget_info['frame'].destroy()
+        self.grouped_view_widgets.clear()
+
+        # Repopulate the grouped view
+        self._group_and_populate_template_view()
+
+        # Reset and repopulate the chronological view
+        self.current_offset = 0
+        self._load_next_history_batch()
 
     def _load_next_history_batch(self):
         """Loads the next batch of history items into the view."""
@@ -413,72 +490,90 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         self._populate_history_list(batch_data)
         self.current_offset = end
 
-        self.load_more_button.pack(side=tk.BOTTOM, fill=tk.X, pady=(5,0))
+        if self.current_offset < len(self.all_history_data):
+            self.load_more_button.pack(side=tk.BOTTOM, fill=tk.X, pady=(5,0))
+        else:
+            self.load_more_button.pack_forget()
+
         self.after(100, self._update_visible_thumbnails)
+
+    def _group_and_populate_template_view(self):
+        """Groups history data by template and populates the treeview."""
+        if not self.template_group_combo: return
+
+        self.grouped_data.clear()
+        for entry in self.all_history_data:
+            template_name = entry.get('template_name')
+            
+            # --- FINAL FIX: Robustly determine the group key and display data ---
+            if template_name and isinstance(template_name, str):
+                group_key = os.path.basename(template_name) if '.txt' in template_name else template_name
+            else:
+                group_key = "(No Template)"
+            
+            # --- FIX: Ensure all required display fields have safe fallbacks ---
+            timestamp = entry.get('timestamp')
+            if timestamp and isinstance(timestamp, str):
+                date = timestamp.split('T')[0]
+            else:
+                date = "Unknown Date"
+            
+            prompt = entry.get('original_prompt') or entry.get('enhanced', {}).get('prompt') or "No prompt text found."
+            entry['_display_date'] = date
+            entry['_display_prompt'] = prompt
+            # --- End of fix ---
+
+            if group_key not in self.grouped_data:
+                self.grouped_data[group_key] = []
+            self.grouped_data[group_key].append(entry)
+
+        sorted_groups = sorted(self.grouped_data.keys(), key=lambda k: (k == "(No Template)", k.lower()))
+        self.template_group_combo['values'] = sorted_groups
+        if sorted_groups:
+            self.template_group_combo.set(sorted_groups[0])
+            self._on_template_group_select()
+
+    def _populate_list_view(self, data: List[Dict[str, Any]], container: ttk.Frame, widget_list: List[Dict[str, Any]], scroll_frame: ScrollableFrame):
+        """Generic function to populate a list view with history items."""
+        for row in data:
+            cover_image_path = self._get_cover_image_path_for_row(row)
+            original_prompt = row.get('original_prompt', 'No original prompt found.')
+            is_fav = row.get('favorite', False)
+            workflow_tag = row.get('workflow_source', 'SFW')
+
+            item_frame = ttk.Frame(container, style="HistoryItem.TFrame", relief="groove", borderwidth=1)
+            item_frame.pack(fill=tk.X, pady=2, padx=2)
+
+            thumb_label = ttk.Label(item_frame, text="🖼️", width=12, anchor=tk.CENTER)
+            thumb_label.pack(side=tk.LEFT, padx=5, pady=5)
+
+            text_frame = ttk.Frame(item_frame, style="HistoryItem.TFrame")
+            text_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            label_style = "Favorite.HistoryPrompt.TLabel" if is_fav else "HistoryPrompt.TLabel"
+            prompt_label = ttk.Label(text_frame, text=original_prompt, style=label_style, wraplength=scroll_frame.canvas.winfo_width() - 150, anchor="nw", justify="left")
+            prompt_label.pack(fill=tk.X, expand=True, padx=5, pady=(5,0))
+
+            timestamp = row.get('timestamp', 'Unknown date')
+            template_name = row.get('template_name')
+            info_text = f"Date: {timestamp.split('T')[0]}"
+            if template_name: info_text += f" | Template: {os.path.basename(template_name)}"
+            info_label = ttk.Label(text_frame, text=info_text, foreground="gray")
+            info_label.pack(fill=tk.X, expand=True, padx=5, pady=(0,5))
+
+            widget_info = {'frame': item_frame, 'label': prompt_label, 'data': row, 'thumb_label': thumb_label, 'text_frame': text_frame, 'cover_image_path': cover_image_path, 'workflow_tag': workflow_tag, 'thumbnail_loaded': False}
+            widget_list.append(widget_info)
+
+            for widget in [item_frame, thumb_label, text_frame, prompt_label, info_label]:
+                widget.bind("<Button-1>", lambda e, info=widget_info: self._on_item_select(info))
+                widget.bind("<Double-1>", lambda e, info=widget_info: self._load_to_main_window())
+                widget.bind("<Button-3>" if sys.platform != "darwin" else "<Button-2>", lambda e, info=widget_info: self._show_context_menu(e, info))
+                widget.bind("<MouseWheel>", scroll_frame._on_mouse_wheel)
 
     def _populate_history_list(self, data: List[Dict[str, str]]):
         """Appends a batch of history items to the list view."""
         if not self.history_container or not data: return
-
-        current_width = self.history_canvas.winfo_width()
-        
-        for row in data:
-            cover_image_path = self._get_cover_image_path_for_row(row)
-
-            original_prompt = row.get('original_prompt', 'No original prompt found.')
-            is_fav = row.get('favorite', False)
-
-            # Get the correct workflow source for this specific entry from the data.
-            workflow_tag = row.get('workflow_source', 'SFW')
-
-            # Create a frame for each item for better layout and binding
-            item_frame = ttk.Frame(self.history_container, style="HistoryItem.TFrame", relief="groove", borderwidth=1)
-            item_frame.pack(fill=tk.X, pady=2, padx=2)
-
-            # --- Thumbnail Label (Left) ---
-            thumb_label = ttk.Label(item_frame, text="🖼️", width=12, anchor=tk.CENTER)
-            thumb_label.pack(side=tk.LEFT, padx=5, pady=5)
-
-            # --- Text Info (Right) ---
-            text_frame = ttk.Frame(item_frame, style="HistoryItem.TFrame") # Match style for seamless selection color
-            text_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-            label_style = "Favorite.HistoryPrompt.TLabel" if is_fav else "HistoryPrompt.TLabel"
-            prompt_label = ttk.Label(text_frame, text=original_prompt, style=label_style, wraplength=current_width - 150, anchor="nw", justify="left")
-            prompt_label.pack(fill=tk.X, expand=True, padx=5, pady=(5,0))
-
-            # Add date/template info
-            timestamp = row.get('timestamp', 'Unknown date')
-            template_name = row.get('template_name')
-            info_text = f"Date: {timestamp.split('T')[0]}"
-            if template_name:
-                info_text += f" | Template: {os.path.basename(template_name)}"
-            
-            info_label = ttk.Label(text_frame, text=info_text, foreground="gray")
-            info_label.pack(fill=tk.X, expand=True, padx=5, pady=(0,5))
-
-            # Store widget and data together
-            widget_info = {
-                'frame': item_frame, 'label': prompt_label, 'data': row, 
-                'thumb_label': thumb_label, 'text_frame': text_frame,
-                # --- NEW: Store data for lazy loading ---
-                'cover_image_path': cover_image_path,
-                'workflow_tag': workflow_tag,
-                'thumbnail_loaded': False
-            }
-            self.history_widgets.append(widget_info)
-
-            # Bind preview events to the thumbnail
-            thumb_label.bind("<Enter>", lambda e, info=widget_info: self._schedule_preview(info))
-            thumb_label.bind("<Leave>", lambda e: self._schedule_hide())
-
-            # Bind events to the frame and its labels
-            right_click_event = "<Button-3>" if sys.platform != "darwin" else "<Button-2>"
-            for widget in [item_frame, thumb_label, text_frame, prompt_label, info_label]:
-                widget.bind("<Button-1>", lambda e, info=widget_info: self._on_item_select(info))
-                widget.bind("<Double-1>", lambda e, info=widget_info: self._load_to_main_window())
-                widget.bind(right_click_event, lambda e, info=widget_info: self._show_context_menu(e, info))
-                widget.bind("<MouseWheel>", self.scrollable_list._on_mouse_wheel)
+        self._populate_list_view(data, self.history_container, self.history_widgets, self.scrollable_list)
 
     def _apply_filters(self):
         """Shows or hides list items based on the current filter criteria."""
@@ -506,6 +601,44 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
             self.after_cancel(self.filter_debounce_timer)
         self.filter_debounce_timer = self.after(300, self._apply_filters) # 300ms delay
 
+    def _on_template_group_select(self, event=None):
+        """Handles selection of a template group from the combobox."""
+        if not self.grouped_view_container: return
+
+        # Clear previous widgets
+        for widget_info in self.grouped_view_widgets:
+            widget_info['frame'].destroy()
+        self.grouped_view_widgets.clear()
+
+        selected_group = self.template_group_var.get()
+        if not selected_group: return
+
+        entries_to_display = self.grouped_data.get(selected_group, [])
+        
+        # Populate the list
+        self._populate_list_view(entries_to_display, self.grouped_view_container.scrollable_frame, self.grouped_view_widgets, self.grouped_view_container)
+        
+        # Trigger thumbnail loading for the newly visible items
+        self.after(100, self._update_grouped_view_visible_thumbnails)
+
+    def _update_grouped_view_visible_thumbnails(self):
+        """Loads thumbnails for the grouped view."""
+        if not self.grouped_view_container or not self.grouped_view_container.winfo_exists(): return
+        canvas = self.grouped_view_container.canvas
+        try:
+            canvas_top = canvas.canvasy(0)
+            canvas_bottom = canvas.canvasy(canvas.winfo_height())
+        except tk.TclError: return
+
+        for widget_info in self.grouped_view_widgets:
+            if widget_info.get('thumbnail_loaded'): continue
+            frame = widget_info['frame']
+            if not frame.winfo_exists(): continue
+            if not (frame.winfo_y() + frame.winfo_reqheight() < canvas_top or frame.winfo_y() > canvas_bottom):
+                widget_info['thumbnail_loaded'] = True
+                if widget_info.get('cover_image_path') and widget_info.get('workflow_tag') and widget_info.get('thumb_label'):
+                    self._load_history_thumbnail(widget_info['thumb_label'], widget_info['cover_image_path'], widget_info['workflow_tag'])
+
     def _on_item_select(self, selected_widget_info: Dict[str, Any]):
         """Handles selection of an item in the custom list."""
         if not self.prompt_version_combo: return
@@ -523,10 +656,11 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         if 'text_frame' in self.selected_widget_info:
             self.selected_widget_info['text_frame'].config(style="Selected.HistoryItem.TFrame")
         
-        # Store the data for other methods to use (delete, favorite, etc.)
         self.selected_row_data = selected_widget_info['data']
-        full_row_data = self.selected_row_data
+        self._display_details_for_row(self.selected_row_data)
 
+    def _display_details_for_row(self, full_row_data: Dict[str, Any]):
+        """Populates the right-hand details pane for a given history entry."""
         # Before doing anything, ensure we exit any active edit mode
         for key in self.detail_tabs:
             self._cancel_edit_mode(key, force=True)
@@ -1047,8 +1181,8 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
                     "cfg_scale": new_gen_params.get("cfg_scale", 7.5),
                     "scheduler": new_gen_params.get("scheduler", "dpmpp_2m"),
                     "cfg_rescale_multiplier": new_gen_params.get("cfg_rescale_multiplier", 0.0),
-                    "save_to_gallery": False,
-                    "cancellation_event": self.cancellation_event, # type: ignore
+                    "save_to_gallery": False, # Regenerations are temporary unless saved
+                    "cancellation_event": self.cancellation_event,
                 }
                 image_data = self.processor.generate_image_with_invokeai(**gen_args)
                 

@@ -34,6 +34,7 @@ class DependencyGraphWindow(custom_dialogs._CustomDialog):
 
         self.geometry("1000x800")
         self._center_window()
+        self._center_window()
         self.wait_window(self)
 
     def destroy(self):

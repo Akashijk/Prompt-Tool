@@ -9,6 +9,7 @@ A desktop application for generating and enhancing prompts for Stable Diffusion.
 *   **Advanced AI Brainstorming:** A dedicated chat window to brainstorm ideas. Load existing wildcards or templates into the chat to have the AI help you refine them, or generate new content from scratch, including linked wildcards and templates based on your entire library.
 *   **Advanced Image Permutations:** Right-click any generated image to instantly create variations with different LoRAs or new random seeds, allowing for rapid, targeted refinement.
 *   **Model Usage Statistics:** Get valuable insights into your creative process with detailed statistics and charts on which models you use most and which are the fastest.
+*   **Automatic Update Notifications:** The application automatically checks for new versions on startup and will notify you if an update is available, with instructions on how to get it.
 *   **Direct Image Generation & History:** Generate images directly from any prompt using a local InvokeAI server. All generations, prompts, and images are saved to a detailed, searchable history viewer with favoriting and image management.
 *   **Image to Prompt (Interrogator):** Generate a detailed Stable Diffusion prompt directly from an image using a local vision model (e.g., LLaVA).
 
@@ -230,6 +231,7 @@ The application is designed with a clear separation of concerns, divided into tw
     *   `history/`: Stores the generated prompt history.
     *   `assets/`: Contains static assets like the application icon.
 
+*   **`version.txt`**: A simple text file in the project root containing the current version number (e.g., `v1.2.0`). This file is intended to be generated automatically as part of a release process (e.g., `git describe --tags > version.txt`) and is used to provide update notifications for users who download the project as a ZIP file.
 ## Troubleshooting
 
 Here are solutions to some common issues you might encounter.

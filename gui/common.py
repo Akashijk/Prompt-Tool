@@ -625,14 +625,12 @@ class ScrollableFrame(ttk.Frame):
         # This is the frame that will hold the content and be scrolled
         self.scrollable_frame = ttk.Frame(self.canvas)
 
-        # Bind the frame's size to the canvas's scroll region
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        )
-
         # Create a window in the canvas that holds the frame
         self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        # Bind the inner frame's <Configure> event to update the canvas's scroll region.
+        # This is the most reliable way to handle dynamically resizing content.
+        self.scrollable_frame.bind("<Configure>", self._on_frame_configure)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
         # Bind the canvas resizing to update the window width
@@ -645,6 +643,12 @@ class ScrollableFrame(ttk.Frame):
         # Bind mouse wheel scrolling to the canvas and the frame
         for widget in [self.canvas, self.scrollable_frame]:
             widget.bind("<MouseWheel>", self._on_mouse_wheel)
+
+    def _on_frame_configure(self, event):
+        """Updates the scroll region of the canvas when the inner frame's size changes."""
+        # This check prevents the scroll region from collapsing to 1x1 when the widget is hidden by the notebook.
+        if event.width > 1 or event.height > 1:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_canvas_configure(self, event):
         """Updates the width of the frame inside the canvas to match the canvas width."""
