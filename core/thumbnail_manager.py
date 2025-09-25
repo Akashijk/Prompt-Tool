@@ -5,14 +5,24 @@ Manages the creation, storage, and retrieval of image thumbnails for the UI.
 import os
 import hashlib
 import threading
-from typing import List, Dict, Any, Optional
+from typing import Optional
 from PIL import Image
 from .config import config
 
 class ThumbnailManager:
     """Handles the thumbnail cache to improve UI performance."""
     def __init__(self):
-        self.thumbnail_size = (128, 128)
+        # Base size for standard DPI screens
+        base_size = 256
+        
+        # Check for high DPI displays (like on macOS) and adjust size.
+        try:
+            from PySide6.QtGui import QGuiApplication
+            pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
+            self.thumbnail_size = (int(base_size * pixel_ratio), int(base_size * pixel_ratio))
+        except (ImportError, Exception):
+            # Fallback if Qt is not available or fails
+            self.thumbnail_size = (base_size, base_size)
 
     def _get_cache_dir(self, workflow: str) -> str:
         """Gets the path to the cache directory for a specific workflow, creating it if needed."""

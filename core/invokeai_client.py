@@ -513,14 +513,21 @@ class InvokeAIClient:
         for i, lora_info in enumerate(loras):
             lora_node_id = f"lora_loader_{i}"
             lora_object = lora_info['lora_object']
-            nodes[lora_node_id] = {"id": lora_node_id, "type": "lora_loader", "lora": lora_object, "weight": lora_info['weight']}
+            # --- FIX: Use 'sdxl_lora_loader' and explicitly define submodels. ---
+            # This is the definitive fix for the "Unrecognized SDXL LoRA key prefix" error.
+            # It ensures that even advanced LoRA/LyCORIS formats are correctly applied
+            # to both the UNet and the text encoders by the InvokeAI server.
+            nodes[lora_node_id] = {
+                "id": lora_node_id, "type": "sdxl_lora_loader", "lora": lora_object, "weight": lora_info['weight'], "submodels": ["unet", "text_encoder", "text_encoder_2"]
+            }
             
             # Check which submodels this LoRA affects.
             # If 'submodels' is null, we must make a safe assumption. The error indicates that
             # assuming 'clip2' exists can fail. A safer default is to assume only the most
-            # common submodels ('unet', 'text_encoder') are affected for such LoRAs.
+            # common submodels ('unet', 'text_encoder') are affected for such LoRAs. This is a
+            # more robust approach than assuming all possible submodels exist.
             submodels = lora_object.get('submodels')
-            if submodels is None:
+            if submodels is None or not isinstance(submodels, list):
                 # Fallback for LoRAs that don't report their submodels, to avoid the 'clip2' error.
                 submodel_types = {'unet', 'text_encoder'}
             else:

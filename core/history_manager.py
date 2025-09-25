@@ -304,9 +304,6 @@ class HistoryManager:
         entry_id_to_update = original_row.get('id')
         if not entry_id_to_update: return False
 
-        # --- NEW: Always update the timestamp on any modification ---
-        updated_row['timestamp'] = datetime.now().isoformat()
-
         # --- NEW: Image Deletion Logic for Replaced Images ---
         original_paths = self._get_all_image_paths_from_entry(original_row)
         updated_paths = self._get_all_image_paths_from_entry(updated_row)

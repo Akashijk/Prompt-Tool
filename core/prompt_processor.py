@@ -5,8 +5,10 @@ import copy
 import os
 import random
 import re
+import time
 import uuid
 import threading
+import queue
 from typing import List, Dict, Any, Optional, Callable, Tuple, Set, TYPE_CHECKING
 from .thumbnail_manager import ThumbnailManager
 from .config import config
@@ -207,15 +209,15 @@ class PromptProcessor:
         """Get list of available Ollama models with their details."""
         return self.ollama_client.list_models()
 
-    def get_invokeai_models(self, base_model: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_invokeai_models(self, base_model: Optional[str] = None, model_type: str = 'main') -> List[Dict[str, Any]]:
         """Gets a list of main models from InvokeAI."""
         self.invokeai_client.check_server_compatibility()
-        return self.invokeai_client.get_models(model_type='main', base_model=base_model)
+        return self.invokeai_client.get_models(model_type=model_type, base_model=base_model)
 
-    def get_invokeai_loras(self, base_model: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_invokeai_loras(self, base_model: Optional[str] = None, model_type: str = 'lora') -> List[Dict[str, Any]]:
         """Gets a list of LoRA models from InvokeAI."""
         self.invokeai_client.check_server_compatibility()
-        return self.invokeai_client.get_models(model_type='lora', base_model=base_model)
+        return self.invokeai_client.get_models(model_type=model_type, base_model=base_model)
 
     def get_model_recommendations(self, models: List[str]) -> List[tuple]:
         """Get recommended models with reasons."""
@@ -225,7 +227,10 @@ class PromptProcessor:
         return self.history_manager.delete_history_entry(row_to_delete)
 
     def update_history_entry(self, original_row: Dict[str, str], updated_row: Dict[str, str]) -> bool:
-        """Pass-through to update a history entry."""
+        """Pass-through to update a history entry, ensuring timestamp is preserved."""
+        # Explicitly preserve the original timestamp to prevent it from being updated.
+        if 'timestamp' in original_row:
+            updated_row['timestamp'] = original_row['timestamp']
         return self.history_manager.update_history_entry(original_row, updated_row)
 
     def get_full_history(self) -> List[Dict[str, str]]:
@@ -665,21 +670,14 @@ class PromptProcessor:
         search_order = self._get_wildcard_search_order()
         
         # Perform the file system operation
-        self.template_engine.rename_wildcard(old_filename, new_filename, search_order)
-        
-        # Update caches
-        old_basename, _ = os.path.splitext(old_filename)
-        new_basename, _ = os.path.splitext(new_filename)
-
-        # Update template engine's main wildcard cache
-        if old_basename in self.template_engine.wildcards:
-            self.template_engine.wildcards[new_basename] = self.template_engine.wildcards.pop(old_basename)
-
-        # Update the mode-agnostic cache
-        if self.all_wildcards_cache is not None and old_basename in self.all_wildcards_cache:
-            self.all_wildcards_cache[new_basename] = self.all_wildcards_cache.pop(old_basename)
-        self._used_wildcards_cache = None
-        self.template_engine.wildcard_files_cache = None # Invalidate file list cache
+        try:
+            self.template_engine.rename_wildcard(old_filename, new_filename, search_order)
+            # --- FIX: Force a full reload after renaming to ensure all caches are updated ---
+            self.reload_wildcards()
+        except Exception as e:
+            # Reload even on failure to ensure UI consistency with the file system state.
+            self.reload_wildcards()
+            raise e
 
     def refactor_template_references(self, old_basename: str, new_basename: str) -> int:
         """
@@ -1814,11 +1812,15 @@ class PromptProcessor:
                                 prompts: List[str], 
                                 model: str,
                                 selected_variations: Optional[List[str]] = None,
-                                cancellation_event: Optional[threading.Event] = None,
-                                template_name: Optional[str] = None) -> List[Dict[str, Any]]:
+                                cancellation_event: Optional[threading.Event] = None, 
+                                template_name: Optional[str] = None,
+                                result_callback: Optional[Callable] = None) -> List[Dict[str, Any]]:
         """Process a batch of prompts for enhancement."""
         results = []
         total_prompts = len(prompts)
+        
+        # --- FIX: Prioritize the passed callback, then fall back to the instance's callback ---
+        final_result_callback = result_callback if result_callback is not None else self.result_callback
         
         enhancement_instruction = self.load_system_prompt_content('enhancement.txt')
         
@@ -1836,8 +1838,8 @@ class PromptProcessor:
             enhanced = self.ollama_client.enhance_prompt(enhancement_instruction + prompt, model)
 
             # Send back the main enhancement result immediately
-            if self.result_callback:
-                self.result_callback('enhanced', {'prompt': enhanced, 'ollama_model': model})
+            if final_result_callback:
+                final_result_callback('enhanced', {'prompt': enhanced, 'ollama_model': model})
 
             result = {
                 'original': prompt,
@@ -1855,12 +1857,18 @@ class PromptProcessor:
 
                     variation_instruction = available_variations[var_type]['prompt']
                     self._update_status('variation_start', var_type=var_type, prompt_num=i+1, total_prompts=total_prompts)
-                    var_prompt = self.ollama_client.create_single_variation(variation_instruction, prompt, model, var_type)
-                    variation_result = {'prompt': var_prompt, 'ollama_model': model}
-                    # Send back variation result immediately
-                    if self.result_callback:
-                        self.result_callback(var_type, variation_result)
-                    result['variations'][var_type] = variation_result
+                var_prompt = self.ollama_client.create_single_variation(
+                    instruction=variation_instruction,
+                    base_prompt=enhanced,  # FIX: Use the enhanced prompt as the base for variations.
+                    model=model,
+                    variation_type=var_type,
+                    original_prompt_context=prompt # Pass the original prompt for better AI context.
+                )
+                variation_result = {'prompt': var_prompt, 'ollama_model': model}
+                # Send back variation result immediately using the correct callback
+                if final_result_callback:
+                    final_result_callback(var_type, variation_result)
+                result['variations'][var_type] = variation_result
             
             if cancellation_event and cancellation_event.is_set():
                 break # break outer loop
@@ -2168,44 +2176,52 @@ class PromptProcessor:
         # The response should be a JSON array.
         return self.ollama_client.parse_json_array_from_response(raw_response)
 
-    def generate_image_with_invokeai(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
-        """Generates an image with InvokeAI and returns the raw image bytes."""
+    def generate_image_with_invokeai(self, gen_params: Dict[str, Any], prompt: str, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+        """
+        A centralized method to generate an image with InvokeAI. It handles all logic
+        for applying prefixes, building the graph, and waiting for the result.
+        """
+        if self.verbose:
+            print(f"\n--- VERBOSE: PromptProcessor.generate_image_with_invokeai ---")
+            print(f"Received gen_params:\n{json.dumps(gen_params, indent=2, default=lambda o: '<object>')}")
+            print(f"Received prompt: {prompt}")
 
+        # --- Extract parameters from gen_params ---
+        negative_prompt = gen_params.get('negative_prompt', '')
+        scheduler = gen_params.get('scheduler', 'dpmpp_2m')
+        model_object = gen_params.get('model')
+        loras = gen_params.get('loras', [])
+        
         # --- Apply model-specific prefixes ---
-        model_name = model_object.get('name')
+        model_name = model_object.get('name') if model_object else None
         if model_name and model_name in self.model_prefixes:
             prefixes = self.model_prefixes[model_name]
-
+            if self.verbose:
+                print(f"Applying model prefixes for '{model_name}': {prefixes}")
             pos_prefix = prefixes.get('positive_prefix', '').strip()
             if pos_prefix:
                 prompt = f"{pos_prefix}, {prompt}"
-
             neg_prefix = prefixes.get('negative_prefix', '').strip()
             if neg_prefix:
-                # Prepend to existing negative prompt, handling the case where it's empty
                 negative_prompt = f"{neg_prefix}, {negative_prompt}" if negative_prompt else neg_prefix
-            
-            # --- FIX: Apply the model-specific scheduler if it exists ---
             model_scheduler = prefixes.get('scheduler')
             if model_scheduler:
                 if self.verbose:
                     print(f"INFO: Overriding scheduler with model-specific setting for '{model_name}': '{model_scheduler}'")
                 scheduler = model_scheduler
 
-        # --- Apply LoRA-specific prefixes with deduplication ---
+        # --- Apply LoRA-specific prefixes ---
         all_pos_lora_prefixes = set()
         all_neg_lora_prefixes = set()
-
         for lora_info in loras:
             lora_name = lora_info.get('lora_object', {}).get('name')
             if lora_name and lora_name in self.lora_prefixes:
                 lora_prefixes = self.lora_prefixes[lora_name]
-
+                if self.verbose:
+                    print(f"Applying LoRA prefixes for '{lora_name}': {lora_prefixes}")
                 pos_prefix = lora_prefixes.get('positive_prefix', '').strip()
                 if pos_prefix:
-                    # Split by comma and add to set to handle duplicates within a single prefix string
                     all_pos_lora_prefixes.update([p.strip() for p in pos_prefix.split(',') if p.strip()])
-
                 neg_prefix = lora_prefixes.get('negative_prefix', '').strip()
                 if neg_prefix:
                     all_neg_lora_prefixes.update([p.strip() for p in neg_prefix.split(',') if p.strip()])
@@ -2218,34 +2234,116 @@ class PromptProcessor:
             combined_neg_prefix = ", ".join(sorted(list(all_neg_lora_prefixes)))
             negative_prompt = f"{combined_neg_prefix}, {negative_prompt}" if negative_prompt else combined_neg_prefix
 
-        # --- FIX: Use the new two-step generation process ---
-        # Step 1: Enqueue the generation job
+        # Create a copy of the model object to add dimensions without modifying the original
+        model_obj_copy = copy.deepcopy(model_object) if model_object else {}
+        if 'width' in gen_params and 'height' in gen_params:
+            if 'default_settings' not in model_obj_copy:
+                model_obj_copy['default_settings'] = {}
+            model_obj_copy['default_settings']['width'] = gen_params['width']
+            model_obj_copy['default_settings']['height'] = gen_params['height']
+
+        if self.verbose:
+            print(f"Final positive prompt for API: {prompt}")
+            print(f"Final negative prompt for API: {negative_prompt}")
+            print(f"Final scheduler for API: {scheduler}")
+
+        # --- Enqueue the job ---
         enqueue_args = {
-            "prompt": prompt, "negative_prompt": negative_prompt, "seed": seed,
-            "model_object": model_object, "loras": loras, "steps": steps,
-            "cfg_scale": cfg_scale, "scheduler": scheduler,
-            "cfg_rescale_multiplier": cfg_rescale_multiplier,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "seed": gen_params.get("seed"),
+            "model_object": model_obj_copy,
+            "loras": loras,
+            "steps": gen_params.get("steps", 30),
+            "cfg_scale": gen_params.get("cfg_scale", 7.5),
+            "scheduler": scheduler,
+            "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier", 0.0),
             "save_to_gallery": save_to_gallery, "verbose": self.verbose,
             "cancellation_event": cancellation_event
         }
         enqueue_data = self.invokeai_client.enqueue_image_generation(**enqueue_args)
-        item_id = enqueue_data.get('item_id')
+        item_id = enqueue_data.get('item_id') if isinstance(enqueue_data, dict) else None
         if not item_id:
             raise Exception("Failed to get a valid job ID from InvokeAI after enqueueing.")
 
-        # Step 2: Wait for the result
+        # --- Wait for the result ---
         result_data = self.invokeai_client.wait_for_image_generation_result(item_id, save_to_gallery, cancellation_event)
 
-        # Step 3: Construct the final return dictionary, including the original generation parameters.
-        # This is what the calling UI components expect.
-        final_params = {
-            'negative_prompt': negative_prompt, 'seed': seed, 'model': model_object,
-            'loras': loras, 'steps': steps, 'cfg_scale': cfg_scale,
-            'scheduler': scheduler, 'cfg_rescale_multiplier': cfg_rescale_multiplier,
-            'duration': result_data.get('duration')
-        }
+        # --- Construct the final return dictionary ---
+        final_gen_params = gen_params.copy()
+        final_gen_params['duration'] = result_data.get('duration')
+        result_data['generation_params'] = final_gen_params
+        return result_data
 
-        return {'bytes': result_data['bytes'], 'image_name': result_data['image_name'], 'duration': result_data.get('duration'), 'item_id': item_id, 'generation_params': final_params}
+    def run_image_generation_jobs(
+        self,
+        generation_jobs: List[Dict[str, Any]],
+        progress_callback: Callable,
+        completion_callback: Callable,
+        cancellation_event: threading.Event,
+        save_to_gallery: bool,
+        new_job_queue: Optional[queue.Queue] = None
+    ):
+        """
+        A centralized method to run a list of image generation jobs sequentially,
+        grouped by model, and clearing the VRAM cache between model batches.
+        This method is designed to be called from a background thread in the GUI.
+        """
+        if not generation_jobs:
+            completion_callback()
+            return
+
+        # Group jobs by model name
+        jobs_by_model: Dict[str, List[Dict[str, Any]]] = {}
+        for job in generation_jobs:
+            model_name = job.get('gen_params', {}).get('model', {}).get('name', 'Unknown Model')
+            if model_name not in jobs_by_model:
+                jobs_by_model[model_name] = []
+            jobs_by_model[model_name].append(job)
+
+        model_queue = sorted(list(jobs_by_model.keys()))
+        total_models = len(model_queue)
+
+        for i, model_name in enumerate(model_queue):
+            if cancellation_event.is_set():
+                break
+
+            # Clear VRAM cache before loading the next model, but not for the very first one.
+            if i > 0:
+                if self.verbose:
+                    print(f"INFO: Model batch for '{model_queue[i-1]}' complete. Clearing VRAM cache before loading '{model_name}'.")
+                if hasattr(self, 'clear_invokeai_cache_async'):
+                    self.clear_invokeai_cache_async()
+                    time.sleep(1.5) # Give the server a moment to process the cache clear.
+        
+            jobs_for_this_model = jobs_by_model[model_name]
+            
+            # --- FIX: Process jobs from a dynamic list to handle regenerations ---
+            job_queue_for_model = list(jobs_for_this_model)
+            while job_queue_for_model:
+                if cancellation_event.is_set():
+                    break
+                
+                # Check for high-priority jobs (regenerations)
+                if new_job_queue and not new_job_queue.empty():
+                    try:
+                        new_job = new_job_queue.get_nowait()
+                        if new_job.get('gen_params', {}).get('model', {}).get('name') == model_name:
+                            job_queue_for_model.insert(0, new_job) # Add to the front
+                    except queue.Empty: pass
+                job = job_queue_for_model.pop(0)
+                
+                try:
+                    result_data = self.generate_image_with_invokeai(
+                        gen_params=job['gen_params'],
+                        prompt=job['prompt'],
+                        save_to_gallery=save_to_gallery,
+                        cancellation_event=cancellation_event
+                    )
+                    progress_callback({'success': True, 'job_id': job['id'], 'result': result_data})
+                except Exception as e:
+                    progress_callback({'success': False, 'job_id': job['id'], 'error': str(e)})
+        completion_callback()
 
     def save_generated_image(self, image_bytes: bytes, entry_id: str) -> str:
         """Saves image bytes to a dedicated folder for the history entry and returns the relative path."""
