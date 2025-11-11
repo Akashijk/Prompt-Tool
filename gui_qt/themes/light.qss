@@ -100,7 +100,7 @@ QComboBox::drop-down {
     background: rgba(0,0,0,0.03);
 }
 QComboBox::down-arrow {
-    image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0Ij48cGF0aCBkPSJNNyA5bDUgNSA1LTUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzJEMzA0MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjwvcGF0aD48L3N2Zz4=");
+    image: url(:/assets/chevron-down-dark.svg);
     width: 16px;
     height: 16px;
     subcontrol-origin: padding;

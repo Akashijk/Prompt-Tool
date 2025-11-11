@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from gui_qt.gui_app import GUIApp
 from core.config import config
+import gui_qt.resources_rc
 
 if __name__ == "__main__":
     # Create the QApplication instance
