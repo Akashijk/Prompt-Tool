@@ -29,6 +29,20 @@ class SmoothTextBrowser(SmoothScrollMixin, QTextBrowser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+class LinkOnlyTextBrowser(SmoothTextBrowser):
+    """A QTextBrowser that only allows clicking on links and emits a signal when a link is clicked."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setOpenLinks(False) # Disable automatic opening of links
+        self.setReadOnly(True)
+
+    def mousePressEvent(self, event):
+        anchor = self.anchorAt(event.pos())
+        if anchor:
+            self.anchorClicked.emit(QUrl(anchor))
+        else:
+            super().mousePressEvent(event)
+
 class LoadingSpinner(QWidget):
     """A simple animated loading spinner widget."""
     def __init__(self, parent=None):
