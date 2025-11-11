@@ -434,3 +434,29 @@ class HistoryManager:
         except Exception as e:
             print(f"Error saving to history: {e}")
             return {}
+
+    def update_enhanced_prompt_entry(self, entry_id: str, enhanced_data: Dict[str, Any]) -> bool:
+        """
+        Updates the 'enhanced' and 'variations' fields of an existing history entry.
+        This is used when a prompt from history is re-enhanced.
+        """
+        existing_entry = self.get_entry_by_id(entry_id)
+        if not existing_entry:
+            print(f"WARNING: Attempted to update non-existent history entry with ID: {entry_id}")
+            return False
+
+        # Update the 'enhanced' and 'variations' parts of the existing entry
+        # Ensure 'original_prompt' is preserved from the existing entry
+        updated_entry = copy.deepcopy(existing_entry)
+        updated_entry['enhanced'] = enhanced_data.get('enhanced', {})
+        updated_entry['variations'] = enhanced_data.get('variations', {})
+        updated_entry['status'] = 're-enhanced' # Mark as re-enhanced
+        updated_entry['timestamp'] = datetime.now().isoformat() # Update timestamp
+
+        # The enhanced_data might contain 'original' which is the original prompt text.
+        # We should ensure the 'original_prompt' field of the history entry remains consistent.
+        if 'original' in enhanced_data and 'original_prompt' not in updated_entry:
+            updated_entry['original_prompt'] = enhanced_data['original']
+        
+        # Call the generic update method
+        return self.update_history_entry(existing_entry, updated_entry)

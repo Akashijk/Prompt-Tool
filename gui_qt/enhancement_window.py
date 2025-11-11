@@ -78,7 +78,7 @@ class SingleEnhancementWorker(QObject):
 
 class EnhancementResultWindow(QDialog):
     """A pop-up window to display enhancement results, rewritten in Qt."""
-    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, original_prompt: str, model: str, variations: List[str]):
+    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, original_prompt: str, model: str, variations: List[str], original_entry_id: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle("Enhancement Result")
         self.setMinimumSize(700, 750)
@@ -88,6 +88,7 @@ class EnhancementResultWindow(QDialog):
         self.original_prompt = original_prompt
         self.model = model
         self.variations = variations
+        self.original_entry_id = original_entry_id # Store the original entry ID
         self.result_data: Dict[str, Any] = {'original': original_prompt, 'variations': {}}
         self.active_workers: List[Tuple[QThread, QObject]] = []
 
@@ -273,8 +274,14 @@ class EnhancementResultWindow(QDialog):
         for key, var_data in self.result_data.get('variations', {}).items():
             var_data['prompt'] = self.text_widgets[key].toPlainText()
 
-        self.processor.history_manager.save_result(**self.result_data)
-        self.parent_app.status_bar.showMessage("Result saved to history.", 5000)
+        if self.original_entry_id:
+            # Update existing entry
+            self.processor.history_manager.update_enhanced_prompt_entry(self.original_entry_id, self.result_data)
+            self.parent_app.status_bar.showMessage("History entry updated with enhanced prompt.", 5000)
+        else:
+            # Create new entry
+            self.processor.history_manager.save_result(**self.result_data)
+            self.parent_app.status_bar.showMessage("Result saved to history.", 5000)
         self.close()
 
     def _copy_prompt(self, key: str):

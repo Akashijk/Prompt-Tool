@@ -232,6 +232,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         self.loading_animation_chars = ["/", "-", "\\", "|"]
         self.loading_animation_index = 0
         self.current_ollama_model: Optional[str] = None
+        self.current_history_entry_id: Optional[str] = None
         
         self.live_update_timer = QTimer(self)
         self.live_update_timer.setSingleShot(True)
@@ -634,6 +635,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
     @Slot(str)
     def _on_template_select(self, template_name: str):
         """Loads the content of the selected template into the editor."""
+        self.current_history_entry_id = None # Reset history context
         if not template_name or template_name == "Select a template":
             self.template_editor_text.clear()
             self._update_action_button_states()
@@ -1089,6 +1091,9 @@ class GUIApp(QMainWindow, TextPreviewMixin):
             self.status_bar.showMessage("Warning: Selected history entry has no prompt text to load.", 5000)
             return
 
+        # Store the ID of the history entry being loaded
+        self.current_history_entry_id = entry.get('id')
+
         # Block signals to prevent the combo box from triggering a template load while we clear it
         self.template_combo.blockSignals(True)
         self.template_combo.setCurrentIndex(-1) # Clear selection
@@ -1170,9 +1175,9 @@ class GUIApp(QMainWindow, TextPreviewMixin):
     def _on_enhance_prompt_clicked(self):
         """Handles the 'Enhance This Prompt' button click from the main window."""
         prompt_text = self._get_current_prompt_string()
-        self.start_enhancement_workflow(prompt_text)
+        self.start_enhancement_workflow(prompt_text, original_entry_id=self.current_history_entry_id)
 
-    def start_enhancement_workflow(self, prompt_text: str):
+    def start_enhancement_workflow(self, prompt_text: str, original_entry_id: Optional[str] = None):
         """
         Starts the enhancement process for a given prompt string.
         This can be called from the main UI or from other windows like the History Viewer.
@@ -1189,7 +1194,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         selected_variations = self._get_selected_variations()
 
         # Create and show the enhancement window, which is non-modal.
-        enhancement_window = EnhancementResultWindow(self, self.processor, prompt_text, model, selected_variations)
+        enhancement_window = EnhancementResultWindow(self, self.processor, prompt_text, model, selected_variations, original_entry_id=original_entry_id)
         enhancement_window.finished.connect(self._update_window_menu)
         self.ollama_model_changed.connect(enhancement_window.set_model)
         self.enhancement_windows.append(enhancement_window)

@@ -763,7 +763,10 @@ class HistoryViewerWindow(QDialog):
         parent_app = self.parent()
         from .gui_app import GUIApp
         if isinstance(parent_app, GUIApp):
-            parent_app.start_enhancement_workflow(prompt_text)
+            # Set the current history entry ID in the main app before starting enhancement
+            parent_app.current_history_entry_id = entry['id']
+            parent_app.start_enhancement_workflow(prompt_text, original_entry_id=entry['id'])
+            self.accept() # Close the dialog with an OK result
 
     def _get_params_for_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         """
