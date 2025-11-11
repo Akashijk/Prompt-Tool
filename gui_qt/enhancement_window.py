@@ -425,7 +425,7 @@ class EnhancementResultWindow(QDialog):
         regen_thread.start()
 
     def closeEvent(self, event: QCloseEvent):
-        """Cleanly stop all running threads before closing."""
+        """Cleanly stop all running threads before closing and unload the model."""
         for thread, worker in self.active_workers[:]:
             if thread.isRunning():
                 thread.quit()
@@ -433,4 +433,9 @@ class EnhancementResultWindow(QDialog):
 
         if self in self.parent_app.enhancement_windows:
             self.parent_app.enhancement_windows.remove(self)
+        
+        # --- NEW: Unload the Ollama model used by this window ---
+        if self.model and self.processor and self.processor.ollama_client:
+            self.processor.ollama_client.unload_model(self.model)
+
         super().closeEvent(event)

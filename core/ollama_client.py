@@ -370,6 +370,29 @@ class OllamaClient:
             # Catch exceptions here since this is a non-critical cleanup task
             print(f"WARNING: Could not unload model '{model}'. Error: {e}")
 
+    def unload_all_models(self) -> None:
+        """Unload all models currently loaded into memory by Ollama."""
+        if not self._is_ollama_running():
+            if self.verbose:
+                print("INFO: Ollama server not running, cannot unload models.")
+            return
+
+        try:
+            running_models = self.get_running_models()
+            if not running_models:
+                if self.verbose:
+                    print("INFO: No Ollama models currently loaded.")
+                return
+
+            for model_name in running_models:
+                self.unload_model(model_name) # Reuse the existing unload_model method
+            
+            if self.verbose:
+                print(f"INFO: Successfully unloaded all {len(running_models)} Ollama models.")
+
+        except Exception as e:
+            print(f"WARNING: Error unloading all Ollama models: {e}")
+
     def interrogate_image(self, model: str, base64_image: str, prompt: str) -> str:
         """Generates a prompt from an image using a multimodal model."""
         payload = {

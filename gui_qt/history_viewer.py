@@ -826,6 +826,10 @@ class HistoryViewerWindow(QDialog):
         entry = self.row_to_entry_map.get(original_row_index)
         if not entry: return
 
+        # --- NEW: Unload all Ollama models before image generation ---
+        if self.processor and self.processor.ollama_client:
+            self.processor.ollama_client.unload_all_models()
+
         # --- NEW: Use the currently selected prompt from the dropdown ---
         selected_prompt_label = self.prompt_selector_combo.currentText()
         available_prompts = self._get_available_prompts_for_entry(entry)
@@ -1199,6 +1203,11 @@ class HistoryViewerWindow(QDialog):
             return
 
         reply = QMessageBox.question(self, "Confirm Delete Image", "Are you sure you want to delete this image? This cannot be undone.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply == QMessageBox.StandardButton.No:
+            return # Do nothing if user selects No
+
+        # If reply is Yes, proceed with deletion
         # Find the main history entry
         selected_rows = self.history_table.selectionModel().selectedRows()
         if not selected_rows:
@@ -1231,25 +1240,30 @@ class HistoryViewerWindow(QDialog):
 
         for img_list in all_image_lists:
             for img_dict in img_list:
-                if os.path.basename(img_dict.get('image_path', '')) == os.path.basename(image_path_to_delete):
+                # Compare by full path to ensure uniqueness
+                current_img_full_path = os.path.join(history_file_dir, img_dict.get('image_path', ''))
+                if current_img_full_path == image_path_to_delete:
                     img_list.remove(img_dict)
                     found_and_removed = True
                     break
             if found_and_removed: break
 
         if found_and_removed:
-            # Update the history entry in the backend
+            # Update the history entry in the backend FIRST
             if self.processor.history_manager.update_history_entry(original_entry, updated_entry):
-                # Delete the actual image file
+                # Then, delete the actual image file
                 try:
                     os.remove(image_path_to_delete)
                     QMessageBox.information(self, "Success", "Image deleted and history updated.")
+                    # Finally, refresh the UI
                     self._load_images_for_entry(updated_entry) # Reload gallery
                     self._start_loading_history() # Reload main table to update cover image if needed
                 except OSError as e:
                     QMessageBox.critical(self, "Error", f"Could not delete image file: {e}")
             else:
                 QMessageBox.critical(self, "Error", "Failed to update history entry after image removal.")
+        else:
+            QMessageBox.warning(self, "Error", "Image not found in history entry for removal.")
 
     def closeEvent(self, event: QCloseEvent):
         """Handle window close event to stop any running threads."""

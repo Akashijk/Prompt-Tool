@@ -1276,6 +1276,10 @@ class GUIApp(QMainWindow, TextPreviewMixin):
             QMessageBox.warning(self, "No Prompt", "There is no prompt to generate an image from.")
             return
 
+        # --- NEW: Unload all Ollama models before image generation ---
+        if self.processor and self.processor.ollama_client:
+            self.processor.ollama_client.unload_all_models()
+
         dialog = ImageGenerationOptionsDialog(self, self.processor, prompt_text, initial_params=self.last_generation_result.get('context', {}))
         if dialog.exec() == QDialog.Accepted:
             options = dialog.get_options()
