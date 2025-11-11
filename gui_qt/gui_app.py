@@ -1177,7 +1177,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         prompt_text = self._get_current_prompt_string()
         self.start_enhancement_workflow(prompt_text, original_entry_id=self.current_history_entry_id)
 
-    def start_enhancement_workflow(self, prompt_text: str, original_entry_id: Optional[str] = None):
+    def start_enhancement_workflow(self, prompt_text: str, original_entry_id: Optional[str] = None, prompt_type_key: Optional[str] = None, model_override: Optional[str] = None, is_reenhancement_mode: bool = False, history_entry: Optional[Dict[str, Any]] = None):
         """
         Starts the enhancement process for a given prompt string.
         This can be called from the main UI or from other windows like the History Viewer.
@@ -1186,7 +1186,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
             QMessageBox.warning(self, "No Prompt", "There is no prompt to enhance.")
             return
 
-        model = self.model_combo.currentText()
+        model = model_override if model_override else self.model_combo.currentText()
         if not model or "model" in model.lower():
             QMessageBox.warning(self, "No Model Selected", "Please select a valid Ollama model to use for enhancement.")
             return
@@ -1194,7 +1194,13 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         selected_variations = self._get_selected_variations()
 
         # Create and show the enhancement window, which is non-modal.
-        enhancement_window = EnhancementResultWindow(self, self.processor, prompt_text, model, selected_variations, original_entry_id=original_entry_id)
+        enhancement_window = EnhancementResultWindow(
+            self, self.processor, prompt_text, model, selected_variations,
+            original_entry_id=original_entry_id,
+            prompt_type_key=prompt_type_key, # Pass the key
+            is_reenhancement_mode=is_reenhancement_mode,
+            history_entry=history_entry
+        )
         enhancement_window.finished.connect(self._update_window_menu)
         self.ollama_model_changed.connect(enhancement_window.set_model)
         self.enhancement_windows.append(enhancement_window)

@@ -1,11 +1,13 @@
 """A Qt-based pop-up window to display enhancement results."""
 
 import random
+import copy # NEW
+from datetime import datetime # NEW
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QDialog, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QGroupBox, QScrollArea, QMessageBox, QComboBox
+    QLabel, QPushButton, QGroupBox, QScrollArea, QMessageBox, QComboBox, QTextEdit
 )
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
 
@@ -78,7 +80,7 @@ class SingleEnhancementWorker(QObject):
 
 class EnhancementResultWindow(QDialog):
     """A pop-up window to display enhancement results, rewritten in Qt."""
-    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, original_prompt: str, model: str, variations: List[str], original_entry_id: Optional[str] = None):
+    def __init__(self, parent: 'GUIApp', processor: PromptProcessor, original_prompt: str, model: str, variations: List[str], original_entry_id: Optional[str] = None, prompt_type_key: Optional[str] = None, is_reenhancement_mode: bool = False, history_entry: Optional[Dict[str, Any]] = None):
         super().__init__(parent)
         self.setWindowTitle("Enhancement Result")
         self.setMinimumSize(700, 750)
@@ -89,8 +91,20 @@ class EnhancementResultWindow(QDialog):
         self.model = model
         self.variations = variations
         self.original_entry_id = original_entry_id # Store the original entry ID
-        self.result_data: Dict[str, Any] = {'original': original_prompt, 'variations': {}}
+        self.prompt_type_key = prompt_type_key # Store the key indicating which prompt part was re-enhanced
+        self.is_reenhancement_mode = is_reenhancement_mode
+        self.history_entry = history_entry # Store the full history entry if in re-enhancement mode
+
+        if self.is_reenhancement_mode and self.history_entry:
+            # If in re-enhancement mode, initialize result_data with existing data
+            self.result_data: Dict[str, Any] = copy.deepcopy(self.history_entry)
+            # Ensure 'original' key is present for consistency
+            self.result_data['original'] = self.history_entry.get('original_prompt', '')
+        else:
+            self.result_data: Dict[str, Any] = {'original': original_prompt, 'variations': {}}
+        
         self.active_workers: List[Tuple[QThread, QObject]] = []
+        self.pending_workers = 0 # Counter for active workers
 
         self.models = [m['name'] for m in self.processor.get_ollama_models()]
 
@@ -99,6 +113,7 @@ class EnhancementResultWindow(QDialog):
         self.regen_buttons: Dict[str, QPushButton] = {}
 
         self._create_widgets()
+        # Always call _start_enhancement, its internal logic will handle initial vs re-enhancement
         self._start_enhancement()
         
         try:
@@ -134,14 +149,28 @@ class EnhancementResultWindow(QDialog):
         self.main_layout.addWidget(scroll_area)
 
         self._create_text_area('original', "Original Prompt", self.original_prompt, is_loading=False, has_regen=False)
-        self._create_text_area('enhanced', "Enhanced Prompt", "Generating...", is_loading=True)
+        
+        # Determine initial content and loading state for 'enhanced'
+        enhanced_initial_content = "Generating..."
+        enhanced_is_loading = True
+        if self.is_reenhancement_mode and self.history_entry and self.history_entry.get('enhanced', {}).get('prompt'):
+            enhanced_initial_content = self.history_entry['enhanced']['prompt']
+            enhanced_is_loading = False
+        self._create_text_area('enhanced', "Enhanced Prompt", enhanced_initial_content, is_loading=enhanced_is_loading)
         
         if self.variations:
             variations_group = QGroupBox("Variations")
             variations_layout = QVBoxLayout(variations_group)
             for var_key in self.variations:
                 var_name = self.processor.available_variations_map.get(var_key, var_key.capitalize())
-                self._create_text_area(var_key, var_name, "Generating...", is_loading=True, parent_layout=variations_layout)
+                
+                variation_initial_content = "Generating..."
+                variation_is_loading = True
+                if self.is_reenhancement_mode and self.history_entry and self.history_entry.get('variations', {}).get(var_key, {}).get('prompt'):
+                    variation_initial_content = self.history_entry['variations'][var_key]['prompt']
+                    variation_is_loading = False
+                
+                self._create_text_area(var_key, var_name, variation_initial_content, is_loading=variation_is_loading, parent_layout=variations_layout)
             variations_group.setLayout(variations_layout)
             self.prompts_layout.addWidget(variations_group)
 
@@ -220,25 +249,34 @@ class EnhancementResultWindow(QDialog):
         self.model = model_name
 
     def _start_enhancement(self):
-        """Starts the background worker to run the enhancement process."""
-        thread = QThread()
-        worker = EnhancementWorker(None, self.processor, self.original_prompt, self.model, self.variations)
-        worker.moveToThread(thread)
+        """Starts the background worker(s) to run the enhancement process."""
+        if not self.is_reenhancement_mode:
+            # Initial batch enhancement
+            thread = QThread()
+            worker = EnhancementWorker(None, self.processor, self.original_prompt, self.model, self.variations)
+            worker.moveToThread(thread)
 
-        thread.started.connect(worker.run)
-        worker.result_ready.connect(self._on_result_ready)
-        worker.batch_finished.connect(self._on_batch_finished)
-        
-        worker.batch_finished.connect(thread.quit)
-        worker.batch_finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
+            thread.started.connect(worker.run)
+            worker.result_ready.connect(self._on_result_ready)
+            worker.batch_finished.connect(self._on_all_workers_finished) # Connect to the new unified finished slot
+            
+            worker.batch_finished.connect(thread.quit)
+            worker.batch_finished.connect(worker.deleteLater)
+            thread.finished.connect(thread.deleteLater)
 
-        worker_tuple = (thread, worker)
-        self.active_workers.append(worker_tuple)
-        thread.finished.connect(lambda: self.active_workers.remove(worker_tuple) if worker_tuple in self.active_workers else None)
+            worker_tuple = (thread, worker)
+            self.active_workers.append(worker_tuple)
+            thread.finished.connect(lambda: self.active_workers.remove(worker_tuple) if worker_tuple in self.active_workers else None)
 
-        thread.start()
-        self.parent_app._start_loading_animation(f"Enhancing prompt with {self.model}...")
+            thread.start()
+            self.pending_workers += 1
+            self.parent_app._start_loading_animation(f"Enhancing prompt with {self.model}...")
+        else:
+            # If in re-enhancement mode, no automatic regeneration.
+            # The existing data is already loaded in __init__.
+            # Just ensure the UI is ready for manual regeneration.
+            self.save_button.setEnabled(True)
+            self.parent_app._stop_loading_animation("Ready for re-enhancement.")
 
     @Slot(str, dict)
     def _on_result_ready(self, key: str, data: dict):
@@ -250,21 +288,36 @@ class EnhancementResultWindow(QDialog):
             
             if key == 'enhanced':
                 self.result_data['enhanced'] = data
+            elif key.startswith('variations.'):
+                # Extract the actual variation key (e.g., 'super_enhanced' from 'variations.super_enhanced')
+                variation_key = key.split('.')[1]
+                self.result_data['variations'][variation_key] = data
             else:
-                self.result_data['variations'][key] = data
+                # For other keys like 'original_prompt' (though not expected to be re-enhanced here)
+                self.result_data[key] = data
 
             if key in self.loading_labels:
                 self.loading_labels[key].hide()
             
-            for btn_dict in [self.text_widgets[key].parent().findChildren(QPushButton)]:
-                for btn in btn_dict:
+            # Re-enable buttons associated with this text area
+            # The parent() of text_widgets[key] is the QGroupBox, its parent is the QVBoxLayout,
+            # and its parent is the QWidget (button_panel) that contains the buttons.
+            # This is a bit fragile, but works for the current structure.
+            # For now, let's re-enable the specific regen button if it exists.
+            if key in self.regen_buttons:
+                self.regen_buttons[key].setEnabled(True)
+            # Also re-enable copy and generate image buttons
+            for btn in self.text_widgets[key].parent().findChildren(QPushButton):
+                if btn.text() == "Copy" or btn.text() == "Generate Image":
                     btn.setEnabled(True)
 
     @Slot()
-    def _on_batch_finished(self):
-        """Slot called when the entire batch is complete."""
-        self.save_button.setEnabled(True)
-        self.parent_app._stop_loading_animation("Enhancement complete.")
+    def _on_all_workers_finished(self):
+        """Slot called when a worker (either batch or single) is complete."""
+        self.pending_workers -= 1
+        if self.pending_workers <= 0:
+            self.save_button.setEnabled(True)
+            self.parent_app._stop_loading_animation("Enhancement complete.")
 
     @Slot()
     def _save(self):
@@ -275,11 +328,20 @@ class EnhancementResultWindow(QDialog):
             var_data['prompt'] = self.text_widgets[key].toPlainText()
 
         if self.original_entry_id:
-            # Update existing entry
-            self.processor.history_manager.update_enhanced_prompt_entry(self.original_entry_id, self.result_data)
-            self.parent_app.status_bar.showMessage("History entry updated with enhanced prompt.", 5000)
+            # If in re-enhancement mode, we update the entire entry with the modified result_data.
+            # The prompt_type_key is only used for single regeneration, not for the final save of the whole window.
+            if self.history_entry:
+                updated_entry = copy.deepcopy(self.history_entry)
+                updated_entry['enhanced'] = self.result_data.get('enhanced', {})
+                updated_entry['variations'] = self.result_data.get('variations', {})
+                updated_entry['status'] = 're-enhanced'
+                updated_entry['timestamp'] = datetime.now().isoformat()
+                self.processor.history_manager.update_history_entry(self.history_entry, updated_entry)
+                self.parent_app.status_bar.showMessage("History entry updated with re-enhanced parts.", 5000)
+            else:
+                self.parent_app.status_bar.showMessage("Error: Cannot save re-enhanced parts, original history entry not found.", 5000)
         else:
-            # Create new entry
+            # Create new entry (initial enhancement)
             self.processor.history_manager.save_result(**self.result_data)
             self.parent_app.status_bar.showMessage("Result saved to history.", 5000)
         self.close()

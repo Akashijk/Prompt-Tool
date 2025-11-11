@@ -460,3 +460,37 @@ class HistoryManager:
         
         # Call the generic update method
         return self.update_history_entry(existing_entry, updated_entry)
+
+    def update_specific_prompt_part_entry(self, entry_id: str, prompt_part_key: str, new_data: Dict[str, Any]) -> bool:
+        """
+        Updates a specific part (e.g., 'enhanced', 'variations.some_key') of an existing history entry.
+        """
+        existing_entry = self.get_entry_by_id(entry_id)
+        if not existing_entry:
+            print(f"WARNING: Attempted to update non-existent history entry with ID: {entry_id}")
+            return False
+
+        updated_entry = copy.deepcopy(existing_entry)
+        
+        if prompt_part_key == "enhanced":
+            updated_entry['enhanced'] = new_data
+        elif prompt_part_key.startswith("variations."):
+            parts = prompt_part_key.split('.')
+            if len(parts) == 2:
+                variation_key = parts[1]
+                if 'variations' not in updated_entry:
+                    updated_entry['variations'] = {}
+                updated_entry['variations'][variation_key] = new_data
+            else:
+                print(f"WARNING: Invalid prompt_part_key format for variations: {prompt_part_key}")
+                return False
+        elif prompt_part_key == "original_prompt":
+            updated_entry['original_prompt'] = new_data.get('prompt', '') # Assuming new_data contains 'prompt'
+        else:
+            print(f"WARNING: Unknown prompt_part_key for update: {prompt_part_key}")
+            return False
+
+        updated_entry['status'] = 're-enhanced' # Mark as re-enhanced
+        updated_entry['timestamp'] = datetime.now().isoformat() # Update timestamp
+
+        return self.update_history_entry(existing_entry, updated_entry)

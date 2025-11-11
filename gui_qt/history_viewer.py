@@ -542,6 +542,12 @@ class HistoryViewerWindow(QDialog):
         generate_image_action.setEnabled(has_selection and self.processor.is_invokeai_connected())
         delete_action.setEnabled(has_selection)
 
+        # --- FIX: Dynamically set "Enhance" action text ---
+        if has_selection and self._current_history_entry and self._current_history_entry.get('enhanced'):
+            enhance_action.setText("Re-enhance")
+        else:
+            enhance_action.setText("Enhance")
+
         menu.exec(self.history_table.mapToGlobal(pos))
 
     def _get_available_prompts_for_entry(self, entry: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -658,12 +664,18 @@ class HistoryViewerWindow(QDialog):
         self._update_action_buttons()
 
     def _update_action_buttons(self):
-        """Enables or disables action buttons based on selection."""
+        """Enables or disables action buttons based on selection and updates 'Enhance' button text."""
         has_selection = len(self.history_table.selectionModel().selectedRows()) > 0
         self.load_prompt_button.setEnabled(has_selection)
         self.delete_button.setEnabled(has_selection)
         self.enhance_button.setEnabled(has_selection)
         self.generate_image_button.setEnabled(has_selection and self.processor.is_invokeai_connected())
+
+        # Update 'Enhance' button text
+        if has_selection and self._current_history_entry and self._current_history_entry.get('enhanced'):
+            self.enhance_button.setText("Re-enhance")
+        else:
+            self.enhance_button.setText("Enhance")
 
     @Slot()
     def _filter_history(self):
@@ -754,18 +766,22 @@ class HistoryViewerWindow(QDialog):
         if not entry:
             return
 
-        prompt_text = entry.get('enhanced', {}).get('prompt') or entry.get('original_prompt', '')
-        if not prompt_text:
-            QMessageBox.warning(self, "No Prompt", "The selected history entry has no prompt text to enhance.")
+        # --- FIX: Always pass the true original_prompt for re-enhancement ---
+        true_original_prompt = entry.get('original_prompt', '')
+        if not true_original_prompt:
+            QMessageBox.warning(self, "No Original Prompt", "The selected history entry does not have an original prompt to re-enhance.")
             return
 
-        # Call the main app's workflow to open the enhancement window
         parent_app = self.parent()
         from .gui_app import GUIApp
         if isinstance(parent_app, GUIApp):
-            # Set the current history entry ID in the main app before starting enhancement
             parent_app.current_history_entry_id = entry['id']
-            parent_app.start_enhancement_workflow(prompt_text, original_entry_id=entry['id'])
+            parent_app.start_enhancement_workflow(
+                true_original_prompt, # Pass the true original prompt
+                original_entry_id=entry['id'],
+                is_reenhancement_mode=True,
+                history_entry=entry # Pass the full history entry
+            )
             self.accept() # Close the dialog with an OK result
 
     def _get_params_for_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
