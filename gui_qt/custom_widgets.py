@@ -43,6 +43,41 @@ class LinkOnlyTextBrowser(SmoothTextBrowser):
         else:
             super().mousePressEvent(event)
 
+class ImageGalleryItemWidget(QWidget):
+    """A custom widget for displaying an image and text in the history viewer's image gallery."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(128, 160) # Match QListWidget icon size and leave space for text
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setFixedSize(128, 128) # Thumbnail size
+        self.image_label.setStyleSheet("border: 1px solid transparent;") # Default transparent border
+        self.layout.addWidget(self.image_label)
+
+        self.text_label = QLabel()
+        self.text_label.setAlignment(Qt.AlignCenter)
+        self.text_label.setWordWrap(True)
+        self.text_label.setFixedHeight(32) # Space for 2 lines of text
+        self.layout.addWidget(self.text_label)
+
+        self.setLayout(self.layout)
+
+    def set_image(self, pixmap: QPixmap):
+        self.image_label.setPixmap(pixmap.scaled(128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def set_text(self, text: str):
+        self.text_label.setText(text)
+
+    def set_is_cover_image(self, is_cover: bool):
+        if is_cover:
+            self.image_label.setStyleSheet("border: 3px solid #FFD700;") # Gold border for cover image
+        else:
+            self.image_label.setStyleSheet("border: 1px solid transparent;") # Transparent border
+
 class LoadingSpinner(QWidget):
     """A simple animated loading spinner widget."""
     def __init__(self, parent=None):
