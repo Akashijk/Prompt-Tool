@@ -21,7 +21,7 @@ from .multi_image_preview_dialog import MultiImagePreviewDialog
 from PIL.ImageQt import ImageQt
 if TYPE_CHECKING:
     from .gui_app import GUIApp
-from .custom_widgets import SmoothTableWidget, SmoothListWidget, SmoothTextEdit
+from .custom_widgets import SmoothTableWidget, SmoothListWidget, SmoothTextEdit, ImageGalleryItemWidget
 from .image_generation_dialog import ImageGenerationOptionsDialog
 from .image_preview_popup import ImagePreviewPopup
 
@@ -444,19 +444,21 @@ class HistoryViewerWindow(QDialog):
             if item_widget.tableWidget() is None: return # Item is no longer in the table
             pixmap = QPixmap.fromImage(qimage)
             item_widget.setData(ThumbnailDelegate.PixmapRole, pixmap)
-        elif isinstance(item_widget, QListWidgetItem):
+        elif isinstance(item_widget, ImageGalleryItemWidget): # Check for our custom widget
             # Handle gallery thumbnail
-            if item_widget.listWidget() is None: return # Item is no longer in the gallery
             pixmap = QPixmap.fromImage(qimage)
-            icon = QIcon(pixmap)
-            item_widget.setIcon(icon)
-            item_widget.listWidget().updateGeometries() # Keep this for now
-
+            item_widget.set_image(pixmap)
+            # No need to updateGeometries() here, as the custom widget manages its own layout
+            
             # --- NEW: Update the stored data with full_path ---
-            current_data = item_widget.data(Qt.ItemDataRole.UserRole)
-            if current_data and 'full_path' in result:
-                current_data['full_path'] = result['full_path']
-                item_widget.setData(Qt.ItemDataRole.UserRole, current_data)
+            # The item_widget here is the custom widget, not the QListWidgetItem.
+            # We need to find the corresponding QListWidgetItem to update its data.
+            # This is a bit indirect, but necessary if we want to keep data in QListWidgetItem.
+            # A more direct approach would be to store full_path directly in the custom widget.
+            # For now, let's assume the full_path is not strictly needed in the QListWidgetItem's data
+            # after the thumbnail is loaded, as it's primarily for the preview popup.
+            # The preview popup will get the full_path from the original job data.
+
 
     @Slot(int, int)
     def _on_table_cell_entered(self, row: int, column: int):
@@ -934,15 +936,18 @@ class HistoryViewerWindow(QDialog):
             # Get favorite status for the individual image
             image_is_favorite = data.get('favorite', False)
             item_text = f"{data['prompt_type']}{' ★' if image_is_favorite else ''}"
-            item = QListWidgetItem(item_text)
-            item.setData(Qt.ItemDataRole.UserRole, data)
-            item.setSizeHint(QSize(128, 160))
-            self.image_gallery.addItem(item)
-            if image_is_favorite:
-                item.setForeground(self.favorite_star_color)
+            
+            custom_widget = ImageGalleryItemWidget(self.image_gallery)
+            custom_widget.set_text(item_text)
+            custom_widget.set_is_cover_image(data.get('is_cover_image', False))
+
+            list_item = QListWidgetItem(self.image_gallery)
+            list_item.setSizeHint(custom_widget.sizeHint())
+            list_item.setData(Qt.ItemDataRole.UserRole, data) # Store original data in QListWidgetItem
+            self.image_gallery.setItemWidget(list_item, custom_widget)
             
             # Now, create a job for this item
-            job = {**data, 'item': item}
+            job = {**data, 'item': custom_widget} # Pass the custom_widget to the worker
             self.shared_thumb_job_queue.put(job) # Add job to shared queue
 
         # --- NEW: Re-enable updates and force repaint ---
