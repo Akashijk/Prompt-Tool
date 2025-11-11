@@ -1,7 +1,7 @@
 """Custom Qt widgets with extended functionality."""
-from PySide6.QtWidgets import QTableWidget, QListWidget, QTextEdit, QTreeWidget, QTextBrowser, QWidget
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPainter, QColor, QPen
+from PySide6.QtWidgets import QTableWidget, QListWidget, QTextEdit, QTreeWidget, QTextBrowser, QWidget, QLabel, QVBoxLayout, QHBoxLayout
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QPixmap
 from .smooth_scroll_mixin import SmoothScrollMixin
 
 class SmoothTableWidget(SmoothScrollMixin, QTableWidget):
