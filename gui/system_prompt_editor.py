@@ -1,10 +1,9 @@
 """A window for editing system-level prompts (enhancement, variations)."""
 
-import json
 import os
 import tkinter as tk
 from tkinter import ttk
-from typing import Optional, Dict
+from typing import Optional
 
 from . import custom_dialogs
 from core.config import config

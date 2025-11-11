@@ -16,7 +16,6 @@ from .common import Tooltip, TextContextMenu
 from . import custom_dialogs # Keep this for WildcardSelectorDialog
 
 if TYPE_CHECKING:
-    from .wildcard_manager import WildcardManagerWindow
     from core.prompt_processor import PromptProcessor
 
 class _AutocompletePopup(tk.Toplevel):

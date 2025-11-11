@@ -1,14 +1,15 @@
 "The wildcard inserter listbox and its frame."
 
 import os
-from typing import Callable, List, Optional, TYPE_CHECKING, Dict, Any
+from typing import Callable, List, Optional, TYPE_CHECKING
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton, QLabel, QLineEdit, QFrame, QListWidgetItem
-from PySide6.QtCore import Qt, QTimer, QPoint, Slot, QEvent
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QListWidgetItem
+from PySide6.QtCore import Qt, Slot, QEvent
 from PySide6.QtGui import QCursor
 
 from core.prompt_processor import PromptProcessor
 from .text_preview_mixin import TextPreviewMixin
+from .custom_widgets import SmoothListWidget
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
@@ -37,7 +38,7 @@ class WildcardInserter(QWidget, TextPreviewMixin):
         search_layout.addWidget(self.search_edit)
         main_layout.addLayout(search_layout)
 
-        self.wildcard_list = QListWidget()
+        self.wildcard_list = SmoothListWidget()
         self.wildcard_list.setMouseTracking(True) # Required for hover events
         main_layout.addWidget(self.wildcard_list)
 

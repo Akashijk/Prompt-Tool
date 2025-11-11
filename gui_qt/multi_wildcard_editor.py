@@ -3,11 +3,11 @@
 import json
 from PySide6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QComboBox,
-    QPushButton, QSplitter, QWidget, QGroupBox, QMessageBox
+    QPushButton, QSplitter, QGroupBox, QMessageBox
 )
 from PySide6.QtCore import Slot, Qt
 from PySide6.QtGui import QCloseEvent
-from typing import Callable, Optional, List, Any
+from typing import Callable, Optional
 
 from core.prompt_processor import PromptProcessor
 from .wildcard_editor_widget import WildcardEditor

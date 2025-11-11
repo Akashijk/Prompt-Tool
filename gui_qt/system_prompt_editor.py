@@ -1,18 +1,19 @@
 """A Qt-based window for editing system-level prompts (enhancement, variations)."""
 
 import os
-from typing import Optional, Dict
+from typing import Optional
 
 from PySide6.QtCore import Slot, Qt
 from PySide6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QGroupBox,
-    QTreeWidget, QTreeWidgetItem, QTextEdit, QPushButton, QMessageBox,
+    QTreeWidget, QTreeWidgetItem, QPushButton, QMessageBox,
     QInputDialog
 )
 from PySide6.QtGui import QCloseEvent
 
 from core.prompt_processor import PromptProcessor
 from core.config import config, update_and_save_settings
+from .custom_widgets import SmoothTextEdit
 
 class SystemPromptEditorWindow(QDialog):
     """A Qt-based window for editing system-level prompts."""
@@ -77,7 +78,7 @@ class SystemPromptEditorWindow(QDialog):
         
         editor_group = QGroupBox("Edit Prompt")
         editor_layout = QVBoxLayout(editor_group)
-        self.editor_text = QTextEdit()
+        self.editor_text = SmoothTextEdit()
         editor_layout.addWidget(self.editor_text)
         right_layout.addWidget(editor_group)
 

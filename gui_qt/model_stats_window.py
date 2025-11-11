@@ -2,10 +2,10 @@
 
 from PySide6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView,
-    QWidget, QSizePolicy, QTabWidget, QHBoxLayout, QLabel, QRadioButton
+    QWidget, QSizePolicy, QTabWidget, QHBoxLayout, QLabel, QRadioButton, QPushButton
 )
-from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
-from typing import Dict, Any, Optional, List
+from PySide6.QtCore import QThread, Signal, Slot, Qt
+from typing import Dict, Optional
 
 # Matplotlib integration
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -13,18 +13,20 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
 from core.prompt_processor import PromptProcessor
+from core.config import config
 
-class StatsLoaderWorker(QObject):
-    """Worker to load model stats in the background."""
+class StatsLoaderThread(QThread):
+    """Worker thread to load model stats in the background."""
     finished = Signal(dict)
 
     def __init__(self, processor: PromptProcessor):
         super().__init__()
         self.processor = processor
 
-    @Slot()
     def run(self):
         try:
+            # --- FIX: Explicitly reload history from disk before calculating stats ---
+            self.processor.history_manager.load_full_history()
             stats = self.processor.get_model_stats()
             lora_stats = self.processor.get_lora_stats()
             all_invokeai_models = [m['name'] for m in self.processor.get_invokeai_models()] if self.processor.is_invokeai_connected() else None
@@ -32,9 +34,11 @@ class StatsLoaderWorker(QObject):
         except Exception as e:
             self.finished.emit({'success': False, 'error': str(e)})
 
+
+
 class MplCanvas(FigureCanvas):
     """A custom Matplotlib canvas widget for Qt."""
-    def __init__(self, parent=None, width=5, height=4, dpi=100):
+    def __init__(self, parent=None, width=5, height=6, dpi=100):
         fig = Figure(figsize=(width, height), dpi=dpi)
         self.axes = fig.add_subplot(111)
         super().__init__(fig)
@@ -54,6 +58,9 @@ class ModelStatsWindow(QDialog):
         self.lora_stats: Dict[str, int] = {}
         self.chart_type_var = "count"
 
+        # --- NEW: Apply Matplotlib theme based on config ---
+        self._apply_matplotlib_theme()
+
         self._create_widgets()
         self._connect_signals()
         self._start_loading_stats()
@@ -63,6 +70,24 @@ class ModelStatsWindow(QDialog):
             self.move(screen_geometry.center() - self.rect().center())
         except Exception:
             pass # Fallback to default positioning
+
+    def _apply_matplotlib_theme(self):
+        if config.theme == 'dark':
+            plt.style.use('dark_background')
+            # Further customize for dark theme
+            plt.rcParams['axes.facecolor'] = '#3c3c3c' # Darker background for plot area
+            plt.rcParams['figure.facecolor'] = '#3c3c3c' # Darker background for figure
+            plt.rcParams['text.color'] = 'white'
+            plt.rcParams['axes.labelcolor'] = 'white'
+            plt.rcParams['xtick.color'] = 'white'
+            plt.rcParams['ytick.color'] = 'white'
+            plt.rcParams['grid.color'] = '#5c5c5c'
+            plt.rcParams['legend.facecolor'] = '#3c3c3c'
+            plt.rcParams['legend.edgecolor'] = 'white'
+        else:
+            plt.style.use('default') # Use default light theme
+            # Reset to default if needed
+            plt.rcParams.update(plt.rcParamsDefault)
 
     def _create_widgets(self):
         main_layout = QVBoxLayout(self)
@@ -84,6 +109,8 @@ class ModelStatsWindow(QDialog):
         self.model_total_time_radio = QRadioButton("Total Time")
         chart_controls.addWidget(self.model_total_time_radio)
         chart_controls.addStretch()
+        self.refresh_button = QPushButton("Refresh Stats")
+        chart_controls.addWidget(self.refresh_button)
         model_stats_layout.addLayout(chart_controls)
 
         self.chart_canvas = MplCanvas(self, width=8, height=3, dpi=100)
@@ -119,10 +146,18 @@ class ModelStatsWindow(QDialog):
         lora_stats_layout.addWidget(self.lora_stats_table)
         notebook.addTab(lora_stats_tab, "LoRA Statistics")
 
+        # --- Bottom Controls ---
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.close) # Connect close button
+        main_layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+
     def _connect_signals(self):
         self.model_count_radio.clicked.connect(self._update_model_chart)
         self.model_avg_time_radio.clicked.connect(self._update_model_chart)
         self.model_total_time_radio.clicked.connect(self._update_model_chart)
+        self.refresh_button.clicked.connect(self._start_loading_stats)
+
+
 
     def _start_loading_stats(self):
         self.stats_table.setRowCount(1)
@@ -130,15 +165,8 @@ class ModelStatsWindow(QDialog):
         self.lora_stats_table.setRowCount(1)
         self.lora_stats_table.setItem(0, 0, QTableWidgetItem("Loading stats..."))
 
-        self.stats_thread = QThread(self)
-        worker = StatsLoaderWorker(self.processor)
-        worker.moveToThread(self.stats_thread)
-
-        self.stats_thread.started.connect(worker.run)
-        worker.finished.connect(self._on_stats_loaded)
-        worker.finished.connect(self.stats_thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        self.stats_thread.finished.connect(self.stats_thread.deleteLater)
+        self.stats_thread = StatsLoaderThread(self.processor)
+        self.stats_thread.finished.connect(self._on_stats_loaded)
         self.stats_thread.start()
 
     @Slot(dict)
@@ -159,7 +187,7 @@ class ModelStatsWindow(QDialog):
                 if model_name not in self.stats:
                     self.stats[model_name] = {'count': 0, 'avg_duration': 0.0, 'total_duration': 0.0, 'min_duration': 0.0, 'max_duration': 0.0}
 
-        sorted_stats = sorted(self.stats.items(), key=lambda item: item[1]['count'], reverse=True)
+        sorted_stats = sorted(self.stats.items(), key=lambda item: item[1].get('avg_duration', float('inf')))
 
         self.stats_table.setRowCount(len(sorted_stats))
         for row, (model_name, data) in enumerate(sorted_stats):
@@ -185,35 +213,39 @@ class ModelStatsWindow(QDialog):
         if self.model_count_radio.isChecked():
             chart_key = "count"
             title = "Image Generation Count per Model"
+            sort_ascending = False
         elif self.model_avg_time_radio.isChecked():
             chart_key = "avg_duration"
             title = "Average Generation Time per Model (s)"
+            sort_ascending = True
         else:
             chart_key = "total_duration"
             title = "Total Generation Time per Model (minutes)"
+            sort_ascending = False
 
         if chart_key == 'total_duration':
             chart_data = {model: data[chart_key] / 60 for model, data in self.stats.items() if data[chart_key] > 0}
         else:
             chart_data = {model: data[chart_key] for model, data in self.stats.items() if data[chart_key] > 0}
 
-        self._draw_horizontal_bar_chart(self.chart_canvas.axes, self.chart_canvas.figure, self.chart_canvas, chart_data, title, chart_key != 'count')
+        self._draw_horizontal_bar_chart(self.chart_canvas.axes, self.chart_canvas.figure, self.chart_canvas, chart_data, title, chart_key != 'count', sort_ascending=sort_ascending)
 
     def _update_lora_chart(self):
-        self._draw_horizontal_bar_chart(self.lora_chart_canvas.axes, self.lora_chart_canvas.figure, self.lora_chart_canvas, self.lora_stats, "LoRA Usage Count", False)
+        self._draw_horizontal_bar_chart(self.lora_chart_canvas.axes, self.lora_chart_canvas.figure, self.lora_chart_canvas, self.lora_stats, "LoRA Usage Count", False, sort_ascending=False)
 
-    def _draw_horizontal_bar_chart(self, ax, fig, canvas, data: Dict[str, float], title: str, is_float: bool):
+    def _draw_horizontal_bar_chart(self, ax, fig, canvas, data: Dict[str, float], title: str, is_float: bool, sort_ascending: bool = False):
         ax.clear()
         MAX_ITEMS_TO_SHOW = 20
-        all_sorted_items = sorted(data.items(), key=lambda item: item[1], reverse=True)
+        all_sorted_items = sorted(data.items(), key=lambda item: item[1], reverse=not sort_ascending)
 
         if len(all_sorted_items) > MAX_ITEMS_TO_SHOW:
             title += f" (Top {MAX_ITEMS_TO_SHOW})"
         
-        items_to_plot = sorted(all_sorted_items[:MAX_ITEMS_TO_SHOW], key=lambda item: item[1])
+        items_to_plot = sorted(all_sorted_items[:MAX_ITEMS_TO_SHOW], key=lambda item: item[1], reverse=sort_ascending)
 
         if not items_to_plot:
             ax.text(0.5, 0.5, "No data to display.", ha='center', va='center', fontsize=10)
+            ax.set_title(title, fontsize=12, pad=15) # Still set the title
             canvas.draw()
             return
 
@@ -237,5 +269,8 @@ class ModelStatsWindow(QDialog):
             label_text = f'{width:.2f}' if is_float else f'{int(width)}'
             ax.text(width + (ax.get_xlim()[1] * 0.01), bar.get_y() + bar.get_height()/2, label_text, va='center', fontsize=8)
 
-        fig.subplots_adjust(left=0.35, right=0.95, top=0.9, bottom=0.1)
+        # Dynamically adjust left margin for long model names
+        max_label_length = max(len(model) for model in models) if models else 0
+        left_margin = max(0.1, min(0.5, max_label_length * 0.04)) # Adjust based on label length
+        fig.subplots_adjust(left=left_margin, right=0.9, top=0.9, bottom=0.1)
         canvas.draw()

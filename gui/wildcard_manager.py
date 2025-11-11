@@ -7,15 +7,12 @@ import difflib
 import copy
 import queue
 import threading
-import difflib
 from contextlib import contextmanager
-from collections import Counter
 import tkinter as tk
 from tkinter import ttk
-import threading
 import sys
 from typing import Optional, Callable, List, Dict, Any, TYPE_CHECKING, Tuple, Set
-from core.prompt_processor import PromptProcessor, sanitize_wildcard_choices
+from core.prompt_processor import PromptProcessor
 from core.config import config
 from . import custom_dialogs
 from .dependency_graph_window import DependencyGraphWindow
@@ -1782,7 +1779,7 @@ class WildcardManagerWindow(tk.Toplevel, SmartWindowMixin, TaskRunnerMixin):
         with self._protect_listbox_focus():
             should_proceed = custom_dialogs.ask_yes_no(
                 self,
-                f"Confirm Removal",
+                "Confirm Removal",
                 f"Are you sure you want to remove ALL '{key_to_remove}' entries from every choice in this file?\n\nThis action cannot be undone."
             )
 

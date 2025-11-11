@@ -4,7 +4,7 @@ import json
 import re
 import requests
 import time
-from typing import List, Tuple, Optional, Dict, Any, Callable
+from typing import List, Tuple, Optional, Dict, Any
 from .config import config
 from .default_content import MODEL_RECOMMENDATIONS
 from .utils import sanitize_wildcard_choices
@@ -190,13 +190,20 @@ class OllamaClient:
             # Re-raise to be caught by the GUI and displayed to the user.
             raise
 
-    def chat(self, model: str, messages: List[Dict[str, str]], timeout: Optional[int] = None) -> str:
+    def chat(self, model: str, messages: List[Dict[str, str]], timeout: Optional[int] = None, temperature: Optional[float] = None, top_p: Optional[float] = None) -> str:
         """Generic chat with a model for brainstorming, using a message history."""
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
         }
+        if temperature is not None:
+            payload["options"] = {"temperature": temperature}
+        if top_p is not None:
+            if "options" not in payload:
+                payload["options"] = {}
+            payload["options"]["top_p"] = top_p
+
         final_timeout = timeout if timeout is not None else config.DEFAULT_TIMEOUT
         response_data = self._post_request("/api/chat", payload, final_timeout)
         return response_data.get('message', {}).get('content', '')

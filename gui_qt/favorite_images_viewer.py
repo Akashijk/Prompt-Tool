@@ -1,7 +1,6 @@
 """A Qt-based window for viewing and managing all favorited images from the history."""
 
 import os
-import json
 import copy
 import random
 import uuid
@@ -11,15 +10,17 @@ from PySide6.QtWidgets import (
     QScrollArea, QWidget, QFrame, QMessageBox, QApplication
 )
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt, QEvent
-from PySide6.QtGui import QPixmap, QCursor
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from PySide6.QtGui import QPixmap
+from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
 from core.config import config
 from .image_preview_mixin import ImagePreviewMixin
 from .image_generation_dialog import ImageGenerationOptionsDialog
 from .multi_image_preview_dialog import MultiImagePreviewDialog
+from .custom_widgets import SmoothTextEdit
 from PIL.ImageQt import ImageQt
+from PIL import Image
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp
@@ -42,10 +43,11 @@ class ThumbnailLoaderWorker(QObject):
     """Worker to load thumbnails for the favorites list."""
     thumbnail_ready = Signal(dict)
     finished = Signal()
-    def __init__(self, processor: PromptProcessor, jobs: List[Dict[str, Any]]):
+    def __init__(self, processor: PromptProcessor, jobs: List[Dict[str, Any]], target_size: Tuple[int, int]):
         super().__init__()
         self.processor = processor
         self.jobs = jobs
+        self.target_size = target_size
     @Slot()
     def run(self):
         for job in self.jobs:
@@ -55,7 +57,7 @@ class ThumbnailLoaderWorker(QObject):
             image_path = job.get('image_path')
             workflow = job.get('workflow')
             if label and image_path and workflow:
-                thumb_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow)
+                thumb_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow, self.target_size)
                 if thumb_image:
                     self.thumbnail_ready.emit({'label': label, 'image': thumb_image})
         self.finished.emit()
@@ -65,6 +67,7 @@ class FavoriteItemWidget(QFrame, ImagePreviewMixin):
     def __init__(self, fav_data: Dict[str, Any], parent_viewer: 'FavoriteImagesViewer'):
         super().__init__()
         ImagePreviewMixin.__init__(self)
+        self._init_image_preview_mixin(self)
         self.fav_data = fav_data
         self.parent_viewer = parent_viewer
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -82,14 +85,21 @@ class FavoriteItemWidget(QFrame, ImagePreviewMixin):
 
     def enterEvent(self, event: QEvent):
         """Show preview on hover."""
-        if self.full_image_path and os.path.exists(self.full_image_path):
-            self._schedule_preview(self.full_image_path)
+        self._schedule_preview(self.fav_data)
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent):
         """Hide preview when mouse leaves."""
-        self._hide_preview()
+        self._schedule_hide()
         super().leaveEvent(event)
+
+    def _get_preview_image(self, item_data: Dict[str, Any]) -> Optional['Image.Image']:
+        if self.full_image_path and os.path.exists(self.full_image_path):
+            try:
+                return Image.open(self.full_image_path)
+            except Exception as e:
+                print(f"Error loading preview image: {e}")
+        return None
 
 class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
     """A dialog to view and manage all favorited images."""
@@ -169,7 +179,7 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
             prompt_type = fav_data.get('prompt_type', 'N/A')
             prompt_label = QLabel(f"<b>Prompt ({prompt_type}):</b>")
             info_layout.addWidget(prompt_label)
-            prompt_text = QTextEdit(fav_data.get('prompt', ''))
+            prompt_text = SmoothTextEdit(fav_data.get('prompt', ''))
             prompt_text.setReadOnly(True)
             prompt_text.setFixedHeight(100)
             info_layout.addWidget(prompt_text)
@@ -206,7 +216,7 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
         self.thumbnail_worker_thread = QThread(self)
         jobs = list(self.thumbnail_queue)
         self.thumbnail_queue.clear()
-        self.thumbnail_worker = ThumbnailLoaderWorker(self.processor, jobs)
+        self.thumbnail_worker = ThumbnailLoaderWorker(self.processor, jobs, (200, 200))
         self.thumbnail_worker.moveToThread(self.thumbnail_worker_thread)
         
         self.thumbnail_worker.thumbnail_ready.connect(self._on_thumbnail_ready)

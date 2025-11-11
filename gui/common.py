@@ -6,12 +6,8 @@ import tkinter.font as tkfont
 from PIL import Image, ImageTk
 import difflib
 import sys
-import os
 import re
 from typing import Callable, Optional, Dict, Any, List
-import queue
-import threading
-from . import custom_dialogs
 
 class Tooltip:
     """A simple tooltip for tkinter widgets."""

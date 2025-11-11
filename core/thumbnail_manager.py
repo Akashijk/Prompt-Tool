@@ -4,8 +4,7 @@ Manages the creation, storage, and retrieval of image thumbnails for the UI.
 
 import os
 import hashlib
-import threading
-from typing import Optional
+from typing import Optional, Tuple
 from PIL import Image
 from .config import config
 
@@ -45,7 +44,7 @@ class ThumbnailManager:
         filename = hashlib.sha1(original_relative_path.encode()).hexdigest() + ".webp"
         return os.path.join(cache_dir, filename)
 
-    def get_thumbnail(self, original_relative_path: str, workflow: str) -> Optional[Image.Image]:
+    def get_thumbnail(self, original_relative_path: str, workflow: str, target_size: Tuple[int, int]) -> Optional[Image.Image]:
         """
         Gets a thumbnail for an image. Returns a cached version if available,
         otherwise creates, caches, and returns a new one.
@@ -53,7 +52,11 @@ class ThumbnailManager:
         cache_path = self._get_cache_path(original_relative_path, workflow)
         if os.path.exists(cache_path):
             try:
-                return Image.open(cache_path)
+                # Open the cached full-size image
+                img = Image.open(cache_path)
+                # Scale it to the target size for display
+                img.thumbnail((target_size.width(), target_size.height()), Image.Resampling.LANCZOS)
+                return img
             except Exception:
                 # The cached file might be corrupted, so we'll try to regenerate it.
                 pass
@@ -66,10 +69,13 @@ class ThumbnailManager:
 
         try:
             with Image.open(original_full_path) as img:
+                # Save a copy of the full-size image to cache for faster retrieval next time
+                # This cache is for the original image, not the thumbnail itself
+                img.save(cache_path, "WEBP", quality=90) # Higher quality for full-size cache
+                
+                # Now, create the thumbnail for return
                 img_copy = img.copy()
-                img_copy.thumbnail(self.thumbnail_size, Image.Resampling.LANCZOS)
-                # Save as WEBP for good quality and small file size.
-                img_copy.save(cache_path, "WEBP", quality=85)
+                img_copy.thumbnail(target_size, Image.Resampling.LANCZOS)
                 return img_copy
         except Exception as e:
             print(f"Error creating thumbnail for {original_relative_path}: {e}")

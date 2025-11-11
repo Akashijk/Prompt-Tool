@@ -2,7 +2,6 @@
 
 import tkinter as tk
 from tkinter import ttk
-import sys
 import os
 import queue
 import threading
@@ -194,7 +193,7 @@ class FavoriteImagesViewer(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin):
 
         def task():
             try:
-                thumbnail_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow)
+                thumbnail_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow, (100, 100))
                 if thumbnail_image:
                     self.thumbnail_queue.put((label_widget, thumbnail_image))
                 else:

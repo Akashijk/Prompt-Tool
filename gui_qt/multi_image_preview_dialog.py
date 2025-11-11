@@ -3,28 +3,26 @@
 import copy
 import time
 import queue
-import io
 import os
 import threading
-import json
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from PySide6.QtCore import QObject, QSize, Qt, Signal, Slot, QThread, QEvent, QTimer, QPoint
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QAction, QCursor
+from PySide6.QtCore import QObject, Qt, Signal, Slot, QThread, QEvent, QTimer, QPoint
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QAction
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QProgressDialog,
-    QGroupBox, QHBoxLayout, QLabel, QMenu, QScrollArea, QSizePolicy, QSpacerItem, QPushButton,
-    QVBoxLayout, QWidget, QDialog
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox, QScrollArea, QSizePolicy, QSpacerItem, QPushButton, QTextEdit,
+    QVBoxLayout, QWidget
 )
 from PIL import Image
-from PIL.ImageQt import ImageQt
 
 from core.prompt_processor import PromptProcessor
 from core.config import config
 from .image_preview_mixin import ImagePreviewMixin
 from .image_generation_dialog import ImageGenerationOptionsDialog
 from .lora_permutation_dialog import LoraPermutationDialog
+from .seed_permutation_dialog import SeedPermutationDialog
+from .custom_widgets import SmoothTextEdit
 
 import random
 
@@ -61,7 +59,7 @@ class GenerationWorker(QObject):
                             if self.processor.verbose:
                                 print(f"INFO: Worker is switching from '{self.current_model_name}' to '{model_name}'. Clearing VRAM cache.")
                             self.processor.clear_invokeai_cache()
-                            time.sleep(1.5)
+                            time.sleep(5)
                         self.current_model_name = model_name
                     
                     result_data = self.processor.generate_image_with_invokeai(gen_params=job['gen_params'], prompt=job['prompt'], save_to_gallery=self.save_to_gallery, cancellation_event=self.cancellation_event)
@@ -114,6 +112,7 @@ class ImageCard(QFrame, ImagePreviewMixin):
     def __init__(self, job: Dict[str, Any], parent_dialog: 'MultiImagePreviewDialog'):
         super().__init__()
         ImagePreviewMixin.__init__(self)
+        self._init_image_preview_mixin(self)
         self.job = job
         self.image_data: Optional[Dict[str, Any]] = None
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -137,12 +136,19 @@ class ImageCard(QFrame, ImagePreviewMixin):
         self.image_label.hide() # Hide image label initially
         layout.addWidget(image_container)
 
+        # --- NEW: Use a SmoothTextEdit for selectable error messages ---
+        self.error_text_edit = SmoothTextEdit()
+        self.error_text_edit.setReadOnly(True)
+        self.error_text_edit.setLineWrapMode(SmoothTextEdit.LineWrapMode.WidgetWidth)
+        self.error_text_edit.setStyleSheet("QTextEdit { border: none; background-color: transparent; }")
+        self.error_text_edit.hide()
+        layout.addWidget(self.error_text_edit)
+
         model_name = job.get('gen_params', {}).get('model', {}).get('name', 'Unknown')
         self.info_label = QLabel(f"Model: {model_name}")
         self.info_label.setWordWrap(True)
         self.info_label.setMinimumHeight(40) # Reserve space
         layout.addWidget(self.info_label)
-
         # Bottom controls
         bottom_layout = QHBoxLayout()
         self.keep_checkbox = QCheckBox("Keep")
@@ -154,7 +160,7 @@ class ImageCard(QFrame, ImagePreviewMixin):
         self.regen_button.setEnabled(False)
 
         def on_regen_clicked():
-            self._hide_preview() # Hide the preview first to prevent a lockup
+            self._schedule_hide() # Hide the preview first to prevent a lockup
             self.parent_dialog._regenerate_image(self)
         self.regen_button.clicked.connect(on_regen_clicked)
 
@@ -165,11 +171,20 @@ class ImageCard(QFrame, ImagePreviewMixin):
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.parent_dialog = parent_dialog
 
+    def _get_preview_image(self, item_data: Dict[str, Any]) -> Optional[Image.Image]:
+        if item_data and item_data.get('full_path') and os.path.exists(item_data['full_path']):
+            try:
+                return Image.open(item_data['full_path'])
+            except Exception as e:
+                print(f"Error loading preview image: {e}")
+        return None
+
     def set_generating(self):
         self.setMouseTracking(False)
         self.spinner.start()
         self.spinner.show()
         self.image_label.hide()
+        self.error_text_edit.hide()
         self.regen_button.setEnabled(False)
 
     def set_image(self, image_bytes: bytes):
@@ -197,14 +212,16 @@ class ImageCard(QFrame, ImagePreviewMixin):
         if loras:
             lora_details = [f"{l.get('lora_object', {}).get('name', 'Unknown')} (w: {l.get('weight', 0.0):.2f})" for l in loras]
             lora_text = " | LoRAs: " + ", ".join(lora_details)
-        self.info_label.setText(f"Model: {model_name}{duration_text}{lora_text}")
+        seed = gen_params.get('seed', 'N/A')
+        self.info_label.setText(f"Model: {model_name}{duration_text} | Seed: {seed}{lora_text}")
 
     def set_error(self, error_msg: str):
         self.spinner.stop()
         self.spinner.hide()
-        self.image_label.show()
-        self.image_label.setText(f"Error:\n{error_msg}")
-        self.image_label.setWordWrap(True)
+        self.error_text_edit.setPlainText(error_msg)
+        self.error_text_edit.show()
+        self.info_label.hide() # Hide the info label to make more room for the error
+
         self.keep_checkbox.setChecked(False)
         self.keep_checkbox.setEnabled(False)
         self.regen_button.setText("Retry")
@@ -213,18 +230,18 @@ class ImageCard(QFrame, ImagePreviewMixin):
     def _show_context_menu(self, pos: QPoint):
         """Shows the context menu, delegating to the parent dialog."""
         # --- FIX: Hide the preview immediately when the context menu is requested ---
-        self._hide_preview()
+        self._schedule_hide()
         self.parent_dialog.show_card_context_menu(self, self.mapToGlobal(pos))
 
     def enterEvent(self, event: QEvent):
         """Show preview on hover."""
-        if self.image_data and self.image_data.get('full_path'):
-            self._schedule_preview(self.image_data['full_path'])
+        if self.image_data:
+            self._schedule_preview(self.image_data)
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent):
         """Hide preview when mouse leaves."""
-        self._hide_preview()
+        self._schedule_hide()
         super().leaveEvent(event)
 
 class MultiImagePreviewDialog(QDialog):
@@ -232,7 +249,7 @@ class MultiImagePreviewDialog(QDialog):
 
     def __init__(self, parent, processor: PromptProcessor, generation_jobs: List[Dict[str, Any]], on_success_callback: Callable, save_to_gallery: bool):
         if processor.verbose:
-            print(f"--- VERBOSE: MultiImagePreviewDialog.__init__ ENTERED ---")
+            print("--- VERBOSE: MultiImagePreviewDialog.__init__ ENTERED ---")
         super().__init__(parent)
         
         self.setWindowTitle("Review Generated Images")
@@ -253,6 +270,7 @@ class MultiImagePreviewDialog(QDialog):
 
 
         self._create_widgets()
+        self._reflow_grid_layout() # Force initial layout calculation
         self._start_generation()
 
         self.resize(1200, 800)
@@ -341,12 +359,12 @@ class MultiImagePreviewDialog(QDialog):
                 jobs_by_model[model_name] = []
             jobs_by_model[model_name].append(job)
 
-        for model_name in sorted(jobs_by_model.keys()):
+        for model_name in sorted(jobs_by_model.keys(), key=lambda x: x.lower()): # Sort case-insensitively
             for job in jobs_by_model[model_name]:
                 self.job_queue.put(job)
 
         # --- NEW: Start a persistent worker thread ---
-        self.worker_thread = QThread(self)
+        self.worker_thread = QThread()
         self.generation_worker = GenerationWorker(self.processor, self.job_queue, self.save_to_gallery_for_batch, self.cancellation_event)
         self.generation_worker.moveToThread(self.worker_thread)
 
@@ -354,6 +372,8 @@ class MultiImagePreviewDialog(QDialog):
         self.generation_worker.progress.connect(self._on_generation_finished)
         self.generation_worker.finished.connect(self._on_batch_complete)
         self.generation_worker.finished.connect(self.worker_thread.quit)
+        self.generation_worker.finished.connect(self.generation_worker.deleteLater) # NEW
+        self.worker_thread.finished.connect(self.worker_thread.deleteLater) # NEW
 
         self.active_threads.append(self.worker_thread)
         self.worker_thread.start()
@@ -430,7 +450,7 @@ class MultiImagePreviewDialog(QDialog):
         menu.addAction(regen_action)
 
         edit_action = QAction("Edit & Regenerate...", self)
-        edit_action.setEnabled(has_image)
+        edit_action.setEnabled(True) # Always allow editing, even on failure
         edit_action.triggered.connect(lambda: self._edit_and_regenerate_image(card))
         menu.addAction(edit_action)
 
@@ -438,6 +458,11 @@ class MultiImagePreviewDialog(QDialog):
         perm_action.setEnabled(has_image)
         perm_action.triggered.connect(lambda: self._generate_lora_permutations(card))
         menu.addAction(perm_action)
+
+        seed_perm_action = QAction("Generate Seed Permutations...", self)
+        seed_perm_action.setEnabled(has_image)
+        seed_perm_action.triggered.connect(lambda: self._generate_seed_permutations(card))
+        menu.addAction(seed_perm_action)
 
         menu.addSeparator()
         discard_action = QAction("Discard", self)
@@ -466,13 +491,16 @@ class MultiImagePreviewDialog(QDialog):
 
     def _edit_and_regenerate_image(self, card_to_edit: ImageCard):
         """Opens the options dialog to edit and regenerate an image."""
-        image_data = card_to_edit.image_data
-        if not image_data:
-            QMessageBox.warning(self, "Error", "Cannot regenerate, image data is missing.")
-            return
+        # --- FIX: Allow editing even if the initial generation failed ---
+        job_data = card_to_edit.job
+        prompt = job_data['prompt']
 
-        prompt = card_to_edit.job['prompt']
-        initial_params = image_data.get('generation_params', {})
+        # Use the successful image's params if they exist, otherwise fall back to the original job params
+        if card_to_edit.image_data and card_to_edit.image_data.get('generation_params'):
+            initial_params = card_to_edit.image_data['generation_params']
+        else:
+            initial_params = job_data.get('gen_params', {})
+
         dialog = ImageGenerationOptionsDialog(self, self.processor, prompt, initial_params=initial_params, is_editing=True)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -487,7 +515,7 @@ class MultiImagePreviewDialog(QDialog):
             idx = self.grid_layout.indexOf(card_to_edit)
             if idx == -1: raise ValueError("Card not in layout")
             row, col, _, _ = self.grid_layout.getItemPosition(idx)
-            index_to_replace = row * self.grid_layout.columnCount() + col
+
         except ValueError:
             QMessageBox.critical(self, "Error", "Could not find the image card to replace.")
             return
@@ -496,9 +524,8 @@ class MultiImagePreviewDialog(QDialog):
         first_model_info = new_models_info.pop(0)
         first_new_gen_params = options.copy()
         first_new_gen_params['model'] = first_model_info['model']
-        first_new_gen_params['loras'] = first_model_info.get('loras', [])
-        # --- FIX: Ensure the negative prompt from the override is used ---
-        # The previous code was missing this, causing the global negative prompt
+        first_new_gen_params['loras'] = first_model_info.get('loras', []) # --- FIX: Ensure the negative prompt from the override is used ---
+        # The previous code was missing this, causing the global negative prompt to be used instead.
         first_new_gen_params['negative_prompt'] = first_model_info.get('negative_prompt', '')
         self._replace_card_job(card_to_edit, {'prompt': prompt, 'gen_params': first_new_gen_params, 'id': str(uuid.uuid4())})
 
@@ -508,7 +535,7 @@ class MultiImagePreviewDialog(QDialog):
             for model_info in new_models_info:
                 new_gen_params = options.copy()
                 new_gen_params['model'] = model_info['model']
-                new_gen_params['loras'] = model_info.get('loras', [])
+                new_gen_params['loras'] = model_info.get('loras', []) # --- FIX: Ensure the negative prompt from the override is used ---
                 new_gen_params['negative_prompt'] = model_info['negative_prompt']
                 new_job = {'prompt': prompt, 'gen_params': new_gen_params, 'id': str(uuid.uuid4())}
                 jobs_to_add.append(new_job)
@@ -559,6 +586,62 @@ class MultiImagePreviewDialog(QDialog):
         self._reflow_grid_layout()
 
 
+    def _generate_seed_permutations(self, card: ImageCard):
+        """Opens a dialog to generate permutations of an image with different seeds."""
+        image_data = card.image_data
+        if not image_data or not image_data.get('generation_params'):
+            QMessageBox.warning(self, "Error", "No generation parameters found for this image.")
+            return
+
+        initial_seed = image_data['generation_params'].get('seed')
+        dialog = SeedPermutationDialog(self, initial_seed=initial_seed)
+        if dialog.exec() != QDialog.Accepted or not dialog.result:
+            return
+
+        options = dialog.get_options()
+        num_permutations = options['num_permutations'] # This is always present
+
+        original_prompt = card.job['prompt']
+        base_gen_params = image_data['generation_params']
+
+        jobs_to_add = []
+        if num_permutations > 0:
+            if options['random_seeds']:
+                seeds_to_use = options['seeds']
+            else:
+                start_seed = options['start_seed']
+                end_seed = options['end_seed']
+                all_possible_seeds = list(range(start_seed, end_seed + 1))
+                
+                if num_permutations < len(all_possible_seeds):
+                    seeds_to_use = all_possible_seeds[:num_permutations]
+                else:
+                    seeds_to_use = all_possible_seeds
+            
+            for seed in seeds_to_use:
+                new_gen_params = copy.deepcopy(base_gen_params)
+                new_gen_params['seed'] = seed
+                new_job = {
+                    'prompt': original_prompt,
+                    'gen_params': new_gen_params,
+                    'id': str(uuid.uuid4())
+                }
+                jobs_to_add.append(new_job)
+
+        # Insert new permutation jobs next to the source image
+        try:
+            index_to_insert_after = self.generation_jobs.index(card.job)
+        except ValueError:
+            index_to_insert_after = len(self.generation_jobs) - 1
+
+        for i, new_job in enumerate(jobs_to_add):
+            insertion_index = index_to_insert_after + 1 + i
+            self.generation_jobs.insert(insertion_index, new_job)
+            self._add_job_to_grid(new_job)
+            self.job_queue.put(new_job)
+        self._reflow_grid_layout()
+
+
     def _add_new_image(self):
         """Opens the options dialog to add a new image to the batch."""
         if not self.generation_jobs:
@@ -586,7 +669,7 @@ class MultiImagePreviewDialog(QDialog):
             for i in range(num_images_per_model):
                 new_gen_params = options.copy()
                 new_gen_params['model'] = model_info['model']
-                new_gen_params['loras'] = model_info.get('loras', [])
+                new_gen_params['loras'] = model_info.get('loras', []) # --- FIX: Ensure the negative prompt from the override is used ---
                 new_gen_params['negative_prompt'] = model_info['negative_prompt']
                 new_gen_params['seed'] = base_seed + i
                 new_job = {'prompt': prompt, 'gen_params': new_gen_params, 'id': str(uuid.uuid4())}
@@ -617,7 +700,6 @@ class MultiImagePreviewDialog(QDialog):
         card = ImageCard(job, self)
         self.image_cards[job['id']] = card
         card.set_generating()
-        self._start_single_job(card)
 
     def _start_single_job(self, card: ImageCard):
         """Starts a background worker for a single new job."""
@@ -659,7 +741,8 @@ class MultiImagePreviewDialog(QDialog):
         cols = max(1, self.grid_widget.width() // 280) if self.grid_widget.width() > 0 else 4
         for i, job in enumerate(self.generation_jobs):
             card = self.image_cards.get(job['id'])
-            if not card: continue
+            if not card:
+                continue
             row, col = divmod(i, cols)
             self.grid_layout.addWidget(card, row, col)
 
@@ -684,14 +767,13 @@ class MultiImagePreviewDialog(QDialog):
         for card in valid_cards:
             card.keep_checkbox.setChecked(new_state)
 
-    def resizeEvent(self, event: QEvent):
-        """Handle window resize to reflow the grid."""
-        super().resizeEvent(event)
-        self._reflow_grid_layout()
-
     def closeEvent(self, event):
         """Handle window close event to stop threads."""
         
+        # --- FIX: Hide any active previews to prevent them from being orphaned ---
+        for card in self.image_cards.values():
+            card._schedule_hide()
+
         # Signal cancellation
         if not self.cancellation_event.is_set():
             self.cancellation_event.set()
@@ -701,16 +783,7 @@ class MultiImagePreviewDialog(QDialog):
         for thread in self.active_threads:
             if thread.isRunning():
                 thread.quit()
-                thread.wait(3000) # Wait up to 3 seconds
-
-        # Clean up the worker object
-        if hasattr(self, 'generation_worker'):
-            self.generation_worker.deleteLater()
-        active_jobs = [job['gen_params'].get('item_id') for job in self.generation_jobs if job.get('gen_params', {}).get('item_id')]
-        if active_jobs:
-            print(f"INFO: Cancelling {len(active_jobs)} active/queued InvokeAI jobs.")
-            for item_id in active_jobs:
-                self.processor.invokeai_client.cancel_and_cleanup_item(item_id, self.save_to_gallery_for_batch)
+                thread.wait() # Wait indefinitely
 
         # Clean up temporary preview images on close
         cache_dir = os.path.join(config.CACHE_DIR, 'previews')
@@ -719,431 +792,22 @@ class MultiImagePreviewDialog(QDialog):
                 temp_filename = f"preview_{card.job['id']}.png"
                 temp_path = os.path.join(cache_dir, temp_filename)
                 if os.path.exists(temp_path):
-                    try: os.remove(temp_path)
-                    except OSError: pass
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
 
         # --- NEW: Clear InvokeAI VRAM cache on close ---
         if hasattr(self.processor, 'is_invokeai_connected') and self.processor.is_invokeai_connected():
             if hasattr(self.processor, 'clear_invokeai_cache_async'):
                 self.processor.clear_invokeai_cache_async()
 
-        parent = self.parent()
-        if hasattr(parent, 'image_preview_dialogs') and self in parent.image_preview_dialogs:
-            parent.image_preview_dialogs.remove(self)
-
-        super().closeEvent(event)
-
-    def _start_generation(self):
-        """Starts the generation process by grouping jobs and processing the first batch."""
-        # Set the initial state for all cards
-        for card in self.image_cards.values():
-            card.set_generating()
-
-        # --- NEW: Group jobs by model and add to queue in order ---
-        jobs_by_model: Dict[str, List[Dict[str, Any]]] = {}
-        for job in self.generation_jobs:
-            model_name = job.get('gen_params', {}).get('model', {}).get('name', 'Unknown Model')
-            if model_name not in jobs_by_model:
-                jobs_by_model[model_name] = []
-            jobs_by_model[model_name].append(job)
-
-        for model_name in sorted(jobs_by_model.keys()):
-            for job in jobs_by_model[model_name]:
-                self.job_queue.put(job)
-
-        # --- NEW: Start a persistent worker thread ---
-        self.worker_thread = QThread(self)
-        self.generation_worker = GenerationWorker(self.processor, self.job_queue, self.save_to_gallery_for_batch, self.cancellation_event)
-        self.generation_worker.moveToThread(self.worker_thread)
-
-        self.worker_thread.started.connect(self.generation_worker.run)
-        self.generation_worker.progress.connect(self._on_generation_finished)
-        self.generation_worker.finished.connect(self._on_batch_complete)
-        self.generation_worker.finished.connect(self.worker_thread.quit)
-
-        self.active_threads.append(self.worker_thread)
-        self.worker_thread.start()
-
-    @Slot()
-    def _on_batch_complete(self):
-        """Called when all jobs in the initial batch are finished."""
-        self.setWindowTitle("Review Generated Images (Complete)")
-        if not self.cache_cleared_on_completion:
-            self.processor.clear_invokeai_cache_async()
-            self.cache_cleared_on_completion = True
-
-    @Slot(dict)
-    def _on_generation_finished(self, result: dict):
-        job_id = result.get('job_id')
-        
-        if job_id not in self.image_cards:
-            return
-
-        card = self.image_cards[job_id]
-        
-        if result['success']:
-            image_data = result['result']
-            card.image_data = image_data
-            
-            # --- NEW: Store the full image path for the previewer ---
-            # The image bytes are in memory, but to show a preview popup, we need a path.
-            # We'll save a temporary file in the cache directory for the popup to use.
-            cache_dir = os.path.join(config.CACHE_DIR, 'previews')
-            os.makedirs(cache_dir, exist_ok=True)
-            
-            # Use a unique name for the temporary preview file.
-            temp_filename = f"preview_{job_id}.png"
-            full_path = os.path.join(cache_dir, temp_filename)
-            with open(full_path, 'wb') as f:
-                f.write(image_data['bytes'])
-            card.image_data['full_path'] = full_path
-
-            if image_data and 'bytes' in image_data:
-                card.set_image(image_data['bytes'])
-            else:
-                card.set_error("No image data received")
-            
-        else:
-            error_msg = result.get('error', 'Unknown error')
-            card.set_error(error_msg)
-
-
-    @Slot()
-    def _on_accept(self):
-        """Handles the 'Keep Selected' button click."""
-        kept_images = []
-        for card in self.image_cards.values():
-            if card.keep_checkbox.isChecked() and card.image_data:
-                kept_images.append(card.image_data)
-        self.result = kept_images
-        if kept_images:
-            self.on_success_callback(kept_images)
-        
-        self.accept()
-
-    def show_card_context_menu(self, card: ImageCard, global_pos: QPoint):
-        """Creates and shows the context menu for a specific image card."""
-        menu = QMenu(self)
-        has_image = card.image_data is not None
-
-        regen_action = QAction("Regenerate with new seed", self)
-        regen_action.setEnabled(has_image)
-        regen_action.triggered.connect(lambda: self._regenerate_image(card))
-        menu.addAction(regen_action)
-
-        edit_action = QAction("Edit & Regenerate...", self)
-        edit_action.setEnabled(has_image)
-        edit_action.triggered.connect(lambda: self._edit_and_regenerate_image(card))
-        menu.addAction(edit_action)
-
-        perm_action = QAction("Generate LoRA Permutations...", self)
-        perm_action.setEnabled(has_image)
-        perm_action.triggered.connect(lambda: self._generate_lora_permutations(card))
-        menu.addAction(perm_action)
-
-        menu.addSeparator()
-        discard_action = QAction("Discard", self)
-        discard_action.triggered.connect(lambda: self._discard_image(card))
-        menu.addAction(discard_action)
-
-        menu.exec(global_pos)
-
-    def _regenerate_image(self, card_to_regen: ImageCard):
-        """Creates a new job to regenerate an image with a new seed."""
-        # --- FIX: Create a completely new job for regeneration ---
-        # The previous logic modified the existing job, which could lead to race conditions.
-        # This new approach creates a new, unique job and replaces the old one.
-        old_job = card_to_regen.job
-        new_gen_params = copy.deepcopy(old_job['gen_params'])
-        new_gen_params['seed'] = random.randint(0, 2**32 - 1)
-
-        new_job = {
-            'prompt': old_job['prompt'],
-            'gen_params': new_gen_params,
-            'id': str(uuid.uuid4()) # A new unique ID for the new job
-        }
-
-        # Replace the old job with the new one on the card and start it.
-        self._replace_card_job(card_to_regen, new_job)
-
-    def _edit_and_regenerate_image(self, card_to_edit: ImageCard):
-        """Opens the options dialog to edit and regenerate an image."""
-        image_data = card_to_edit.image_data
-        if not image_data:
-            QMessageBox.warning(self, "Error", "Cannot regenerate, image data is missing.")
-            return
-
-        prompt = card_to_edit.job['prompt']
-        initial_params = image_data.get('generation_params', {})
-        dialog = ImageGenerationOptionsDialog(self, self.processor, prompt, initial_params=initial_params, is_editing=True)
-        if dialog.exec() != QDialog.Accepted:
-            return
-
-        options = dialog.get_options()
-        new_models_info = options.pop('models', [])
-        if not new_models_info:
-            return
-
-        try:
-            # Find the index of the card in the grid layout for insertion
-            idx = self.grid_layout.indexOf(card_to_edit)
-            if idx == -1: raise ValueError("Card not in layout")
-            row, col, _, _ = self.grid_layout.getItemPosition(idx)
-            index_to_replace = row * self.grid_layout.columnCount() + col
-        except ValueError:
-            QMessageBox.critical(self, "Error", "Could not find the image card to replace.")
-            return
-
-        # 1. Handle the first selected model: it replaces the original card.
-        first_model_info = new_models_info.pop(0)
-        first_new_gen_params = options.copy()
-        first_new_gen_params['model'] = first_model_info['model']
-        first_new_gen_params['loras'] = first_model_info.get('loras', [])
-        # --- FIX: Ensure the negative prompt from the override is used ---
-        # The previous code was missing this, causing the global negative prompt
-        first_new_gen_params['negative_prompt'] = first_model_info.get('negative_prompt', '')
-        self._replace_card_job(card_to_edit, {'prompt': prompt, 'gen_params': first_new_gen_params, 'id': str(uuid.uuid4())})
-
-        # 2. Handle additional models: insert them as new cards.
-        if new_models_info:
-            jobs_to_add = []
-            for model_info in new_models_info:
-                new_gen_params = options.copy()
-                new_gen_params['model'] = model_info['model']
-                new_gen_params['loras'] = model_info.get('loras', [])
-                new_gen_params['negative_prompt'] = model_info['negative_prompt']
-                new_job = {'prompt': prompt, 'gen_params': new_gen_params, 'id': str(uuid.uuid4())}
-                jobs_to_add.append(new_job)
-
-            for new_job in jobs_to_add:
-                self.generation_jobs.append(new_job)
-                self._add_job_to_grid(new_job)
-                self.job_queue.put(new_job)
-            self._reflow_grid_layout() # Reflow after adding all new jobs
-
-    def _generate_lora_permutations(self, card: ImageCard):
-        """Opens a dialog to generate permutations of an image with different LoRAs."""
-        image_data = card.image_data
-        if not image_data or not image_data.get('generation_params'):
-            QMessageBox.warning(self, "Error", "No generation parameters found for this image.")
-            return
-
-        dialog = LoraPermutationDialog(self, self.processor, image_data['generation_params'])
-        if dialog.exec() != QDialog.Accepted or not dialog.result:
-            return
-
-        lora_permutations = dialog.result
-        original_prompt = card.job['prompt']
-        base_gen_params = image_data['generation_params']
-
-        jobs_to_add = []
-        for perm_loras in lora_permutations:
-            new_gen_params = copy.deepcopy(base_gen_params)
-            new_gen_params['loras'] = perm_loras
-            new_job = {
-                'prompt': original_prompt,
-                'gen_params': new_gen_params,
-                'id': str(uuid.uuid4())
-            }
-            jobs_to_add.append(new_job)
-
-        # --- FIX: Insert new permutation jobs next to the source image ---
-        try:
-            index_to_insert_after = self.generation_jobs.index(card.job)
-        except ValueError:
-            index_to_insert_after = len(self.generation_jobs) - 1
-
-        for i, new_job in enumerate(jobs_to_add):
-            insertion_index = index_to_insert_after + 1 + i
-            self.generation_jobs.insert(insertion_index, new_job)
-            self._add_job_to_grid(new_job)
-            self.job_queue.put(new_job)
-        self._reflow_grid_layout()
-
-
-    def _add_new_image(self):
-        """Opens the options dialog to add a new image to the batch."""
-        if not self.generation_jobs:
-            QMessageBox.warning(self, "Error", "No existing job to base new image on.")
-            return
-
-        # Use the first job's parameters as a starting point
-        base_job = self.generation_jobs[0]
-        prompt = base_job['prompt']
-        initial_params = base_job['gen_params']
-
-        dialog = ImageGenerationOptionsDialog(self, self.processor, prompt, initial_params=initial_params, is_editing=False)
-        if dialog.exec() != QDialog.Accepted:
-            return
-
-        options = dialog.get_options()
-        new_models_info = options.pop('models', [])
-        if not new_models_info:
-            return
-
-        num_images_per_model = options.pop('num_images', 1)
-        base_seed = options.get('seed', random.randint(0, 2**32 - 1))
-
-        for model_info in new_models_info:
-            for i in range(num_images_per_model):
-                new_gen_params = options.copy()
-                new_gen_params['model'] = model_info['model']
-                new_gen_params['loras'] = model_info.get('loras', [])
-                new_gen_params['negative_prompt'] = model_info['negative_prompt']
-                new_gen_params['seed'] = base_seed + i
-                new_job = {'prompt': prompt, 'gen_params': new_gen_params, 'id': str(uuid.uuid4())}
-                self.generation_jobs.append(new_job)
-                self._add_job_to_grid(new_job)
-                self.job_queue.put(new_job)
-        self._reflow_grid_layout()
-
-    def _discard_image(self, card_to_discard: ImageCard, reflow: bool = True):
-        """Removes an image card from the view and cancels its job if running."""
-        job_id = card_to_discard.job['id']
-        self.grid_layout.removeWidget(card_to_discard)
-        card_to_discard.deleteLater()
-        if job_id in self.image_cards:
-            del self.image_cards[job_id] # type: ignore
-
-        # Also remove from the master job list
-        job_to_discard = next((j for j in self.generation_jobs if j.get('id') == job_id), None)
-        if job_to_discard:
-            job_to_discard['discarded'] = True # Mark as discarded for any running workers
-            self.generation_jobs.remove(job_to_discard)
-
-        if reflow:
-            self._reflow_grid_layout()
-
-    def _add_job_to_grid(self, job: Dict[str, Any]):
-        """Adds a new placeholder card for a job and starts its generation."""
-        card = ImageCard(job, self)
-        self.image_cards[job['id']] = card
-        card.set_generating()
-
-
-
-    def _replace_card_job(self, card: ImageCard, new_job: Dict[str, Any]):
-        """Replaces the job on an existing card and starts generation."""
-        old_job_id = card.job['id']
-        new_job_id = new_job['id']
-
-        # Update the master job list
-        try:
-            idx = next(i for i, j in enumerate(self.generation_jobs) if j['id'] == old_job_id)
-            self.generation_jobs[idx] = new_job
-        except ValueError:
-            self.generation_jobs.append(new_job)
-
-        # Update the card and the dictionary mapping
-        card.job = new_job
-        card.set_generating()
-        self.image_cards[new_job_id] = self.image_cards.pop(old_job_id)
-        self.job_queue.put(new_job)
-
-
-
-    def _set_initial_size_and_position(self):
-        """Sets the initial size and position of the dialog."""
-        num_jobs = len(self.generation_jobs)
-        if num_jobs == 0:
-            self.resize(300, 200)
-            return
-
-        cols = min(num_jobs, 4)
-        rows = (num_jobs + cols - 1) // cols
-        card_width = 276 + self.grid_layout.horizontalSpacing()
-        card_height = 400 + self.grid_layout.verticalSpacing()
-
-        new_width = cols * card_width + self.layout().contentsMargins().left() + self.layout().contentsMargins().right() + 70
-        new_height = rows * card_height + self.layout().contentsMargins().top() + self.layout().contentsMargins().bottom() + 250
-
-        try:
-            screen_geometry = QApplication.primaryScreen().availableGeometry()
-            max_width = screen_geometry.width() * 0.95
-            max_height = screen_geometry.height() * 0.9
-            new_width = min(new_width, int(max_width))
-            new_height = min(new_height, int(max_height))
-        except Exception:
-            pass
-
-        self.resize(new_width, new_height)
-
-        try:
-            screen_geometry = QApplication.primaryScreen().availableGeometry()
-            self.move(screen_geometry.center() - self.rect().center())
-        except Exception:
-            pass
-
-    def _reflow_grid_layout(self):
-        """Clears and re-populates the grid layout based on the current image_cards."""
-        while self.grid_layout.count():
-            child = self.grid_layout.takeAt(0)
-            if child and child.widget():
-                child.widget().setParent(None)
-
-        cols = max(1, self.grid_widget.width() // 280) if self.grid_widget.width() > 0 else min(len(self.generation_jobs), 4)
-        for i, job in enumerate(self.generation_jobs):
-            card = self.image_cards.get(job['id'])
-            if not card: continue
-            row, col = divmod(i, cols)
-            self.grid_layout.addWidget(card, row, col)
-
-        self.grid_layout.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum), 0, cols)
-        self.grid_layout.setRowStretch(self.grid_layout.rowCount(), 1)
-
-    @Slot()
-    def _toggle_all_checkboxes(self):
-        """Toggles the 'keep' checkbox for all successfully generated images."""
-        valid_cards = [card for card in self.image_cards.values() if card.image_data]
-        if not valid_cards: 
-            return
-
-        # If any are unchecked, the new state is checked. Otherwise, uncheck all.
-        new_state = any(not card.keep_checkbox.isChecked() for card in valid_cards)
-        for card in valid_cards:
-            card.keep_checkbox.setChecked(new_state)
-
-    def resizeEvent(self, event: QEvent):
-        """Handle window resize to reflow the grid."""
-        super().resizeEvent(event)
-        self._reflow_grid_layout()
-
-    def closeEvent(self, event):
-        """Handle window close event to stop threads."""
-        
-        # Signal cancellation
-        if not self.cancellation_event.is_set():
-            self.cancellation_event.set()
-            # Unblock the worker thread if it's waiting on the queue
-            self.job_queue.put(None)
-
-        for thread in self.active_threads:
-            if thread.isRunning():
-                thread.quit()
-                thread.wait(3000) # Wait up to 3 seconds
-
-        # Clean up the worker object
-        if hasattr(self, 'generation_worker'):
-            self.generation_worker.deleteLater()
         active_jobs = [job['gen_params'].get('item_id') for job in self.generation_jobs if job.get('gen_params', {}).get('item_id')]
         if active_jobs:
             print(f"INFO: Cancelling {len(active_jobs)} active/queued InvokeAI jobs.")
             for item_id in active_jobs:
                 self.processor.invokeai_client.cancel_and_cleanup_item(item_id, self.save_to_gallery_for_batch)
 
-        # Clean up temporary preview images on close
-        cache_dir = os.path.join(config.CACHE_DIR, 'previews')
-        if os.path.exists(cache_dir):
-            for card in self.image_cards.values():
-                temp_filename = f"preview_{card.job['id']}.png"
-                temp_path = os.path.join(cache_dir, temp_filename)
-                if os.path.exists(temp_path):
-                    try: os.remove(temp_path)
-                    except OSError: pass
-
-        # --- NEW: Clear InvokeAI VRAM cache on close ---
-        if hasattr(self.processor, 'is_invokeai_connected') and self.processor.is_invokeai_connected():
-            if hasattr(self.processor, 'clear_invokeai_cache_async'):
-                self.processor.clear_invokeai_cache_async()
-
         super().closeEvent(event)
+
+

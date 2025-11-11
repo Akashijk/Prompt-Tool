@@ -1,26 +1,18 @@
 """A Qt dialog to review and save AI-generated content."""
 
 import json
-from typing import Optional, Callable, TYPE_CHECKING, Dict, Any
+from typing import Optional, Callable
 
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QTextEdit, QLineEdit,
-    QDialogButtonBox, QLabel, QMessageBox, QTabWidget, QWidget, QHBoxLayout, QGroupBox
+    QApplication, QDialog, QVBoxLayout, QLineEdit,
+    QLabel, QMessageBox, QTabWidget, QWidget, QHBoxLayout
 )
 from PySide6.QtCore import Slot, Qt, QTimer
 
 from core.prompt_processor import PromptProcessor
 from core.config import config
-# Placeholder for WildcardEditor - will need to be ported or replaced
-class StructuredEditorPlaceholder(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Structured Editor Placeholder (Port WildcardEditor from Tkinter)"))
-    def set_data(self, data: Dict):
-        pass
-    def get_data(self) -> Dict:
-        return {}
+from .wildcard_editor_widget import WildcardEditor # NEW
+from .custom_widgets import SmoothTextEdit
 
 class LoadingAnimation(QLabel):
     def __init__(self, parent=None, size: int = 24):
@@ -82,19 +74,19 @@ class ReviewAndSaveDialog(QDialog):
 
             self.structured_editor_frame = QWidget()
             structured_editor_layout = QVBoxLayout(self.structured_editor_frame)
-            self.structured_editor = StructuredEditorPlaceholder(self.structured_editor_frame) # Placeholder
+            self.structured_editor = WildcardEditor(self.structured_editor_frame, self.processor) # Use actual WildcardEditor
             structured_editor_layout.addWidget(self.structured_editor)
             self.editor_notebook.addTab(self.structured_editor_frame, "Structured Editor")
 
             self.raw_text_frame = QWidget()
             raw_text_layout = QVBoxLayout(self.raw_text_frame)
-            self.raw_text_editor = QTextEdit()
+            self.raw_text_editor = SmoothTextEdit()
             raw_text_layout.addWidget(self.raw_text_editor)
             self.editor_notebook.addTab(self.raw_text_frame, "Raw Text Editor")
             
             self.text_widget = self.raw_text_editor # Alias for compatibility
         else: # 'template'
-            self.text_widget = QTextEdit()
+            self.text_widget = SmoothTextEdit()
             main_layout.addWidget(self.text_widget)
             
         button_frame = QWidget()
@@ -155,12 +147,12 @@ class ReviewAndSaveDialog(QDialog):
             self.raw_text_editor.clear()
             try:
                 parsed_data = json.loads(new_content)
-                self.structured_editor.set_data(parsed_data)
+                self.structured_editor.set_data(parsed_data) # Use set_data on the actual editor
                 self.raw_text_editor.setText(json.dumps(parsed_data, indent=2))
                 self.editor_notebook.setCurrentWidget(self.structured_editor_frame)
             except (json.JSONDecodeError, TypeError):
                 # If content is not valid JSON, show it in the raw editor
-                self.structured_editor.set_data({})
+                self.structured_editor.set_data({}) # Clear structured editor
                 self.raw_text_editor.setText(new_content)
                 self.editor_notebook.setCurrentWidget(self.raw_text_frame)
         else: # template
@@ -184,7 +176,7 @@ class ReviewAndSaveDialog(QDialog):
 
         if self.content_type == 'wildcard':
             if self.editor_notebook.currentWidget() == self.structured_editor_frame:
-                data = self.structured_editor.get_data()
+                data = self.structured_editor.get_data() # Use get_data from the actual editor
                 content = json.dumps(data, indent=2)
             else:
                 content = self.raw_text_editor.toPlainText().strip()

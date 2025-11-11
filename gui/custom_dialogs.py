@@ -11,8 +11,6 @@ import json
 import copy
 import tkinter.font as tkfont
 import difflib
-import re
-import os
 from typing import TYPE_CHECKING, Callable, Tuple, Any, Optional, List, Dict
 from .common import Tooltip, TextContextMenu, SmartWindowMixin
 
@@ -33,7 +31,7 @@ def is_valid_filename_component(name: str) -> Tuple[bool, str]:
     # Disallow characters that are invalid in Windows/Linux/macOS filenames
     invalid_chars = r'[\\/:*?"<>|]'
     if re.search(invalid_chars, name):
-        return False, f"Filename cannot contain any of the following characters: \\ / : * ? \" < > |"
+        return False, "Filename cannot contain any of the following characters: \\ / : * ? \" < > |"
     
     return True, ""
 

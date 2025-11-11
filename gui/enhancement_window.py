@@ -2,17 +2,14 @@
 
 import tkinter as tk
 from tkinter import ttk
-import random
 import threading
 import queue
 import uuid
 from typing import List, Optional, Dict, Callable, TYPE_CHECKING, Any
 
 from . import custom_dialogs
-from core.config import config
 from core.prompt_processor import PromptProcessor
 from .common import LoadingAnimation, TextContextMenu, SmartWindowMixin, ScrollableFrame
-from .image_generation_dialog import ImageGenerationOptionsDialog
 
 if TYPE_CHECKING:
     from .gui_app import GUIApp

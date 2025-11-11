@@ -7,7 +7,6 @@ import random
 import copy
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Tuple, Callable
-from .config import config
 
 @dataclass
 class PromptSegment:

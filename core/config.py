@@ -5,11 +5,6 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 
-# Determine the project root directory (the 'v2' folder)
-# __file__ is the path to this config.py file
-# The project root is the parent directory of the 'core' directory
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 # --- User Settings Management ---
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".prompt_tool_v2")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
@@ -40,27 +35,22 @@ def update_and_save_settings(settings_dict: dict):
     settings = load_settings()
     for key, value in settings_dict.items():
         settings[key] = value
-        # Convert to uppercase for dataclass attribute name
         config_attr = key.upper()
-        if hasattr(config, config_attr):
+        if hasattr(config, config_attr) and not isinstance(getattr(type(config), config_attr, None), property):
             setattr(config, config_attr, value)
     save_settings(settings)
+    # --- NEW: Reload _user_settings after saving to ensure properties reflect latest values ---
+    global _user_settings
+    _user_settings = load_settings()
 
 _user_settings = load_settings()
 
 @dataclass
 class Config:
     """Application configuration settings."""
-    
-    PROJECT_ROOT: str = PROJECT_ROOT
-    # Base Directory paths
-    TEMPLATE_BASE_DIR: str = _user_settings.get("template_base_dir", os.path.join(PROJECT_ROOT, 'templates'))
-    WILDCARD_DIR: str = _user_settings.get("wildcard_dir", os.path.join(PROJECT_ROOT, 'wildcards'))
-    HISTORY_DIR: str = _user_settings.get("history_dir", os.path.join(PROJECT_ROOT, 'history'))
-    SYSTEM_PROMPT_BASE_DIR: str = _user_settings.get("system_prompt_base_dir", os.path.join(PROJECT_ROOT, 'system_prompts'))
-    CACHE_DIR: str = CACHE_DIR
-    MODEL_PREFIXES_FILE: str = MODEL_PREFIXES_FILE
-    LORA_PREFIXES_FILE: str = LORA_PREFIXES_FILE
+
+    # The root directory of the application.
+    PROJECT_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     # Default settings
     DEFAULT_FONT_SIZE: int = 11
@@ -82,7 +72,39 @@ class Config:
     workflow: str = _user_settings.get("workflow", "sfw")
 
     # UI settings
+    theme: str = _user_settings.get("theme", "light")
     font_size: int = _user_settings.get("font_size", DEFAULT_FONT_SIZE)
+    DEFAULT_OLLAMA_MODEL: Optional[str] = _user_settings.get("default_ollama_model")
+
+
+
+    @property
+    def TEMPLATE_BASE_DIR(self) -> str:
+        return _user_settings.get("template_base_dir", os.path.join(self.PROJECT_ROOT, 'templates'))
+
+    @property
+    def WILDCARD_DIR(self) -> str:
+        return _user_settings.get("wildcard_dir", os.path.join(self.PROJECT_ROOT, 'wildcards'))
+
+    @property
+    def HISTORY_DIR(self) -> str:
+        return _user_settings.get("history_dir", os.path.join(self.PROJECT_ROOT, 'history'))
+    
+    @property
+    def SYSTEM_PROMPT_BASE_DIR(self) -> str:
+        return _user_settings.get("system_prompt_base_dir", os.path.join(self.PROJECT_ROOT, 'system_prompts'))
+
+    @property
+    def CACHE_DIR(self) -> str:
+        return CACHE_DIR # This is a global constant, so it's fine
+
+    @property
+    def MODEL_PREFIXES_FILE(self) -> str:
+        return MODEL_PREFIXES_FILE # Global constant
+
+    @property
+    def LORA_PREFIXES_FILE(self) -> str:
+        return LORA_PREFIXES_FILE # Global constant
 
     @property
     def WILDCARD_NSFW_DIR(self) -> str:
@@ -109,6 +131,8 @@ class Config:
         """Returns the path to the history file for the current workflow."""
         workflow_history_dir = self.get_history_file_dir()
         return os.path.join(workflow_history_dir, 'history.jsonl')
+
+
 
 # Global config instance
 config = Config()

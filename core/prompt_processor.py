@@ -9,7 +9,7 @@ import time
 import uuid
 import threading
 import queue
-from typing import List, Dict, Any, Optional, Callable, Tuple, Set, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, Callable, Tuple, Set
 from .thumbnail_manager import ThumbnailManager
 from .config import config
 from .default_content import (DEFAULT_SFW_ENHANCEMENT_INSTRUCTION, DEFAULT_SFW_VARIATIONS, DEFAULT_NSFW_ENHANCEMENT_INSTRUCTION, DEFAULT_NSFW_VARIATIONS, DEFAULT_SFW_NEGATIVE_PROMPTS, DEFAULT_NSFW_NEGATIVE_PROMPTS, DEFAULT_AI_TASK_PROMPTS,
@@ -194,6 +194,7 @@ class PromptProcessor:
         self.template_engine.list_templates(config.get_template_dir())
         # --- End of fix ---
         self._used_wildcards_cache = None
+        self._template_usage_map_cache = None
         self._load_all_wildcards_into_cache()
         self.available_variations_map = {v['key']: v['name'] for v in self.get_available_variations()}
         self._update_status("Ready")
@@ -205,7 +206,7 @@ class PromptProcessor:
             return True
         return False
 
-    def get_available_models(self) -> List[Dict[str, Any]]:
+    def get_ollama_models(self) -> List[Dict[str, Any]]:
         """Get list of available Ollama models with their details."""
         return self.ollama_client.list_models()
 
@@ -234,16 +235,15 @@ class PromptProcessor:
         return self.history_manager.update_history_entry(original_row, updated_row)
 
     def get_full_history(self) -> List[Dict[str, str]]:
-        """Pass-through to get the full history data, sorted newest first."""
-        history = self.history_manager.load_full_history()
-        history.sort(key=lambda x: x.get('timestamp', '0'), reverse=True)
-        return history
+        """Pass-through to get the full history data from all workflows, sorted newest first."""
+        return self.get_all_history_across_workflows()
 
     def clear_invokeai_cache(self):
         """Clears the InvokeAI model cache synchronously."""
         if not self.is_invokeai_connected():
             return
-        self.invokeai_client.empty_model_cache()
+        if not self.invokeai_client.empty_model_cache():
+            print("ERROR: Failed to clear InvokeAI model cache.")
 
     def clear_invokeai_data_cache(self):
         """Clears the cached InvokeAI models, LoRAs, and schedulers."""
@@ -594,6 +594,65 @@ class PromptProcessor:
             
         return final_graph
 
+    def get_template_usage_map(self) -> Dict[str, List[str]]:
+        """
+        Builds a map where each key is a wildcard name and the value is a list
+        of template files that use that wildcard, either directly or indirectly.
+        Uses a cache to avoid re-computation on subsequent calls.
+        """
+        if hasattr(self, '_template_usage_map_cache') and self._template_usage_map_cache is not None:
+            return self._template_usage_map_cache
+
+        from collections import defaultdict
+        dependency_graph = self.get_wildcard_dependency_graph()
+        template_usage_map = defaultdict(list)
+
+        # 1. Find direct template usages (root wildcards for each template)
+        template_to_roots = defaultdict(set)
+        all_template_dirs = [
+            os.path.join(config.TEMPLATE_BASE_DIR, 'sfw'),
+            os.path.join(config.TEMPLATE_BASE_DIR, 'nsfw')
+        ]
+        for template_dir in all_template_dirs:
+            if not os.path.exists(template_dir):
+                continue
+            for template_file in os.listdir(template_dir):
+                if template_file.endswith('.txt'):
+                    try:
+                        # Use the engine's loader to ensure consistency
+                        content = self.template_engine.load_template(template_file, template_dir)
+                        found = re.findall(r'__([a-zA-Z0-9_.\\s-]+?)__', content)
+                        for wc in found:
+                            if wc in dependency_graph: # Only consider known wildcards
+                                template_to_roots[template_file].add(wc)
+                    except Exception as e:
+                        print(f"Warning: Could not scan template {os.path.join(template_dir, template_file)}: {e}")
+
+        # 2. For each template, traverse the dependency graph downwards from its roots
+        for template, roots in template_to_roots.items():
+            queue = list(roots)
+            visited_for_template = set()
+            while queue:
+                wildcard = queue.pop(0)
+                if wildcard in visited_for_template:
+                    continue
+                visited_for_template.add(wildcard)
+
+                # This wildcard is used by the template
+                if template not in template_usage_map[wildcard]:
+                    template_usage_map[wildcard].append(template)
+
+                # Get children and add them to the queue to be processed
+                children = dependency_graph.get(wildcard, {}).get('dependencies', [])
+                for child in children:
+                    if child not in visited_for_template:
+                        queue.append(child)
+        
+        # Convert defaultdict to dict and sort lists for consistency
+        final_map = {k: sorted(v) for k, v in template_usage_map.items()}
+        self._template_usage_map_cache = final_map
+        return final_map
+
     def load_wildcard_content(self, wildcard_file: str) -> str:
         """Load content of a single wildcard file."""
         return self.template_engine.load_wildcard_content(wildcard_file, self._get_wildcard_search_order())
@@ -650,11 +709,13 @@ class PromptProcessor:
         """Saves modified template content back to its file."""
         self.template_engine.save_template(template_file, content, config.get_template_dir())
         self._used_wildcards_cache = None
+        self._template_usage_map_cache = None
 
     def archive_template(self, template_file: str) -> None:
         """Archives a template file."""
         self.template_engine.archive_template(template_file, config.get_template_dir())
         self._used_wildcards_cache = None
+        self._template_usage_map_cache = None
 
     def archive_wildcard(self, wildcard_file: str) -> None:
         """Archives a wildcard file."""
@@ -1418,7 +1479,7 @@ class PromptProcessor:
             print(f"Warning: AI task prompt file not found: {filepath}. Using default content.")
             return DEFAULT_AI_TASK_PROMPTS[key]['content']
 
-    def chat_with_model(self, model: str, messages: List[Dict[str, str]], timeout: Optional[int] = None) -> str:
+    def chat_with_model(self, model: str, messages: List[Dict[str, str]], timeout: Optional[int] = None, temperature: Optional[float] = None, top_p: Optional[float] = None) -> str:
         """Handles a chat interaction with the specified Ollama model."""
         
         if self.verbose:
@@ -1433,7 +1494,7 @@ class PromptProcessor:
             print("--------------------------------\n", flush=True)
 
         try:
-            raw_response = self.ollama_client.chat(model, messages, timeout=timeout)
+            raw_response = self.ollama_client.chat(model, messages, timeout=timeout, temperature=temperature, top_p=top_p)
             if self.verbose:
                 print("\n--- VERBOSE: AI Raw Chat Response ---", flush=True)
                 print(raw_response, flush=True)
@@ -1854,24 +1915,19 @@ class PromptProcessor:
                 for var_type in valid_selected_variations:
                     if cancellation_event and cancellation_event.is_set():
                         break # break inner loop
-
                     variation_instruction = available_variations[var_type]['prompt']
                     self._update_status('variation_start', var_type=var_type, prompt_num=i+1, total_prompts=total_prompts)
-                var_prompt = self.ollama_client.create_single_variation(
-                    instruction=variation_instruction,
-                    base_prompt=enhanced,  # FIX: Use the enhanced prompt as the base for variations.
-                    model=model,
-                    variation_type=var_type,
-                    original_prompt_context=prompt # Pass the original prompt for better AI context.
-                )
-                variation_result = {'prompt': var_prompt, 'ollama_model': model}
-                # Send back variation result immediately using the correct callback
-                if final_result_callback:
-                    final_result_callback(var_type, variation_result)
-                result['variations'][var_type] = variation_result
-            
-            if cancellation_event and cancellation_event.is_set():
-                break # break outer loop
+                    var_prompt = self.ollama_client.create_single_variation(
+                        instruction=variation_instruction,
+                        base_prompt=enhanced,
+                        model=model,
+                        variation_type=var_type,
+                        original_prompt_context=prompt # Pass the original prompt for better AI context.
+                    )
+                    variation_result = {'prompt': var_prompt, 'ollama_model': model}
+                    if final_result_callback:
+                        final_result_callback(var_type, variation_result)
+                    result['variations'][var_type] = variation_result
 
             results.append(result)
         
@@ -1887,6 +1943,17 @@ class PromptProcessor:
         enhanced = self.ollama_client.enhance_prompt(full_prompt, model)
         return enhanced
 
+    def mutate_prompt(self, base_prompt: str, model: str, temperature: Optional[float] = None, top_p: Optional[float] = None) -> str:
+        """Uses AI to generate a single, slightly mutated version of a given prompt."""
+        instruction = self.load_ai_task_prompt('mutate_prompt')
+        full_prompt = instruction.format(original_prompt=base_prompt)
+
+        messages = [
+            {'role': 'user', 'content': full_prompt}
+        ]
+        raw_response = self.chat_with_model(model, messages, timeout=config.VARIATION_TIMEOUT, temperature=temperature, top_p=top_p)
+        return raw_response.strip() # The prompt expects only the mutated prompt back
+
     def _prepare_suggestion_context(self, wildcard_data: Dict[str, Any], current_wildcard_filename: Optional[str]) -> Tuple[str, str, str, str, Optional[str]]:
         """Prepares context variables for the AI suggestion prompt."""
         description = wildcard_data.get('description', 'No description.')
@@ -1898,7 +1965,7 @@ class PromptProcessor:
         
         # Extract just the values for a more concise prompt.
         sample_choice_values = [c.get('value') if isinstance(c, dict) else c for c in sample_choices_full]
-        sample_choices_str = "\n".join([f"- {val}" for val in sample_choice_values]) if sample_choice_values else "none"
+        sample_choices_str = "\n".join([f"- {val}" for val in sample_choice_values]) if sample_choices_full else "none"
         
         current_wildcard_name = None
         if current_wildcard_filename:
@@ -2182,7 +2249,7 @@ class PromptProcessor:
         for applying prefixes, building the graph, and waiting for the result.
         """
         if self.verbose:
-            print(f"\n--- VERBOSE: PromptProcessor.generate_image_with_invokeai ---")
+            print("\n--- VERBOSE: PromptProcessor.generate_image_with_invokeai ---")
             print(f"Received gen_params:\n{json.dumps(gen_params, indent=2, default=lambda o: '<object>')}")
             print(f"Received prompt: {prompt}")
 
@@ -2233,14 +2300,8 @@ class PromptProcessor:
         if all_neg_lora_prefixes:
             combined_neg_prefix = ", ".join(sorted(list(all_neg_lora_prefixes)))
             negative_prompt = f"{combined_neg_prefix}, {negative_prompt}" if negative_prompt else combined_neg_prefix
-
-        # Create a copy of the model object to add dimensions without modifying the original
-        model_obj_copy = copy.deepcopy(model_object) if model_object else {}
-        if 'width' in gen_params and 'height' in gen_params:
-            if 'default_settings' not in model_obj_copy:
-                model_obj_copy['default_settings'] = {}
-            model_obj_copy['default_settings']['width'] = gen_params['width']
-            model_obj_copy['default_settings']['height'] = gen_params['height']
+        # --- FIX: The model object should not be modified here. ---
+        # The width and height are passed directly to the enqueue method.
 
         if self.verbose:
             print(f"Final positive prompt for API: {prompt}")
@@ -2252,10 +2313,12 @@ class PromptProcessor:
             "prompt": prompt,
             "negative_prompt": negative_prompt,
             "seed": gen_params.get("seed"),
-            "model_object": model_obj_copy,
+            "model_object": model_object,
             "loras": loras,
             "steps": gen_params.get("steps", 30),
             "cfg_scale": gen_params.get("cfg_scale", 7.5),
+            "width": gen_params.get("width", 1024),
+            "height": gen_params.get("height", 1024),
             "scheduler": scheduler,
             "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier", 0.0),
             "save_to_gallery": save_to_gallery, "verbose": self.verbose,
@@ -2266,11 +2329,16 @@ class PromptProcessor:
         if not item_id:
             raise Exception("Failed to get a valid job ID from InvokeAI after enqueueing.")
 
+        # --- FIX: Add the item_id to the gen_params so it can be accessed for cancellation ---
+        gen_params['item_id'] = item_id
+
         # --- Wait for the result ---
         result_data = self.invokeai_client.wait_for_image_generation_result(item_id, save_to_gallery, cancellation_event)
 
         # --- Construct the final return dictionary ---
         final_gen_params = gen_params.copy()
+        # Merge in params that were determined by the client (e.g., VAE)
+        final_gen_params.update(enqueue_data.get('generation_params', {}))
         final_gen_params['duration'] = result_data.get('duration')
         result_data['generation_params'] = final_gen_params
         return result_data
@@ -2379,7 +2447,7 @@ class PromptProcessor:
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
 
-    def ai_breed_prompts(self, parent_prompts: List[str], num_children: int, model: str) -> List[str]:
+    def ai_breed_prompts(self, parent_prompts: List[str], num_children: int, model: str, temperature: Optional[float] = None, top_p: Optional[float] = None) -> List[str]:
         """Uses AI to 'breed' new prompts from a list of parent prompts."""
         if len(parent_prompts) < 2:
             raise ValueError("Breeding requires at least two parent prompts.")
@@ -2396,7 +2464,7 @@ class PromptProcessor:
 
         # Use chat for better instruction following on complex tasks.
         messages = [{'role': 'user', 'content': prompt}]
-        raw_response = self.chat_with_model(model, messages, timeout=config.BRAINSTORM_TIMEOUT)
+        raw_response = self.chat_with_model(model, messages, timeout=config.BRAINSTORM_TIMEOUT, temperature=temperature, top_p=top_p)
 
         # Parse the numbered list response
         child_prompts = []

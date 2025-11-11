@@ -5,9 +5,8 @@ from tkinter import ttk
 import queue
 import random
 import re
-import sys
 import threading
-from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable, Tuple
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 from .common import SmartWindowMixin, Tooltip, VerticalSpinbox, ScrollableFrame
 from . import custom_dialogs
@@ -15,7 +14,7 @@ from .common import TextContextMenu
 from core.prompt_processor import PromptProcessor
 from .model_usage_manager import ModelUsageManager
 if TYPE_CHECKING:
-    from core.invokeai_client import InvokeAIClient
+    pass
 
 def _sanitize_for_widget_name(name: str) -> str:
     """

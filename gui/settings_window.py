@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from typing import TYPE_CHECKING
 from core.config import config, update_and_save_settings
-from .common import SmartWindowMixin, Tooltip, TextContextMenu
+from .common import SmartWindowMixin, Tooltip
 from . import custom_dialogs
 
 if TYPE_CHECKING:

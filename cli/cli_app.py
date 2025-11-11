@@ -120,7 +120,7 @@ class CLIApp:
                 print(f"   {idx}. {model}{marker} - {reason}")
 
         print("\n" + "-"*50)
-        print(f"All Available Ollama Models:")
+        print("All Available Ollama Models:")
         for i, model in enumerate(models, 1):
             marker = " ← DEFAULT" if model == default_model else ""
             print(f"{i}. {model}{marker}")
@@ -174,7 +174,7 @@ class CLIApp:
     
     def _queue_prompts(self, template_content: str, num_prompts: int) -> List[str]:
         """Phase 1: Queue prompts for enhancement."""
-        print(f"\n" + "="*60)
+        print("\n" + "="*60)
         print("PHASE 1: QUEUING PROMPTS FOR ENHANCEMENT")
         print("="*60)
         print("Tip: Queue as many prompts as you want, then batch process them all!")

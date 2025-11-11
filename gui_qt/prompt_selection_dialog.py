@@ -1,13 +1,16 @@
 """A Qt dialog to select multiple prompts from history."""
 
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QListWidget, QLineEdit, QDialogButtonBox,
+    QApplication, QDialog, QVBoxLayout, QLineEdit, QDialogButtonBox,
     QAbstractItemView
 )
 from PySide6.QtCore import Slot
 from typing import List
 
 from core.prompt_processor import PromptProcessor
+from .custom_widgets import SmoothListWidget
+
+import os
 
 class PromptSelectionDialog(QDialog):
     """A dialog to select multiple prompts from history."""
@@ -16,8 +19,8 @@ class PromptSelectionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Select Prompts from History")
         self.processor = processor
-        self.all_prompts: List[str] = []
-        self.selected_prompts: List[str] = []
+        self.all_prompts_data: List[Dict[str, Any]] = []
+        self.selected_prompts: List[Dict[str, Any]] = []
 
         self._create_widgets()
         self._connect_signals()
@@ -35,7 +38,7 @@ class PromptSelectionDialog(QDialog):
         self.search_edit.setPlaceholderText("Filter prompts...")
         layout.addWidget(self.search_edit)
 
-        self.prompt_list = QListWidget()
+        self.prompt_list = SmoothListWidget()
         self.prompt_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.prompt_list)
 
@@ -49,9 +52,39 @@ class PromptSelectionDialog(QDialog):
 
     def _load_history(self):
         history = self.processor.get_all_history_across_workflows()
-        prompts = {entry.get('enhanced', {}).get('prompt', entry.get('original_prompt', '')).strip() for entry in history if entry.get('enhanced', {}).get('prompt') or entry.get('original_prompt')}
-        self.all_prompts = sorted(list(prompts))
-        self.prompt_list.addItems(self.all_prompts)
+        self.all_prompts_data = []
+        processed_prompts = set()
+
+        for entry in history:
+            image_path = None
+            if entry.get('original_images'):
+                image_path = entry['original_images'][0].get('image_path')
+                if image_path and not os.path.isabs(image_path):
+                    image_path = os.path.join(self.processor.history_manager.history_dir, image_path)
+
+            # Original Prompt
+            original_prompt = entry.get('original_prompt', '').strip()
+            if original_prompt and original_prompt not in processed_prompts:
+                self.all_prompts_data.append({'prompt': original_prompt, 'image_path': image_path, 'version': 'Original'})
+                processed_prompts.add(original_prompt)
+
+            # Enhanced Prompt
+            enhanced_prompt_data = entry.get('enhanced', {})
+            enhanced_prompt = enhanced_prompt_data.get('prompt', '').strip()
+            if enhanced_prompt and enhanced_prompt not in processed_prompts:
+                self.all_prompts_data.append({'prompt': enhanced_prompt, 'image_path': image_path, 'version': 'Enhanced'})
+                processed_prompts.add(enhanced_prompt)
+
+            # Variations
+            variations = enhanced_prompt_data.get('variations', [])
+            for i, variation in enumerate(variations):
+                variation_prompt = variation.get('prompt', '').strip()
+                if variation_prompt and variation_prompt not in processed_prompts:
+                    self.all_prompts_data.append({'prompt': variation_prompt, 'image_path': image_path, 'version': f'Variation {i+1}'})
+                    processed_prompts.add(variation_prompt)
+
+        self.all_prompts_data.sort(key=lambda x: x['prompt'])
+        self.prompt_list.addItems([f"[{d['version']}] {d['prompt']}" for d in self.all_prompts_data])
 
     @Slot(str)
     def _filter_prompts(self, text: str):
@@ -62,5 +95,12 @@ class PromptSelectionDialog(QDialog):
 
     @Slot()
     def _on_accept(self):
-        self.selected_prompts = [item.text() for item in self.prompt_list.selectedItems()]
+        selected_items = self.prompt_list.selectedItems()
+        self.selected_prompts = []
+        for item in selected_items:
+            # Find the corresponding data in all_prompts_data
+            for data in self.all_prompts_data:
+                if f"[{data['version']}] {data['prompt']}" == item.text():
+                    self.selected_prompts.append(data)
+                    break
         self.accept()

@@ -5,7 +5,7 @@ import uuid
 from tkinter import ttk
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
-from .common import SmartWindowMixin, Tooltip, VerticalSpinbox
+from .common import SmartWindowMixin, VerticalSpinbox
 from . import custom_dialogs
 from .common import ScrollableFrame
 

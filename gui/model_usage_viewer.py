@@ -3,9 +3,8 @@
 import tkinter as tk
 import queue
 import threading
-import numpy as np
 from tkinter import ttk
-from typing import TYPE_CHECKING, Dict, Any, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 

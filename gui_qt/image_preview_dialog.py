@@ -1,12 +1,11 @@
 """A Qt dialog to display a full-size image and its metadata."""
 
-import json
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QTextEdit, QLabel, QScrollArea, QWidget,
-    QDialogButtonBox
+    QApplication, QDialog, QVBoxLayout, QLabel, QScrollArea, QDialogButtonBox
 )
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt
+from .custom_widgets import SmoothTextEdit
 
 
 class ImagePreviewDialog(QDialog):
@@ -33,27 +32,65 @@ class ImagePreviewDialog(QDialog):
         scroll_area.setWidget(self.image_label)
         self.main_layout.addWidget(scroll_area, 1) # Give it stretch factor
 
-        # Load the pixmap
-        pixmap = QPixmap(image_path)
-        if pixmap.isNull():
+        # Load the original pixmap and store it
+        self._original_pixmap = QPixmap(image_path)
+        if self._original_pixmap.isNull():
             self.image_label.setText(f"Error: Could not load image from\n{image_path}")
         else:
-            # Scale pixmap to fit window width, preserving aspect ratio
-            # A fixed reasonable size to start with. The scroll area will handle overflow.
-            self.image_label.setPixmap(pixmap.scaledToWidth(800, Qt.TransformationMode.SmoothTransformation))
+            self._update_image_display() # Initial display
 
         # --- Parameters Display ---
-        self.params_text = QTextEdit()
+        self.params_text = SmoothTextEdit()
         self.params_text.setReadOnly(True)
-        try:
-            # Pretty-print the JSON parameters
-            params_str = json.dumps(params, indent=2)
-            self.params_text.setPlainText(params_str)
-        except (TypeError, ValueError):
-            self.params_text.setPlainText("Could not display parameters.")
+        self.params_text.setPlainText(self._format_generation_params(params))
         self.main_layout.addWidget(self.params_text)
 
         # --- Buttons ---
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         button_box.rejected.connect(self.reject)
         self.main_layout.addWidget(button_box)
+
+    def _update_image_display(self):
+        """Scales the original pixmap to fit the current label size and sets it."""
+        if self._original_pixmap.isNull():
+            return
+
+        # Get the available size for the image (label size within scroll area)
+        available_size = self.image_label.size()
+        if available_size.isEmpty():
+            # Fallback if size is not yet determined, use a reasonable default
+            available_size = self.image_label.parentWidget().size()
+            if available_size.isEmpty():
+                available_size = self.size() # Fallback to dialog size
+
+        # Scale the pixmap to fit the available size, maintaining aspect ratio
+        scaled_pixmap = self._original_pixmap.scaled(available_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.image_label.setPixmap(scaled_pixmap)
+
+    def resizeEvent(self, event):
+        """Handles resize events to rescale the image."""
+        super().resizeEvent(event)
+        self._update_image_display()
+
+    def _format_generation_params(self, params: dict) -> str:
+        """Formats generation parameters into a human-readable string."""
+        details = []
+        details.append("Generation Parameters:")
+        details.append(f"  Model: {params.get('model', {}).get('name', 'N/A')}")
+        details.append(f"  Seed: {params.get('seed', 'N/A')}")
+        details.append(f"  Steps: {params.get('steps', 'N/A')}")
+        details.append(f"  CFG Scale: {params.get('cfg_scale', 'N/A')}")
+        details.append(f"  Size: {params.get('width', 'N/A')}x{params.get('height', 'N/A')}")
+        details.append(f"  Scheduler: {params.get('scheduler', 'N/A')}")
+        
+        neg_prompt = params.get('negative_prompt', '')
+        if neg_prompt:
+            details.append(f"  Negative Prompt:\n    {neg_prompt}")
+
+        loras = params.get('loras', [])
+        if loras:
+            details.append("  LoRAs:")
+            for lora in loras:
+                details.append(f"    - {lora.get('lora_object', {}).get('name', 'N/A')} (Weight: {lora.get('weight', 'N/A')})")
+        
+        return "\n".join(details)

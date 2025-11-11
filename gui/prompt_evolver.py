@@ -5,10 +5,8 @@ import os
 import tkinter.font as tkfont
 import sys
 from tkinter import ttk
-import re
 import queue
 import threading
-import copy
 from typing import Optional, List, Callable, TYPE_CHECKING, Dict, Any
 from PIL import Image, ImageTk
 

@@ -42,9 +42,16 @@ class HistoryManager:
                             if not images: return False
                             for img in images:
                                 relative_path = img.get('image_path')
-                                # An old-style path is 'images/uuid.png' (2 parts). A new one is 'images/entry_id/uuid.png' (3 parts).
-                                if relative_path and len(os.path.normpath(relative_path).split(os.sep)) == 2:
-                                    old_full_path = os.path.join(history_dir, relative_path)
+                                # An old-style path is 'uuid.png' (1 part) or 'images/uuid.png' (2 parts).
+                                # A new one is 'images/entry_id/uuid.png' (3 parts).
+                                path_parts = os.path.normpath(relative_path).split(os.sep)
+                                if relative_path and (len(path_parts) == 1 or len(path_parts) == 2):
+                                    # Determine the old full path correctly based on the number of parts
+                                    if len(path_parts) == 1: # e.g., "uuid.png"
+                                        old_full_path = os.path.join(history_dir, relative_path)
+                                    else: # len(path_parts) == 2, e.g., "images/uuid.png"
+                                        old_full_path = os.path.join(history_dir, relative_path)
+                                    
                                     if os.path.exists(old_full_path):
                                         new_relative_dir = os.path.join('images', entry_id)
                                         new_full_dir = os.path.join(history_dir, new_relative_dir)
@@ -101,6 +108,33 @@ class HistoryManager:
                             if var_data.get('image_path'):
                                 var_data['images'] = [{'image_path': var_data.pop('image_path'), 'generation_params': var_data.pop('generation_params', {})}]
                                 needs_rewrite = True
+
+                        # --- NEW: Normalize all image paths within the entry to the new format ---
+                        def normalize_image_path(img_data: Dict[str, Any], entry_id: str) -> bool:
+                            path_updated = False
+                            relative_path = img_data.get('image_path')
+                            if relative_path:
+                                path_parts = os.path.normpath(relative_path).split(os.sep)
+                                if len(path_parts) < 3 or path_parts[0] != 'images' or path_parts[1] != entry_id:
+                                    # Path is not in the expected 'images/entry_id/filename.png' format
+                                    image_filename = os.path.basename(relative_path)
+                                    new_relative_path = os.path.join('images', entry_id, image_filename)
+                                    img_data['image_path'] = new_relative_path
+                                    path_updated = True
+                            return path_updated
+
+                        if 'original_images' in entry:
+                            for img_data in entry['original_images']:
+                                if normalize_image_path(img_data, entry['id']): needs_rewrite = True
+                        if 'enhanced' in entry and 'images' in entry['enhanced']:
+                            for img_data in entry['enhanced']['images']:
+                                if normalize_image_path(img_data, entry['id']): needs_rewrite = True
+                        if 'variations' in entry:
+                            for var_data in entry['variations'].values():
+                                if 'images' in var_data:
+                                    for img_data in var_data['images']:
+                                        if normalize_image_path(img_data, entry['id']): needs_rewrite = True
+                        # --- END NEW ---
 
                         history.append(entry)
         except Exception as e:
@@ -261,15 +295,44 @@ class HistoryManager:
 
         history_dir = config.get_history_file_dir()
         for relative_path in image_paths_to_delete:
-            try:
-                full_path = os.path.join(history_dir, relative_path)
-                if os.path.exists(full_path):
-                    os.remove(full_path)
+            # Attempt to find and delete the image file in various possible locations
+            possible_paths = []
+            # 1. Current expected format: images/entry_id/filename.png
+            possible_paths.append(os.path.join(history_dir, 'images', entry_id_to_delete, os.path.basename(relative_path)))
+            # 2. Old format: images/filename.png (if it was moved but not to entry_id subfolder)
+            possible_paths.append(os.path.join(history_dir, 'images', os.path.basename(relative_path)))
+            # 3. Oldest format: filename.png (directly in history_dir)
+            possible_paths.append(os.path.join(history_dir, os.path.basename(relative_path)))
+            # 4. The path as it is stored in the entry (might already be correct)
+            possible_paths.append(os.path.join(history_dir, relative_path))
+
+            deleted_file = False
+            for full_path in possible_paths:
+                try:
+                    # Only attempt to remove if the file actually exists
+                    if os.path.exists(full_path):
+                        os.remove(full_path)
+                        if self.verbose:
+                            print(f"INFO: Deleted associated image: {full_path}")
+                        deleted_file = True
+                        break # Stop after first successful deletion
+                    # If the file doesn't exist, it's already "deleted" from our perspective
+                    elif self.verbose:
+                        print(f"INFO: Image file {full_path} not found, skipping deletion.")
+                        deleted_file = True # Consider it deleted if it wasn't there
+                        break # Stop trying other paths for this image
+                except FileNotFoundError:
+                    # This specific error means the file was already gone, which is fine.
                     if self.verbose:
-                        print(f"INFO: Deleted associated image: {full_path}")
-            except Exception as e:
-                # Log the error but don't stop the history entry deletion
-                print(f"WARNING: Could not delete image file {relative_path}. Error: {e}")
+                        print(f"INFO: Image file {full_path} not found during deletion attempt, already gone.")
+                    deleted_file = True # Consider it deleted
+                    break # Stop trying other paths for this image
+                except Exception as e:
+                    # Log other types of errors
+                    print(f"WARNING: Could not delete image file {full_path}. Error: {e}")
+            
+            if not deleted_file:
+                print(f"WARNING: Image file for {relative_path} not found or could not be deleted from any known location.")
 
         deleted = False
         temp_filepath = ""

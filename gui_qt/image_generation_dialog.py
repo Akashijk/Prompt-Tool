@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -29,13 +28,13 @@ from PySide6.QtWidgets import (
     QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
-    QProgressDialog,
 )
-from PySide6.QtCore import Slot, Qt, QTimer, QThread, QObject, Signal
+from PySide6.QtCore import Slot, Qt, QThread, QObject, Signal
 
 from core.config import config
 from core.prompt_processor import PromptProcessor
 from .per_model_override_dialogs import PerModelNegativePromptDialog, PerModelLoraDialog
+from .custom_widgets import SmoothTextEdit
 
 class AssetFetchWorker(QObject):
     """Worker to fetch InvokeAI assets in the background."""
@@ -57,7 +56,8 @@ class AssetFetchWorker(QObject):
             lora_models = processor.get_invokeai_loras(base_model=self.base_model, model_type='lora')
             self.finished.emit({'success': True, 'main': main_models, 'lora': lora_models})
         except Exception as e:
-            import traceback; traceback.print_exc()
+            import traceback
+            traceback.print_exc()
             self.finished.emit({'success': False, 'error': str(e)})
 
 
@@ -66,7 +66,7 @@ class ImageGenerationOptionsDialog(QDialog):
 
     def __init__(self, parent, processor: PromptProcessor, prompt: str, initial_params: Optional[Dict] = None, is_editing: bool = False):
         if processor.verbose:
-            print(f"\n--- VERBOSE: ImageGenerationOptionsDialog.__init__ ENTERED ---")
+            print("\n--- VERBOSE: ImageGenerationOptionsDialog.__init__ ENTERED ---")
         super().__init__(parent)
         self.setWindowTitle("Image Generation Options")
         self.processor = processor
@@ -111,7 +111,8 @@ class ImageGenerationOptionsDialog(QDialog):
             
             try:
                 self.move(screen.availableGeometry().center() - self.rect().center())
-            except Exception: pass
+            except Exception:
+                pass
 
             self.has_been_resized = True
 
@@ -247,15 +248,29 @@ class ImageGenerationOptionsDialog(QDialog):
                 row += 1
         main_settings_layout.addLayout(aspect_button_layout, 2, 2, 1, 2)
 
-        # Row 3: Scheduler
+        # Row 3: Scheduler and Seed
         main_settings_layout.addWidget(QLabel("Scheduler:"), 3, 0)
         self.scheduler_combo = QComboBox()
         self.scheduler_combo.addItems(self.schedulers)
-        self.scheduler_combo.setCurrentText(self.initial_params.get("scheduler", "dpmpp_2m"))
-        main_settings_layout.addWidget(self.scheduler_combo, 3, 1, 1, 3)
+        
+        # --- FIX: Validate the initial scheduler and fall back to a default if it's not in the list ---
+        initial_scheduler = self.initial_params.get("scheduler")
+        if initial_scheduler not in self.schedulers:
+            # If the saved scheduler isn't valid, try a sensible default
+            if "dpmpp_2m" in self.schedulers:
+                initial_scheduler = "dpmpp_2m"
+            # If that's not available either, just pick the first one
+            elif self.schedulers:
+                initial_scheduler = self.schedulers[0]
+            else:
+                initial_scheduler = "" # Should not happen if connected
 
-        # Row 4: Seed
-        main_settings_layout.addWidget(QLabel("Seed:"), 4, 0)
+        if initial_scheduler:
+             self.scheduler_combo.setCurrentText(initial_scheduler)
+
+        main_settings_layout.addWidget(self.scheduler_combo, 3, 1) # Only spans 1 column now
+
+        main_settings_layout.addWidget(QLabel("Seed:"), 3, 2) # New position
         seed_layout = QHBoxLayout()
         self.seed_edit = QLineEdit()
         self.seed_edit.setText(str(self.initial_params.get("seed", random.randint(0, 2**32 - 1))))
@@ -263,7 +278,7 @@ class ImageGenerationOptionsDialog(QDialog):
         self.random_seed_button = QPushButton("🎲")
         self.random_seed_button.setFixedWidth(40)
         seed_layout.addWidget(self.random_seed_button)
-        main_settings_layout.addLayout(seed_layout, 4, 1, 1, 3)
+        main_settings_layout.addLayout(seed_layout, 3, 3) # New position
 
         # Row 5: Overrides
         override_buttons_layout = QHBoxLayout()
@@ -295,7 +310,7 @@ class ImageGenerationOptionsDialog(QDialog):
         self.save_preset_button.setEnabled(False)
         preset_layout.addWidget(self.save_preset_button)
         neg_prompt_layout.addLayout(preset_layout)
-        self.negative_prompt_text = QTextEdit()
+        self.negative_prompt_text = SmoothTextEdit()
         neg_prompt_layout.addWidget(self.negative_prompt_text)
         self._populate_negative_prompt_presets()
         prompts_layout.addWidget(neg_prompt_group)
@@ -403,7 +418,13 @@ class ImageGenerationOptionsDialog(QDialog):
 
     @Slot()
     def _on_base_model_change(self):
-        """Handles the base model radio button change by fetching new assets."""
+        """Handles the base model radio button change by fetching new assets and updating the default resolution."""
+        if self.sd15_radio.isChecked():
+            self.width_spin.setValue(512)
+            self.height_spin.setValue(512)
+        else:
+            self.width_spin.setValue(1024)
+            self.height_spin.setValue(1024)
         self._fetch_and_populate_assets(force_fetch=False)
 
     def set_controls_enabled(self, enabled: bool):
@@ -459,6 +480,7 @@ class ImageGenerationOptionsDialog(QDialog):
                 spin_box = QDoubleSpinBox()
                 spin_box.setRange(-1.0, 2.0)
                 spin_box.setSingleStep(0.1)
+                spin_box.setDecimals(2)
                 spin_box.setValue(0.75)
                 
                 # Check if this lora was in the initial params
@@ -512,10 +534,12 @@ class ImageGenerationOptionsDialog(QDialog):
     @Slot()
     def _save_negative_prompt_preset(self):
         prompt_text = self.negative_prompt_text.toPlainText().strip()
-        if not prompt_text: return
+        if not prompt_text:
+            return
 
         preset_name, ok = QInputDialog.getText(self, "Save Negative Prompt Preset", "Enter a name for the new preset:")
-        if not ok or not preset_name: return
+        if not ok or not preset_name:
+            return
 
         # Check for existing name
         if any(p['name'].lower() == preset_name.lower() for p in self.negative_prompts):
@@ -578,11 +602,11 @@ class ImageGenerationOptionsDialog(QDialog):
             }
         else: # SD-1.5
             resolutions = {
-                (1, 1): (768, 768),
-                (4, 3): (832, 640),
-                (3, 4): (640, 832),
-                (16, 9): (960, 576),
-                (9, 16): (576, 960),
+                (1, 1): (512, 512),
+                (4, 3): (512, 384),
+                (3, 4): (384, 512),
+                (16, 9): (512, 288),
+                (9, 16): (288, 512),
             }
         
         width, height = resolutions.get((aspect_w, aspect_h), (1024, 1024))
@@ -743,6 +767,13 @@ class ImageGenerationOptionsDialog(QDialog):
         selected_models = self._get_selected_models()
         if not selected_models:
             QMessageBox.warning(self, "No Models Selected", "You must select at least one model to generate images.")
+            return # Keep the dialog open
+
+        # --- FIX: Validate that the seed is a valid integer before accepting ---
+        try:
+            int(self.seed_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Seed", "The seed must be a valid integer.")
             return # Keep the dialog open
 
         super().accept()

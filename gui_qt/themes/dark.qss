@@ -103,6 +103,15 @@ QComboBox::drop-down {
     border-top-right-radius: 6px; border-bottom-right-radius: 6px;
     background: rgba(255,255,255,0.02);
 }
+QComboBox::down-arrow {
+    image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTcgMTBMMTIgMTVMMTcgMTBIN1oiIGZpbGw9ImN1cnJlbnRDb2xvciIvPgo8L3N2Zz4=");
+    width: 16px;
+    height: 16px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    padding-right: 5px;
+    color: #E6E7EC; /* Color of the arrow */
+}
 QComboBox QAbstractItemView {
     background: #262833; color: #E6E7EC;
     border: 1px solid #3C3F51; selection-background-color: #6AA9FF;

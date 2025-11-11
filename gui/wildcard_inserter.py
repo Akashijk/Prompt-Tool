@@ -4,7 +4,7 @@ import os
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable, List, Optional, TYPE_CHECKING, Dict, Any
-from PIL import Image, ImageTk
+from PIL import Image
 
 from .common import Tooltip, ImagePreviewMixin
 

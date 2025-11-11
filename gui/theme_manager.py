@@ -2,7 +2,7 @@
 
 import tkinter as tk
 import sv_ttk
-from core.config import config, save_settings, load_settings
+from core.config import save_settings, load_settings
 
 class ThemeManager:
     """Manages the application's theme (light/dark)."""

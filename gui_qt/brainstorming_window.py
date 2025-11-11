@@ -2,7 +2,7 @@
 
 import re
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser, QTextEdit, QInputDialog,
+    QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser, QInputDialog,
     QPushButton, QComboBox, QGroupBox, QSplitter, QWidget, QMessageBox, QApplication
 )
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
@@ -11,6 +11,8 @@ from typing import List, Dict, Optional
 
 from core.prompt_processor import PromptProcessor
 from .review_and_save_dialog import ReviewAndSaveDialog
+from core.config import config
+from .custom_widgets import SmoothTextEdit, SmoothTextBrowser
 
 class ChatWorker(QObject):
     """Worker to handle streaming chat with an AI model."""
@@ -89,10 +91,24 @@ class BrainstormingWindow(QDialog):
         self.current_worker_thread: Optional[QThread] = None
         self.content_gen_thread: Optional[QThread] = None
 
-        self.models = [m['name'] for m in self.processor.get_available_models()]
+        self.models = [m['name'] for m in self.processor.get_ollama_models()]
+        self.current_model: Optional[str] = None
 
         self._create_widgets()
         self._connect_signals()
+
+        # Set the default model after widgets are created
+        if config.DEFAULT_OLLAMA_MODEL and config.DEFAULT_OLLAMA_MODEL in self.models:
+            self.model_combo.setCurrentText(config.DEFAULT_OLLAMA_MODEL)
+        else:
+            main_app_model = self.parent_app.model_combo.currentText()
+            if main_app_model and main_app_model in self.models:
+                self.model_combo.setCurrentText(main_app_model)
+            elif self.models:
+                self.model_combo.setCurrentIndex(0)
+        
+        self.current_model = self.model_combo.currentText()
+
         self.resize(800, 600)
         try:
             screen_geometry = QApplication.primaryScreen().availableGeometry()
@@ -109,12 +125,12 @@ class BrainstormingWindow(QDialog):
         chat_widget = QWidget()
         chat_layout = QVBoxLayout(chat_widget)
         
-        self.chat_display = QTextBrowser()
+        self.chat_display = SmoothTextBrowser()
         self.chat_display.setOpenExternalLinks(True)
         chat_layout.addWidget(self.chat_display)
 
         input_layout = QHBoxLayout()
-        self.user_input = QTextEdit()
+        self.user_input = SmoothTextEdit()
         self.user_input.setFixedHeight(80)
         input_layout.addWidget(self.user_input)
         
@@ -152,6 +168,20 @@ class BrainstormingWindow(QDialog):
         self.send_button.clicked.connect(self._on_send_clicked)
         self.gen_template_button.clicked.connect(self._on_gen_template)
         self.gen_wildcard_button.clicked.connect(self._on_gen_wildcard)
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
+
+    @Slot(str)
+    def _on_model_changed(self, new_model: str):
+        self.current_model = new_model
+        self.parent_app.report_model_change(new_model)
+
+    @Slot(str)
+    def set_model(self, model_name: str):
+        """Slot to programmatically set the model from the parent app."""
+        self.model_combo.blockSignals(True)
+        self.model_combo.setCurrentText(model_name)
+        self.model_combo.blockSignals(False)
+        self.current_model = model_name
 
     @Slot()
     def _on_send_clicked(self):

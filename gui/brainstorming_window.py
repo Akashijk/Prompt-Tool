@@ -8,14 +8,12 @@ import os
 import threading
 import json
 import re
-import random
 import traceback
-from typing import Optional, List, Dict, Callable, Tuple, TYPE_CHECKING
+from typing import Optional, List, Dict, Callable, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
 from core.config import config
-from core.ollama_client import sanitize_wildcard_choices
-from . import custom_dialogs, wildcard_editor_widget
+from . import custom_dialogs
 from .review_window import ReviewAndSaveWindow
 from .common import BrainstormingContextMenu, TextContextMenu, SmartWindowMixin
 
@@ -657,7 +655,7 @@ class BrainstormingWindow(tk.Toplevel, SmartWindowMixin):
 
         except json.JSONDecodeError:
             # If JSON is invalid, just show the basic message
-            self._add_message("AI", f"Generated a new wildcard. See the new window to review and save.", "ai")
+            self._add_message("AI", "Generated a new wildcard. See the new window to review and save.", "ai")
 
         self._handle_generated_content(parsed_json_string, 'wildcard', metadata)
 

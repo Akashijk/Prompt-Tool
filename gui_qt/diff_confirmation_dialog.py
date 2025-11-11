@@ -2,9 +2,10 @@
 
 import difflib
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QTextEdit, QDialogButtonBox
+    QApplication, QDialog, QVBoxLayout, QDialogButtonBox
 )
 from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont
+from .custom_widgets import SmoothTextEdit
 
 class DiffHighlighter(QSyntaxHighlighter):
     """A simple syntax highlighter for unified diff format."""
@@ -41,7 +42,7 @@ class DiffConfirmationDialog(QDialog):
             pass # Fallback to default positioning
 
         layout = QVBoxLayout(self)
-        self.text_edit = QTextEdit()
+        self.text_edit = SmoothTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setFont(QFont("Courier", 10))
         layout.addWidget(self.text_edit)

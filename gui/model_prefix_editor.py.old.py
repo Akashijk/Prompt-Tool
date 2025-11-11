@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 import queue
-from typing import Optional, Dict, TYPE_CHECKING, List
+from typing import Optional, TYPE_CHECKING
 
 from . import custom_dialogs
 from .common import SmartWindowMixin, TextContextMenu

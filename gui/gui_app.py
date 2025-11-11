@@ -11,7 +11,6 @@ import random
 import subprocess
 from packaging.version import parse as parse_version
 import requests
-import sys
 import queue
 from typing import Optional, List, Tuple, Dict, Any, Callable
 from tkinter import ttk
@@ -22,7 +21,7 @@ from core.config import config, save_settings, load_settings
 from .enhancement_window import EnhancementResultWindow
 from .brainstorming_window import BrainstormingWindow
 from .action_bar import ActionBar
-from .common import Tooltip, LoadingAnimation, TextContextMenu, TemplateEditorContextMenu, SmartWindowMixin, PromptPreviewContextMenu
+from .common import Tooltip, LoadingAnimation, SmartWindowMixin, PromptPreviewContextMenu
 from .history_viewer import HistoryViewerWindow
 from .review_window import ReviewAndSaveWindow
 from .favorite_images_viewer import FavoriteImagesViewer

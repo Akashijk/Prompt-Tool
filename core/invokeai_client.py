@@ -1,13 +1,11 @@
 """Client for interacting with the InvokeAI REST API."""
 
 import requests
-import os
 import json
 import time
 import threading
-import base64
 import copy
-from typing import Dict, Any, Optional, List, Tuple, Callable
+from typing import Dict, Any, Optional, List
 from .config import config
 from packaging.version import Version, parse as parse_version
 
@@ -236,7 +234,7 @@ class InvokeAIClient:
             # Priority 1: Look for the well-known 'fp16-fix' VAE.
             for vae in sdxl_vaes:
                 if 'sdxl-vae-fp16-fix' in vae.get('name', '').lower():
-                    if self.verbose: print(f"INFO: Found high-priority 'sdxl-vae-fp16-fix'. Overriding model's default VAE.")
+                    if self.verbose: print("INFO: Found high-priority 'sdxl-vae-fp16-fix'. Overriding model's default VAE.")
                     return vae
             
             # Priority 2: Look for any other non-fp16 SDXL VAE.
@@ -260,7 +258,7 @@ class InvokeAIClient:
             # Priority 1: Look for the well-known 'ft-mse' VAE.
             for vae in sd15_vaes:
                 if 'sd-vae-ft-mse' in vae.get('name', '').lower():
-                    if self.verbose: print(f"INFO: Found standard 'sd-vae-ft-mse'. Applying VAE override for SD-1.5 model.")
+                    if self.verbose: print("INFO: Found standard 'sd-vae-ft-mse'. Applying VAE override for SD-1.5 model.")
                     return vae
             
             # Priority 2: If the standard one isn't found, use the first available compatible VAE as a fallback.
@@ -270,7 +268,7 @@ class InvokeAIClient:
 
         return None
 
-    def _build_sd15_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, save_to_gallery: bool) -> Dict[str, Any]:
+    def _build_sd15_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, save_to_gallery: bool, width: int, height: int) -> Dict[str, Any]:
         """
         Builds the complete node graph for a standard SD-1.5 text-to-image generation.
         """
@@ -305,8 +303,8 @@ class InvokeAIClient:
                 "type": "noise",
                 "id": "noise",
                 "seed": seed,
-                "width": model_object.get("default_settings", {}).get("width", 512),
-                "height": model_object.get("default_settings", {}).get("height", 512),
+                "width": width,
+                "height": height,
             },
             "denoise_latents": {
                 "type": "denoise_latents",
@@ -373,19 +371,29 @@ class InvokeAIClient:
 
         edges.extend(lora_edges)
 
-        return {"nodes": nodes, "edges": edges}
+        return {"nodes": nodes, "edges": edges}, compatible_vae
 
-    def _build_sdxl_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool) -> Dict[str, Any]:
+    def _build_sdxl_t2i_graph(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, width: int, height: int) -> Dict[str, Any]:
         """
         Builds the complete node graph for a standard SDXL text-to-image generation,
         including LoRA chaining.
         Returns the complete graph dictionary.
         """
         # --- Automatic Negative Prompt Splitting ---
+        # --- FIX: Pass width and height directly into the graph builder ---
+        # The previous code was only looking inside model_object['default_settings'],
+        # but the actual dimensions are passed in the top-level gen_params.
+        # This ensures the 'noise' node is created with the correct dimensions.
         # To improve generation quality, we separate style-related negatives from content-related ones.
         content_neg_parts = []
-        style_neg_parts = []
-        # A set of common, style-related negative keywords. This is not exhaustive but covers the majority of presets.
+        # --- FIX: Start with a base set of style-related negative prompts ---
+        # This ensures a baseline of quality and prevents common artifacts, even if the user
+        # provides no style-related negatives.
+        style_neg_parts = [
+            'low quality', 'blurry', 'jpeg artifacts', 'bad anatomy', 'disfigured', 
+            'deformed', 'missing fingers', 'watermark', 'signature', 'text', 'error', 
+            'loli', 'child', 'cropped', 'duplicate'
+        ]
         STYLE_KEYWORDS = {
             'ugly', 'deformed', 'disfigured', 'bad anatomy', 'blurry', 'low resolution',
             'duplicate', 'bad quality', 'worst quality', 'low quality', 'normal quality',
@@ -479,8 +487,8 @@ class InvokeAIClient:
                 "type": "noise",
                 "id": "noise",
                 "seed": seed,
-                "width": model_object.get("default_settings", {}).get("width", 1024),
-                "height": model_object.get("default_settings", {}).get("height", 1024),
+                "width": width,
+                "height": height,
             },
             "sdxl_denoise_latents": denoise_node,
             "l2i": {
@@ -513,10 +521,10 @@ class InvokeAIClient:
         for i, lora_info in enumerate(loras):
             lora_node_id = f"lora_loader_{i}"
             lora_object = lora_info['lora_object']
-            # --- FIX: Use 'sdxl_lora_loader' and explicitly define submodels. ---
+            # --- FIX: Use 'sdxl_lora_loader' and explicitly define submodels. --- #
             # This is the definitive fix for the "Unrecognized SDXL LoRA key prefix" error.
             # It ensures that even advanced LoRA/LyCORIS formats are correctly applied
-            # to both the UNet and the text encoders by the InvokeAI server.
+            # to both the UNet and the text encoders by the InvokeAI server. #
             nodes[lora_node_id] = {
                 "id": lora_node_id, "type": "sdxl_lora_loader", "lora": lora_object, "weight": lora_info['weight'], "submodels": ["unet", "text_encoder", "text_encoder_2"]
             }
@@ -578,7 +586,7 @@ class InvokeAIClient:
 
         edges.extend(lora_edges)
 
-        return {"nodes": nodes, "edges": edges}
+        return {"nodes": nodes, "edges": edges}, compatible_vae
 
     def empty_model_cache(self) -> bool:
         """
@@ -735,14 +743,14 @@ class InvokeAIClient:
             pass # Defensive: if anything goes wrong, we just return what we have.
         return names
 
-    def enqueue_image_generation(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+    def enqueue_image_generation(self, prompt: str, negative_prompt: str, seed: int, model_object: Dict[str, Any], loras: List[Dict[str, Any]], steps: int, cfg_scale: float, scheduler: str, cfg_rescale_multiplier: float, save_to_gallery: bool, width: int, height: int, verbose: bool = False, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:
         """Generates an image using the queue API and returns the raw image bytes."""
         model_base = model_object.get('base')
         if model_base == 'sdxl':
-            graph = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, cfg_rescale_multiplier, save_to_gallery)
+            graph, vae_used = self._build_sdxl_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, cfg_rescale_multiplier, save_to_gallery, width, height) # type: ignore
         elif model_base in ['sd-1.5', 'sd-1']:
             # Note: cfg_rescale_multiplier is not used for SD-1.5
-            graph = self._build_sd15_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, save_to_gallery)
+            graph, vae_used = self._build_sd15_t2i_graph(prompt, negative_prompt, seed, model_object, loras, steps, cfg_scale, scheduler, save_to_gallery, width, height)
         else:
             raise ValueError(f"Unsupported model base type: '{model_base}'. This tool currently supports 'sdxl' and 'sd-1.5'.")
         
@@ -770,8 +778,11 @@ class InvokeAIClient:
         except (KeyError, IndexError) as e:
             raise Exception(f"Could not parse queue item ID from InvokeAI response. Response was: {json.dumps(queue_item, indent=2)}") from e
 
-        # --- FIX: Return the item_id and the actual scheduler used ---
-        final_params = {'scheduler': scheduler}
+        # --- FIX: Return all relevant parameters for reproducibility ---
+        final_params = {
+            'scheduler': scheduler,
+            'vae': vae_used
+        }
         return {'item_id': item_id, 'generation_params': final_params}
 
     def wait_for_image_generation_result(self, item_id: int, save_to_gallery: bool, cancellation_event: Optional[threading.Event] = None) -> Dict[str, Any]:

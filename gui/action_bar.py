@@ -2,8 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk
-import random
-from typing import Dict, List, Callable, Optional, TYPE_CHECKING
+from typing import Dict, List, Callable, Optional
 from .common import Tooltip
 
 class ActionBar(ttk.Frame):

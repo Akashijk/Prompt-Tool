@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPushButton,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.prompt_processor import PromptProcessor
+from .custom_widgets import SmoothListWidget
 
 
 class LoraPermutationDialog(QDialog):
@@ -65,7 +65,7 @@ class LoraPermutationDialog(QDialog):
         left_pane = QWidget()
         left_layout = QVBoxLayout(left_pane)
         left_layout.addWidget(QLabel("Permutations:"))
-        self.perm_list = QListWidget()
+        self.perm_list = SmoothListWidget()
         self.perm_list.currentItemChanged.connect(self._on_permutation_select)
         left_layout.addWidget(self.perm_list)
 
@@ -164,9 +164,11 @@ class LoraPermutationDialog(QDialog):
         return row_widgets
 
     def _on_permutation_select(self, current: QListWidgetItem, previous: QListWidgetItem):
-        if not current: return
+        if not current:
+            return
         new_index = self.perm_list.row(current)
-        if new_index == self.current_permutation_index: return
+        if new_index == self.current_permutation_index:
+            return
 
         # Clear old widgets
         while self.lora_rows_layout.count():
@@ -192,27 +194,30 @@ class LoraPermutationDialog(QDialog):
             display_name += f" ({' + '.join(lora_names)})"
         item.setText(display_name)
 
-    def _update_current_perm_name(self):
-        if self.current_permutation_index == -1: return
+        if self.current_permutation_index == -1:
+            return
         item = self.perm_list.item(self.current_permutation_index)
         perm_data = self.permutations[self.current_permutation_index]
         self._update_perm_list_item_text(item, perm_data)
 
     def _add_lora_row_to_current_perm(self):
-        if self.current_permutation_index == -1: return
+        if self.current_permutation_index == -1:
+            return
         new_row = self._create_lora_row()
         self.permutations[self.current_permutation_index]['lora_rows'].append(new_row)
         self.lora_rows_layout.addWidget(new_row['frame'])
 
     def _delete_lora_row(self, row_widgets: Dict[str, QWidget]):
-        if self.current_permutation_index == -1: return
+        if self.current_permutation_index == -1:
+            return
         current_perm = self.permutations[self.current_permutation_index]
         current_perm['lora_rows'].remove(row_widgets)
         row_widgets['frame'].deleteLater()
         self._update_current_perm_name()
 
     def _duplicate_permutation(self):
-        if self.current_permutation_index == -1: return
+        if self.current_permutation_index == -1:
+            return
         perm_to_copy = self.permutations[self.current_permutation_index]
         new_loras = []
         for row in perm_to_copy['lora_rows']:
@@ -223,7 +228,8 @@ class LoraPermutationDialog(QDialog):
         self._add_permutation(new_loras)
 
     def _remove_permutation(self):
-        if self.current_permutation_index == -1: return
+        if self.current_permutation_index == -1:
+            return
         row_to_remove = self.current_permutation_index
         perm_to_remove = self.permutations.pop(row_to_remove)
         for row in perm_to_remove['lora_rows']:
@@ -236,7 +242,8 @@ class LoraPermutationDialog(QDialog):
             loras_for_perm = []
             for row in perm['lora_rows']:
                 lora_name = row['combo'].currentText()
-                if lora_name == "(None)": continue
+                if lora_name == "(None)":
+                    continue
                 lora_obj = self.all_loras.get(lora_name)
                 if lora_obj:
                     loras_for_perm.append({'lora_object': lora_obj, 'weight': row['spinbox'].value()})
@@ -244,5 +251,4 @@ class LoraPermutationDialog(QDialog):
         
         if not self.result:
             self.result.append([]) # Add a default permutation with no LoRAs
-        
         self.accept()

@@ -9,13 +9,11 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFrame,
     QHBoxLayout,
     QDoubleSpinBox,
     QGroupBox,
     QHeaderView,
     QSplitter,
-    QListWidget,
     QListWidgetItem,
     QTextEdit,
     QTreeWidget,
@@ -24,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from core.prompt_processor import PromptProcessor
+from .custom_widgets import SmoothListWidget, SmoothTextEdit
 
 
 class PerModelNegativePromptDialog(QDialog):
@@ -64,7 +63,7 @@ class PerModelNegativePromptDialog(QDialog):
         # --- Left Pane: Model List ---
         left_pane = QWidget()
         left_layout = QVBoxLayout(left_pane)
-        self.model_list = QListWidget()
+        self.model_list = SmoothListWidget()
         self.model_list.addItems(self.model_names)
         self.model_list.currentItemChanged.connect(self._on_model_select)
         left_layout.addWidget(self.model_list)
@@ -84,7 +83,7 @@ class PerModelNegativePromptDialog(QDialog):
         preset_layout.addWidget(self.combo)
         editor_group_layout.addLayout(preset_layout)
 
-        self.editor = QTextEdit()
+        self.editor = SmoothTextEdit()
         editor_group_layout.addWidget(self.editor)
         right_layout.addWidget(self.editor_group)
         splitter.addWidget(right_pane)
@@ -192,7 +191,7 @@ class PerModelLoraDialog(QDialog):
         # --- Left Pane: Model List ---
         left_pane = QWidget()
         left_layout = QVBoxLayout(left_pane)
-        self.model_list = QListWidget()
+        self.model_list = SmoothListWidget()
         self.model_list.addItems(self.model_names)
         self.model_list.currentItemChanged.connect(self._on_model_select)
         left_layout.addWidget(self.model_list)

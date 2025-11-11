@@ -1,7 +1,7 @@
 """A reusable Qt widget for displaying a text preview on hover."""
 
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor
 
 class TextPreviewPopup(QWidget):

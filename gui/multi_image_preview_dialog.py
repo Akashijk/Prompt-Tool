@@ -281,18 +281,19 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                 self.event_generate("<<GenerationQueueUpdated>>")
                 prompt = job['prompt']
                 gen_params = job['gen_params']
-
+                
                 gen_args = {
                     "prompt": prompt, "negative_prompt": gen_params.get("negative_prompt", ""),
                     "seed": gen_params.get("seed"), "model_object": gen_params.get("model"),
                     "loras": gen_params.get("loras", []), "steps": gen_params.get("steps", 30),
                     "cfg_scale": gen_params.get("cfg_scale", 7.5), "scheduler": gen_params.get("scheduler", "dpmpp_2m"),
                     "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier", 0.0),
-                    "save_to_gallery": self.save_to_gallery_for_batch, "cancellation_event": self.cancellation_event
+                    "save_to_gallery": self.save_to_gallery_for_batch, "cancellation_event": self.cancellation_event,
+                    "width": gen_params.get("width", 1024), # Default to 1024 if not found
+                    "height": gen_params.get("height", 1024) # Default to 1024 if not found
                 }
-                
-                # --- FIX: Register the job ID *before* starting generation ---
-                # This prevents a race condition where a cancellation might miss an in-progress job.
+                            
+                            # --- FIX: Register the job ID *before* starting generation ---                # This prevents a race condition where a cancellation might miss an in-progress job.
                 image_data = self.processor.invokeai_client.enqueue_image_generation(**gen_args)
                 item_id = image_data.get('item_id')
                 if item_id:
@@ -345,7 +346,9 @@ class MultiImagePreviewDialog(custom_dialogs._CustomDialog, SmartWindowMixin, Im
                     "loras": gen_params.get("loras", []), "steps": gen_params.get("steps", 30),
                     "cfg_scale": gen_params.get("cfg_scale", 7.5), "scheduler": gen_params.get("scheduler", "dpmpp_2m"),
                     "cfg_rescale_multiplier": gen_params.get("cfg_rescale_multiplier", 0.0),
-                    "save_to_gallery": self.save_to_gallery_for_batch, "cancellation_event": self.cancellation_event
+                    "save_to_gallery": self.save_to_gallery_for_batch, "cancellation_event": self.cancellation_event,
+                    "width": gen_params.get("width", 1024), # Default to 1024 if not found
+                    "height": gen_params.get("height", 1024) # Default to 1024 if not found
                 }
                 image_data = self.processor.generate_image_with_invokeai(**gen_args)
                 result_data = {'bytes': image_data['bytes'], 'prompt': prompt, 'generation_params': image_data.get('generation_params', {})}

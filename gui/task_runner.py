@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 import queue
-from typing import Callable, Optional, Any
+from typing import Callable, Optional
 
 from . import custom_dialogs
 from .common import LoadingAnimation

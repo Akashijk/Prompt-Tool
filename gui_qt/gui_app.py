@@ -1,20 +1,18 @@
 """The new Qt-based main application window."""
 
-import sys
 import re
 import random
 import json
 import os
 import uuid
 from typing import Optional, List, Dict, Any
-from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QTextCursor, QIcon, QCursor
+from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QSyntaxHighlighter, QTextCharFormat, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenuBar, QMenu,
-    QLabel, QComboBox, QPushButton, QTextEdit, QSplitter, QGroupBox, QLineEdit, QInputDialog, QStyle,
-    QMessageBox, QCheckBox, QFileDialog, QListWidget, QListWidgetItem, QStatusBar,
-    QDialog, QTextBrowser
+    QLabel, QComboBox, QPushButton, QTextEdit, QSplitter, QGroupBox, QLineEdit, QInputDialog, QMessageBox, QCheckBox, QFileDialog, QStatusBar,
+    QDialog, QGridLayout
 )
-from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt, QTimer, QUrl, QEvent
+from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt, QTimer, QUrl
 
 # The magic! We import the existing core logic directly. No changes needed there.
 from core.prompt_processor import PromptProcessor
@@ -31,7 +29,7 @@ from .model_stats_window import ModelStatsWindow
 from .diff_confirmation_dialog import DiffConfirmationDialog
 from .settings_window import SettingsWindow
 from .asset_prefix_editor import AssetPrefixEditorWindow
-from .custom_widgets import LinkOnlyTextBrowser
+from .custom_widgets import LinkOnlyTextBrowser, SmoothTextEdit
 from .system_prompt_editor import SystemPromptEditorWindow
 from .favorite_images_viewer import FavoriteImagesViewer
 from .theme_manager import ThemeManager
@@ -39,6 +37,44 @@ from .text_preview_mixin import TextPreviewMixin
 from .model_usage_manager import ModelUsageManager
 from .wildcard_inserter import WildcardInserter
 from .dependency_graph_window import DependencyGraphWindow
+from .png_text_viewer import PNGTextViewerWindow
+
+
+import threading
+
+class NetworkWorker(QObject):
+    """
+    A worker object that runs network-dependent tasks in a separate thread.
+    """
+    finished = Signal(dict)
+
+    def __init__(self, processor: PromptProcessor, cancellation_event: threading.Event):
+        super().__init__()
+        self.processor = processor
+        self.cancellation_event = cancellation_event
+
+    @Slot()
+    def run(self):
+        """The main work method. This runs in the background thread."""
+        try:
+            if self.cancellation_event.is_set():
+                self.finished.emit({'success': False, 'error': 'Cancelled'})
+                return
+            
+            try:
+                self.processor.invokeai_client.check_server_compatibility()
+            except Exception as e:
+                print(f"DEBUG: Initial InvokeAI connection check failed: {e}")
+
+            if self.cancellation_event.is_set():
+                self.finished.emit({'success': False, 'error': 'Cancelled'})
+                return
+            models = self.processor.get_ollama_models()
+
+            self.finished.emit({'success': True, 'models': models})
+        except Exception as e:
+            if not self.cancellation_event.is_set():
+                self.finished.emit({'success': False, 'error': str(e)})
 
 
 class Worker(QObject):
@@ -50,23 +86,24 @@ class Worker(QObject):
     # It will carry a dictionary as its payload.
     finished = Signal(dict)
 
-    def __init__(self, processor: PromptProcessor):
+    def __init__(self, verbose: bool):
         super().__init__()
-        self.processor = processor
+        self.verbose = verbose
 
     @Slot()
     def run(self):
         """The main work method. This runs in the background thread."""
         try:
-            # Perform the long-running task (e.g., loading files from disk).
-            self.processor.initialize()
-            templates = self.processor.get_available_templates()
-            models = self.processor.get_available_models() # Fetch models too
-            wildcard_files = self.processor.get_wildcard_files()
+            processor = PromptProcessor(verbose=self.verbose)
+            processor.initialize()
+            # These are local file operations and should be fast
+            templates = processor.get_available_templates()
+            wildcard_files = processor.get_wildcard_files()
             
             # Emit the 'finished' signal with the results.
-            self.finished.emit({'success': True, 'templates': templates, 'models': models, 'wildcard_files': wildcard_files})
+            self.finished.emit({'success': True, 'processor': processor, 'templates': templates, 'wildcard_files': wildcard_files})
         except Exception as e:
+            # This is a catch-all for any other unexpected errors
             self.finished.emit({'success': False, 'error': str(e)})
 
 class PromptGenerationWorker(QObject):
@@ -111,11 +148,38 @@ class TemplateEnhancementWorker(QObject):
             enhanced_content = self.processor.ai_enhance_template(self.template_content, self.model)
             self.finished.emit({'success': True, 'original': self.template_content, 'enhanced': enhanced_content})
         except Exception as e:
+            print(f"ERROR in TemplateEnhancementWorker: {e}")
             self.finished.emit({'success': False, 'error': str(e)})
+
+
+class WildcardHighlighter(QSyntaxHighlighter):
+    """A syntax highlighter for wildcards in the template editor."""
+    def __init__(self, document, parent_app):
+        super().__init__(document)
+        self.parent_app = parent_app
+        self.highlighting_rules = []
+
+        self.light_theme_format = QTextCharFormat()
+        self.light_theme_format.setForeground(QColor("#00008B")) # Dark Blue
+        self.light_theme_format.setFontWeight(700) # Bold
+
+        self.dark_theme_format = QTextCharFormat()
+        self.dark_theme_format.setForeground(QColor("#FFFF00")) # Bright Yellow
+        self.dark_theme_format.setFontWeight(700) # Bold
+
+    def highlightBlock(self, text):
+        current_theme = config.theme
+        wildcard_format = self.dark_theme_format if current_theme == "dark" else self.light_theme_format
+
+        pattern = re.compile(r"__([a-zA-Z0-9_.\\s-]+?)__")
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            self.setFormat(start, end - start, wildcard_format)
 
 
 class GUIApp(QMainWindow, TextPreviewMixin):
     """The main application window, rewritten using PyQt/PySide."""
+    ollama_model_changed = Signal(str)
 
     def __init__(self, verbose: bool = False):
         if verbose:
@@ -142,9 +206,12 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         config.theme = settings.get('theme', 'light')
         config.save_to_gallery_by_default = settings.get('save_to_gallery_by_default', False)
 
-        self.processor = PromptProcessor(verbose=verbose)
+        self.processor: Optional[PromptProcessor] = None
+        self.verbose = verbose
+
         self.theme_manager = ThemeManager()
-        self.model_usage_manager = ModelUsageManager(self.processor)
+        self.model_usage_manager: Optional[ModelUsageManager] = None
+        self.wildcard_inserter: Optional[WildcardInserter] = None
 
         self.last_generation_result: Dict = {}
         self.current_structured_prompt: List = []
@@ -160,9 +227,11 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         self.favorite_images_viewer_window: Optional[FavoriteImagesViewer] = None
         self.asset_prefix_editor_window: Optional[AssetPrefixEditorWindow] = None
         self.system_prompt_editor_window: Optional[SystemPromptEditorWindow] = None
+        self.png_text_viewer_window: Optional[PNGTextViewerWindow] = None
         self.loading_animation_timer: Optional[QTimer] = None
         self.loading_animation_chars = ["/", "-", "\\", "|"]
         self.loading_animation_index = 0
+        self.current_ollama_model: Optional[str] = None
         
         self.live_update_timer = QTimer(self)
         self.live_update_timer.setSingleShot(True)
@@ -177,6 +246,8 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         self.gen_thread: Optional[QThread] = None
         self.enhance_thread: Optional[QThread] = None
 
+        self.cancellation_event = threading.Event()
+
         self._create_widgets()
         self.theme_manager.apply_theme(config.theme)
         self._create_menu_bar()
@@ -184,26 +255,31 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         self._connect_signals()
         self._start_initial_load()
 
-        # Connect to the application's aboutToQuit signal for robust cleanup
-        app = QApplication.instance()
-        app.aboutToQuit.connect(self.cleanup_threads)
 
-    def cleanup_threads(self):
-        """Gracefully shut down all background threads before the application quits."""
-        print("Cleaning up all child threads before application quits...")
-        child_threads = self.findChildren(QThread)
-        running_threads = [t for t in child_threads if t.isRunning()]
 
-        if not running_threads:
-            return
+    def closeEvent(self, event):
+        """Ensures all child windows are closed before the main application exits."""
+        all_windows = []
+        if self.wildcard_manager_window: all_windows.append(self.wildcard_manager_window)
+        if self.history_viewer_window: all_windows.append(self.history_viewer_window)
+        if self.brainstorming_window: all_windows.append(self.brainstorming_window)
+        if self.prompt_evolver_window: all_windows.append(self.prompt_evolver_window)
+        if self.image_interrogator_window: all_windows.append(self.image_interrogator_window)
+        if self.model_stats_window: all_windows.append(self.model_stats_window)
+        if self.asset_prefix_editor_window: all_windows.append(self.asset_prefix_editor_window)
+        if self.system_prompt_editor_window: all_windows.append(self.system_prompt_editor_window)
+        if self.settings_window: all_windows.append(self.settings_window)
+        if self.favorite_images_viewer_window: all_windows.append(self.favorite_images_viewer_window)
+        if self.png_text_viewer_window: all_windows.append(self.png_text_viewer_window)
+        
+        all_windows.extend(self.enhancement_windows)
+        all_windows.extend(self.image_preview_dialogs)
 
-        print(f"Found {len(running_threads)} running threads to terminate.")
-        for thread in running_threads:
-            thread.quit()
-            if not thread.wait(500):
-                print(f"Warning: Thread {thread} did not terminate gracefully. Forcing termination.")
-                thread.terminate()
-                thread.wait()
+        for window in all_windows:
+            if window and window.isVisible():
+                window.close()
+        
+        super().closeEvent(event)
 
     @Slot()
     def _on_any_thread_finished(self):
@@ -260,8 +336,9 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         # Template Editor
         self.template_editor_group = QGroupBox("Template Content")
         template_editor_layout = QVBoxLayout()
-        self.template_editor_text = QTextEdit()
+        self.template_editor_text = SmoothTextEdit()
         self.template_editor_text.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.highlighter = WildcardHighlighter(self.template_editor_text.document(), self)
         template_editor_layout.addWidget(self.template_editor_text)
         self.template_editor_group.setLayout(template_editor_layout)
         
@@ -327,7 +404,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
         # --- Variations Group ---
         self.variations_group = QGroupBox("Variations")
-        self.variations_layout = QHBoxLayout(self.variations_group)
+        self.variations_layout = QGridLayout(self.variations_group) # Changed to QGridLayout
         self.variation_checkboxes: Dict[str, QCheckBox] = {}
         action_bar_main_layout.addWidget(self.variations_group)
         action_bar_main_layout.addStretch(1)
@@ -335,7 +412,10 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         # Seed Controls
         seed_controls_group = QGroupBox("Seed Controls")
         seed_controls_layout = QHBoxLayout()
-        seed_controls_layout.addWidget(QLabel("Seed:"))
+        seed_controls_layout.setAlignment(Qt.AlignVCenter) # Align items vertically in the center
+        seed_label = QLabel("Seed:")
+        seed_label.setFixedHeight(24) # Set a reasonable fixed height
+        seed_controls_layout.addWidget(seed_label)
         self.seed_edit = QLineEdit()
         self.seed_edit.setFixedWidth(120)
         seed_controls_layout.addWidget(self.seed_edit)
@@ -353,11 +433,12 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         main_splitter.addWidget(left_widget)
 
         # --- Right Pane (Wildcard Inserter) ---
-        wildcard_group = QGroupBox("Insert Wildcard")
-        wildcard_layout = QVBoxLayout(wildcard_group)
-        self.wildcard_inserter = WildcardInserter(self, self.processor, self._insert_wildcard_into_editor, self._open_wildcard_manager)
-        wildcard_layout.addWidget(self.wildcard_inserter)
-        main_splitter.addWidget(wildcard_group)
+        self.wildcard_group = QGroupBox("Insert Wildcard")
+        wildcard_layout = QVBoxLayout(self.wildcard_group)
+        self.wildcard_placeholder = QLabel("Loading wildcards...")
+        self.wildcard_placeholder.setAlignment(Qt.AlignCenter)
+        wildcard_layout.addWidget(self.wildcard_placeholder)
+        main_splitter.addWidget(self.wildcard_group)
 
         self.main_layout.addWidget(main_splitter)
 
@@ -369,6 +450,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
     def _connect_signals(self):
         """Connect widget signals to corresponding slots."""
         self.template_combo.currentTextChanged.connect(self._on_template_select)
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
         self.generate_preview_button.clicked.connect(self._on_generate_preview_clicked)
         self.randomize_seed_button.clicked.connect(self._randomize_seed)
         self.template_editor_text.textChanged.connect(self.live_update_timer.start)
@@ -383,64 +465,62 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
     def _start_initial_load(self):
         """Starts the background thread to load initial data."""
+        # --- Local Worker ---
         self.thread = QThread(self)
-        self.worker = Worker(self.processor)
-
-        # Move the worker to the background thread.
+        self.worker = Worker(self.verbose)
         self.worker.moveToThread(self.thread)
-
-        # Connect signals and slots.
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._on_load_finished)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.finished.connect(self._on_any_thread_finished)
-
-        # Start the thread!
         self.thread.start()
-
-        # --- NEW: Start a separate thread for network tasks ---
-        self.network_thread = QThread(self)
-        # We can reuse the main worker class if we add a task type, but for clarity,
-        # let's define the task inline with a lambda.
-        def network_task():
-            # This task runs on startup to proactively check the InvokeAI connection.
-            # The check_server_compatibility method is idempotent.
-            try:
-                if config.INVOKEAI_BASE_URL:
-                    self.processor.invokeai_client.check_server_compatibility()
-            except Exception as e:
-                # We don't need to show an error here, as the UI will reflect the
-                # disconnected state, and other tools will show specific errors.
-                print(f"INFO: Initial InvokeAI connection check failed: {e}")
-
-        self.network_thread.started.connect(network_task)
-        self.network_thread.finished.connect(self.network_thread.quit)
-        self.network_thread.finished.connect(self.network_thread.deleteLater)
-        self.network_thread.finished.connect(self._on_any_thread_finished)
-        self.network_thread.start()
 
         self._start_loading_animation("Initializing...")
 
     @Slot(dict)
-    def _on_load_finished(self, result: Dict):
-        """This method is the 'slot' that receives the result from the worker."""
+    def _on_network_load_finished(self, result: Dict):
         if result['success']:
+            models = result.get('models', [])
+            model_names = [m['name'] for m in models]
+            self.model_combo.clear()
+            self.model_combo.addItems(model_names)
+
+            if config.DEFAULT_OLLAMA_MODEL and config.DEFAULT_OLLAMA_MODEL in model_names:
+                self.model_combo.setCurrentText(config.DEFAULT_OLLAMA_MODEL)
+            elif model_names:
+                self.model_combo.setCurrentIndex(0)
+
+            if model_names:
+                self.current_ollama_model = self.model_combo.currentText()
+            self.model_combo.setEnabled(True)
+            self.model_combo.setPlaceholderText("Select a model")
+        else:
+            self.model_combo.setPlaceholderText("Failed to load models")
+            print(f"Error during network load: {result['error']}")
+
+    @Slot(dict)
+    def _on_load_finished(self, result: Dict):
+        """This method is the 'slot' that receives the result from the local worker."""
+        if result['success']:
+            self.processor = result['processor']
+            self.model_usage_manager = ModelUsageManager(self.processor)
+
+            # Create and set the wildcard inserter
+            self.wildcard_inserter = WildcardInserter(self, self.processor, self._insert_wildcard_into_editor, self._open_wildcard_manager)
+            if self.wildcard_placeholder:
+                self.wildcard_group.layout().removeWidget(self.wildcard_placeholder)
+                self.wildcard_placeholder.deleteLater()
+                self.wildcard_placeholder = None
+            self.wildcard_group.layout().addWidget(self.wildcard_inserter)
+
             # Populate templates
             templates = result.get('templates', [])
             self.template_combo.clear()
             self.template_combo.addItems(templates)
             self.template_combo.setEnabled(True)
             self.template_combo.setPlaceholderText("Select a template")
-
-            # Populate models
-            models = result.get('models', [])
-            model_names = [m['name'] for m in models]
-            self.model_combo.clear()
-            self.model_combo.addItems(model_names)
-            self.model_combo.setEnabled(True)
-            self.model_combo.setPlaceholderText("Select a model")
 
             # Populate wildcards
             wildcard_files = result.get('wildcard_files', [])
@@ -456,12 +536,25 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
             # Now that the UI is populated, set the splitter sizes.
             self.main_splitter.setSizes([self.width() * 0.7, self.width() * 0.3])
+
+            # Start the network worker now that the processor is available
+            self.network_thread = QThread(self)
+            self.network_worker = NetworkWorker(self.processor, self.cancellation_event)
+            self.network_worker.moveToThread(self.network_thread)
+            self.network_thread.started.connect(self.network_worker.run)
+            self.network_worker.finished.connect(self._on_network_load_finished)
+            self.network_worker.finished.connect(self.network_thread.quit)
+            self.network_worker.finished.connect(self.network_worker.deleteLater)
+            self.network_thread.finished.connect(self.network_thread.deleteLater)
+            self.network_thread.finished.connect(self._on_any_thread_finished)
+            self.network_thread.start()
+
         else:
             # Here you would show an error dialog.
-            print(f"Error during initial load: {result['error']}")
+            error_message = result.get('error', 'An unknown error occurred.')
+            print(f"Error during initial load: {error_message}")
             self.template_combo.setPlaceholderText("Failed to load templates")
-            self.model_combo.setPlaceholderText("Failed to load models")
-            self._stop_loading_animation(f"Error: {result['error']}")
+            self._stop_loading_animation(f"Error: {error_message}")
 
     def _on_generate_preview_clicked(self):
         """Handles the 'Generate Next Preview' button click."""
@@ -553,13 +646,27 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         except Exception as e:
             print(f"Error loading template '{template_name}': {e}")
             self.template_editor_text.setPlainText(f"Error loading template: {e}")
-        self._highlight_template_wildcards()
 
-    def _highlight_template_wildcards(self):
-        """Highlights missing wildcards in the template editor."""
-        # This is a simplified version. A full implementation would use QSyntaxHighlighter.
-        # For now, we'll just mark this as a TODO for a future refactor.
-        pass
+
+    @Slot(str)
+    def _on_model_changed(self, new_model: str):
+        """When the model is changed in the dropdown, unload the previous one."""
+        if self.current_ollama_model and self.current_ollama_model != new_model:
+            # This is a non-critical task, so we can run it and forget.
+            # A background thread would be better, but this is simpler for now.
+            try:
+                self.processor.ollama_client.unload_model(self.current_ollama_model)
+            except Exception as e:
+                print(f"Warning: Could not unload model {self.current_ollama_model}: {e}")
+        self.current_ollama_model = new_model
+        self.ollama_model_changed.emit(new_model)
+
+    def report_model_change(self, new_model: str):
+        """Allows child windows to report a model change back to the main app."""
+        # Set our own combo box. This will trigger our _on_model_changed signal,
+        # which in turn unloads the old model and emits the signal to all other windows.
+        self.model_combo.setCurrentText(new_model)
+
 
     def _check_and_display_missing_includes(self):
         """Checks for missing wildcards and displays clickable links to generate them."""
@@ -682,6 +789,10 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         stats_action = QAction("Model Usage Statistics...", self)
         stats_action.triggered.connect(self._open_model_stats_window)
         tools_menu.addAction(stats_action)
+
+        png_viewer_action = QAction("PNG Text Viewer...", self)
+        png_viewer_action.triggered.connect(self._open_png_text_viewer)
+        tools_menu.addAction(png_viewer_action)
 
         tools_menu.addSeparator()
 
@@ -809,6 +920,9 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         settings['theme'] = theme_name
         save_settings(settings)
         self.status_bar.showMessage(f"Theme changed to {theme_name}.", 3000)
+        # Re-apply highlighting for the template editor
+        if self.highlighter:
+            self.highlighter.rehighlight()
 
     def _start_loading_animation(self, message: str):
         """Starts the status bar loading animation."""
@@ -857,6 +971,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         if self.brainstorming_window is None or not self.brainstorming_window.isVisible():
             self.brainstorming_window = BrainstormingWindow(self, self.processor)
             self.brainstorming_window.finished.connect(self._update_window_menu)
+            self.ollama_model_changed.connect(self.brainstorming_window.set_model)
             self.brainstorming_window.show()
         self.brainstorming_window.activateWindow()
         self.brainstorming_window.raise_()
@@ -866,6 +981,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         if self.image_interrogator_window is None or not self.image_interrogator_window.isVisible():
             self.image_interrogator_window = ImageInterrogatorWindow(self, self.processor)
             self.image_interrogator_window.finished.connect(self._update_window_menu)
+            self.ollama_model_changed.connect(self.image_interrogator_window.set_model)
             self.image_interrogator_window.show()
         self.image_interrogator_window.activateWindow()
         self.image_interrogator_window.raise_()
@@ -887,6 +1003,15 @@ class GUIApp(QMainWindow, TextPreviewMixin):
             self.prompt_evolver_window.show()
         self.prompt_evolver_window.activateWindow()
         self.prompt_evolver_window.raise_()
+
+    def _open_png_text_viewer(self):
+        """Opens the PNG Text Viewer window, ensuring only one instance exists."""
+        if self.png_text_viewer_window is None or not self.png_text_viewer_window.isVisible():
+            self.png_text_viewer_window = PNGTextViewerWindow(self)
+            self.png_text_viewer_window.finished.connect(self._update_window_menu)
+            self.png_text_viewer_window.show()
+        self.png_text_viewer_window.activateWindow()
+        self.png_text_viewer_window.raise_()
 
     def _open_settings_window(self):
         """Opens the application settings window."""
@@ -921,6 +1046,9 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         # Re-initialize the processor's clients with the new URLs from the global config
         self.processor.ollama_client = self.processor.ollama_client.__class__(base_url=config.OLLAMA_BASE_URL)
         self.processor.invokeai_client = self.processor.invokeai_client.__class__(base_url=config.INVOKEAI_BASE_URL)
+        
+        # --- NEW: Re-initialize HistoryManager to pick up potential changes to HISTORY_DIR ---
+        self.processor.history_manager = self.processor.history_manager.__class__()
         
         # --- NEW: Explicitly re-check server compatibility after settings change ---
         try:
@@ -990,11 +1118,10 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
     def _update_action_button_states(self):
         """Updates the enabled/disabled state of all action buttons."""
-        # A prompt is available if there's text in the editor OR the preview
         is_prompt_available = bool(self.template_editor_text.toPlainText().strip()) or bool(self.prompt_preview_text.toPlainText().strip())
         is_template_loaded = bool(self.template_combo.currentIndex() != -1)
+        is_invokeai_ready = self.processor and self.processor.is_invokeai_connected()
 
-        # Update menu item states
         if hasattr(self, 'save_template_action'):
             self.save_template_action.setEnabled(is_template_loaded)
             self.archive_template_action.setEnabled(is_template_loaded)
@@ -1003,7 +1130,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         self.enhance_prompt_button.setEnabled(is_prompt_available)
         self.copy_prompt_button.setEnabled(is_prompt_available)
         self.save_as_template_button.setEnabled(is_prompt_available)
-        self.generate_image_button.setEnabled(is_prompt_available) # TODO: Add InvokeAI check
+        self.generate_image_button.setEnabled(is_prompt_available and is_invokeai_ready)
         self.enhance_template_button.setEnabled(is_template_loaded)
 
     @Slot()
@@ -1013,7 +1140,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         if prompt_text:
             clipboard = QApplication.clipboard()
             clipboard.setText(prompt_text)
-            print("Prompt copied to clipboard.") # TODO: Replace with status bar message
+            self.status_bar.showMessage("Prompt copied to clipboard.", 3000)
 
     @Slot()
     def _on_save_as_template_clicked(self):
@@ -1064,6 +1191,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         # Create and show the enhancement window, which is non-modal.
         enhancement_window = EnhancementResultWindow(self, self.processor, prompt_text, model, selected_variations)
         enhancement_window.finished.connect(self._update_window_menu)
+        self.ollama_model_changed.connect(enhancement_window.set_model)
         self.enhancement_windows.append(enhancement_window)
         enhancement_window.show()
 
@@ -1142,7 +1270,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
             options = dialog.get_options()
             
             if self.processor.verbose:
-                print(f"\n--- VERBOSE: GUIApp._on_generate_image_clicked ---")
+                print("\n--- VERBOSE: GUIApp._on_generate_image_clicked ---")
                 print(f"Options from dialog:\n{json.dumps(options, indent=2, default=lambda o: '<object>')}")
 
             selected_models_info = options.pop('models', [])
@@ -1159,9 +1287,6 @@ class GUIApp(QMainWindow, TextPreviewMixin):
                 self.model_usage_manager.register_usage(model_info.get('model', {}).get('name'))
                 for i in range(num_images_per_model):
                     job_params = options.copy()
-                    # --- FIX: The model object must be nested inside the 'gen_params' dictionary ---
-                    # The GenerationWorker expects the model object to be at gen_params['model'].
-                    # The previous code was placing it at the top level of the job, causing it to be missed.
                     job_params['model'] = model_info.get('model')
                     job_params['loras'] = model_info.get('loras', [])
                     job_params['negative_prompt'] = model_info['negative_prompt']
@@ -1251,16 +1376,17 @@ class GUIApp(QMainWindow, TextPreviewMixin):
             self.wildcard_manager_window.show()
         self.wildcard_manager_window.activateWindow()
         self.wildcard_manager_window.raise_()
+
+    def open_wildcard_manager_and_select_file(self, filename: str):
+        """Opens the wildcard manager and tells it to load a specific file."""
+        self._open_wildcard_manager() # This will show and raise the window
+        if self.wildcard_manager_window:
+            self.wildcard_manager_window.select_and_load_file(filename)
         
     def _open_dependency_graph_window(self) -> None:
-        """Opens the Wildcard Dependency Graph window, ensuring only one instance exists."""
-        if self.wildcard_manager_window is None or not self.wildcard_manager_window.isVisible():
-            QMessageBox.warning(self, "Wildcard Manager Not Open", "Please open the Wildcard Manager first to view the dependency graph.")
-            return
-
-        # The DependencyGraphWindow is modal and self-managing, so we just create and exec it.
-        # It doesn't need to be a persistent attribute on the wildcard manager.
-        dialog = DependencyGraphWindow(self.wildcard_manager_window, self.processor)
+        """Opens the Wildcard Dependency Graph window."""
+        # This window is modal, so we don't need to worry about multiple instances.
+        dialog = DependencyGraphWindow(self, self.processor)
         dialog.exec()
 
     def _refresh_template_list(self):
@@ -1285,17 +1411,36 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
     def _update_action_bar_variations(self):
         """Populates the variations group box with checkboxes."""
-        # Clear existing checkboxes
-        for i in reversed(range(self.variations_layout.count())): 
-            widget = self.variations_layout.itemAt(i).widget()
-            if widget: widget.setParent(None)
+        # Clear existing checkboxes and layout items
+        while self.variations_layout.count():
+            item = self.variations_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self.variation_checkboxes.clear()
         
         variations = self.processor.available_variations_map
+        num_variations = len(variations)
+        if num_variations == 0:
+            self.variations_group.setVisible(False)
+            return
+        else:
+            self.variations_group.setVisible(True)
+
+        # Determine grid dimensions (e.g., 2 rows, dynamic columns)
+        num_rows = 2
+        num_cols = (num_variations + num_rows - 1) // num_rows # Ceiling division
+        
+        row, col = 0, 0
         for key, name in variations.items():
             checkbox = QCheckBox(name)
+            checkbox.setChecked(True)  # Set to checked by default
             self.variation_checkboxes[key] = checkbox
-            self.variations_layout.addWidget(checkbox)
+            self.variations_layout.addWidget(checkbox, row, col)
+            
+            col += 1
+            if col >= num_cols:
+                col = 0
+                row += 1
 
     @Slot(QUrl)
     def _on_wildcard_link_clicked(self, url: QUrl):

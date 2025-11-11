@@ -2,7 +2,6 @@
 
 import tkinter as tk
 from tkinter import ttk
-import json
 import traceback
 import queue
 import random
@@ -14,7 +13,7 @@ import os
 from PIL import Image, ImageTk
 from typing import List, Dict, Optional, TYPE_CHECKING, Any, Tuple, Callable
 from . import custom_dialogs
-from core.config import config, PROJECT_ROOT
+from core.config import config
 from core.prompt_processor import PromptProcessor
 from .common import TextContextMenu, SmartWindowMixin, LoadingAnimation, ImagePreviewMixin, ScrollableFrame
 from .task_runner import TaskRunnerMixin
@@ -1514,7 +1513,7 @@ class HistoryViewerWindow(tk.Toplevel, SmartWindowMixin, ImagePreviewMixin, Task
         def task():
             try:
                 # The thumbnail manager handles caching and creation.
-                thumbnail_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow)
+                thumbnail_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow, (100, 100))
                 if thumbnail_image:
                     self.thumbnail_queue.put((label_widget, thumbnail_image))
             except Exception as e:

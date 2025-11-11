@@ -5,12 +5,11 @@ import os
 from collections import Counter
 import re
 import copy
-import difflib
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QSplitter, QTabWidget, QWidget, QGroupBox, QListWidgetItem, QCheckBox,
     QFormLayout,
-    QTextEdit, QMessageBox, QInputDialog
+    QMessageBox, QInputDialog
 )
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
@@ -19,6 +18,7 @@ from typing import Callable, List, Dict, Optional, Any, Tuple
 from core.prompt_processor import PromptProcessor
 from .wildcard_editor_widget import WildcardEditor
 from .multi_wildcard_editor import MultiWildcardEditorWindow
+from .custom_widgets import SmoothListWidget, SmoothTextEdit
 
 
 class FindReplaceDialog(QDialog):
@@ -223,7 +223,7 @@ class WildcardManagerWindow(QDialog):
         # File list
         list_frame = QGroupBox("Wildcard Files")
         list_layout = QVBoxLayout(list_frame)
-        self.file_list = QListWidget()
+        self.file_list = SmoothListWidget()
         loading_item = QListWidgetItem("Loading files...")
         loading_item.setFlags(loading_item.flags() & ~Qt.ItemIsSelectable)
         self.file_list.addItem(loading_item)
@@ -257,8 +257,8 @@ class WildcardManagerWindow(QDialog):
         # Structured Editor Tab
         structured_tab = QWidget()
         structured_layout = QVBoxLayout(structured_tab) # Layout for the tab
-        self.structured_editor = WildcardEditor(
-            self.processor, self,
+        self.structured_editor = WildcardEditor(self,
+            processor=self.processor,
             suggestion_callback=self._suggest_choices_with_ai,
             autotag_callback=self._autotag_choices_with_ai,
             enrich_callback=self._enrich_choices_with_ai,
@@ -267,7 +267,7 @@ class WildcardManagerWindow(QDialog):
         )
         raw_text_tab = QWidget()
         raw_text_layout = QVBoxLayout(raw_text_tab) # Layout for the tab
-        self.raw_text_editor = QTextEdit()
+        self.raw_text_editor = SmoothTextEdit()
         raw_text_layout.addWidget(self.raw_text_editor)
         self.editor_tabs.addTab(raw_text_tab, "Raw Text Editor")
 
@@ -360,7 +360,11 @@ class WildcardManagerWindow(QDialog):
             if reply == QMessageBox.StandardButton.Save:
                 self._on_save_file()
             elif reply == QMessageBox.StandardButton.Cancel:
-                # TODO: Revert selection in listbox
+                # Revert selection in listbox
+                if self.selected_wildcard_file:
+                    items = self.file_list.findItems(self.selected_wildcard_file, Qt.MatchExactly)
+                    if items:
+                        self.file_list.setCurrentItem(items[0])
                 return
 
         """Loads the content of the selected file into the editor panes."""
@@ -386,8 +390,10 @@ class WildcardManagerWindow(QDialog):
     def _on_content_load_finished(self, result: dict):
         """Slot to receive the loaded wildcard content."""
         if not result['success']:
-            print(f"Error loading {self.selected_wildcard_file}: {result['error']}")
-            # TODO: Show error in UI
+            error_msg = result.get('error', 'An unknown error occurred.')
+            QMessageBox.critical(self, "Wildcard Load Error", f"Failed to load content for {self.selected_wildcard_file}:\n\n{error_msg}")
+            self.structured_editor.set_data({})
+            self.raw_text_editor.setPlainText(f"Error: {error_msg}")
             return
 
         data = result.get('data')
@@ -408,10 +414,6 @@ class WildcardManagerWindow(QDialog):
         self.save_button.setEnabled(False)
         self.setWindowTitle("Wildcard Manager (Qt)")
 
-        # --- NEW: Enable AI buttons now that a file is loaded ---
-        self.structured_editor.suggest_button.setEnabled(True)
-        self.structured_editor.autotag_button.setEnabled(True)
-        self.structured_editor.enrich_button.setEnabled(bool(data.get('choices')))
     @Slot()
     def _on_archive_selected(self):
         """Archives the selected wildcard files."""
@@ -467,46 +469,7 @@ class WildcardManagerWindow(QDialog):
         self.editor_tabs.setCurrentIndex(0) # Go back to structured editor tab
         self.structured_editor.suggest_button.setEnabled(False)
         self.structured_editor.autotag_button.setEnabled(False)
-        self.structured_editor.enrich_button.setEnabled(False)
 
-    @Slot()
-    def _on_merge_selected(self):
-        """Merges selected wildcard files into a new one."""
-        selected_items = self.file_list.selectedItems()
-        if len(selected_items) < 2:
-            QMessageBox.warning(self, "Merge Wildcards", "Please select at least two wildcard files to merge.")
-            return
-
-        files_to_merge = [item.text() for item in selected_items]
-
-        new_filename_base, ok = QInputDialog.getText(self, "Merge Wildcards", "Enter a name for the new merged wildcard file (without extension):")
-        if not ok or not new_filename_base:
-            return
-
-        new_filename = f"{new_filename_base}.json"
-        if new_filename in self.all_wildcard_files:
-            QMessageBox.warning(self, "File Exists", f"A wildcard file named '{new_filename}' already exists. Please choose a different name.")
-            return
-
-        # Disable buttons and show progress
-        self.merge_button.setEnabled(False)
-        self.new_button.setEnabled(False)
-        self.archive_button.setEnabled(False)
-        self.compare_button.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-
-        # Start background worker
-        self.merge_thread = QThread(self)
-        self.merge_worker = WildcardMergeWorker(self.processor, files_to_merge)
-        self.merge_worker.moveToThread(self.merge_thread)
-
-        self.merge_thread.started.connect(self.merge_worker.run)
-        self.merge_worker.finished.connect(lambda result: self._on_merge_finished(result, new_filename))
-        self.merge_worker.finished.connect(self.merge_thread.quit)
-        self.merge_worker.finished.connect(self.merge_worker.deleteLater)
-        self.merge_thread.finished.connect(self.merge_thread.deleteLater)
-
-        self.merge_thread.start()
 
     @Slot(dict, str)
     def _on_merge_finished(self, result: dict, new_filename: str):
@@ -686,31 +649,99 @@ class WildcardManagerWindow(QDialog):
     def _on_new_file(self):
         """Handles the 'New Wildcard File' button click."""
         filename, ok = QInputDialog.getText(self, "New Wildcard File", "Enter new wildcard filename (without extension):")
-        if ok and filename:
-            # Ensure it has a .json extension for the processor
-            if not filename.endswith('.json'):
-                filename_with_ext = f"{filename}.json"
+        if not ok or not filename:
+            return
+
+        # Ensure it has a .json extension for the processor
+        if not filename.endswith('.json'):
+            filename_with_ext = f"{filename}.json"
+        else:
+            filename_with_ext = filename
+
+        # Check if file already exists
+        if filename_with_ext in self.all_wildcard_files:
+            QMessageBox.warning(self, "File Exists", f"A wildcard file named '{filename_with_ext}' already exists. Please choose a different name.")
+            return
+
+        # Create default content
+        default_content = {
+            "description": f"New wildcard file for {filename}",
+            "choices": ["Sample choice 1", "Sample choice 2"]
+        }
+        content_str = json.dumps(default_content, indent=2)
+
+        try:
+            self.processor.save_wildcard_content(filename_with_ext, content_str)
+            self.update_callback(filename_with_ext) # Notify main window
+            self._start_loading() # Reload the list in this window
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not create new wildcard file:\n{e}")
+
+
+    def _suggest_choices_with_ai(self, current_choices: List[str], context: str) -> List[str]:
+        """Uses AI to suggest new wildcard choices based on existing ones and context."""
+        try:
+            suggestions = self.processor.ai_suggest_wildcard_choices(current_choices, context)
+            return suggestions
+        except Exception as e:
+            QMessageBox.critical(self, "AI Suggestion Error", f"Could not get AI suggestions:\n{e}")
+            return []
+
+    def _autotag_choices_with_ai(self, choices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Uses AI to autotag wildcard choices."""
+        try:
+            autotagged_choices = self.processor.ai_autotag_wildcard_choices(choices)
+            return autotagged_choices
+        except Exception as e:
+            QMessageBox.critical(self, "AI Autotag Error", f"Could not get AI autotags:\n{e}")
+            return choices
+
+    def _enrich_choices_with_ai(self, choices: List[Dict[str, Any]], context: str) -> List[Dict[str, Any]]:
+        """Uses AI to enrich wildcard choices with additional data or variations."""
+        try:
+            enriched_choices = self.processor.ai_enrich_wildcard_choices(choices, context)
+            return enriched_choices
+        except Exception as e:
+            QMessageBox.critical(self, "AI Enrich Error", f"Could not get AI enrichment:\n{e}")
+            return choices
+
+    def _find_and_replace(self, find_replace_data: Dict[str, Any], choices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Performs find and replace operations on wildcard choices."""
+        find_text = find_replace_data['find']
+        replace_text = find_replace_data['replace']
+        case_sensitive = find_replace_data['case']
+        whole_word = find_replace_data['whole']
+        selected_only = find_replace_data['selected_only']
+
+        new_choices = []
+        for choice_data in choices:
+            value = choice_data.get('value')
+            if value is None: # Skip choices without a value
+                new_choices.append(choice_data)
+                continue
+
+            if selected_only and not choice_data.get('selected', False): # Assuming 'selected' key for filtering
+                new_choices.append(choice_data)
+                continue
+
+            flags = 0 if case_sensitive else re.IGNORECASE
+            pattern = r'\b' + re.escape(find_text) + r'\b' if whole_word else re.escape(find_text)
+
+            new_value = re.sub(pattern, replace_text, value, flags=flags)
+            
+            if new_value != value:
+                updated_choice_data = copy.deepcopy(choice_data)
+                updated_choice_data['value'] = new_value
+                new_choices.append(updated_choice_data)
             else:
-                filename_with_ext = filename
+                new_choices.append(choice_data)
+        return new_choices
 
-            # Check if file already exists
-            if filename_with_ext in self.all_wildcard_files:
-                QMessageBox.warning(self, "File Exists", f"A wildcard file named '{filename_with_ext}' already exists.")
-                return
-
-            # Create default content
-            default_content = {
-                "description": f"New wildcard file for {filename}",
-                "choices": ["Sample choice 1", "Sample choice 2"]
-            }
-            content_str = json.dumps(default_content, indent=2)
-
-            try:
-                self.processor.save_wildcard_content(filename_with_ext, content_str)
-                self.update_callback(filename_with_ext) # Notify main window
-                self._start_loading() # Reload the list in this window
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not create new wildcard file:\n{e}")
+    def _find_duplicates(self, choices: List[Dict[str, Any]]) -> List[str]:
+        """Finds duplicate choices based on their 'value'."""
+        value_counts = Counter(c.get('value') for c in choices if c.get('value') is not None)
+        duplicates = [value for value, count in value_counts.items() if count > 1]
+        return duplicates
 
     def _on_multi_editor_update(self, modified_files: Optional[List[str]] = None):
         """Callback for when the MultiWildcardEditorWindow saves changes."""
@@ -731,6 +762,14 @@ class WildcardManagerWindow(QDialog):
                 self.update_callback(f)
         else:
             self.update_callback() # Generic update if we don't know specifics
+    def select_and_load_file(self, filename: str):
+        """Public method to find a file in the list and load it for editing."""
+        items = self.file_list.findItems(filename, Qt.MatchExactly)
+        if items:
+            item = items[0]
+            self.file_list.setCurrentItem(item)
+            self._on_file_selected(item)
+
     def closeEvent(self, event: QCloseEvent):
         """Overrides the default close event to check for unsaved changes."""
         if self.is_dirty:
