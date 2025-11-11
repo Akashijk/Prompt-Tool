@@ -323,10 +323,6 @@ class ImageGenerationOptionsDialog(QDialog):
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Generate")
         main_layout.addWidget(self.button_box)
-        
-        if self.is_editing:
-            self.num_images_spin.setValue(1)
-            self.num_images_spin.setEnabled(False)
 
     def _connect_signals(self):
         self.random_seed_button.clicked.connect(self._randomize_seed)
@@ -342,7 +338,8 @@ class ImageGenerationOptionsDialog(QDialog):
         self.lora_override_button.clicked.connect(self._set_lora_overrides)
         self.model_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.lora_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self.model_tree.itemChanged.connect(self._update_override_button_states)
+        self.model_tree.itemChanged.connect(self._update_generate_button_text) # Connect to update button text
+        self.num_images_spin.valueChanged.connect(self._update_generate_button_text) # Connect to update button text
 
     @Slot(QTreeWidgetItem)
     def _on_item_double_clicked(self, item: QTreeWidgetItem):
@@ -361,6 +358,7 @@ class ImageGenerationOptionsDialog(QDialog):
             self.sdxl_radio.setChecked(True)
         # Manually trigger the fetch since the toggled signal might not fire if it's the default
         self._fetch_and_populate_assets(force_fetch=False)
+        self._update_generate_button_text() # Initial update of the button text
     
     def _fetch_and_populate_assets(self, force_fetch: bool = False):
         """Fetches assets in a background thread and populates the UI upon completion."""
@@ -450,6 +448,7 @@ class ImageGenerationOptionsDialog(QDialog):
             self.loras_data[base_model] = result['lora']
             self._populate_tree(self.model_tree, self.models_data.get(base_model, []), is_lora=False)
             self._populate_tree(self.lora_tree, self.loras_data.get(base_model, []), is_lora=True)
+            self._update_generate_button_text() # Update button text after models are populated
         else:
             QMessageBox.critical(self, "Fetch Error", f"Could not fetch assets from InvokeAI:\n{result['error']}")
             self.model_tree.clear()
@@ -657,6 +656,7 @@ class ImageGenerationOptionsDialog(QDialog):
     def _update_override_button_states(self):
         """Updates the enabled state of the per-model override buttons."""
         self.set_controls_enabled(True)
+        self._update_generate_button_text() # Also update button text when models change
 
     def _set_neg_prompt_overrides(self):
         """Opens the dialog to set per-model negative prompt overrides."""
@@ -728,6 +728,19 @@ class ImageGenerationOptionsDialog(QDialog):
                 selected_loras.append({'lora_object': lora_data, 'weight': weight})
             iterator += 1
         return selected_loras
+
+    def _update_generate_button_text(self):
+        """Updates the text of the Generate button to show the total number of images."""
+        num_images_per_model = self.num_images_spin.value()
+        selected_models_count = len(self._get_selected_models())
+        total_images = num_images_per_model * selected_models_count
+        
+        generate_button = self.button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if generate_button:
+            if total_images > 0:
+                generate_button.setText(f"Generate ({total_images})")
+            else:
+                generate_button.setText("Generate")
 
     def get_options(self) -> Dict[str, Any]:
         """Returns the selected generation options, structured for batch processing."""
