@@ -435,7 +435,8 @@ class HistoryViewerWindow(QDialog):
         """Unified slot to handle thumbnails for both the table and the gallery."""
         item_widget = result.get('item')
         qimage: Optional[QImage] = result.get('thumb_image')
-        
+        full_path: Optional[str] = result.get('full_path') # Get full_path from result
+
         if not item_widget or not qimage:
             return
 
@@ -448,16 +449,17 @@ class HistoryViewerWindow(QDialog):
             # Handle gallery thumbnail
             pixmap = QPixmap.fromImage(qimage)
             item_widget.set_image(pixmap)
-            # No need to updateGeometries() here, as the custom widget manages its own layout
             
-            # --- NEW: Update the stored data with full_path ---
-            # The item_widget here is the custom widget, not the QListWidgetItem.
-            # We need to find the corresponding QListWidgetItem to update its data.
-            # This is a bit indirect, but necessary if we want to keep data in QListWidgetItem.
-            # A more direct approach would be to store full_path directly in the custom widget.
-            # For now, let's assume the full_path is not strictly needed in the QListWidgetItem's data
-            # after the thumbnail is loaded, as it's primarily for the preview popup.
-            # The preview popup will get the full_path from the original job data.
+            # --- FIX: Update the QListWidgetItem's UserRole data with full_path ---
+            # Find the QListWidgetItem that contains this custom_widget
+            for i in range(self.image_gallery.count()):
+                list_item = self.image_gallery.item(i)
+                if self.image_gallery.itemWidget(list_item) == item_widget:
+                    current_data = list_item.data(Qt.ItemDataRole.UserRole)
+                    if current_data and full_path:
+                        current_data['full_path'] = full_path
+                        list_item.setData(Qt.ItemDataRole.UserRole, current_data)
+                    break
 
 
     @Slot(int, int)
