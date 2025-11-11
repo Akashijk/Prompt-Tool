@@ -1,6 +1,7 @@
 """A manager to handle loading and applying Qt stylesheets for theming."""
 
 import os
+import re
 from PySide6.QtWidgets import QApplication
 from core.config import config
 
@@ -9,10 +10,15 @@ class ThemeManager:
 
     def __init__(self):
         self.themes_dir = os.path.join(os.path.dirname(__file__), 'themes')
-        self.light_stylesheet = self._load_stylesheet('light.qss')
-        self.dark_stylesheet = self._load_stylesheet('dark.qss')
+        self.assets_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'assets')
+        
+        self.light_stylesheet_content = self._load_stylesheet_content('light.qss')
+        self.dark_stylesheet_content = self._load_stylesheet_content('dark.qss')
 
-    def _load_stylesheet(self, filename: str) -> str:
+        self.light_chevron_path = os.path.join(self.assets_dir, 'chevron-down-light.svg').replace(os.sep, '/')
+        self.dark_chevron_path = os.path.join(self.assets_dir, 'chevron-down-dark.svg').replace(os.sep, '/')
+
+    def _load_stylesheet_content(self, filename: str) -> str:
         """Loads a QSS file from the themes directory."""
         path = os.path.join(self.themes_dir, filename)
         if not os.path.exists(path):
@@ -31,10 +37,24 @@ class ThemeManager:
         if not app:
             return
 
+        stylesheet_to_apply = ""
         if theme_name == 'dark':
-            app.setStyleSheet(self.dark_stylesheet)
+            stylesheet_to_apply = self.dark_stylesheet_content
+            chevron_path = self.light_chevron_path # Dark theme uses light chevron
         else:
-            # Default to light theme if the name is unknown or 'light'
-            app.setStyleSheet(self.light_stylesheet)
+            stylesheet_to_apply = self.light_stylesheet_content
+            chevron_path = self.dark_chevron_path # Light theme uses dark chevron
         
+        # Dynamically replace the chevron image URL
+        # This regex looks for QComboBox::down-arrow { ... image: url(...) ... }
+        # and replaces the url content.
+        # It's important to use re.DOTALL to match across newlines.
+        modified_stylesheet = re.sub(
+            r"(QComboBox::down-arrow\s*\{[^}]*image:\s*url\()[^)]*(\);[^}]*\})",
+            r"\1" + f"'{chevron_path}'" + r"\2",
+            stylesheet_to_apply,
+            flags=re.DOTALL
+        )
+
+        app.setStyleSheet(modified_stylesheet)
         config.theme = theme_name

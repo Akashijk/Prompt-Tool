@@ -104,7 +104,7 @@ QComboBox::drop-down {
     background: rgba(255,255,255,0.02);
 }
 QComboBox::down-arrow {
-    image: url(:/assets/chevron-down-light.svg);
+    image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTcgMTBMMTIgMTVMMTcgMTBIN1oiIGZpbGw9ImN1cnJlbnRDb2xvciIvPgo8L2N2Zz4=");
     width: 16px;
     height: 16px;
     subcontrol-origin: padding;

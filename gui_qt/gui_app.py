@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from typing import Optional, List, Dict, Any
-from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QSyntaxHighlighter, QTextCharFormat, QColor
+from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QSyntaxHighlighter, QTextCharFormat, QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenuBar, QMenu,
     QLabel, QComboBox, QPushButton, QTextEdit, QSplitter, QGroupBox, QLineEdit, QInputDialog, QMessageBox, QCheckBox, QFileDialog, QStatusBar,

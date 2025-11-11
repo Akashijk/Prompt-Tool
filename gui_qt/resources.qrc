@@ -1,6 +1,0 @@
-<RCC>
-    <qresource prefix="/assets">
-        <file>../assets/chevron-down-dark.svg</file>
-        <file>../assets/chevron-down-light.svg</file>
-    </qresource>
-</RCC>
