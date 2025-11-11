@@ -10,12 +10,13 @@ class SmoothScrollMixin:
         self._scroll_animation.setPropertyName(b"value")
         self._scroll_animation.setDuration(250)
         self._scroll_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.scroll_speed_factor = 2 # Adjust this value to change scroll speed
 
     def wheelEvent(self, event):
         if self._scroll_animation.state() == QPropertyAnimation.Running:
             return
 
-        delta = event.angleDelta().y()
+        delta = event.angleDelta().y() * self.scroll_speed_factor
         current_value = self.verticalScrollBar().value()
         new_value = current_value - delta
 
