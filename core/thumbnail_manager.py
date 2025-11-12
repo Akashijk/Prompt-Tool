@@ -52,13 +52,11 @@ class ThumbnailManager:
         cache_path = self._get_cache_path(original_relative_path, workflow)
         if os.path.exists(cache_path):
             try:
-                print(f"DEBUG: Opening cached thumbnail from: {cache_path}")
                 with Image.open(cache_path) as img: # Use with statement
                     # Scale it to the target size for display
                     img.thumbnail(target_size, Image.Resampling.LANCZOS)
                     return img
-            except Exception as e:
-                print(f"DEBUG: Error opening cached thumbnail {cache_path}: {e}. Regenerating.")
+            except Exception:
                 # The cached file might be corrupted, so we'll try to regenerate it.
                 pass
 
@@ -66,17 +64,14 @@ class ThumbnailManager:
         history_dir = self._get_history_dir(workflow)
         original_full_path = os.path.join(history_dir, original_relative_path)
         if not os.path.exists(original_full_path):
-            print(f"DEBUG: Original image not found: {original_full_path}")
             return None
 
         try:
-            print(f"DEBUG: Opening original image from: {original_full_path}")
             with Image.open(original_full_path) as img:
                 # Create the thumbnail
                 img.thumbnail(target_size, Image.Resampling.LANCZOS)
                 
                 # Save this thumbnail to the cache
-                print(f"DEBUG: Saving thumbnail to cache: {cache_path}")
                 img.save(cache_path, "WEBP", quality=80) # Quality for thumbnail cache
                 
                 return img
