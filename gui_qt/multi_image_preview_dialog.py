@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import QObject, Qt, Signal, Slot, QThread, QEvent, QTimer, QPoint
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QAction
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox, QScrollArea, QSizePolicy, QSpacerItem, QPushButton, QTextEdit,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox, QScrollArea, QSizePolicy, QSpacerItem, QPushButton,
     QVBoxLayout, QWidget
 )
 from PIL import Image
@@ -50,7 +50,8 @@ class GenerationWorker(QObject):
             job = None
             try:
                 job = self.job_queue.get(timeout=1)
-                if job is None: break
+                if job is None:
+                    break
 
                 try:
                     model_name = job.get('gen_params', {}).get('model', {}).get('name', 'Unknown')
@@ -210,7 +211,7 @@ class ImageCard(QFrame, ImagePreviewMixin):
         # --- FIX: Display full LoRA details instead of just the count ---
         lora_text = ""
         if loras:
-            lora_details = [f"{l.get('lora_object', {}).get('name', 'Unknown')} (w: {l.get('weight', 0.0):.2f})" for l in loras]
+            lora_details = [f"{lora_item.get('lora_object', {}).get('name', 'Unknown')} (w: {lora_item.get('weight', 0.0):.2f})" for lora_item in loras]
             lora_text = " | LoRAs: " + ", ".join(lora_details)
         seed = gen_params.get('seed', 'N/A')
         self.info_label.setText(f"Model: {model_name}{duration_text} | Seed: {seed}{lora_text}")
@@ -277,7 +278,8 @@ class MultiImagePreviewDialog(QDialog):
         try:
             screen_geometry = QApplication.primaryScreen().availableGeometry()
             self.move(screen_geometry.center() - self.rect().center())
-        except Exception: pass
+        except Exception:
+            pass
 
     def _remove_thread(self, thread_to_remove: QThread):
         """Safely removes a thread from the active list when it finishes."""
@@ -513,7 +515,8 @@ class MultiImagePreviewDialog(QDialog):
         try:
             # Find the index of the card in the grid layout for insertion
             idx = self.grid_layout.indexOf(card_to_edit)
-            if idx == -1: raise ValueError("Card not in layout")
+            if idx == -1:
+                raise ValueError("Card not in layout")
             row, col, _, _ = self.grid_layout.getItemPosition(idx)
 
         except ValueError:

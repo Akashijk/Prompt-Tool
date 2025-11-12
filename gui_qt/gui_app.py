@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from typing import Optional, List, Dict, Any
-from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QSyntaxHighlighter, QTextCharFormat, QColor, QPixmap
+from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QSyntaxHighlighter, QTextCharFormat, QColor, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenuBar, QMenu,
     QLabel, QComboBox, QPushButton, QTextEdit, QSplitter, QGroupBox, QLineEdit, QInputDialog, QMessageBox, QCheckBox, QFileDialog, QStatusBar,
@@ -445,8 +445,56 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
     @Slot(str)
     def _insert_wildcard_into_editor(self, wildcard_name: str):
-        """Inserts a wildcard tag into the template editor."""
-        self.template_editor_text.insertPlainText(f"__{wildcard_name}__")
+        """Inserts a wildcard tag into the template editor, replacing an existing one if the cursor is inside it."""
+        cursor = self.template_editor_text.textCursor()
+        current_pos = cursor.position()
+        text = self.template_editor_text.toPlainText()
+        
+        # Define the wildcard pattern (consistent with WildcardHighlighter)
+        wildcard_pattern = r"__([a-zA-Z0-9_.\\s-]+?)__"
+        
+        found_existing_wildcard = False
+        
+        # Strategy:
+        # 1. Check if cursor is strictly inside a wildcard.
+        # 2. Check if cursor is exactly at the end of a wildcard.
+        # 3. Check if cursor is exactly at the start of a wildcard.
+        
+        # Search a reasonable window around the cursor
+        window_start = max(0, current_pos - 50) # Increased window size
+        window_end = min(len(text), current_pos + 50)
+        search_substring = text[window_start:window_end]
+
+        for match in re.finditer(wildcard_pattern, search_substring):
+            match_start_abs = window_start + match.start()
+            match_end_abs = window_start + match.end()
+            
+            # Case 1: Cursor is strictly inside the wildcard
+            if match_start_abs < current_pos < match_end_abs:
+                cursor.setPosition(match_start_abs)
+                cursor.setPosition(match_end_abs, QTextCursor.KeepAnchor)
+                cursor.removeSelectedText()
+                found_existing_wildcard = True
+                break
+            # Case 2: Cursor is exactly at the end of a wildcard (e.g., __wildcard1__|)
+            elif current_pos == match_end_abs:
+                cursor.setPosition(match_start_abs)
+                cursor.setPosition(match_end_abs, QTextCursor.KeepAnchor)
+                cursor.removeSelectedText()
+                found_existing_wildcard = True
+                break
+            # Case 3: Cursor is exactly at the start of a wildcard (e.g., |__wildcard2__)
+            elif current_pos == match_start_abs:
+                cursor.setPosition(match_start_abs)
+                cursor.setPosition(match_end_abs, QTextCursor.KeepAnchor)
+                cursor.removeSelectedText()
+                found_existing_wildcard = True
+                break
+        
+        # Insert the new wildcard tag
+        cursor.insertText(f"__{wildcard_name}__")
+        self.template_editor_text.setTextCursor(cursor) # Ensure cursor is updated
+        self.live_update_timer.start() # Trigger a live update after insertion
 
     def _connect_signals(self):
         """Connect widget signals to corresponding slots."""
@@ -1280,7 +1328,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         if self.processor and self.processor.ollama_client:
             self.processor.ollama_client.unload_all_models()
 
-        dialog = ImageGenerationOptionsDialog(self, self.processor, prompt_text, initial_params=self.last_generation_result.get('context', {}))
+        dialog = ImageGenerationOptionsDialog(self, self.processor, prompt_text, initial_params=self.last_generation_result.get('context', {}), force_random_seed=True)
         if dialog.exec() == QDialog.Accepted:
             options = dialog.get_options()
             
@@ -1293,10 +1341,11 @@ class GUIApp(QMainWindow, TextPreviewMixin):
                 QMessageBox.warning(self, "No Models Selected", "You must select at least one model to generate images.")
                 return
 
+            save_to_gallery = options.get('save_to_gallery', False)
+
             generation_jobs = []
             num_images_per_model = options.pop('num_images', 1)
-            base_seed = options.get('seed', random.randint(0, 2**32 - 1))
-            save_to_gallery = options.get('save_to_gallery', False)
+            base_seed = options.get('seed', random.randint(0, 2**32 - 1)) # REVERTED TO THIS LINE
 
             for model_info in selected_models_info:
                 self.model_usage_manager.register_usage(model_info.get('model', {}).get('name'))
@@ -1305,7 +1354,7 @@ class GUIApp(QMainWindow, TextPreviewMixin):
                     job_params['model'] = model_info.get('model')
                     job_params['loras'] = model_info.get('loras', [])
                     job_params['negative_prompt'] = model_info['negative_prompt']
-                    job_params['seed'] = base_seed + i
+                    job_params['seed'] = base_seed + i # Use base_seed + i
                     generation_jobs.append({
                         'prompt': prompt_text,
                         'gen_params': job_params
@@ -1480,10 +1529,12 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
         segment = self.current_structured_prompt[segment_index]
         wildcard_name = segment.wildcard_name
-        if not wildcard_name: return
+        if not wildcard_name:
+            return
 
         options = self.processor.get_wildcard_options(wildcard_name)
-        if not options: return
+        if not options:
+            return
 
         menu = QMenu(self)
         for option in options:
@@ -1496,11 +1547,13 @@ class GUIApp(QMainWindow, TextPreviewMixin):
 
     def _swap_wildcard(self, segment_index: int, new_value: str):
         """Swaps the text of a wildcard segment and redisplays the prompt."""
-        if not (0 <= segment_index < len(self.current_structured_prompt)): return
+        if not (0 <= segment_index < len(self.current_structured_prompt)):
+            return
 
         segment_to_swap = self.current_structured_prompt[segment_index]
         wildcard_name = segment_to_swap.wildcard_name
-        if not wildcard_name: return
+        if not wildcard_name:
+            return
 
         context = self.last_generation_result.get('context', {})
         context[wildcard_name] = {'value': new_value, 'tags': []} # Assume no tags for a simple swap
@@ -1547,7 +1600,8 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         suggested_name = re.sub(r'[^a-z0-9_]', '', suggested_name)[:50]
         
         wildcard_name, ok = QInputDialog.getText(self, "Create New Wildcard", "Enter a name for the new wildcard (without .json):", text=suggested_name)
-        if not ok or not wildcard_name: return
+        if not ok or not wildcard_name:
+            return
 
         initial_data = {"description": f"Wildcard created from template selection: '{selected_text}'", "choices": [selected_text]}
         initial_content_str = json.dumps(initial_data, indent=2)
@@ -1603,7 +1657,8 @@ class GUIApp(QMainWindow, TextPreviewMixin):
     def _archive_current_template(self):
         """Archives the currently loaded template."""
         current_file = self.template_combo.currentText()
-        if not current_file or "template" in current_file.lower(): return
+        if not current_file or "template" in current_file.lower():
+            return
         if QMessageBox.question(self, "Confirm Archive", f"Are you sure you want to archive '{current_file}'?") == QMessageBox.StandardButton.Yes:
             self.processor.archive_template(current_file)
             self._refresh_template_list()

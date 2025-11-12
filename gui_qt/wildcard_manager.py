@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QSplitter, QTabWidget, QWidget, QGroupBox, QListWidgetItem, QCheckBox,
     QFormLayout,
-    QMessageBox, QInputDialog
+    QMessageBox, QInputDialog, QDialogButtonBox
 )
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
@@ -134,49 +134,64 @@ class WildcardMergeWorker(QObject):
             for choice in data.get('choices', []):
                 is_new_dict = isinstance(choice, dict)
                 value = choice.get('value') if is_new_dict else choice
-                if value is None: continue
+                if value is None:
+                    continue
 
                 if value not in merged_choices_map:
                     merged_choices_map[value] = copy.deepcopy(choice)
                 else:
                     existing_choice = merged_choices_map[value]
-                    if not isinstance(existing_choice, dict): existing_choice = {'value': existing_choice}
+                    if not isinstance(existing_choice, dict):
+                        existing_choice = {'value': existing_choice}
                     new_choice_data = choice if is_new_dict else {'value': choice}
 
                     # Merge tags
-                    existing_tags = set(existing_choice.get('tags', [])); new_tags = set(new_choice_data.get('tags', []))
-                    if existing_tags or new_tags: existing_choice['tags'] = sorted(list(existing_tags | new_tags))
+                    existing_tags = set(existing_choice.get('tags', []))
+                    new_tags = set(new_choice_data.get('tags', []))
+                    if existing_tags or new_tags:
+                        existing_choice['tags'] = sorted(list(existing_tags | new_tags))
 
                     # Merge requires
-                    existing_reqs = existing_choice.get('requires', {}); new_reqs = new_choice_data.get('requires', {})
+                    existing_reqs = existing_choice.get('requires', {})
+                    new_reqs = new_choice_data.get('requires', {})
                     if existing_reqs or new_reqs:
                         merged_reqs = copy.deepcopy(existing_reqs)
                         for key, value2 in new_reqs.items():
                             if key in merged_reqs:
                                 value1 = merged_reqs[key]
-                                set1 = set(value1) if isinstance(value1, list) else {value1}; set2 = set(value2) if isinstance(value2, list) else {value2}
+                                set1 = set(value1) if isinstance(value1, list) else {value1}
+                                set2 = set(value2) if isinstance(value2, list) else {value2}
                                 merged_values = sorted(list(set1 | set2))
                                 merged_reqs[key] = merged_values[0] if len(merged_values) == 1 else merged_values
-                            else: merged_reqs[key] = value2
+                            else:
+                                merged_reqs[key] = value2
                         existing_choice['requires'] = merged_reqs
                     
                     # Merge includes
-                    inc1 = existing_choice.get('includes'); inc2 = new_choice_data.get('includes')
-                    s1 = " ".join([f"[{w}]" for w in inc1]) if isinstance(inc1, list) else (inc1 or ''); s2 = " ".join([f"[{w}]" for w in inc2]) if isinstance(inc2, list) else (inc2 or '')
+                    inc1 = existing_choice.get('includes')
+                    inc2 = new_choice_data.get('includes')
+                    s1 = " ".join([f"[{w}]" for w in inc1]) if isinstance(inc1, list) else (inc1 or '')
+                    s2 = " ".join([f"[{w}]" for w in inc2]) if isinstance(inc2, list) else (inc2 or '')
                     combined_str = f"{s1} {s2}".strip()
-                    if combined_str: existing_choice['includes'] = combined_str
+                    if combined_str:
+                        existing_choice['includes'] = combined_str
                     merged_choices_map[value] = existing_choice
         
         # Merge Global Includes
         all_includes = set()
         for _, data in all_data:
             includes = data.get('includes')
-            if not includes: continue
-            if isinstance(includes, list): all_includes.update(includes)
-            elif isinstance(includes, str): all_includes.update(re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', includes)); all_includes.update(re.findall(r'\[([a-zA-Z0-9_.-]+?)\]', includes))
+            if not includes:
+                continue
+            if isinstance(includes, list):
+                all_includes.update(includes)
+            elif isinstance(includes, str):
+                all_includes.update(re.findall(r'__([a-zA-Z0-9_.\s-]+?)__', includes))
+                all_includes.update(re.findall(r'\[([a-zA-Z0-9_.-]+?)\]', includes))
 
         merged_data = {"description": merged_desc, "choices": list(merged_choices_map.values())}
-        if all_includes: merged_data['includes'] = sorted(list(all_includes))
+        if all_includes:
+            merged_data['includes'] = sorted(list(all_includes))
         return merged_data
 
 class WildcardManagerWindow(QDialog):
@@ -283,11 +298,11 @@ class WildcardManagerWindow(QDialog):
 
         splitter.addWidget(right_pane)
 
-        splitter.setSizes([300, 700])
+        splitter.setSizes([200, 800])
 
     def _connect_signals(self):
         self.search_edit.textChanged.connect(self._filter_wildcards)
-        self.file_list.itemDoubleClicked.connect(self._on_file_selected)
+        self.file_list.itemClicked.connect(self._on_file_selected)
         self.save_button.clicked.connect(self._on_save_file)
         self.structured_editor.description_entry.textChanged.connect(self._mark_dirty)
         self.structured_editor.includes_text.textChanged.connect(self._mark_dirty)

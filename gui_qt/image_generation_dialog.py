@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QTabWidget,
-    QTextEdit,
     QTreeWidget,
     QInputDialog,
     QTreeWidgetItem,
@@ -64,7 +63,7 @@ class AssetFetchWorker(QObject):
 class ImageGenerationOptionsDialog(QDialog):
     """A dialog for setting image generation options."""
 
-    def __init__(self, parent, processor: PromptProcessor, prompt: str, initial_params: Optional[Dict] = None, is_editing: bool = False):
+    def __init__(self, parent, processor: PromptProcessor, prompt: str, initial_params: Optional[Dict] = None, is_editing: bool = False, force_random_seed: bool = False):
         if processor.verbose:
             print("\n--- VERBOSE: ImageGenerationOptionsDialog.__init__ ENTERED ---")
         super().__init__(parent)
@@ -74,6 +73,7 @@ class ImageGenerationOptionsDialog(QDialog):
         self.initial_params = initial_params or {}
         self.fetch_thread: Optional[QThread] = None
         self.is_editing = is_editing
+        self.force_random_seed = force_random_seed
         # --- FIX: Make worker an instance variable to prevent garbage collection ---
         self.fetch_worker: Optional[AssetFetchWorker] = None
 
@@ -270,15 +270,37 @@ class ImageGenerationOptionsDialog(QDialog):
 
         main_settings_layout.addWidget(self.scheduler_combo, 3, 1) # Only spans 1 column now
 
-        main_settings_layout.addWidget(QLabel("Seed:"), 3, 2) # New position
+        main_settings_layout.addWidget(QLabel("Seed:"), 3, 2)
         seed_layout = QHBoxLayout()
         self.seed_edit = QLineEdit()
-        self.seed_edit.setText(str(self.initial_params.get("seed", random.randint(0, 2**32 - 1))))
+        self.random_seed_checkbox = QCheckBox("Random") # Instantiated here
+        self.randomize_seed_button = QPushButton("🎲") # Instantiated here
+        self.randomize_seed_button.setFixedWidth(40)
+
+        # Now, set properties based on conditions
+        if self.force_random_seed:
+            initial_seed = random.randint(0, 2**32 - 1)
+            self.random_seed_checkbox.setChecked(True)
+            self.seed_edit.setEnabled(False)
+            self.randomize_seed_button.setEnabled(False)
+        elif self.is_editing and "seed" in self.initial_params:
+            initial_seed = self.initial_params["seed"]
+            self.random_seed_checkbox.setChecked(False)
+            self.random_seed_checkbox.setEnabled(False)
+            self.seed_edit.setEnabled(True)
+            self.randomize_seed_button.setEnabled(False)
+        else:
+            initial_seed = self.initial_params.get("seed", random.randint(0, 2**32 - 1))
+            self.random_seed_checkbox.setChecked(self.initial_params.get("seed") is None)
+            self.seed_edit.setEnabled(not self.random_seed_checkbox.isChecked())
+            self.randomize_seed_button.setEnabled(not self.random_seed_checkbox.isChecked())
+            
+        self.seed_edit.setText(str(initial_seed))
+        
         seed_layout.addWidget(self.seed_edit, 1)
-        self.random_seed_button = QPushButton("🎲")
-        self.random_seed_button.setFixedWidth(40)
-        seed_layout.addWidget(self.random_seed_button)
-        main_settings_layout.addLayout(seed_layout, 3, 3) # New position
+        seed_layout.addWidget(self.randomize_seed_button)
+        seed_layout.addWidget(self.random_seed_checkbox)
+        main_settings_layout.addLayout(seed_layout, 3, 3)
 
         # Row 5: Overrides
         override_buttons_layout = QHBoxLayout()
@@ -325,7 +347,7 @@ class ImageGenerationOptionsDialog(QDialog):
         main_layout.addWidget(self.button_box)
 
     def _connect_signals(self):
-        self.random_seed_button.clicked.connect(self._randomize_seed)
+        self.randomize_seed_button.clicked.connect(self._randomize_seed)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         self.sdxl_radio.toggled.connect(self._on_base_model_change)
@@ -340,6 +362,7 @@ class ImageGenerationOptionsDialog(QDialog):
         self.lora_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.model_tree.itemChanged.connect(self._update_generate_button_text) # Connect to update button text
         self.num_images_spin.valueChanged.connect(self._update_generate_button_text) # Connect to update button text
+        self.random_seed_checkbox.toggled.connect(self._on_random_seed_toggled)
 
     @Slot(QTreeWidgetItem)
     def _on_item_double_clicked(self, item: QTreeWidgetItem):
@@ -493,6 +516,13 @@ class ImageGenerationOptionsDialog(QDialog):
     @Slot()
     def _randomize_seed(self):
         self.seed_edit.setText(str(random.randint(0, 2**32 - 1)))
+
+    @Slot(bool)
+    def _on_random_seed_toggled(self, checked: bool):
+        self.seed_edit.setEnabled(not checked)
+        self.randomize_seed_button.setEnabled(not checked)
+        if checked:
+            self._randomize_seed() # Generate a new random seed when toggled to random
 
     @Slot(str)
     def _on_negative_prompt_preset_selected(self, preset_name: str):

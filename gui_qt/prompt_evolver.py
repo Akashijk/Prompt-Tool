@@ -104,7 +104,8 @@ class ThumbnailLoader(QObject):
         while not QThread.currentThread().isInterruptionRequested():
             try:
                 job = self.job_queue.get(timeout=1)
-                if job is None: break
+                if job is None:
+                    break
                 item_widget, prompt_data = job.get('item_widget'), job.get('prompt_data')
                 all_image_data_lists = []
                 if isinstance(prompt_data.get('original_images'), list):
@@ -125,7 +126,7 @@ class ThumbnailLoader(QObject):
                             break
                     if cover_image_path:
                         break
-                image_to_load = cover_image_path or first_image_path
+                relative_image_path = cover_image_path or first_image_path
                 pixmap = QPixmap()
                 if image_to_load:
                     try:
@@ -196,21 +197,25 @@ class PromptEvolverWindow(QDialog, ImagePreviewMixin):
 
     def _get_preview_image(self, item_data: Dict[str, Any]) -> Optional[Image.Image]:
         all_image_data_lists = []
-        if isinstance(item_data.get('original_images'), list): all_image_data_lists.append(item_data['original_images'])
-        if isinstance(item_data.get('enhanced'), dict) and isinstance(item_data['enhanced'].get('images'), list): all_image_data_lists.append(item_data['enhanced']['images'])
+        if isinstance(item_data.get('original_images'), list):
+            all_image_data_lists.append(item_data['original_images'])
+        if isinstance(item_data.get('enhanced'), dict) and isinstance(item_data['enhanced'].get('images'), list):
+            all_image_data_lists.append(item_data['enhanced']['images'])
         if isinstance(item_data.get('variations'), dict):
             for var_data in item_data['variations'].values():
-                if isinstance(var_data, dict) and isinstance(var_data.get('images'), list): all_image_data_lists.append(var_data['images'])
+                if isinstance(var_data, dict) and isinstance(var_data.get('images'), list):
+                    all_image_data_lists.append(var_data['images'])
         cover_image_path, first_image_path = None, None
         for img_list in all_image_data_lists:
-            if not first_image_path and img_list and isinstance(img_list[0], dict): first_image_path = img_list[0].get('image_path')
+            if not first_image_path and img_list and isinstance(img_list[0], dict):
+                first_image_path = img_list[0].get('image_path')
             for img_data in img_list:
                 if isinstance(img_data, dict) and img_data.get('is_cover_image'):
                     cover_image_path = img_data.get('image_path')
                     break
                 if cover_image_path:
                     break
-                image_to_load = cover_image_path or first_image_path
+                relative_image_path = cover_image_path or first_image_path
         if not relative_image_path:
             return None
         try:

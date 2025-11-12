@@ -28,7 +28,7 @@ class SystemPromptEditorWindow(QDialog):
 
         # UI Widgets
         self.file_tree: Optional[QTreeWidget] = None
-        self.editor_text: Optional[QTextEdit] = None
+        self.editor_text: Optional[SmoothTextEdit] = None
         self.save_button: Optional[QPushButton] = None
         self.reset_button: Optional[QPushButton] = None
         self.rename_button: Optional[QPushButton] = None
@@ -109,7 +109,8 @@ class SystemPromptEditorWindow(QDialog):
         files_by_category = self.processor.get_system_prompt_files()
 
         for category, files in files_by_category.items():
-            if not files: continue
+            if not files:
+                continue
             category_item = QTreeWidgetItem(self.file_tree, [category])
             for file_info in files:
                 file_item = QTreeWidgetItem(category_item, [file_info['display_name']])
@@ -180,7 +181,8 @@ class SystemPromptEditorWindow(QDialog):
 
     @Slot()
     def _save_file(self):
-        if not self.selected_file: return
+        if not self.selected_file:
+            return
         content = self.editor_text.toPlainText()
         try:
             self.processor.save_system_prompt_content(self.selected_file, content)
@@ -201,7 +203,8 @@ class SystemPromptEditorWindow(QDialog):
 
     @Slot()
     def _set_as_default_negative_prompt(self):
-        if not self.selected_file or not self.selected_file.startswith('negative_prompts/'): return
+        if not self.selected_file or not self.selected_file.startswith('negative_prompts/'):
+            return
 
         key = os.path.splitext(os.path.basename(self.selected_file))[0]
         new_default_key = "" if key == config.DEFAULT_NEGATIVE_PROMPT_KEY else key
@@ -219,13 +222,15 @@ class SystemPromptEditorWindow(QDialog):
     def _create_new_prompt(self):
         items = ["Variation", "Negative Prompt", "Enhancement Prompt"]
         item, ok = QInputDialog.getItem(self, "Select Type", "Select the type of prompt to create:", items, 0, False)
-        if not ok or not item: return
+        if not ok or not item:
+            return
 
         prompt_type_map = {"Variation": "variation", "Negative Prompt": "negative_prompt", "Enhancement Prompt": "enhancement"}
         prompt_type = prompt_type_map[item]
 
         filename, ok = QInputDialog.getText(self, "New Prompt", "Enter new filename (without extension):")
-        if not ok or not filename: return
+        if not ok or not filename:
+            return
 
         try:
             self.processor.create_system_prompt(filename, prompt_type)
@@ -254,7 +259,8 @@ class SystemPromptEditorWindow(QDialog):
 
         old_basename, ext = os.path.splitext(os.path.basename(self.selected_file))
         new_basename, ok = QInputDialog.getText(self, "Rename Prompt", "Enter new name (without extension):", text=old_basename)
-        if not ok or not new_basename or new_basename.strip() == old_basename: return
+        if not ok or not new_basename or new_basename.strip() == old_basename:
+            return
         
         new_filename = f"{new_basename.strip()}{ext}"
         try:
@@ -269,8 +275,10 @@ class SystemPromptEditorWindow(QDialog):
             reply = QMessageBox.question(self, "Unsaved Changes", "You have unsaved changes. Do you want to save them before closing?", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
             if reply == QMessageBox.StandardButton.Save:
                 self._save_file()
-                if self.is_dirty: event.ignore()
-                else: event.accept()
+                if self.is_dirty:
+                    event.ignore()
+                else:
+                    event.accept()
             elif reply == QMessageBox.StandardButton.Cancel:
                 event.ignore()
             else:

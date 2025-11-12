@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem, QComboBox, QStyledItemDelegate
 )
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt, QSize, QPoint, QModelIndex, QTimer, QEvent
-from PySide6.QtGui import QPixmap, QIcon, QImage, QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QCloseEvent, QPainter, QDesktopServices, QCursor
+from PySide6.QtGui import QPixmap, QImage, QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QCloseEvent, QPainter, QDesktopServices, QCursor
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
@@ -332,10 +332,13 @@ class HistoryViewerWindow(QDialog):
     def _get_cover_image_path_for_row(self, row: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         """Finds the cover image path and its workflow for a given history row data."""
         image_lists_to_check = []
-        if row.get('original_images'): image_lists_to_check.append(row['original_images'])
-        if row.get('enhanced', {}).get('images'): image_lists_to_check.append(row['enhanced']['images'])
+        if row.get('original_images'):
+            image_lists_to_check.append(row['original_images'])
+        if row.get('enhanced', {}).get('images'):
+            image_lists_to_check.append(row['enhanced']['images'])
         for var_data in row.get('variations', {}).values():
-            if var_data.get('images'): image_lists_to_check.append(var_data['images'])
+            if var_data.get('images'):
+                image_lists_to_check.append(var_data['images'])
 
         workflow_source = row.get('workflow_source', 'sfw')
 
@@ -409,18 +412,22 @@ class HistoryViewerWindow(QDialog):
     def _lazy_load_visible_thumbnails(self):
         """Identifies visible rows and queues their thumbnails for loading."""
         first_visible_row = self.history_table.rowAt(0)
-        if first_visible_row == -1: first_visible_row = 0 # Handle empty table case
+        if first_visible_row == -1:
+            first_visible_row = 0 # Handle empty table case
         last_visible_row = self.history_table.rowAt(self.history_table.viewport().height())
-        if last_visible_row == -1: last_visible_row = self.history_table.rowCount() - 1
+        if last_visible_row == -1:
+            last_visible_row = self.history_table.rowCount() - 1
         for row in range(first_visible_row, last_visible_row + 1):
             self._request_thumbnail_for_row(row)
 
     def _request_thumbnail_for_row(self, row: int):
         """Checks if a row needs its thumbnail loaded and queues it."""
         thumb_item = self.history_table.item(row, 1)
-        if not thumb_item or thumb_item.data(ThumbnailDelegate.PixmapRole): return
+        if not thumb_item or thumb_item.data(ThumbnailDelegate.PixmapRole):
+            return
         original_row_index_item = self.history_table.item(row, 0)
-        if not original_row_index_item: return # Row might not be fully populated yet
+        if not original_row_index_item:
+            return # Row might not be fully populated yet
         original_row_index = original_row_index_item.data(Qt.UserRole)
         entry = self.row_to_entry_map.get(original_row_index)
         if entry:
@@ -442,7 +449,8 @@ class HistoryViewerWindow(QDialog):
 
         if isinstance(item_widget, QTableWidgetItem):
             # Handle table thumbnail
-            if item_widget.tableWidget() is None: return # Item is no longer in the table
+            if item_widget.tableWidget() is None:
+                return # Item is no longer in the table
             pixmap = QPixmap.fromImage(qimage)
             item_widget.setData(ThumbnailDelegate.PixmapRole, pixmap)
         elif isinstance(item_widget, ImageGalleryItemWidget): # Check for our custom widget
@@ -472,7 +480,8 @@ class HistoryViewerWindow(QDialog):
             if thumb_item and thumb_item.data(ThumbnailDelegate.PixmapRole):
                 # Get the full path from the original entry data
                 original_row_index_item = self.history_table.item(row, 0)
-                if not original_row_index_item: return
+                if not original_row_index_item:
+                    return
                 original_row_index = original_row_index_item.data(Qt.UserRole)
                 entry = self.row_to_entry_map.get(original_row_index)
                 if entry:
@@ -496,11 +505,13 @@ class HistoryViewerWindow(QDialog):
             return
 
         item = self.history_table.item(row, 0)
-        if not item: return
+        if not item:
+            return
 
         original_row_index = item.data(Qt.UserRole)
         original_entry = self.row_to_entry_map.get(original_row_index)
-        if not original_entry: return
+        if not original_entry:
+            return
 
         # Create a deep copy to modify
         updated_entry = copy.deepcopy(original_entry)
@@ -691,7 +702,8 @@ class HistoryViewerWindow(QDialog):
             status_item = self.history_table.item(row, 3)
             template_item = self.history_table.item(row, 4)
 
-            if not item_fav: continue
+            if not item_fav:
+                continue
 
             # Check favorite status
             original_row_index = item_fav.data(Qt.UserRole)
@@ -794,9 +806,11 @@ class HistoryViewerWindow(QDialog):
         image_lists_to_check = []
         if entry.get('original_images'):
             image_lists_to_check.append(entry['original_images'])
-        if entry.get('enhanced', {}).get('images'): image_lists_to_check.append(entry['enhanced']['images'])
+        if entry.get('enhanced', {}).get('images'):
+            image_lists_to_check.append(entry['enhanced']['images'])
         for var_data in entry.get('variations', {}).values():
-            if var_data.get('images'): image_lists_to_check.append(var_data['images'])
+            if var_data.get('images'):
+                image_lists_to_check.append(var_data['images'])
 
         # Find cover image
         for img_list in image_lists_to_check:
@@ -820,11 +834,13 @@ class HistoryViewerWindow(QDialog):
             return
 
         item = self.history_table.item(selected_rows[0].row(), 0)
-        if not item: return
+        if not item:
+            return
 
         original_row_index = item.data(Qt.UserRole)
         entry = self.row_to_entry_map.get(original_row_index)
-        if not entry: return
+        if not entry:
+            return
 
         # --- NEW: Unload all Ollama models before image generation ---
         if self.processor and self.processor.ollama_client:
@@ -849,7 +865,7 @@ class HistoryViewerWindow(QDialog):
 
         # --- NEW: Use the new helper to get the correct parameters ---
         initial_params = self._get_params_for_entry(entry)
-        dialog = ImageGenerationOptionsDialog(self, self.processor, prompt_text, initial_params=initial_params)
+        dialog = ImageGenerationOptionsDialog(self, self.processor, prompt_text, initial_params=initial_params, force_random_seed=True)
         if dialog.exec() == QDialog.Accepted:
             options = dialog.get_options()
             selected_models = options.pop('models', [])
@@ -940,6 +956,12 @@ class HistoryViewerWindow(QDialog):
             for img in images:
                 # Create a new dict to avoid modifying the original entry data
                 job_data = {**img, 'prompt_type': prompt_type, 'workflow_source': workflow_source}
+                # Construct full_path here
+                if job_data.get('image_path'):
+                    original_workflow = config.workflow
+                    config.workflow = workflow_source.lower()
+                    job_data['full_path'] = os.path.join(config.get_history_file_dir(), job_data['image_path'])
+                    config.workflow = original_workflow # Restore immediately
                 # --- NEW: Add 'params' if it exists in img ---
                 if 'params' in img:
                     job_data['params'] = img['params']
@@ -1051,27 +1073,30 @@ class HistoryViewerWindow(QDialog):
     def _toggle_selected_image_favorite(self, item: QListWidgetItem):
         """Toggles the favorite status of an individual image."""
         image_data = item.data(Qt.ItemDataRole.UserRole)
-        if not image_data: return
+        if not image_data:
+            return
 
         # Find the main history entry
         selected_rows = self.history_table.selectionModel().selectedRows()
-        if not selected_rows: return
+        if not selected_rows:
+            return
         original_row_index = self.history_table.item(selected_rows[0].row(), 0).data(Qt.UserRole)
         original_entry = self.row_to_entry_map.get(original_row_index)
-        if not original_entry: return
+        if not original_entry:
+            return
 
         updated_entry = copy.deepcopy(original_entry)
         image_path_to_find = image_data['full_path']
 
         # Find the specific image dict within the entry
         found_image_dict = None
-        image_lists = [updated_entry.get('original_images', [])]
+        all_image_lists = [updated_entry.get('original_images', [])] # Initialize here
         if 'enhanced' in updated_entry:
             all_image_lists.append(updated_entry['enhanced'].get('images', []))
         for var_data in updated_entry.get('variations', {}).values():
-            image_lists.append(var_data.get('images', []))
+            all_image_lists.append(var_data.get('images', []))
 
-        for img_list in image_lists:
+        for img_list in all_image_lists:
             for img_dict in img_list:
                 if os.path.basename(img_dict.get('image_path', '')) == os.path.basename(image_path_to_find):
                     found_image_dict = img_dict
@@ -1126,41 +1151,8 @@ class HistoryViewerWindow(QDialog):
                     found_and_set = True
                     break
             if found_and_set:
-                break
-        """Sets the selected image as the cover image for the history entry."""
-        image_data = item.data(Qt.ItemDataRole.UserRole)
-        if not image_data: return
+                break # type: ignore
 
-        # Find the main history entry
-        selected_rows = self.history_table.selectionModel().selectedRows()
-        if not selected_rows: return
-        original_row_index = self.history_table.item(selected_rows[0].row(), 0).data(Qt.UserRole)
-        original_entry = self.row_to_entry_map.get(original_row_index)
-        if not original_entry: return
-
-        updated_entry = copy.deepcopy(original_entry)
-        image_path_to_find = image_data['full_path']
-
-        # 1. Clear all existing cover image flags within the entry
-        all_image_lists = [updated_entry.get('original_images', [])]
-        if 'enhanced' in updated_entry: all_image_lists.append(updated_entry['enhanced'].get('images', []))
-        for var_data in updated_entry.get('variations', {}).values():
-            all_image_lists.append(var_data.get('images', []))
-
-        for img_list in all_image_lists:
-            for img_dict in img_list:
-                if 'is_cover_image' in img_dict:
-                    img_dict['is_cover_image'] = False
-
-        # 2. Find the selected image and set it as the new cover
-        found_and_set = False
-        for img_list in all_image_lists:
-            for img_dict in img_list:
-                if os.path.basename(img_dict.get('image_path', '')) == os.path.basename(image_path_to_find):
-                    img_dict['is_cover_image'] = True
-                    found_and_set = True
-                    break
-            if found_and_set: break # type: ignore
 
         if found_and_set and self.processor.history_manager.update_history_entry(original_entry, updated_entry):
             QMessageBox.information(self, "Success", "Cover image has been set. The list will now refresh.")
@@ -1214,7 +1206,8 @@ class HistoryViewerWindow(QDialog):
             return
         original_row_index = self.history_table.item(selected_rows[0].row(), 0).data(Qt.UserRole)
         original_entry = self.row_to_entry_map.get(original_row_index)
-        if not original_entry: return
+        if not original_entry:
+            return
 
         updated_entry = copy.deepcopy(original_entry)
         
@@ -1234,7 +1227,8 @@ class HistoryViewerWindow(QDialog):
         # Remove the image from the entry's image lists
         found_and_removed = False
         all_image_lists = [updated_entry.get('original_images', [])]
-        if 'enhanced' in updated_entry: all_image_lists.append(updated_entry['enhanced'].get('images', []))
+        if 'enhanced' in updated_entry:
+            all_image_lists.append(updated_entry['enhanced'].get('images', []))
         for var_data in updated_entry.get('variations', {}).values():
             all_image_lists.append(var_data.get('images', []))
 
@@ -1246,7 +1240,8 @@ class HistoryViewerWindow(QDialog):
                     img_list.remove(img_dict)
                     found_and_removed = True
                     break
-            if found_and_removed: break
+            if found_and_removed:
+                break
 
         if found_and_removed:
             # Update the history entry in the backend FIRST
@@ -1278,6 +1273,7 @@ class HistoryViewerWindow(QDialog):
                     self.shared_thumb_job_queue.put(None) # Send sentinel to unblock worker
                     thread.quit()
                     thread.wait(1000)
-        except RuntimeError: pass # Object already deleted
+        except RuntimeError:
+            pass # Object already deleted
 
         super().closeEvent(event)

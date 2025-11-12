@@ -5,7 +5,7 @@ from typing import Optional, Callable
 
 from PySide6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QLineEdit,
-    QLabel, QMessageBox, QTabWidget, QWidget, QHBoxLayout
+    QLabel, QMessageBox, QTabWidget, QWidget, QHBoxLayout, QPushButton
 )
 from PySide6.QtCore import Slot, Qt, QTimer
 

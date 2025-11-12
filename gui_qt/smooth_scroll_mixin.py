@@ -1,6 +1,5 @@
 """A mixin class to provide smooth scrolling for Qt widgets."""
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve
-from PySide6.QtWidgets import QWidget
 
 class SmoothScrollMixin:
     def __init__(self, *args, **kwargs):

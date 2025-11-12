@@ -56,6 +56,13 @@ class LoraPermutationDialog(QDialog):
         except Exception:
             pass # Fallback to default positioning
 
+    def _update_current_permutation_display(self):
+        """Updates the display text of the currently selected permutation."""
+        if self.current_permutation_index != -1:
+            item = self.perm_list.item(self.current_permutation_index)
+            perm_data = self.permutations[self.current_permutation_index]
+            self._update_perm_list_item_text(item, perm_data)
+
     def _create_widgets(self):
         main_layout = QVBoxLayout(self)
         splitter = QSplitter(Qt.Horizontal)
@@ -151,7 +158,7 @@ class LoraPermutationDialog(QDialog):
 
         row_widgets = {"frame": row_frame, "combo": lora_combo, "spinbox": weight_spinbox}
         delete_button.clicked.connect(lambda: self._delete_lora_row(row_widgets))
-        lora_combo.currentTextChanged.connect(self._update_current_perm_name)
+        lora_combo.currentTextChanged.connect(self._update_current_permutation_display)
 
         if lora_info:
             lora_name = lora_info.get('lora_object', {}).get('name')
@@ -194,12 +201,6 @@ class LoraPermutationDialog(QDialog):
             display_name += f" ({' + '.join(lora_names)})"
         item.setText(display_name)
 
-        if self.current_permutation_index == -1:
-            return
-        item = self.perm_list.item(self.current_permutation_index)
-        perm_data = self.permutations[self.current_permutation_index]
-        self._update_perm_list_item_text(item, perm_data)
-
     def _add_lora_row_to_current_perm(self):
         if self.current_permutation_index == -1:
             return
@@ -213,7 +214,7 @@ class LoraPermutationDialog(QDialog):
         current_perm = self.permutations[self.current_permutation_index]
         current_perm['lora_rows'].remove(row_widgets)
         row_widgets['frame'].deleteLater()
-        self._update_current_perm_name()
+        self._update_current_permutation_display()
 
     def _duplicate_permutation(self):
         if self.current_permutation_index == -1:

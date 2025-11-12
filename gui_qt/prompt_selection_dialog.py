@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView
 )
 from PySide6.QtCore import Slot
-from typing import List
+from typing import List, Dict, Any
 
 from core.prompt_processor import PromptProcessor
 from .custom_widgets import SmoothListWidget

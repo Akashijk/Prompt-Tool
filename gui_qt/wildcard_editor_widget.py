@@ -6,7 +6,7 @@ from typing import Dict, List, Any, Optional, Tuple, Callable, TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QGroupBox,
-    QTreeWidget, QTreeWidgetItem, QHeaderView, QTextEdit, QMenu,
+    QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu,
     QMessageBox, QApplication, QLabel, QListWidgetItem, QDialog
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QPoint
@@ -33,11 +33,11 @@ class _AutocompletePopup(QWidget):
         self.list_widget.itemClicked.connect(self._on_select)
 
     def set_suggestions(self, suggestions: List[str]):
-        self.list_widget.clear()
-        self.list_widget.addItems(suggestions)
-        if suggestions:
-            self.list_widget.setCurrentRow(0)
-        self.adjustSize()
+                                                                self.list_widget.clear()
+                                                                self.list_widget.addItems(suggestions)
+                                                                if suggestions:
+                                                                    self.list_widget.setCurrentRow(0)
+                                                                self.adjustSize()
 
     def _on_select(self, item: QListWidgetItem):
         # This will need to be connected to the actual insert callback
@@ -119,39 +119,40 @@ class WildcardEditor(QWidget):
         choices_group = QGroupBox("Choices")
         choices_layout = QVBoxLayout(choices_group)
 
-        # Choices Toolbar
-        choices_toolbar = QHBoxLayout()
+        # Choices Toolbar - Group 1: Basic Actions
+        basic_actions_toolbar = QHBoxLayout()
         add_button = QPushButton("Add")
         add_button.clicked.connect(self._add_item)
-        choices_toolbar.addWidget(add_button)
+        basic_actions_toolbar.addWidget(add_button)
 
         mass_edit_button = QPushButton("Mass Edit...")
         mass_edit_button.clicked.connect(self._mass_edit_choices)
-        choices_toolbar.addWidget(mass_edit_button)
+        basic_actions_toolbar.addWidget(mass_edit_button)
 
         delete_button = QPushButton("Delete")
         delete_button.clicked.connect(self._delete_item)
-        choices_toolbar.addWidget(delete_button)
+        basic_actions_toolbar.addWidget(delete_button)
+        basic_actions_toolbar.addStretch() # Push buttons to the left
+        choices_layout.addLayout(basic_actions_toolbar)
 
-        choices_toolbar.addStretch()
-
-        # AI Buttons
-        self.suggest_button = QPushButton("Suggest Choices (AI)")
+        # Choices Toolbar - Group 2: AI Actions
+        ai_actions_toolbar = QHBoxLayout()
+        self.suggest_button = QPushButton("Suggest (AI)")
         self.suggest_button.clicked.connect(self._on_suggest_choices)
         self.suggest_button.setEnabled(self.suggestion_callback is not None)
-        choices_toolbar.addWidget(self.suggest_button)
+        ai_actions_toolbar.addWidget(self.suggest_button)
 
-        self.autotag_button = QPushButton("Auto-Tag All (AI)")
+        self.autotag_button = QPushButton("Auto-Tag (AI)")
         self.autotag_button.clicked.connect(self._on_auto_tag_choices)
         self.autotag_button.setEnabled(self.autotag_callback is not None)
-        choices_toolbar.addWidget(self.autotag_button)
+        ai_actions_toolbar.addWidget(self.autotag_button)
 
-        self.enrich_button = QPushButton("Enrich Choices (AI)")
+        self.enrich_button = QPushButton("Enrich (AI)")
         self.enrich_button.clicked.connect(self._on_enrich_choices)
         self.enrich_button.setEnabled(self.enrich_callback is not None)
-        choices_toolbar.addWidget(self.enrich_button)
-
-        choices_layout.addLayout(choices_toolbar)
+        ai_actions_toolbar.addWidget(self.enrich_button)
+        ai_actions_toolbar.addStretch() # Push buttons to the left
+        choices_layout.addLayout(ai_actions_toolbar)
 
         # Choices Treeview
         columns = ['Value', 'Weight', 'Tags', 'Requires', 'Includes']
@@ -159,9 +160,12 @@ class WildcardEditor(QWidget):
         self.tree.setHeaderLabels(columns)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch) # Value column stretches
         self.tree.setColumnWidth(1, 60) # Weight
-        self.tree.setColumnWidth(2, 120) # Tags
-        self.tree.setColumnWidth(3, 150) # Requires
-        self.tree.setColumnWidth(4, 150) # Includes
+        self.tree.header().setSectionResizeMode(2, QHeaderView.Stretch) # Tags
+        self.tree.header().setSectionResizeMode(3, QHeaderView.Stretch) # Requires
+        self.tree.header().setSectionResizeMode(4, QHeaderView.Stretch) # Includes
+        self.tree.setColumnWidth(2, 100) # Minimum width for Tags
+        self.tree.setColumnWidth(3, 100) # Minimum width for Requires
+        self.tree.setColumnWidth(4, 100) # Minimum width for Includes
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click_item)
@@ -171,7 +175,7 @@ class WildcardEditor(QWidget):
         main_layout.addWidget(choices_group)
 
         # --- Includes Pane ---
-        includes_group = QGroupBox("Global Includes (as list or template string)")
+        includes_group = QGroupBox("Global Includes") # Shortened title
         includes_layout = QVBoxLayout(includes_group)
 
         includes_toolbar = QHBoxLayout()
@@ -188,20 +192,34 @@ class WildcardEditor(QWidget):
         main_layout.addWidget(includes_group)
 
     def _connect_signals(self):
-        self.tree.itemDoubleClicked.connect(self._on_double_click_item) # Already connected in _create_widgets
+        # self.tree.itemDoubleClicked.connect(self._on_double_click_item) # Removed duplicate connection
         self.tree.customContextMenuRequested.connect(self._show_context_menu) # Already connected in _create_widgets
 
     def _on_suggest_choices(self):
         if self.suggestion_callback:
-            self.suggestion_callback()
+            # Pass current choices and description as context for AI
+            current_data = self.get_data()
+            current_choices = [c.get('value') if isinstance(c, dict) else c for c in current_data.get('choices', [])]
+            context = current_data.get('description', '')
+            self.suggestion_callback(current_choices, context)
 
     def _on_auto_tag_choices(self):
         if self.autotag_callback:
-            self.autotag_callback()
+            current_choices = self.get_data().get('choices', [])
+            autotagged_choices = self.autotag_callback(current_choices)
+            if autotagged_choices:
+                self.set_data({'description': self.description_entry.text(), 'choices': autotagged_choices, 'includes': self.includes_text.toPlainText()})
+                self.dataChanged.emit()
 
     def _on_enrich_choices(self):
         if self.enrich_callback:
-            self.enrich_callback()
+            current_data = self.get_data()
+            current_choices = current_data.get('choices', [])
+            context = current_data.get('description', '')
+            enriched_choices = self.enrich_callback(current_choices, context)
+            if enriched_choices:
+                self.set_data({'description': self.description_entry.text(), 'choices': enriched_choices, 'includes': self.includes_text.toPlainText()})
+                self.dataChanged.emit()
 
     def update_theme(self):
         """Updates the tag colors in the treeview to match the current theme."""
@@ -236,57 +254,6 @@ class WildcardEditor(QWidget):
             return includes_data
         return ""
 
-    def _format_includes_for_display(self, includes_data: Any) -> str:
-        """Formats the includes data for display in the QTextEdit."""
-        if isinstance(includes_data, list):
-            return " ".join([f"[{w}]" for w in includes_data])
-        elif isinstance(includes_data, str):
-            return includes_data
-        return ""
-
-    def _get_choice_from_values_tuple(self, values_tuple: Tuple[str, str, str, str, str]) -> Any:
-        value, weight_str, tags_str, requires_str, includes_str = values_tuple
-
-        # If no extra data, return a simple string
-        if not weight_str and not tags_str and not requires_str and not includes_str:
-            return value
-
-        choice_obj = {'value': value}
-        
-        # Parse weight
-        if weight_str:
-            try:
-                choice_obj['weight'] = int(weight_str)
-            except (ValueError, TypeError):
-                pass  # Ignore invalid weight
-
-        # Parse tags
-        if tags_str:
-            choice_obj['tags'] = [t.strip() for t in tags_str.split(',') if t.strip()]
-
-        # Parse requires
-        if requires_str:
-            try:
-                req_dict = json.loads(requires_str)
-                if req_dict:
-                    choice_obj['requires'] = req_dict
-            except json.JSONDecodeError:
-                pass # Ignore malformed JSON string
-        
-        if includes_str:
-            try:
-                # Try to parse as JSON list first
-                parsed_includes = json.loads(includes_str)
-                if isinstance(parsed_includes, list):
-                    choice_obj['includes'] = parsed_includes
-                else: # It's some other JSON type, store as string
-                    choice_obj['includes'] = includes_str
-            except json.JSONDecodeError:
-                # Not a valid JSON, so it's a template string
-                choice_obj['includes'] = includes_str
-        
-        return choice_obj
-
     def _get_values_tuple_from_choice(self, choice: Any) -> Tuple[str, str, str, str, str]:
         """Converts a choice object (string or dict) into a tuple of strings for the treeview."""
         if isinstance(choice, str):
@@ -294,15 +261,20 @@ class WildcardEditor(QWidget):
         elif isinstance(choice, dict):
             value = str(choice.get('value', ''))
             weight = str(choice.get('weight', ''))
-            tags = ", ".join(choice.get('tags', []))
-            requires = json.dumps(choice.get('requires', {}), separators=(',', ':')) if choice.get('requires') else ""
-            includes = ""
-            choice_includes = choice.get('includes')
-            if isinstance(choice_includes, list):
-                includes = " ".join([f"[{w}]" for w in choice_includes])
-            elif isinstance(choice_includes, str):
-                includes = choice_includes
-            return value, weight, tags, requires, includes
+            
+            # Summarize tags
+            tags_list = choice.get('tags', [])
+            tags_display = f"{len(tags_list)} tags" if tags_list else ""
+
+            # Summarize requires
+            requires_dict = choice.get('requires', {})
+            requires_display = "Yes" if requires_dict else ""
+
+            # Summarize includes
+            includes_data = choice.get('includes')
+            includes_display = "Yes" if includes_data else ""
+
+            return value, weight, tags_display, requires_display, includes_display
         return "", "", "", "", ""
 
     def set_data(self, data: Dict[str, Any]):
@@ -708,8 +680,30 @@ class WildcardEditor(QWidget):
 
     @Slot(QTreeWidgetItem, int)
     def _on_double_click_item(self, item: QTreeWidgetItem, column: int):
-        # Placeholder for now
-        QMessageBox.information(self, "Double Click", "Double click editing not yet implemented.")
+        # Get current values from the item
+        current_values = (
+            item.text(0), # Value
+            item.text(1), # Weight
+            item.text(2), # Tags
+            item.text(3), # Requires
+            item.text(4)  # Includes
+        )
+        
+        dialog = EditChoiceDialog(self, "Edit Choice", initial_values=current_values, processor=self.processor)
+        if dialog.exec() == QDialog.Accepted and dialog.result:
+            new_values = dialog.result
+            
+            # Update the QTreeWidgetItem
+            for i, value in enumerate(new_values):
+                item.setText(i, str(value))
+            
+            # Update the internal data structure (iid_to_choice_map)
+            new_choice_obj = self._get_choice_from_values_tuple(new_values)
+            item.setData(0, Qt.UserRole, new_choice_obj) # Update stored object
+            self.iid_to_choice_map[id(item)] = new_choice_obj
+            
+            self._validate_all_items()
+            self.dataChanged.emit()
 
     @Slot(QTreeWidgetItem, int)
     def _on_item_changed(self, item: QTreeWidgetItem, column: int):

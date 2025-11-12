@@ -41,7 +41,7 @@ class ThumbnailManager:
         """Generates a unique, safe cache path for a given image path."""
         cache_dir = self._get_cache_dir(workflow)
         # Use a hash of the relative path to create a unique and filesystem-safe filename.
-        filename = hashlib.sha1(original_relative_path.encode()).hexdigest() + ".webp"
+        filename = hashlib.sha1(original_relative_path.encode()).hexdigest() + ".png"
         return os.path.join(cache_dir, filename)
 
     def get_thumbnail(self, original_relative_path: str, workflow: str, target_size: Tuple[int, int]) -> Optional[Image.Image]:
@@ -52,12 +52,13 @@ class ThumbnailManager:
         cache_path = self._get_cache_path(original_relative_path, workflow)
         if os.path.exists(cache_path):
             try:
-                # Open the cached full-size image
-                img = Image.open(cache_path)
-                # Scale it to the target size for display
-                img.thumbnail((target_size.width(), target_size.height()), Image.Resampling.LANCZOS)
-                return img
-            except Exception:
+                print(f"DEBUG: Opening cached thumbnail from: {cache_path}")
+                with Image.open(cache_path) as img: # Use with statement
+                    # Scale it to the target size for display
+                    img.thumbnail(target_size, Image.Resampling.LANCZOS)
+                    return img
+            except Exception as e:
+                print(f"DEBUG: Error opening cached thumbnail {cache_path}: {e}. Regenerating.")
                 # The cached file might be corrupted, so we'll try to regenerate it.
                 pass
 
@@ -65,18 +66,20 @@ class ThumbnailManager:
         history_dir = self._get_history_dir(workflow)
         original_full_path = os.path.join(history_dir, original_relative_path)
         if not os.path.exists(original_full_path):
+            print(f"DEBUG: Original image not found: {original_full_path}")
             return None
 
         try:
+            print(f"DEBUG: Opening original image from: {original_full_path}")
             with Image.open(original_full_path) as img:
-                # Save a copy of the full-size image to cache for faster retrieval next time
-                # This cache is for the original image, not the thumbnail itself
-                img.save(cache_path, "WEBP", quality=90) # Higher quality for full-size cache
+                # Create the thumbnail
+                img.thumbnail(target_size, Image.Resampling.LANCZOS)
                 
-                # Now, create the thumbnail for return
-                img_copy = img.copy()
-                img_copy.thumbnail(target_size, Image.Resampling.LANCZOS)
-                return img_copy
+                # Save this thumbnail to the cache
+                print(f"DEBUG: Saving thumbnail to cache: {cache_path}")
+                img.save(cache_path, "WEBP", quality=80) # Quality for thumbnail cache
+                
+                return img
         except Exception as e:
             print(f"Error creating thumbnail for {original_relative_path}: {e}")
             return None

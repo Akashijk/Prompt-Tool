@@ -51,7 +51,8 @@ class MultiWildcardEditorWindow(QDialog):
         layout1 = QVBoxLayout(self.frame1)
         self.combo1 = QComboBox()
         self.combo1.addItems(["(None)"] + self.all_files)
-        if self.file1_name: self.combo1.setCurrentText(self.file1_name)
+        if self.file1_name:
+            self.combo1.setCurrentText(self.file1_name)
         layout1.addWidget(self.combo1)
         self.editor1 = WildcardEditor(self.processor, self)
         layout1.addWidget(self.editor1)
@@ -62,7 +63,8 @@ class MultiWildcardEditorWindow(QDialog):
         layout2 = QVBoxLayout(self.frame2)
         self.combo2 = QComboBox()
         self.combo2.addItems(["(None)"] + self.all_files)
-        if self.file2_name: self.combo2.setCurrentText(self.file2_name)
+        if self.file2_name:
+            self.combo2.setCurrentText(self.file2_name)
         layout2.addWidget(self.combo2)
         self.editor2 = WildcardEditor(self.processor, self)
         layout2.addWidget(self.editor2)
@@ -97,8 +99,10 @@ class MultiWildcardEditorWindow(QDialog):
         self.editor2.tree.itemChanged.connect(lambda: self._set_dirty(2))
 
     def _set_dirty(self, editor_num: int):
-        if editor_num == 1: self.editor1_dirty = True
-        else: self.editor2_dirty = True
+        if editor_num == 1:
+            self.editor1_dirty = True
+        else:
+            self.editor2_dirty = True
         self.setWindowTitle("Compare & Edit Wildcards (Qt)*")
 
     def _on_file_switch(self, editor_num: int, new_filename: str):
@@ -124,8 +128,10 @@ class MultiWildcardEditorWindow(QDialog):
         editor = self.editor1 if editor_num == 1 else self.editor2
         frame = self.frame1 if editor_num == 1 else self.frame2
 
-        if editor_num == 1: self.file1_name = filename
-        else: self.file2_name = filename
+        if editor_num == 1:
+            self.file1_name = filename
+        else:
+            self.file2_name = filename
 
         frame.setTitle(filename or ("Left Pane" if editor_num == 1 else "Right Pane"))
 
@@ -144,8 +150,10 @@ class MultiWildcardEditorWindow(QDialog):
             QMessageBox.critical(self, "Load Error", f"Could not load {filename}:\n{e}")
             editor.set_data({})
 
-        if editor_num == 1: self.editor1_dirty = False
-        else: self.editor2_dirty = False
+        if editor_num == 1:
+            self.editor1_dirty = False
+        else:
+            self.editor2_dirty = False
 
         if not self.editor1_dirty and not self.editor2_dirty:
             self.setWindowTitle("Compare & Edit Wildcards (Qt)")
@@ -153,15 +161,18 @@ class MultiWildcardEditorWindow(QDialog):
     def _save_pane(self, editor_num: int) -> bool:
         editor = self.editor1 if editor_num == 1 else self.editor2
         filename = self.file1_name if editor_num == 1 else self.file2_name
-        if not filename: return True # Nothing to save
+        if not filename:
+            return True # Nothing to save
 
         try:
             data = editor.get_data()
             content = json.dumps(data, indent=2)
             self.processor.save_wildcard_content(filename, content)
             
-            if editor_num == 1: self.editor1_dirty = False
-            else: self.editor2_dirty = False
+            if editor_num == 1:
+                self.editor1_dirty = False
+            else:
+                self.editor2_dirty = False
 
             if not self.editor1_dirty and not self.editor2_dirty:
                 self.setWindowTitle("Compare & Edit Wildcards (Qt)")
@@ -180,8 +191,10 @@ class MultiWildcardEditorWindow(QDialog):
 
         if save1_ok and save2_ok:
             modified_files = []
-            if self.file1_name and self.editor1_dirty: modified_files.append(self.file1_name)
-            if self.file2_name and self.editor2_dirty: modified_files.append(self.file2_name)
+            if self.file1_name and self.editor1_dirty:
+                modified_files.append(self.file1_name)
+            if self.file2_name and self.editor2_dirty:
+                modified_files.append(self.file2_name)
             self.update_callback(modified_files)
             QMessageBox.information(self, "Save Complete", "All changes have been saved.")
             self.accept() # Closes the dialog with an OK result

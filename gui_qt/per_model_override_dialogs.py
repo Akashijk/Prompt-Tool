@@ -36,10 +36,7 @@ class PerModelNegativePromptDialog(QDialog):
         self.default_prompt = default_prompt
         self.temp_overrides = copy.deepcopy(existing_overrides)
         self.negative_prompts = self.processor.get_available_negative_prompts()
-        self.result: Optional[Dict[str, str]] = None
-
-        # UI Widgets
-        self.model_list: Optional[QListWidget] = None
+        self.model_list: Optional[SmoothListWidget] = None
         self.editor: Optional[QTextEdit] = None
         self.combo: Optional[QComboBox] = None
         self.current_model_name: Optional[str] = None
@@ -131,7 +128,8 @@ class PerModelNegativePromptDialog(QDialog):
     def _on_negative_prompt_preset_selected(self, preset_name: str):
         if preset_name == "Custom":
             return
-        if not self.combo or not self.editor: return
+        if not self.combo or not self.editor:
+            return
 
         index = self.combo.findText(preset_name)
         if index != -1:
@@ -139,12 +137,14 @@ class PerModelNegativePromptDialog(QDialog):
             self.editor.setPlainText(prompt_text)
 
     def _on_negative_prompt_text_changed(self):
-        if not self.editor: return
+        if not self.editor:
+            return
         current_text = self.editor.toPlainText().strip()
         self._sync_combo_to_text(current_text)
 
     def _sync_combo_to_text(self, text: str):
-        if not self.combo: return
+        if not self.combo:
+            return
         current_text = text.strip()
         matching_preset = next((p['name'] for p in self.negative_prompts if p['prompt'].strip() == current_text), None)
         
@@ -167,7 +167,7 @@ class PerModelLoraDialog(QDialog):
         self.result: Optional[Dict[str, List[Dict]]] = None
 
         # UI Widgets
-        self.model_list: Optional[QListWidget] = None
+        self.model_list: Optional[SmoothListWidget] = None
         self.lora_tree: Optional[QTreeWidget] = None
         self.editor_group: Optional[QGroupBox] = None
         self.current_model_name: Optional[str] = None
@@ -233,7 +233,7 @@ class PerModelLoraDialog(QDialog):
 
     def _populate_lora_tree(self, tree: QTreeWidget, selected_loras: List[Dict]):
         tree.clear()
-        selected_lora_map = {l['lora_object']['name']: l['weight'] for l in selected_loras}
+        selected_lora_map = {lora_item['lora_object']['name']: lora_item['weight'] for lora_item in selected_loras}
 
         for lora_data in self.all_loras:
             lora_name = lora_data['name']

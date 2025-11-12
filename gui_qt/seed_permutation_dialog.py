@@ -75,7 +75,6 @@ class SeedPermutationDialog(QDialog):
     @Slot(int)
     def _on_num_permutations_changed(self, value: int):
         current_start_seed = self.start_seed_input.value()
-        current_end_seed = self.end_seed_input.value()
         required_end_seed = current_start_seed + value - 1
         max_spinbox_value = 2**31 - 1 # Define max_spinbox_value here as well
         
@@ -86,7 +85,6 @@ class SeedPermutationDialog(QDialog):
     @Slot(int)
     def _on_start_seed_changed(self, value: int):
         current_num_permutations = self.num_permutations_input.value()
-        current_end_seed = self.end_seed_input.value()
         required_end_seed = value + current_num_permutations - 1
         max_spinbox_value = 2**31 - 1 # Define max_spinbox_value here as well
         
@@ -122,10 +120,12 @@ class SeedPermutationDialog(QDialog):
                 max_generation_seed = 2**32 - 1
                 if true_start_seed > max_generation_seed:
                     true_start_seed = (true_start_seed % (max_generation_seed + 1)) # Roll over
-                    if true_start_seed == 0: true_start_seed = 1 # Ensure not 0
+                    if true_start_seed == 0:
+                        true_start_seed = 1 # Ensure not 0
                 if true_end_seed > max_generation_seed:
                     true_end_seed = (true_end_seed % (max_generation_seed + 1)) # Roll over
-                    if true_end_seed == 0: true_end_seed = 1 # Ensure not 0
+                    if true_end_seed == 0:
+                        true_end_seed = 1 # Ensure not 0
                 
                 self.result = {
                     "random_seeds": False,
@@ -145,10 +145,12 @@ class SeedPermutationDialog(QDialog):
                 max_generation_seed = 2**32 - 1
                 if start_seed > max_generation_seed:
                     start_seed = (start_seed % (max_generation_seed + 1))
-                    if start_seed == 0: start_seed = 1
+                    if start_seed == 0:
+                        start_seed = 1
                 if end_seed > max_generation_seed:
                     end_seed = (end_seed % (max_generation_seed + 1))
-                    if end_seed == 0: end_seed = 1
+                    if end_seed == 0:
+                        end_seed = 1
 
                 self.result = {
                     "random_seeds": False,
