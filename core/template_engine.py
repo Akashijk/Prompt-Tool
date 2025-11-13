@@ -372,8 +372,8 @@ class TemplateEngine:
         
         # Pass the context to the rule checker. An empty context is valid.
         return self._check_rules(rules, context or {})
-    def _get_wildcard_choice_object(self, key: str, context: Dict[str, Any] = None) -> Optional[Any]:
-        """Gets a random choice for a wildcard key, considering context."""
+    def _get_wildcard_choice_object(self, key: str, context: Dict[str, Any] = None, exclude_value: Optional[str] = None) -> Optional[Any]:
+        """Gets a random choice for a wildcard key, considering context and excluding a specific value."""
         wildcard_data = self.wildcards.get(key)
 
         if not wildcard_data or 'choices' not in wildcard_data:
@@ -385,6 +385,11 @@ class TemplateEngine:
 
         # Filter choices based on requirements
         valid_choices = [c for c in choices if self._check_requirements(c, context)]
+        
+        # Exclude a specific value if provided
+        if exclude_value:
+            valid_choices = [c for c in valid_choices if (isinstance(c, dict) and c.get('value') != exclude_value) or (isinstance(c, str) and c != exclude_value)]
+
         if not valid_choices:
             return None
 
@@ -529,20 +534,30 @@ class TemplateEngine:
             choice_obj = self.find_choice_object_by_value(key, choice_text)
             return choice_obj, choice_text
 
-        # Priority 1: Check if this wildcard has already been resolved in this generation pass.
-        if not force_unique and key in resolved_context:
+        # Determine if we need to exclude a value for unique generation
+        exclude_val_for_unique: Optional[str] = None
+        if force_unique and key in resolved_context:
+            exclude_val_for_unique = resolved_context[key]['value']
+
+        # Priority 1: If force_unique is True, we must generate a new choice, ignoring existing context.
+        if force_unique:
+            choice_obj = self._get_wildcard_choice_object(key, resolved_context, exclude_value=exclude_val_for_unique)
+            if choice_obj:
+                choice_text = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj
+                return choice_obj, choice_text
+            return None, None # Could not generate a unique choice
+
+        # Priority 2: Check if this wildcard has already been resolved in this generation pass.
+        if key in resolved_context:
             choice_text = resolved_context[key]['value']
-            # We need to find the original choice object to get its metadata (like includes) again.
             choice_obj = self.find_choice_object_by_value(key, choice_text)
             return choice_obj, choice_text
 
-        # Priority 2: Check if we are preserving a choice from a previous generation.
-        if not force_unique and key in existing_choices_map:
+        # Priority 3: Check if we are preserving a choice from a previous generation.
+        if key in existing_choices_map:
             choice_text = existing_choices_map[key]
             choice_obj = self.find_choice_object_by_value(key, choice_text)
             
-            # If a choice object was found, we must validate its 'requires' clause
-            # against the current context, as dependencies may have changed.
             if choice_obj:
                 is_still_valid = True
                 if isinstance(choice_obj, dict) and 'requires' in choice_obj:
@@ -553,7 +568,7 @@ class TemplateEngine:
                     return choice_obj, choice_text
             # If the choice is no longer valid, fall through to generate a new one.
         
-        # Priority 3: Generate a new choice.
+        # Priority 4: Generate a new choice.
         choice_obj = self._get_wildcard_choice_object(key, resolved_context)
         if choice_obj:
             choice_text = choice_obj['value'] if isinstance(choice_obj, dict) else choice_obj

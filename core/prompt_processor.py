@@ -27,16 +27,13 @@ class PromptProcessor:
     """Coordinates prompt generation and enhancement workflow."""
     
     def __init__(self, verbose: bool = False):
+        self.verbose = verbose
         self.template_engine = TemplateEngine()
-        self.thumbnail_manager = ThumbnailManager()
+        self.thumbnail_manager = ThumbnailManager(verbose=self.verbose)
         # Lazily import OllamaClient to avoid issues if it's not needed (e.g., in GUI)
         self.ollama_client = OllamaClient(base_url=config.OLLAMA_BASE_URL)
         self.invokeai_client = InvokeAIClient(base_url=config.INVOKEAI_BASE_URL, verbose=verbose)
-        self.history_manager: 'HistoryManager' = HistoryManager()
-        self.model_prefixes: Dict[str, Dict[str, str]] = {}
-        self.lora_prefixes: Dict[str, Dict[str, str]] = {}
-        self.all_wildcards_cache: Optional[Dict[str, Dict]] = None
-        self.verbose = verbose
+        self.history_manager: 'HistoryManager' = HistoryManager(verbose=self.verbose)
         self.rng = random.Random()
         self._avg_gen_times_cache: Optional[Dict[str, float]] = None
         self._default_negative_prompt_cache: Optional[str] = None
@@ -696,7 +693,7 @@ class PromptProcessor:
                     try:
                         os.remove(path_to_check)
                         if self.verbose:
-                            print(f"INFO: Migrated and removed old wildcard file: {path_to_check}")
+                            if self.verbose: print(f"INFO: Migrated and removed old wildcard file: {path_to_check}")
                     except OSError as e:
                         print(f"WARNING: Could not remove old .txt wildcard file during migration: {e}")
                     break
@@ -1483,20 +1480,20 @@ class PromptProcessor:
         """Handles a chat interaction with the specified Ollama model."""
         
         if self.verbose:
-            print("\n--- VERBOSE: AI Chat Request ---", flush=True)
-            print(f"Model: {model}", flush=True)
+            if self.verbose: print("\n--- VERBOSE: AI Chat Request ---", flush=True)
+            if self.verbose: print(f"Model: {model}", flush=True)
             try:
                 # Pretty-print the JSON for readability
-                print(json.dumps(messages, indent=2), flush=True)
+                if self.verbose: print(json.dumps(messages, indent=2), flush=True)
             except (TypeError, json.JSONDecodeError):
                 # Fallback for non-serializable content
-                print(messages, flush=True)
-            print("--------------------------------\n", flush=True)
+                if self.verbose: print(messages, flush=True)
+            if self.verbose: print("--------------------------------\n", flush=True)
 
         try:
             raw_response = self.ollama_client.chat(model, messages, timeout=timeout, temperature=temperature, top_p=top_p)
             if self.verbose:
-                print("\n--- VERBOSE: AI Raw Chat Response ---", flush=True)
+                if self.verbose: print("\n--- VERBOSE: AI Raw Chat Response ---", flush=True)
                 print(raw_response, flush=True)
                 print("-------------------------------------\n", flush=True)
             return raw_response
@@ -1521,8 +1518,8 @@ class PromptProcessor:
             raw_response = self.ollama_client._generate(model, prompt, config.BRAINSTORM_TIMEOUT).strip()
             if self.verbose:
                 print("\n--- VERBOSE: AI Raw Generation Response ---", flush=True)
-                print(raw_response, flush=True)
-                print("-------------------------------------------\n", flush=True)
+                if self.verbose: print(raw_response, flush=True)
+                if self.verbose: print("-------------------------------------------\n", flush=True)
             return raw_response
         except Exception as e:
             if self.verbose:
@@ -2249,10 +2246,10 @@ class PromptProcessor:
         for applying prefixes, building the graph, and waiting for the result.
         """
         if self.verbose:
-            print("\n--- VERBOSE: PromptProcessor.generate_image_with_invokeai ---")
-            print(f"Received gen_params:\n{json.dumps(gen_params, indent=2, default=lambda o: '<object>')}")
-            print(f"Received prompt: {prompt}")
-
+                    if self.verbose:
+                        print("\n--- VERBOSE: PromptProcessor.generate_image_with_invokeai ---")
+                        print(f"Received gen_params:\n{json.dumps(gen_params, indent=2, default=lambda o: '<object>')}")
+                        print(f"Received prompt: {prompt}")
         # --- Extract parameters from gen_params ---
         negative_prompt = gen_params.get('negative_prompt', '')
         scheduler = gen_params.get('scheduler', 'dpmpp_2m')
@@ -2264,7 +2261,7 @@ class PromptProcessor:
         if model_name and model_name in self.model_prefixes:
             prefixes = self.model_prefixes[model_name]
             if self.verbose:
-                print(f"Applying model prefixes for '{model_name}': {prefixes}")
+                if self.verbose: print(f"Applying model prefixes for '{model_name}': {prefixes}")
             pos_prefix = prefixes.get('positive_prefix', '').strip()
             if pos_prefix:
                 prompt = f"{pos_prefix}, {prompt}"
@@ -2274,7 +2271,7 @@ class PromptProcessor:
             model_scheduler = prefixes.get('scheduler')
             if model_scheduler:
                 if self.verbose:
-                    print(f"INFO: Overriding scheduler with model-specific setting for '{model_name}': '{model_scheduler}'")
+                    if self.verbose: print(f"INFO: Overriding scheduler with model-specific setting for '{model_name}': '{model_scheduler}'")
                 scheduler = model_scheduler
 
         # --- Apply LoRA-specific prefixes ---
@@ -2285,7 +2282,7 @@ class PromptProcessor:
             if lora_name and lora_name in self.lora_prefixes:
                 lora_prefixes = self.lora_prefixes[lora_name]
                 if self.verbose:
-                    print(f"Applying LoRA prefixes for '{lora_name}': {lora_prefixes}")
+                    if self.verbose: print(f"Applying LoRA prefixes for '{lora_name}': {lora_prefixes}")
                 pos_prefix = lora_prefixes.get('positive_prefix', '').strip()
                 if pos_prefix:
                     all_pos_lora_prefixes.update([p.strip() for p in pos_prefix.split(',') if p.strip()])
@@ -2304,10 +2301,10 @@ class PromptProcessor:
         # The width and height are passed directly to the enqueue method.
 
         if self.verbose:
-            print(f"Final positive prompt for API: {prompt}")
-            print(f"Final negative prompt for API: {negative_prompt}")
-            print(f"Final scheduler for API: {scheduler}")
-
+                    if self.verbose:
+                        print(f"Final positive prompt for API: {prompt}")
+                        print(f"Final negative prompt for API: {negative_prompt}")
+                        print(f"Final scheduler for API: {scheduler}")
         # --- Enqueue the job ---
         enqueue_args = {
             "prompt": prompt,
@@ -2379,7 +2376,7 @@ class PromptProcessor:
             # Clear VRAM cache before loading the next model, but not for the very first one.
             if i > 0:
                 if self.verbose:
-                    print(f"INFO: Model batch for '{model_queue[i-1]}' complete. Clearing VRAM cache before loading '{model_name}'.")
+                    if self.verbose: print(f"INFO: Model batch for '{model_queue[i-1]}' complete. Clearing VRAM cache before loading '{model_name}'.")
                 if hasattr(self, 'clear_invokeai_cache_async'):
                     self.clear_invokeai_cache_async()
                     time.sleep(1.5) # Give the server a moment to process the cache clear.

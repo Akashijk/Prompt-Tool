@@ -128,20 +128,20 @@ class ThumbnailLoader(QObject):
                         break
                 relative_image_path = cover_image_path or first_image_path
                 pixmap = QPixmap()
-                if image_to_load:
+                if relative_image_path:
                     try:
                         workflow = prompt_data.get('workflow_source', 'sfw').lower()
                         original_workflow = config.workflow
                         config.workflow = workflow
-                        full_path = os.path.join(config.get_history_file_dir(), image_to_load)
+                        full_path = os.path.join(config.get_history_file_dir(), relative_image_path)
                         config.workflow = original_workflow
                         if os.path.exists(full_path):
-                            pil_image = self.processor.thumbnail_manager.get_thumbnail(image_to_load, workflow, (64, 64))
+                            pil_image = self.processor.thumbnail_manager.get_thumbnail(full_path, (64, 64))
                             if pil_image:
                                 qimage = ImageQt(pil_image)
                                 pixmap = QPixmap.fromImage(qimage)
                     except Exception as e:
-                        print(f"Error loading thumbnail for {image_to_load}: {e}")
+                        print(f"Error loading thumbnail for {relative_image_path}: {e}")
                 self.thumbnail_ready.emit({'item_widget': item_widget, 'pixmap': pixmap})
             except queue.Empty:
                 continue

@@ -1,5 +1,6 @@
 """A Qt-based window for viewing and managing all favorited images from the history."""
 
+import queue # Ensure queue is imported
 import os
 import copy
 import random
@@ -22,8 +23,7 @@ from .custom_widgets import SmoothTextEdit
 from PIL.ImageQt import ImageQt
 from PIL import Image
 
-if TYPE_CHECKING:
-    from .gui_app import GUIApp
+from .history_viewer import ThumbnailThread, ThumbnailLoaderWorker # NEW: Import ThumbnailThread and ThumbnailLoaderWorker
 
 class FavoriteLoaderWorker(QObject):
     """Worker to fetch all favorite images in the background."""
@@ -34,33 +34,13 @@ class FavoriteLoaderWorker(QObject):
     @Slot()
     def run(self):
         try:
-            favorites = self.processor.get_all_favorite_images()
+            # --- FIX: Explicitly reload history from disk to get the latest favorite statuses ---
+            # This prevents the viewer from showing stale data.
+            self.processor.history_manager.load_full_history()
+            favorites = self.processor.history_manager.get_all_favorite_images()
             self.finished.emit({'success': True, 'data': favorites})
         except Exception as e:
             self.finished.emit({'success': False, 'error': str(e)})
-
-class ThumbnailLoaderWorker(QObject):
-    """Worker to load thumbnails for the favorites list."""
-    thumbnail_ready = Signal(dict)
-    finished = Signal()
-    def __init__(self, processor: PromptProcessor, jobs: List[Dict[str, Any]], target_size: Tuple[int, int]):
-        super().__init__()
-        self.processor = processor
-        self.jobs = jobs
-        self.target_size = target_size
-    @Slot()
-    def run(self):
-        for job in self.jobs:
-            if QThread.currentThread().isInterruptionRequested():
-                break
-            label = job.get('label')
-            image_path = job.get('image_path')
-            workflow = job.get('workflow')
-            if label and image_path and workflow:
-                thumb_image = self.processor.thumbnail_manager.get_thumbnail(image_path, workflow, self.target_size)
-                if thumb_image:
-                    self.thumbnail_ready.emit({'label': label, 'image': thumb_image})
-        self.finished.emit()
 
 class FavoriteItemWidget(QFrame, ImagePreviewMixin):
     """A custom widget for a single item in the favorites viewer."""
@@ -72,6 +52,7 @@ class FavoriteItemWidget(QFrame, ImagePreviewMixin):
         self.parent_viewer = parent_viewer
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.full_image_path: Optional[str] = None
+        self.img_label: Optional[QLabel] = None
 
         # Calculate full path
         relative_path = self.fav_data.get('image_path')
@@ -83,22 +64,32 @@ class FavoriteItemWidget(QFrame, ImagePreviewMixin):
             config.workflow = original_config_workflow # Restore immediately
             self.full_image_path = os.path.join(history_dir, relative_path)
 
-    def enterEvent(self, event: QEvent):
-        """Show preview on hover."""
-        self._schedule_preview(self.fav_data)
-        super().enterEvent(event)
+    def set_image_label(self, label: QLabel):
+        """Sets the image label and installs an event filter to watch for hovers."""
+        self.img_label = label
+        if self.img_label:
+            self.img_label.setMouseTracking(True)
+            self.img_label.installEventFilter(self)
 
-    def leaveEvent(self, event: QEvent):
-        """Hide preview when mouse leaves."""
-        self._schedule_hide()
-        super().leaveEvent(event)
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        """Filters events to show/hide preview only when hovering over the image label."""
+        if obj == self.img_label:
+            if event.type() == QEvent.Type.Enter:
+                self._schedule_preview(self.fav_data)
+                return True
+            elif event.type() == QEvent.Type.Leave:
+                self._schedule_hide()
+                return True
+        return super().eventFilter(obj, event)
 
     def _get_preview_image(self, item_data: Dict[str, Any]) -> Optional['Image.Image']:
         if self.full_image_path and os.path.exists(self.full_image_path):
             try:
+        
                 return Image.open(self.full_image_path)
             except Exception as e:
                 print(f"Error loading preview image: {e}")
+
         return None
 
 class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
@@ -110,9 +101,13 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
         self.parent_app = parent
         self.processor = processor
         self.favorite_widgets: List[FavoriteItemWidget] = []
-        self.thumbnail_queue: List[Dict[str, Any]] = []
-        self.thumbnail_worker_thread: Optional[QThread] = None
-        self.thumbnail_worker: Optional[ThumbnailLoaderWorker] = None
+        
+        # --- NEW: Persistent worker for all thumbnails ---
+        self.persistent_thumb_threads: List[QThread] = []
+        self.persistent_thumb_workers: List[ThumbnailLoaderWorker] = []
+        self.shared_thumb_job_queue = queue.Queue() # Shared queue for thumbnail jobs
+        self._setup_persistent_thumbnail_worker() # Setup the workers
+        
         self._create_widgets()
         self._start_loading_favorites()
         self.resize(1000, 800)
@@ -136,6 +131,41 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
         self.favorites_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.scroll_area.setWidget(container)
 
+    def _setup_persistent_thumbnail_worker(self):
+        """Creates and starts a pool of long-lived worker threads for thumbnail loading."""
+        num_workers = 2 # Number of concurrent thumbnail loaders, can be adjusted
+
+        for i in range(num_workers):
+            thread = ThumbnailThread() # Use our custom QThread subclass
+            worker = ThumbnailLoaderWorker(self.processor, (200, 200), self.shared_thumb_job_queue) # Pass shared queue
+            worker.moveToThread(thread)
+
+            worker.thumbnail_ready.connect(self._on_thumbnail_ready)
+            thread.started.connect(worker._timer.start) # Start the worker's timer when the thread starts
+            worker.finished.connect(thread.quit)
+            # Let the closeEvent handle deletion
+
+            self.persistent_thumb_threads.append(thread)
+            self.persistent_thumb_workers.append(worker)
+            thread.start()
+
+    def refresh_viewer(self):
+        """Clears the current display and reloads all favorite images."""
+        # Clear existing widgets
+        for i in reversed(range(self.favorites_layout.count())):
+            widget = self.favorites_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.favorite_widgets.clear()
+        self.thumbnail_queue.clear()
+        
+        # Show loading message and restart loading process
+        self.loading_label.setText("Loading favorite images...")
+        self.loading_label.show()
+        self.scroll_area.hide()
+        self._start_loading_favorites()
+
     def _start_loading_favorites(self):
         self.load_thread = QThread(self)
         self.load_worker = FavoriteLoaderWorker(self.processor)
@@ -143,8 +173,8 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
         self.load_thread.started.connect(self.load_worker.run)
         self.load_worker.finished.connect(self._on_favorites_loaded)
         self.load_worker.finished.connect(self.load_thread.quit)
-        self.load_worker.finished.connect(self.load_worker.deleteLater)
-        self.load_thread.finished.connect(self.load_thread.deleteLater)
+        # self.load_worker.finished.connect(self.load_worker.deleteLater) # Managed explicitly in closeEvent
+        # self.load_thread.finished.connect(self.load_thread.deleteLater) # Managed explicitly in closeEvent
         self.load_thread.start()
 
     @Slot(dict)
@@ -171,6 +201,7 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
             img_label.setFixedSize(200, 200)
             img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             img_label.setStyleSheet("border: 1px solid gray;")
+            item_widget.set_image_label(img_label) # Set the label for event filtering
             item_layout.addWidget(img_label)
             self._queue_thumbnail_load(img_label, fav_data.get('image_path'), fav_data.get('workflow_source'))
 
@@ -202,36 +233,26 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
             item_layout.addWidget(info_frame)
             self.favorites_layout.addWidget(item_frame)
             self.favorite_widgets.append(item_widget)
-        
-        self._start_thumbnail_worker()
 
     def _queue_thumbnail_load(self, label: QLabel, image_path: Optional[str], workflow: Optional[str]):
         if label and image_path and workflow:
-            self.thumbnail_queue.append({'label': label, 'image_path': image_path, 'workflow': workflow})
+            # The ThumbnailLoaderWorker expects 'item' and 'workflow_source'
+            job = {'item': label, 'image_path': image_path, 'workflow_source': workflow}
+            self.shared_thumb_job_queue.put(job)
 
-    def _start_thumbnail_worker(self):
-        if self.thumbnail_worker_thread and self.thumbnail_worker_thread.isRunning(): return
-        if not self.thumbnail_queue: return
-        
-        self.thumbnail_worker_thread = QThread(self)
-        jobs = list(self.thumbnail_queue)
-        self.thumbnail_queue.clear()
-        self.thumbnail_worker = ThumbnailLoaderWorker(self.processor, jobs, (200, 200))
-        self.thumbnail_worker.moveToThread(self.thumbnail_worker_thread)
-        
-        self.thumbnail_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
-        self.thumbnail_worker_thread.started.connect(self.thumbnail_worker.run)
-        self.thumbnail_worker.finished.connect(self.thumbnail_worker_thread.quit)
-        self.thumbnail_worker.finished.connect(self.thumbnail_worker.deleteLater)
-        self.thumbnail_worker_thread.finished.connect(self.thumbnail_worker_thread.deleteLater)
-        self.thumbnail_worker_thread.start()
+
+
 
     @Slot(dict)
     def _on_thumbnail_ready(self, result: dict):
-        label = result.get('label')
-        image = result.get('image')
-        if label and image:
-            pixmap = QPixmap.fromImage(ImageQt(image))
+        label = result.get('item') # ThumbnailLoaderWorker passes the QLabel as 'item'
+        qimage = result.get('thumb_image') # Corrected: ThumbnailLoaderWorker passes the QImage as 'thumb_image'
+        if label and qimage:
+
+            if not label.parent():
+                print(f"WARNING: Label {label} has no parent, likely deleted. Skipping thumbnail update.")
+                return
+            pixmap = QPixmap.fromImage(qimage)
             label.setPixmap(pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def _unfavorite_image(self, fav_data: Dict[str, Any], item_widget: FavoriteItemWidget):
@@ -323,7 +344,74 @@ class FavoriteImagesViewer(QDialog, ImagePreviewMixin):
         preview_dialog.exec()
 
     def closeEvent(self, event: QCloseEvent):
-        """Ensures the parent app knows this window is closed."""
+        """Ensures the parent app knows this window is closed and gracefully stops worker threads."""
+        if self.processor.verbose: print("INFO: FavoriteImagesViewer closeEvent triggered.")
+
+        # Gracefully shut down the persistent thumbnail workers
+        num_workers = len(self.persistent_thumb_threads)
+        if num_workers > 0:
+            if self.processor.verbose: print(f"INFO: Shutting down {num_workers} thumbnail worker threads.")
+            
+            # Disconnect signals for persistent thumbnail workers and threads
+            for i, worker in enumerate(self.persistent_thumb_workers):
+                thread = self.persistent_thumb_threads[i]
+                if worker and thread:
+                    try:
+                        worker.thumbnail_ready.disconnect(self._on_thumbnail_ready)
+                        thread.started.disconnect(worker._timer.start)
+                        worker.finished.disconnect(thread.quit)
+                    except RuntimeError:
+                        pass # Already disconnected or object gone
+            
+            # Signal workers to stop their timers
+            for worker in self.persistent_thumb_workers:
+                if worker:
+                    worker.stop_timer_signal.emit()
+            
+            # Clear the queue to prevent workers from starting new jobs
+            if self.processor.verbose: print("INFO: Clearing thumbnail job queue for FavoriteImagesViewer...")
+            while not self.shared_thumb_job_queue.empty():
+                try:
+                    self.shared_thumb_job_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self.shared_thumb_job_queue.task_done()
+
+            # Unblock all workers waiting on the queue by sending sentinel values
+            if self.processor.verbose: print("INFO: Unblocking thumbnail worker threads for FavoriteImagesViewer...")
+            for _ in range(num_workers):
+                self.shared_thumb_job_queue.put(None)
+
+            # Call worker.stop() to quit the event loop and emit finished
+            for worker in self.persistent_thumb_workers:
+                if worker:
+                    worker.stop()
+
+            # Wait for all threads to finish
+            if self.processor.verbose: print("INFO: Waiting for thumbnail worker threads to terminate...")
+            for thread in self.persistent_thumb_threads:
+                if thread and thread.isRunning():
+                    if not thread.wait(5000): # Wait 5s
+                        print(f"WARNING: Thumbnail thread {thread} did not terminate gracefully. Terminating.")
+                        thread.terminate() # Last resort
+            if self.processor.verbose: print("INFO: All thumbnail worker threads have been processed.")
+
+        # Schedule all thread and worker objects for deletion
+        if self.processor.verbose: print("INFO: Scheduling threads and workers for deletion.")
+        if self.load_thread:
+            self.load_thread.deleteLater()
+        if self.load_worker:
+            self.load_worker.deleteLater()
+
+        for worker in self.persistent_thumb_workers:
+            if worker:
+                worker.deleteLater()
+        for thread in self.persistent_thumb_threads:
+            if thread:
+                thread.deleteLater()
+
         if self.parent_app and hasattr(self.parent_app, 'favorite_images_viewer_window'):
             self.parent_app.favorite_images_viewer_window = None
+        
+        if self.processor.verbose: print("INFO: FavoriteImagesViewer closeEvent finished.")
         super().closeEvent(event)

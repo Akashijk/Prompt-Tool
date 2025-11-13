@@ -4,6 +4,7 @@ import os
 import random
 import copy
 import queue # NEW
+import uuid
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QCheckBox,
     QLineEdit, QPushButton, QGroupBox, QSplitter, QLabel, QMenu, QApplication,
@@ -11,7 +12,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem, QComboBox, QStyledItemDelegate
 )
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt, QSize, QPoint, QModelIndex, QTimer, QEvent
-from PySide6.QtGui import QPixmap, QImage, QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QCloseEvent, QPainter, QDesktopServices, QCursor
+from PySide6.QtGui import QPixmap, QImage, QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QCloseEvent, QPainter, QDesktopServices, QCursor, QBrush
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 
 from core.prompt_processor import PromptProcessor
@@ -66,60 +67,88 @@ class HistoryLoaderWorker(QObject):
         history = self.processor.get_all_history_across_workflows()
         self.finished.emit(history)
 
+class ThumbnailThread(QThread):
+    """A QThread subclass to run the ThumbnailLoaderWorker in its own event loop."""
+    def run(self):
+        """Starts the event loop for the thread."""
+        self.exec()
+
 class ThumbnailLoaderWorker(QObject):
     """Worker to load image thumbnails in the background."""
     thumbnail_ready = Signal(dict)
     finished = Signal()
-    # job_added = Signal() # No longer needed
+    stop_timer_signal = Signal() # NEW: Signal to stop the timer from another thread
 
-    def __init__(self, processor: PromptProcessor, target_size: Tuple[int, int], job_queue: queue.Queue): # Accept shared job_queue
+    def __init__(self, processor: PromptProcessor, target_size: Tuple[int, int], job_queue: queue.Queue):
         super().__init__()
         self.processor = processor
         self.target_size = target_size
-        self.job_queue = job_queue # Use shared queue
-        # self._is_running = False # No longer needed for individual worker
+        self.job_queue = job_queue
+        self._timer = QTimer(self)
+        self._timer.setInterval(50) # Check queue every 50ms
+        self._timer.timeout.connect(self._check_queue_and_process_job)
+        self.stop_timer_signal.connect(self._stop_timer_slot)
+        self._should_stop = False # NEW: Flag to signal stopping
 
     def add_job(self, job: Dict[str, Any]):
         """Adds a job to the shared queue."""
-        self.job_queue.put(job) # Put job into shared queue
-        # No need to emit job_added here, workers will pull from the queue
+        self.job_queue.put(job)
 
     @Slot()
-    def run(self):
-        """Loads thumbnails from the shared queue and emits them one by one."""
-        while not QThread.currentThread().isInterruptionRequested():
-            data = None # Initialize data to None
-            try:
-                data = self.job_queue.get(timeout=1) # Get job from shared queue with timeout
-                if data is None: # Sentinel for graceful shutdown
-                    self.job_queue.task_done()
-                    break
+    def _stop_timer_slot(self):
+        """Slot to set the stop flag, called from another thread via signal."""
+        self._should_stop = True
 
-                relative_path = data.get('image_path') # This is the key for the path
-                workflow = data.get('workflow_source', 'sfw')
-                item_widget = data.get('item')
-
-                if relative_path:
-                    original_workflow = config.workflow
-                    config.workflow = workflow.lower()
-                    full_path = os.path.join(config.get_history_file_dir(), relative_path)
-                    config.workflow = original_workflow # Restore immediately
-                    if os.path.exists(full_path):
-                        thumb_image = self.processor.thumbnail_manager.get_thumbnail(relative_path, workflow.lower(), self.target_size)
-                        if thumb_image and (not QThread.currentThread().isInterruptionRequested()):
-                            qimage = ImageQt(thumb_image).copy()
-                            qimage = qimage.convertToFormat(QImage.Format.Format_ARGB32)
-                            result = {**data, 'item': item_widget, 'thumb_image': qimage, 'full_path': full_path}
-                            self.thumbnail_ready.emit(result)
-            except queue.Empty:
-                continue # Loop again to check for interruption
-            except Exception as e:
-                print(f"ERROR in ThumbnailLoaderWorker: {e}")
-            finally:
-                if data is not None: # Ensure task_done is called for actual jobs
-                    self.job_queue.task_done()
-
+    def stop(self):
+        """Signals completion and quits the worker's event loop."""
         self.finished.emit()
+        self.thread().quit() # Quit the event loop
+
+    @Slot()
+    def _check_queue_and_process_job(self):
+        """Checks the queue for jobs and processes one if available."""
+        if self._should_stop: # NEW: Check stop flag
+            self._timer.stop()
+            self.finished.emit()
+            self.thread().quit()
+            return
+
+        data = None # Initialize data to None
+        try:
+            data = self.job_queue.get_nowait()
+            if data is None: # Sentinel for graceful shutdown
+                self.job_queue.task_done()
+                self._timer.stop() # Stop the timer here
+                self.finished.emit()
+                self.thread().quit() # Quit the event loop
+                return
+
+
+            relative_path = data.get('image_path')
+            workflow = data.get('workflow_source', 'sfw')
+            item_widget = data.get('item')
+            selection_id = data.get('selection_id')
+
+            if relative_path:
+                # The workflow context is already set correctly by HistoryManager.get_all_favorite_images()
+                # so we can directly get the history file directory for the current workflow.
+                full_path = os.path.join(config.get_history_file_dir(), relative_path)
+                
+                if os.path.exists(full_path):
+                    thumb_image = self.processor.thumbnail_manager.get_thumbnail(full_path, self.target_size) # Pass full_path directly
+                    if thumb_image:
+                        qimage = ImageQt(thumb_image).copy()
+                        qimage = qimage.convertToFormat(QImage.Format.Format_ARGB32)
+                        result = {**data, 'item': item_widget, 'thumb_image': qimage, 'full_path': full_path, 'selection_id': selection_id}
+            
+                        self.thumbnail_ready.emit(result)
+        except queue.Empty:
+            pass # No job in queue, timer will fire again
+        except Exception as e:
+            print(f"ERROR in ThumbnailLoaderWorker: {e}")
+        finally:
+            if 'data' in locals() and data is not None: # Ensure task_done is called for actual jobs
+                self.job_queue.task_done()
 
 class ThumbnailDelegate(QStyledItemDelegate):
     """A delegate to draw pixmaps in table cells."""
@@ -134,6 +163,31 @@ class ThumbnailDelegate(QStyledItemDelegate):
             painter.drawPixmap(int(x), int(y), pixmap)
             return
         super().paint(painter, option, index)
+
+class FavoriteDelegate(QStyledItemDelegate):
+    """A delegate to draw a gold star for favorite items."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.favorite_star_color = QColor("#FFD700")
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+        is_favorite = index.data(Qt.DisplayRole) == "★"
+
+        if is_favorite:
+            painter.save()
+            # Set the color for the star
+            painter.setPen(self.favorite_star_color)
+            # Set font for the star
+            font = QFont("Arial", 14, QFont.Bold)
+            painter.setFont(font)
+            # Get the text (the star)
+            text = index.data(Qt.DisplayRole)
+            # Draw the text centered
+            painter.drawText(option.rect, Qt.AlignCenter, text)
+            painter.restore()
+        else:
+            # If not a favorite, let the default delegate handle it
+            super().paint(painter, option, index)
 
 class HistoryViewerWindow(QDialog):
     """A Qt-based window for viewing and managing prompt history."""
@@ -150,6 +204,7 @@ class HistoryViewerWindow(QDialog):
         self.thumbnail_loader_thread: Optional[QThread] = None
         self.history_loader_thread: Optional[QThread] = None # For the main history loader
         self._current_history_entry: Optional[Dict[str, Any]] = None # Store the currently selected history entry
+        self.current_gallery_selection_id: Optional[uuid.UUID] = None # NEW: To track gallery jobs
         
         # --- NEW: Persistent worker for all thumbnails ---
         self.persistent_thumb_worker: Optional[ThumbnailLoaderWorker] = None
@@ -159,7 +214,12 @@ class HistoryViewerWindow(QDialog):
         self.image_preview_timer = QTimer(self) # Timer for delayed image preview
         self.image_preview_timer.setSingleShot(True)
         self.image_preview_timer.setInterval(1500) # 1500ms delay
-        self._current_hover_image_path: Optional[str] = None # Store path for timer
+        self._current_hover_image_path: Optional[str] = None # Stores the path of the image currently under the cursor
+        self._pending_preview_path: Optional[str] = None # Stores the path for which the timer is currently running
+        self._timer_start_path: Optional[str] = None # Stores the path that the timer was started for
+
+        # Clear the thumbnail cache to ensure fresh, high-quality thumbnails are generated.
+        self.processor.thumbnail_manager.clear_cache()
 
         self._create_widgets()
         self._connect_signals()
@@ -212,6 +272,7 @@ class HistoryViewerWindow(QDialog):
         header = self.history_table.horizontalHeader()
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch) # Prompt column
         self.history_table.setColumnWidth(0, 60)
+        self.history_table.setItemDelegateForColumn(0, FavoriteDelegate(self))
         self.history_table.setItemDelegateForColumn(1, ThumbnailDelegate(self))
         self.history_table.setColumnWidth(1, 200) # Thumbnail
         self.history_table.setColumnWidth(2, 160)
@@ -280,16 +341,17 @@ class HistoryViewerWindow(QDialog):
         self.history_table.itemSelectionChanged.connect(self._on_selection_changed)
         self.enhance_button.clicked.connect(self._on_enhance_clicked)
         self.history_table.verticalScrollBar().valueChanged.connect(self._lazy_load_visible_thumbnails)
-        self.history_table.cellEntered.connect(self._on_table_cell_entered)
+        # self.history_table.cellEntered.connect(self._on_table_cell_entered) # No longer needed
         self.generate_image_button.clicked.connect(self._on_generate_image_clicked)
         self.generate_image_button.clicked.connect(self._on_generate_image_clicked)
         self.delete_button.clicked.connect(self._delete_selected)
         self.load_prompt_button.clicked.connect(self._on_load_prompt_clicked)
         self.image_gallery.itemDoubleClicked.connect(self._on_image_double_clicked)
         self.image_gallery.customContextMenuRequested.connect(self._show_image_context_menu)
-        self.image_gallery.itemEntered.connect(self._on_image_gallery_item_entered)
         self.image_preview_timer.timeout.connect(self._show_image_preview_popup)
         self.prompt_selector_combo.currentTextChanged.connect(self._on_prompt_selection_changed)
+        self.history_table.viewport().installEventFilter(self) # Install event filter on the viewport
+
 
     def _setup_persistent_thumbnail_worker(self):
         """Creates and starts a pool of long-lived worker threads for thumbnail loading."""
@@ -298,15 +360,13 @@ class HistoryViewerWindow(QDialog):
         num_workers = 4 # Number of concurrent thumbnail loaders
 
         for i in range(num_workers):
-            thread = QThread(self)
+            thread = ThumbnailThread() # Removed self as parent
             worker = ThumbnailLoaderWorker(self.processor, (200, 200), self.shared_thumb_job_queue) # Pass shared queue
             worker.moveToThread(thread)
 
             worker.thumbnail_ready.connect(self._on_any_thumbnail_ready)
-            thread.started.connect(worker.run)
+            thread.started.connect(worker._timer.start) # Start the worker's timer when the thread starts
             worker.finished.connect(thread.quit)
-            worker.finished.connect(worker.deleteLater)
-            thread.finished.connect(thread.deleteLater)
 
             self.persistent_thumb_threads.append(thread)
             self.persistent_thumb_workers.append(worker)
@@ -317,15 +377,13 @@ class HistoryViewerWindow(QDialog):
         self.history_table.setRowCount(1)
         self.history_table.setItem(0, 2, QTableWidgetItem("Loading history..."))
 
-        self.history_loader_thread = QThread(self)
+        self.history_loader_thread = QThread() # Removed self as parent
         self.worker = HistoryLoaderWorker(self.processor)
         self.worker.moveToThread(self.history_loader_thread)
 
         self.history_loader_thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._on_history_loaded)
         self.worker.finished.connect(self.history_loader_thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.history_loader_thread.finished.connect(self.history_loader_thread.deleteLater)
 
         self.history_loader_thread.start()
 
@@ -378,9 +436,6 @@ class HistoryViewerWindow(QDialog):
             item_fav = QTableWidgetItem(fav_char)
             item_fav.setData(Qt.UserRole, row)
             item_fav.setTextAlignment(Qt.AlignCenter)
-            if entry.get('favorite'):
-                item_fav.setForeground(self.favorite_star_color)
-                item_fav.setFont(QFont("Arial", 14, QFont.Bold))
             thumb_item = QTableWidgetItem() # Placeholder for the thumbnail
 
             self.history_table.setItem(row, 0, item_fav)
@@ -440,6 +495,11 @@ class HistoryViewerWindow(QDialog):
     @Slot(dict)
     def _on_any_thumbnail_ready(self, result: dict):
         """Unified slot to handle thumbnails for both the table and the gallery."""
+        # --- FIX: Check if the job is for the current selection ---
+        # This check is primarily for the gallery, but is safe for the table too.
+        if 'selection_id' in result and result.get('selection_id') is not None and result['selection_id'] != self.current_gallery_selection_id:
+            return # This is a thumbnail for a previous, obsolete selection. Ignore it.
+
         item_widget = result.get('item')
         qimage: Optional[QImage] = result.get('thumb_image')
         full_path: Optional[str] = result.get('full_path') # Get full_path from result
@@ -453,50 +513,23 @@ class HistoryViewerWindow(QDialog):
                 return # Item is no longer in the table
             pixmap = QPixmap.fromImage(qimage)
             item_widget.setData(ThumbnailDelegate.PixmapRole, pixmap)
-        elif isinstance(item_widget, ImageGalleryItemWidget): # Check for our custom widget
+        elif isinstance(item_widget, QListWidgetItem):
             # Handle gallery thumbnail
+            if item_widget.listWidget() is None:
+                return # Item is no longer in the list, abort.
+
             pixmap = QPixmap.fromImage(qimage)
-            item_widget.set_image(pixmap)
-            
-            # --- FIX: Update the QListWidgetItem's UserRole data with full_path ---
-            # Find the QListWidgetItem that contains this custom_widget
-            for i in range(self.image_gallery.count()):
-                list_item = self.image_gallery.item(i)
-                if self.image_gallery.itemWidget(list_item) == item_widget:
-                    current_data = list_item.data(Qt.ItemDataRole.UserRole)
-                    if current_data and full_path:
-                        current_data['full_path'] = full_path
-                        list_item.setData(Qt.ItemDataRole.UserRole, current_data)
-                    break
+            custom_widget = self.image_gallery.itemWidget(item_widget)
+            if custom_widget and isinstance(custom_widget, ImageGalleryItemWidget):
+                custom_widget.set_image(pixmap)
+
+            # Update the QListWidgetItem's UserRole data with the full path
+            current_data = item_widget.data(Qt.ItemDataRole.UserRole)
+            if current_data and full_path:
+                current_data['full_path'] = full_path
+                item_widget.setData(Qt.ItemDataRole.UserRole, current_data)
 
 
-    @Slot(int, int)
-    def _on_table_cell_entered(self, row: int, column: int):
-        """Shows a preview popup when the mouse enters a cell in the history table, if it's the thumbnail column."""
-        self.image_preview_timer.stop() # Stop any previous timer
-        self.image_preview_popup.hide() # Hide any active popup
-        if column == 1: # Thumbnail column
-            thumb_item = self.history_table.item(row, 1)
-            if thumb_item and thumb_item.data(ThumbnailDelegate.PixmapRole):
-                # Get the full path from the original entry data
-                original_row_index_item = self.history_table.item(row, 0)
-                if not original_row_index_item:
-                    return
-                original_row_index = original_row_index_item.data(Qt.UserRole)
-                entry = self.row_to_entry_map.get(original_row_index)
-                if entry:
-                    cover_image_path, _ = self._get_cover_image_path_for_row(entry)
-                    if cover_image_path:
-                        # Construct the full path using the correct workflow context
-                        workflow = entry.get('workflow_source', 'sfw')
-                        original_workflow = config.workflow
-                        config.workflow = workflow.lower()
-                        full_path = os.path.join(config.get_history_file_dir(), cover_image_path)
-                        config.workflow = original_workflow # Restore immediately
-                        self._current_hover_image_path = full_path
-                        self.image_preview_timer.start() # Start the timer
-        else:
-            self.image_preview_popup.hide() # Hide if not hovering over a thumbnail
 
     @Slot(int, int)
     def _on_cell_clicked(self, row: int, column: int):
@@ -526,9 +559,6 @@ class HistoryViewerWindow(QDialog):
 
             # Update the UI
             item.setText("★" if updated_entry['favorite'] else "")
-            item.setForeground(self.favorite_star_color if updated_entry['favorite'] else QColor(Qt.GlobalColor.black)) # Adjust for theme later
-            font = QFont("Arial", 14, QFont.Bold) if updated_entry['favorite'] else QFont()
-            item.setFont(font)
 
     @Slot(QPoint)
     def _show_history_context_menu(self, pos: QPoint):
@@ -540,12 +570,14 @@ class HistoryViewerWindow(QDialog):
         enhance_action = menu.addAction("Enhance")
         generate_image_action = menu.addAction("Generate Image")
         menu.addSeparator()
+        toggle_entry_fav_action = menu.addAction("") # Text will be set dynamically
         delete_action = menu.addAction("Delete Entry")
 
         # Connect actions to existing slots
         load_action.triggered.connect(self._on_load_prompt_clicked)
         enhance_action.triggered.connect(self._on_enhance_clicked)
         generate_image_action.triggered.connect(self._on_generate_image_clicked)
+        toggle_entry_fav_action.triggered.connect(self._toggle_selected_entry_favorite)
         delete_action.triggered.connect(self._delete_selected)
 
         # Enable/disable actions based on selection, similar to buttons
@@ -554,6 +586,15 @@ class HistoryViewerWindow(QDialog):
         enhance_action.setEnabled(has_selection)
         generate_image_action.setEnabled(has_selection and self.processor.is_invokeai_connected())
         delete_action.setEnabled(has_selection)
+
+        # Set text and enable/disable for toggle_entry_fav_action
+        if has_selection and self._current_history_entry:
+            is_favorited = self._current_history_entry.get('favorite', False)
+            toggle_entry_fav_action.setText("Unfavorite Entry" if is_favorited else "Favorite Entry")
+            toggle_entry_fav_action.setEnabled(True)
+        else:
+            toggle_entry_fav_action.setText("Favorite Entry") # Default text
+            toggle_entry_fav_action.setEnabled(False)
 
         # --- FIX: Dynamically set "Enhance" action text ---
         if has_selection and self._current_history_entry and self._current_history_entry.get('enhanced'):
@@ -626,6 +667,10 @@ class HistoryViewerWindow(QDialog):
     @Slot()
     def _on_selection_changed(self):
         selected_rows = self.history_table.selectionModel().selectedRows()
+
+        # --- FIX: Generate a new UUID for this selection's gallery jobs ---
+        self.current_gallery_selection_id = uuid.uuid4()
+
         if not selected_rows:
             self.details_text.clear()
             self.image_gallery.clear()
@@ -668,7 +713,7 @@ class HistoryViewerWindow(QDialog):
             else:
                 self.details_text.setPlainText("No prompt details available.")
 
-            self._load_images_for_entry(entry)
+            self._load_images_for_entry(entry, self.current_gallery_selection_id)
         else:
             self.image_gallery.clear()
             self.prompt_selector_combo.clear()
@@ -745,6 +790,33 @@ class HistoryViewerWindow(QDialog):
                 QMessageBox.information(self, "Success", "History entry deleted.")
             else:
                 QMessageBox.critical(self, "Error", "Failed to delete the history entry.")
+
+    def _toggle_selected_entry_favorite(self):
+        selected_rows = self.history_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        row = selected_rows[0].row()
+        item = self.history_table.item(row, 0) # Get the item from the favorite column
+        if not item:
+            return
+
+        original_row_index = item.data(Qt.UserRole)
+        original_entry = self.row_to_entry_map.get(original_row_index)
+        if not original_entry:
+            return
+
+        updated_entry = copy.deepcopy(original_entry)
+        is_currently_favorite = updated_entry.get('favorite', False)
+        updated_entry['favorite'] = not is_currently_favorite
+
+        if self.processor.history_manager.update_history_entry(original_entry, updated_entry):
+            self.row_to_entry_map[original_row_index] = updated_entry
+            self.all_history_data[original_row_index] = updated_entry
+            item.setText("★" if updated_entry['favorite'] else "")
+            # Refresh the FavoriteImagesViewer if it's open, as entry favorite status might affect it
+            if self.parent().favorite_images_viewer_window and self.parent().favorite_images_viewer_window.isVisible():
+                self.parent().favorite_images_viewer_window.refresh_viewer()
 
     @Slot()
     def _on_load_prompt_clicked(self):
@@ -943,7 +1015,7 @@ class HistoryViewerWindow(QDialog):
             preview_dialog = MultiImagePreviewDialog(self, self.processor, generation_jobs, on_success_callback=on_success, save_to_gallery=config.save_to_gallery_by_default)
             preview_dialog.exec()
 
-    def _load_images_for_entry(self, entry: Dict[str, Any]):
+    def _load_images_for_entry(self, entry: Dict[str, Any], selection_id: uuid.UUID):
         """Starts a background worker to load thumbnails for the selected entry."""
         self.image_gallery.clear()
         
@@ -981,9 +1053,15 @@ class HistoryViewerWindow(QDialog):
         # First, populate the gallery with placeholder items
         for data in all_image_data:
             # Get favorite status for the individual image
-            image_is_favorite = data.get('favorite', False)
-            item_text = f"{data['prompt_type']}{' ★' if image_is_favorite else ''}"
+            image_is_favorite = data.get('is_favorite', False)
+            prompt_type = data.get('prompt_type', '')
             
+            # Use rich text to color the star
+            if image_is_favorite:
+                item_text = f"{prompt_type} <font color='#FFD700'>★</font>"
+            else:
+                item_text = prompt_type
+
             custom_widget = ImageGalleryItemWidget(self.image_gallery)
             custom_widget.set_text(item_text)
             custom_widget.set_is_cover_image(data.get('is_cover_image', False))
@@ -994,7 +1072,7 @@ class HistoryViewerWindow(QDialog):
             self.image_gallery.setItemWidget(list_item, custom_widget)
             
             # Now, create a job for this item
-            job = {**data, 'item': custom_widget} # Pass the custom_widget to the worker
+            job = {**data, 'item': list_item, 'selection_id': selection_id} # Pass the QListWidgetItem and selection_id
             self.shared_thumb_job_queue.put(job) # Add job to shared queue
 
         # --- NEW: Re-enable updates and force repaint ---
@@ -1002,11 +1080,59 @@ class HistoryViewerWindow(QDialog):
         self.image_gallery.viewport().update()
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        """Event filter to hide the image preview popup when the mouse leaves the image gallery viewport."""
-        if (obj == self.image_gallery.viewport() or obj == self.history_table.viewport()) and event.type() == QEvent.Type.Leave:
+        """Event filter for mouse move and leave events on viewports to handle preview popups."""
+        if obj not in (self.history_table.viewport(), self.image_gallery.viewport()):
+            return super().eventFilter(obj, event)
+
+        if event.type() == QEvent.Type.MouseMove:
+            pos = event.pos()
+            hover_path_candidate = None
+
+            if obj == self.history_table.viewport():
+                row = self.history_table.rowAt(pos.y())
+                col = self.history_table.columnAt(pos.x())
+                if row >= 0 and col == 1:  # Thumbnail column
+                    thumb_item = self.history_table.item(row, col)
+                    if thumb_item and thumb_item.data(ThumbnailDelegate.PixmapRole):
+                        cell_rect = self.history_table.visualRect(self.history_table.model().index(row, col))
+                        if cell_rect.contains(pos):
+                            original_row_index_item = self.history_table.item(row, 0)
+                            if original_row_index_item:
+                                original_row_index = original_row_index_item.data(Qt.UserRole)
+                                entry = self.row_to_entry_map.get(original_row_index)
+                                if entry:
+                                    cover_image_path, _ = self._get_cover_image_path_for_row(entry)
+                                    if cover_image_path:
+                                        workflow = entry.get('workflow_source', 'sfw')
+                                        original_workflow = config.workflow
+                                        config.workflow = workflow.lower()
+                                        hover_path_candidate = os.path.join(config.get_history_file_dir(), cover_image_path)
+                                        config.workflow = original_workflow
+
+            elif obj == self.image_gallery.viewport():
+                item = self.image_gallery.itemAt(pos)
+                if item:
+                    data = item.data(Qt.ItemDataRole.UserRole)
+                    if data and data.get('full_path'):
+                        hover_path_candidate = data['full_path']
+
+            # If the mouse is now hovering over a different image (or no image),
+            # reset the timer and potentially start a new one.
+            if self._pending_preview_path != hover_path_candidate:
+                self.image_preview_timer.stop()
+                self.image_preview_popup.hide()
+                self._pending_preview_path = hover_path_candidate # Update the path for which the timer is running
+                if self._pending_preview_path:
+                    self.image_preview_timer.start()
+            
+            return False # Let event propagate
+
+        if event.type() == QEvent.Type.Leave:
             self.image_preview_timer.stop()
             self.image_preview_popup.hide()
-            return True
+            self._pending_preview_path = None # Clear pending path when mouse leaves
+            return False # Let event propagate
+
         return super().eventFilter(obj, event)
 
     @Slot(QListWidgetItem)
@@ -1016,27 +1142,17 @@ class HistoryViewerWindow(QDialog):
         if data:
             preview_dialog = ImagePreviewDialog(self, data['full_path'], data['params'])
             preview_dialog.exec()
-
+            
     @Slot()
     def _show_image_preview_popup(self):
         """Shows the image preview popup using the stored image path."""
-        if self._current_hover_image_path:
+        if self._pending_preview_path: # Use the path the timer was started for
             try:
                 from PIL import Image
-                pil_image = Image.open(self._current_hover_image_path)
+                pil_image = Image.open(self._pending_preview_path)
                 self.image_preview_popup.show_image(pil_image, QCursor.pos())
             except Exception as e:
                 print(f"Error showing image preview: {e}")
-
-    @Slot(QListWidgetItem)
-    def _on_image_gallery_item_entered(self, item: QListWidgetItem):
-        """Starts a timer to show a preview popup when the mouse enters an image gallery item."""
-        self.image_preview_timer.stop() # Stop any previous timer
-        self.image_preview_popup.hide() # Hide any active popup
-        data = item.data(Qt.ItemDataRole.UserRole)
-        if data and data.get('full_path'):
-            self._current_hover_image_path = data['full_path']
-            self.image_preview_timer.start() # Start the timer
 
     @Slot(QPoint)
     def _show_image_context_menu(self, pos: QPoint):
@@ -1046,7 +1162,9 @@ class HistoryViewerWindow(QDialog):
             return
 
         menu = QMenu(self)
-        toggle_fav_action = menu.addAction("Toggle Favorite")
+        image_data = item.data(Qt.ItemDataRole.UserRole)
+        is_image_favorited = image_data.get('is_favorite', False) if image_data else False
+        toggle_fav_action = menu.addAction("Unfavorite" if is_image_favorited else "Favorite")
         set_cover_action = menu.addAction("Set as Entry Cover")
         menu.addSeparator()
         copy_path_action = menu.addAction("Copy Image Path")
@@ -1096,22 +1214,49 @@ class HistoryViewerWindow(QDialog):
         for var_data in updated_entry.get('variations', {}).values():
             all_image_lists.append(var_data.get('images', []))
 
+        # Construct the full path for comparison
+        workflow = image_data.get('workflow_source', 'sfw')
+        original_workflow = config.workflow
+        config.workflow = workflow.lower() # Set workflow context for path resolution
+        history_file_dir = config.get_history_file_dir()
+        full_image_path_to_find = os.path.join(history_file_dir, image_data.get('image_path', ''))
+        config.workflow = original_workflow # Restore workflow context
+
         for img_list in all_image_lists:
             for img_dict in img_list:
-                if os.path.basename(img_dict.get('image_path', '')) == os.path.basename(image_path_to_find):
+                # Compare by full path to ensure uniqueness
+                current_img_full_path = os.path.join(history_file_dir, img_dict.get('image_path', ''))
+                if current_img_full_path == full_image_path_to_find:
                     found_image_dict = img_dict
                     break
             if found_image_dict:
                 break
 
         if found_image_dict:
-            is_currently_favorite = found_image_dict.get('favorite', False)
-            found_image_dict['favorite'] = not is_currently_favorite
+            is_currently_favorite = found_image_dict.get('is_favorite', False)
+            found_image_dict['is_favorite'] = not is_currently_favorite
+
+
+
             if self.processor.history_manager.update_history_entry(original_entry, updated_entry):
                 self.row_to_entry_map[original_row_index] = updated_entry
                 self.all_history_data[original_row_index] = updated_entry
-                self._load_images_for_entry(updated_entry) # Reload to update UI
+                self._load_images_for_entry(updated_entry, self.current_gallery_selection_id)
 
+                # --- FIX: Find the correct table item to update, regardless of sorting ---
+                table_item = None
+                for row in range(self.history_table.rowCount()):
+                    item_to_check = self.history_table.item(row, 0)
+                    if item_to_check and item_to_check.data(Qt.UserRole) == original_row_index:
+                        table_item = item_to_check
+                        break
+                
+                if not table_item: return # Should not happen
+                table_item.setText("★" if updated_entry['favorite'] else "")
+
+                # NEW: If the FavoriteImagesViewer is open, tell it to refresh
+                if self.parent().favorite_images_viewer_window and self.parent().favorite_images_viewer_window.isVisible():
+                    self.parent().favorite_images_viewer_window.refresh_viewer()
     def _set_selected_image_as_cover(self, item: QListWidgetItem):
         """Sets the selected image as the cover image for the history entry."""
         image_data = item.data(Qt.ItemDataRole.UserRole)
@@ -1251,7 +1396,7 @@ class HistoryViewerWindow(QDialog):
                     os.remove(image_path_to_delete)
                     QMessageBox.information(self, "Success", "Image deleted and history updated.")
                     # Finally, refresh the UI
-                    self._load_images_for_entry(updated_entry) # Reload gallery
+                    self._load_images_for_entry(updated_entry, self.current_gallery_selection_id) # Reload gallery
                     self._start_loading_history() # Reload main table to update cover image if needed
                 except OSError as e:
                     QMessageBox.critical(self, "Error", f"Could not delete image file: {e}")
@@ -1262,18 +1407,72 @@ class HistoryViewerWindow(QDialog):
 
     def closeEvent(self, event: QCloseEvent):
         """Handle window close event to stop any running threads."""
-        try:
-            if self.history_loader_thread and self.history_loader_thread.isRunning():
-                self.history_loader_thread.quit()
-                self.history_loader_thread.wait(1000)
-            # Signal all persistent thumbnail workers to stop
-            for thread in self.persistent_thumb_threads:
-                if thread.isRunning():
-                    thread.requestInterruption()
-                    self.shared_thumb_job_queue.put(None) # Send sentinel to unblock worker
-                    thread.quit()
-                    thread.wait(1000)
-        except RuntimeError:
-            pass # Object already deleted
+        if self.processor.verbose: print("INFO: HistoryViewer closeEvent triggered.")
 
+        # --- Shutdown History Loader Thread ---
+        if self.history_loader_thread and self.history_loader_thread.isRunning():
+            if self.processor.verbose: print("INFO: Stopping history loader thread...")
+            # Disconnect signals first
+            try:
+                self.history_loader_thread.started.disconnect(self.worker.run)
+                self.worker.finished.disconnect(self._on_history_loaded)
+                self.worker.finished.disconnect(self.history_loader_thread.quit)
+            except RuntimeError:
+                pass # Already disconnected or object gone
+            
+            self.history_loader_thread.quit()
+            if not self.history_loader_thread.wait(1000): # Wait up to 1 second
+                print("WARNING: History loader thread did not stop in time. Terminating.")
+                self.history_loader_thread.terminate()
+            # Explicitly delete objects after thread has stopped
+            self.worker.deleteLater()
+            self.history_loader_thread.deleteLater()
+
+        # --- Shutdown Persistent Thumbnail Workers ---
+        num_workers = len(self.persistent_thumb_threads)
+        if num_workers > 0:
+            if self.processor.verbose: print(f"INFO: Shutting down {num_workers} thumbnail worker threads.")
+            
+            # Disconnect signals for persistent thumbnail workers and threads
+            for i, worker in enumerate(self.persistent_thumb_workers):
+                thread = self.persistent_thumb_threads[i]
+                if worker and thread:
+                    try:
+                        worker.thumbnail_ready.disconnect(self._on_any_thumbnail_ready)
+                        thread.started.disconnect(worker._timer.start)
+                        worker.finished.disconnect(thread.quit)
+                    except RuntimeError:
+                        pass # Already disconnected or object gone
+            
+            # Signal workers to stop their timers and clear the queue
+            if self.processor.verbose: print("INFO: Clearing thumbnail job queue and signaling workers to stop...")
+            while not self.shared_thumb_job_queue.empty():
+                try:
+                    self.shared_thumb_job_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self.shared_thumb_job_queue.task_done()
+            
+            for worker in self.persistent_thumb_workers:
+                if worker:
+                    worker.stop_timer_signal.emit() # Signal the worker to stop its timer
+                    self.shared_thumb_job_queue.put(None) # Send sentinel to unblock any waiting workers
+
+            # Quit and wait for all threads to finish
+            if self.processor.verbose: print("INFO: Waiting for thumbnail worker threads to terminate...")
+            for i, thread in enumerate(self.persistent_thumb_threads):
+                worker = self.persistent_thumb_workers[i]
+                if thread and thread.isRunning():
+                    thread.quit()
+                    if not thread.wait(2000): # Wait up to 2 seconds
+                        print(f"WARNING: Thumbnail thread {thread} did not terminate gracefully. Terminating.")
+                        thread.terminate()
+                # Explicitly delete objects after thread has stopped
+                if worker:
+                    worker.deleteLater()
+                if thread:
+                    thread.deleteLater()
+            if self.processor.verbose: print("INFO: All thumbnail worker threads have been processed.")
+
+        if self.processor.verbose: print("INFO: HistoryViewer closeEvent finished.")
         super().closeEvent(event)

@@ -64,7 +64,8 @@ class NetworkWorker(QObject):
             try:
                 self.processor.invokeai_client.check_server_compatibility()
             except Exception as e:
-                print(f"DEBUG: Initial InvokeAI connection check failed: {e}")
+                pass # Ignore connection errors for now, will be handled later
+
 
             if self.cancellation_event.is_set():
                 self.finished.emit({'success': False, 'error': 'Cancelled'})
@@ -182,8 +183,6 @@ class GUIApp(QMainWindow, TextPreviewMixin):
     ollama_model_changed = Signal(str)
 
     def __init__(self, verbose: bool = False):
-        if verbose:
-            print(f"\n--- VERBOSE: GUIApp.__init__ ENTERED (Verbose mode: {verbose}) ---")
         super().__init__()
         TextPreviewMixin.__init__(self)
         self.setWindowTitle("Prompt Tool GUI (Qt Version)")
@@ -1332,10 +1331,6 @@ class GUIApp(QMainWindow, TextPreviewMixin):
         if dialog.exec() == QDialog.Accepted:
             options = dialog.get_options()
             
-            if self.processor.verbose:
-                print("\n--- VERBOSE: GUIApp._on_generate_image_clicked ---")
-                print(f"Options from dialog:\n{json.dumps(options, indent=2, default=lambda o: '<object>')}")
-
             selected_models_info = options.pop('models', [])
             if not selected_models_info:
                 QMessageBox.warning(self, "No Models Selected", "You must select at least one model to generate images.")
@@ -1360,10 +1355,6 @@ class GUIApp(QMainWindow, TextPreviewMixin):
                         'gen_params': job_params
                     })
             
-            if self.processor.verbose:
-                print(f"Constructed {len(generation_jobs)} generation jobs.")
-                print("------------------------------------------------\n")
-
             def on_success(images_to_save: List[Dict[str, Any]]):
                 if not images_to_save: return
                 entry_id = str(uuid.uuid4())

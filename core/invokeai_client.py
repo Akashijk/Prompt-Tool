@@ -84,7 +84,7 @@ class InvokeAIClient:
                                     print(f"Warning: Could not fetch VAE models: {e}")
                                     self.available_vaes = []
                                 if self.verbose:
-                                    print(f"INFO: InvokeAI client configured to use endpoint '{self.models_endpoint}' with param '{self.base_model_param_name}'")
+                                        print(f"INFO: InvokeAI client configured to use endpoint '{self.models_endpoint}' with param '{self.base_model_param_name}'")
                                 return
                         except requests.RequestException:
                             continue # Try next combination
@@ -153,7 +153,7 @@ class InvokeAIClient:
         """Gets a list of available schedulers from the InvokeAI server."""
         if self.schedulers_cache is not None:
             if self.verbose:
-                print("INFO: Returning schedulers from cache.")
+                if self.verbose: print("INFO: Returning schedulers from cache.")
             return self.schedulers_cache
 
         # Method 1: Try the modern schema endpoint (preferred for InvokeAI 3.1+)
@@ -755,10 +755,10 @@ class InvokeAIClient:
             raise ValueError(f"Unsupported model base type: '{model_base}'. This tool currently supports 'sdxl' and 'sd-1.5'.")
         
         if verbose:
-            print(f"\n--- VERBOSE: InvokeAI Generation Graph (Base: {model_base}) ---", flush=True)
-            print(json.dumps(graph, indent=2), flush=True)
-            print("----------------------------------------\n", flush=True)
-
+            if self.verbose:
+                print(f"\n--- VERBOSE: InvokeAI Generation Graph (Base: {model_base}) ---", flush=True)
+                print(json.dumps(graph, indent=2), flush=True)
+                print("----------------------------------------\n", flush=True)
         batch = {"batch": {"graph": graph, "runs": 1}}
 
         try:

@@ -136,13 +136,18 @@ class HistoryManager:
                                         if normalize_image_path(img_data, entry['id']): needs_rewrite = True
                         # --- END NEW ---
 
+                        # --- NEW: Set entry's overall 'favorite' status based on contained images ---
+                        entry.setdefault('favorite', False) # Ensure the key exists
+                        if self._is_any_image_favorited_in_entry(entry):
+                            entry['favorite'] = True
+
                         history.append(entry)
         except Exception as e:
             print(f"Error loading full history: {e}")
         
         # If any migrations occurred, rewrite the entire history file with the updated data.
         if needs_rewrite:
-            print("INFO: Migrating history file to new format...")
+            if self.verbose: print("INFO: Migrating history file to new format...")
             try:
                 with open(jsonl_path, 'w', encoding='utf-8') as f:
                     for entry in history:
@@ -150,6 +155,23 @@ class HistoryManager:
             except IOError as e:
                 print(f"ERROR: Could not rewrite history file after migration: {e}")
         return history
+
+    def _is_any_image_favorited_in_entry(self, entry: Dict[str, Any]) -> bool:
+        """Checks if any image within the given entry is marked as favorite."""
+        # Check original images
+        for img_data in entry.get('original_images', []):
+            if img_data.get('is_favorite'):
+                return True
+        # Check enhanced images
+        for img_data in entry.get('enhanced', {}).get('images', []):
+            if img_data.get('is_favorite'):
+                return True
+        # Check variation images
+        for var_data in entry.get('variations', {}).values():
+            for img_data in var_data.get('images', []):
+                if img_data.get('is_favorite'):
+                    return True
+        return False
 
     def _get_all_image_paths_from_entry(self, data: Dict[str, Any]) -> Set[str]:
         """Helper to extract all image paths from a single history entry."""
@@ -194,7 +216,7 @@ class HistoryManager:
             try:
                 os.remove(full_path)
                 if self.verbose:
-                    print(f"INFO: Deleted orphaned image: {full_path}")
+                    if self.verbose: print(f"INFO: Deleted orphaned image: {full_path}")
             except OSError as e:
                 print(f"WARNING: Could not delete orphaned image file {relative_path}. Error: {e}")
         
@@ -313,18 +335,18 @@ class HistoryManager:
                     if os.path.exists(full_path):
                         os.remove(full_path)
                         if self.verbose:
-                            print(f"INFO: Deleted associated image: {full_path}")
+                            if self.verbose: print(f"INFO: Deleted associated image: {full_path}")
                         deleted_file = True
                         break # Stop after first successful deletion
                     # If the file doesn't exist, it's already "deleted" from our perspective
                     elif self.verbose:
-                        print(f"INFO: Image file {full_path} not found, skipping deletion.")
+                        if self.verbose: print(f"INFO: Image file {full_path} not found, skipping deletion.")
                         deleted_file = True # Consider it deleted if it wasn't there
                         break # Stop trying other paths for this image
                 except FileNotFoundError:
                     # This specific error means the file was already gone, which is fine.
                     if self.verbose:
-                        print(f"INFO: Image file {full_path} not found during deletion attempt, already gone.")
+                        if self.verbose: print(f"INFO: Image file {full_path} not found during deletion attempt, already gone.")
                     deleted_file = True # Consider it deleted
                     break # Stop trying other paths for this image
                 except Exception as e:
@@ -380,7 +402,7 @@ class HistoryManager:
                     if os.path.exists(full_path):
                         os.remove(full_path)
                         if self.verbose:
-                            print(f"INFO: Deleted replaced image: {full_path}")
+                            if self.verbose: print(f"INFO: Deleted replaced image: {full_path}")
                 except Exception as e:
                     print(f"WARNING: Could not delete replaced image file {relative_path}. Error: {e}")
 
@@ -399,6 +421,7 @@ class HistoryManager:
                             temp_file.write(line)
             
             if updated:
+
                 os.replace(temp_filepath, filepath)
             else:
                 os.remove(temp_filepath)
@@ -460,6 +483,62 @@ class HistoryManager:
         
         # Call the generic update method
         return self.update_history_entry(existing_entry, updated_entry)
+
+    def get_all_favorite_images(self) -> List[Dict[str, Any]]:
+        """
+        Loads all history entries from all workflows and extracts information about all favorited images.
+        Returns a list of dictionaries, each representing a favorited image.
+        """
+        favorite_images = []
+        original_config_workflow = config.workflow # Store current workflow
+
+        for workflow_name in ['sfw', 'nsfw']: # Iterate through all possible workflows
+            config.workflow = workflow_name # Temporarily set workflow
+            all_history = self.load_full_history() # Load history for this workflow
+
+            for entry in all_history:
+                history_id = entry.get('id')
+                if not history_id:
+                    continue
+                
+                # Ensure workflow_source is explicitly set for this entry
+                entry['workflow_source'] = workflow_name 
+
+                # Helper to process image lists
+                def process_image_list(images: List[Dict[str, Any]], prompt_type: str):
+                    for img_data in images:
+                        if img_data.get('is_favorite'):
+                            # Extract relevant data for the favorite image
+                            fav_image_info = {
+                                'history_id': history_id,
+                                'image_path': img_data.get('image_path'),
+                                'prompt': entry.get('original_prompt'), # Default to original prompt
+                                'generation_params': img_data.get('generation_params'),
+                                'workflow_source': entry.get('workflow_source'), # Use the explicitly set workflow_name
+                                'prompt_type': prompt_type, # e.g., 'Original', 'Enhanced', 'Variation'
+                                'timestamp': entry.get('timestamp')
+                            }
+                            # Override prompt if it's from enhanced or variation
+                            if prompt_type == 'Enhanced' and entry.get('enhanced', {}).get('prompt'):
+                                fav_image_info['prompt'] = entry['enhanced']['prompt']
+                            elif prompt_type.startswith('Variation') and entry.get('variations', {}).get(prompt_type.split(': ')[1].lower(), {}).get('prompt'):
+                                fav_image_info['prompt'] = entry['variations'][prompt_type.split(': ')[1].lower()]['prompt']
+                            
+                            favorite_images.append(fav_image_info)
+
+                # Check original images
+                process_image_list(entry.get('original_images', []), 'Original')
+
+                # Check enhanced images
+                if 'enhanced' in entry:
+                    process_image_list(entry['enhanced'].get('images', []), 'Enhanced')
+
+                # Check variation images
+                for var_key, var_data in entry.get('variations', {}).items():
+                    process_image_list(var_data.get('images', []), f'Variation: {var_key.capitalize()}')
+        
+        config.workflow = original_config_workflow # Restore original workflow
+        return favorite_images
 
     def update_specific_prompt_part_entry(self, entry_id: str, prompt_part_key: str, new_data: Dict[str, Any]) -> bool:
         """

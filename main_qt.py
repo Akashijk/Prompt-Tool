@@ -16,7 +16,7 @@ if __name__ == "__main__":
         app.setWindowIcon(QIcon(icon_path))
 
     # Check for the --verbose command-line argument
-    verbose_mode = "--verbose" in sys.argv
+    verbose_mode = False
 
     # Initialize the GUIApp, passing the verbose flag
     window = GUIApp(verbose=verbose_mode)

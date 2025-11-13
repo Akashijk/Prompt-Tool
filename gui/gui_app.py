@@ -51,7 +51,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Defer adding the trace until the event loop is idle, ensuring 'self' is fully constructed.
         self.after_idle(lambda: self.enhancement_model_var.trace_add("write", self._on_enhancement_model_change))
         if verbose:
-            print("--- VERBOSE MODE ENABLED ---", flush=True)
+    
         self.geometry("900x700")
 
         # Set application icon
@@ -164,7 +164,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         """
         # This is a placeholder. The actual logic would need to find the active
         # tool window and call a method on it. For now, it does nothing.
-        print("DEBUG: Toggle tab bar called. This feature is not fully implemented.")
+
 
     def destroy(self):
         """
@@ -275,10 +275,10 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                     if local_hash and remote_hash and local_hash != remote_hash:
                         self.update_check_queue.put({'update_available': True, 'type': 'git'})
                 else:
-                    if self.processor.verbose: print("INFO: Not a git repository. Checking for updates via release tags.")
+            
                     version_file_path = os.path.join(config.PROJECT_ROOT, 'version.txt')
                     if not os.path.exists(version_file_path):
-                        if self.processor.verbose: print("INFO: version.txt not found. Skipping update check for non-git install.")
+                
                         return
 
                     with open(version_file_path, 'r') as f:
@@ -302,7 +302,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
                         })
             except Exception as e:
                 # Silently fail on any error (e.g., no internet, API rate limit)
-                if self.processor.verbose: print(f"INFO: Update check failed with error: {e}")
+        
 
         thread = threading.Thread(target=task, daemon=True)
         thread.start()
@@ -2079,7 +2079,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         # Close any remaining top-level windows that might have been missed.
         for window in list(self.enhancement_windows):
             if window.winfo_exists():
-                print(f"INFO: Force-closing enhancement window: {window.title()}")
+        
                 window.close()
 
         # Unregister the main window's model. The manager will handle unloading if needed.
@@ -2090,14 +2090,14 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.processor.is_ollama_connected():
             active_ollama_models = self.model_usage_manager.get_active_models()
             if active_ollama_models:
-                print(f"INFO: Unloading all active Ollama models on exit: {', '.join(active_ollama_models)}")
+        
                 for model in active_ollama_models:
                     self.processor.cleanup_model(model)
 
         # Only attempt to clear the cache if the client was successfully configured during the session.
         # The `models_endpoint` is only set after a successful version and endpoint check.
         if self.processor.invokeai_client and self.processor.invokeai_client.models_endpoint:
-            print("INFO: Clearing InvokeAI model cache on exit (async)...")
+    
             self.processor.clear_invokeai_cache_async()
         if self.debounce_timer:
             self.after_cancel(self.debounce_timer)
@@ -2115,7 +2115,7 @@ class GUIApp(tk.Tk, SmartWindowMixin):
         if self.last_saved_entry_id_from_preview:
             self.last_saved_entry_id_from_preview = None
         
-        print("INFO: Application shutdown complete.")
+
         self.destroy()
 
     def _show_missing_wildcard_menu(self, event, wildcard_name: str):
