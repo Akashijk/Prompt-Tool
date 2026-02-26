@@ -38,7 +38,7 @@ public static class GraphBuilder
             finalCfgRescale = 0.7;
         }
 
-        var vaePrecision = string.IsNullOrWhiteSpace(genParams.VaePrecision) ? "fp32" : genParams.VaePrecision!.Trim();
+        var vaePrecision = string.IsNullOrWhiteSpace(genParams.VaePrecision) ? null : genParams.VaePrecision!.Trim();
         var nodes = new Dictionary<string, IInvokeAINode>
         {
             ["sdxl_model_loader"] = new SdxlModelLoaderNode { Model = genParams.Model!, VaePrecision = vaePrecision },
@@ -57,7 +57,7 @@ public static class GraphBuilder
                 DenoisingEnd = 1.0,
                 CfgRescaleMultiplier = finalCfgRescale
             },
-            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = genParams.L2iFp32 ?? true }
+            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = genParams.L2iFp32 }
         };
 
         if (!string.IsNullOrWhiteSpace(positiveStylePrompt))
@@ -169,7 +169,7 @@ public static class GraphBuilder
                 DenoisingEnd = 1.0,
                 CfgRescaleMultiplier = finalCfgRescale
             },
-            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = genParams.L2iFp32 ?? true }
+            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = genParams.L2iFp32 }
         };
 
         if (compatibleVae != null)

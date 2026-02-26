@@ -102,6 +102,19 @@
                                         Padding="8"
                                         IsVisible="{Binding HasGraphJson}">
                                     <StackPanel Spacing="6">
+                                        <Border Background="#2A7A2A"
+                                                BorderBrush="#2A7A2A"
+                                                BorderThickness="1"
+                                                CornerRadius="4"
+                                                Padding="6"
+                                                IsVisible="{Binding HasReplaySafetyWarning}">
+                                            <StackPanel Spacing="6">
+                                                <TextBlock Text="{Binding ReplaySafetyWarning}" TextWrapping="Wrap" Foreground="White"/>
+                                                <Button Content="Apply Server-Safe Settings"
+                                                        Command="{Binding ApplyReplaySafetyDefaultsCommand}"
+                                                        HorizontalAlignment="Left"/>
+                                            </StackPanel>
+                                        </Border>
                                         <TextBlock Text="Replay From PNG (Overrides)" FontWeight="SemiBold"/>
                                         <WrapPanel Orientation="Horizontal">
                                             <CheckBox Content="Use CPU noise"

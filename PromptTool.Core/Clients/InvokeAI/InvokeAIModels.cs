@@ -172,7 +172,8 @@ public record LatentsToImageNode : IInvokeAINode
     [JsonPropertyName("image_category")]
     public string ImageCategory { get; init; } = "general";
     [JsonPropertyName("fp32")]
-    public bool Fp32 { get; init; } = true;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Fp32 { get; init; }
 }
 
 public record SaveImageNode : IInvokeAINode
@@ -193,7 +194,8 @@ public record SdxlModelLoaderNode : IInvokeAINode
     [JsonPropertyName("model")]
     public InvokeAIModel Model { get; init; } = new();
     [JsonPropertyName("vae_precision")]
-    public string VaePrecision { get; init; } = "fp32";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? VaePrecision { get; init; }
 }
 
 public record SdxlLoraLoaderNode : IInvokeAINode

@@ -69,6 +69,7 @@ public partial class HistoryViewerViewModel : ObservableObject
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _workflowFilter = "All"; // All, SFW, NSFW
     [ObservableProperty] private bool _canEnhanceSelected;
+    [ObservableProperty] private bool _isEnhancing;
     [ObservableProperty] private bool _canFillMissingVariations;
     // Result set when dialog closes.
     [ObservableProperty] private HistoryEntry? _dialogResult;
@@ -1173,9 +1174,19 @@ public partial class HistoryViewerViewModel : ObservableObject
     private async Task Enhance()
     {
         if (SelectedHistoryEntry == null) return;
+        if (IsEnhancing) return;
         if (EnhanceRequested != null)
         {
-            await EnhanceRequested(SelectedHistoryEntry.Entry);
+            IsEnhancing = true;
+            StatusNote = "Enhancing prompt...";
+            try
+            {
+                await EnhanceRequested(SelectedHistoryEntry.Entry);
+            }
+            finally
+            {
+                IsEnhancing = false;
+            }
             return;
         }
         StatusNote = "Enhance flow not configured.";

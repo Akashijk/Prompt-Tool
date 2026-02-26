@@ -84,6 +84,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     public bool? UseAutoCfgRescale { get; set; }
     private string? _pendingModelSelection;
     private List<(string name, double weight)> _pendingLoraSelection = new();
+    private string? _disabledModelSelection;
 
     public ImageGenerationOptionsViewModel(InvokeAIClient invokeAiClient, SettingsService settingsService, NotificationService? notifications = null)
     {
@@ -190,6 +191,12 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     {
         _pendingModelSelection = modelName;
         ApplyPendingModelSelection();
+    }
+
+    public void DisableModelSelection(string? modelName)
+    {
+        _disabledModelSelection = string.IsNullOrWhiteSpace(modelName) ? null : modelName.Trim();
+        ApplyDisabledModelSelection();
     }
 
     public void SetInitialLoras(IEnumerable<LoraParameter> loras)
@@ -491,9 +498,12 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     private void ToggleAllModels()
     {
         if (!_allModels.Any()) return;
-        var anyUnchecked = _allModels.Any(m => !m.IsSelected);
+        var enabled = _allModels.Where(m => m.IsEnabled).ToList();
+        if (enabled.Count == 0) return;
+        var anyUnchecked = enabled.Any(m => !m.IsSelected);
         foreach (var model in _allModels)
         {
+            if (!model.IsEnabled) continue;
             model.IsSelected = anyUnchecked;
         }
         UpdateTotalImagesLabel();
@@ -604,6 +614,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     {
         foreach (var m in _allModels)
         {
+            if (!m.IsEnabled) continue;
             m.IsSelected = false;
         }
         UpdateTotalImagesLabel();
@@ -659,6 +670,13 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
                 ApplyDefaultsForSelection();
             }
         };
+        if (!string.IsNullOrWhiteSpace(_disabledModelSelection) &&
+            string.Equals(m.Name, _disabledModelSelection, StringComparison.OrdinalIgnoreCase))
+        {
+            vm.IsEnabled = false;
+            vm.IsSelected = false;
+            vm.IsSourceModel = true;
+        }
         return vm;
     }
 
@@ -786,12 +804,36 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(_pendingModelSelection) || !_allModels.Any()) return;
         var match = _allModels.FirstOrDefault(m => string.Equals(m.Model.Name, _pendingModelSelection, StringComparison.OrdinalIgnoreCase));
-        if (match != null)
+        if (match != null && match.IsEnabled)
         {
             match.IsSelected = true;
             _pendingModelSelection = null;
             UpdateTotalImagesLabel();
         }
+    }
+
+    private void ApplyDisabledModelSelection()
+    {
+        if (string.IsNullOrWhiteSpace(_disabledModelSelection) || !_allModels.Any()) return;
+        foreach (var model in _allModels)
+        {
+            var isDisabled = string.Equals(model.Model.Name, _disabledModelSelection, StringComparison.OrdinalIgnoreCase);
+            model.IsEnabled = !isDisabled;
+            if (isDisabled)
+            {
+                model.IsSelected = false;
+                model.IsSourceModel = true;
+            }
+            else if (model.IsSourceModel)
+            {
+                model.IsSourceModel = false;
+            }
+        }
+        if (string.Equals(_pendingModelSelection, _disabledModelSelection, StringComparison.OrdinalIgnoreCase))
+        {
+            _pendingModelSelection = null;
+        }
+        UpdateTotalImagesLabel();
     }
 
     private void ApplyPendingLoraSelection()
@@ -876,6 +918,8 @@ public partial class SelectableModelViewModel : ObservableObject
 {
     [ObservableProperty] private bool _isSelected;
     [ObservableProperty] private bool _isVisible = true;
+    [ObservableProperty] private bool _isEnabled = true;
+    [ObservableProperty] private bool _isSourceModel;
     public required InvokeAIModel Model { get; init; }
 
     public string DisplayName => Model.Name;

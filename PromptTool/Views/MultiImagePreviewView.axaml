@@ -35,6 +35,9 @@
                                     <MenuItem Header="Generate Seed Variations"
                                               Command="{Binding GenerateSeedVariationsCommand}"
                                               IsVisible="{Binding ShowGenerationActions}"/>
+                                    <MenuItem Header="Generate Model Variations"
+                                              Command="{Binding GenerateModelVariationsCommand}"
+                                              IsVisible="{Binding ShowGenerationActions}"/>
                                     <MenuItem Header="Generate LoRA Variations"
                                               Command="{Binding GenerateLoraVariationsCommand}"
                                               IsVisible="{Binding ShowGenerationActions}"/>

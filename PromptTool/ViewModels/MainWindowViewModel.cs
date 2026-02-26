@@ -671,7 +671,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task ShowSettingsAsync(Window? owner, string? sectionKey)
     {
-        var vm = new SettingsViewModel(_settingsService, _ollamaClient, _notifications, _imageCacheService);
+        var vm = new SettingsViewModel(_settingsService, _ollamaClient, _notifications, _imageCacheService, _invokeAIClient);
         var win = new Views.SettingsWindow(vm);
         win.Opened += (_, _) =>
         {
@@ -1081,7 +1081,7 @@ public partial class MainWindowViewModel : ObservableObject
     private async Task ShowPngMetadataViewerAsync(Window? owner)
     {
         var historyManager = (Avalonia.Application.Current as App)?.HistoryManagerService;
-        var vm = new PngMetadataViewerViewModel(historyManager);
+        var vm = new PngMetadataViewerViewModel(historyManager, _settingsService);
         vm.GenerateMergedRequested = GenerateFromMergedPngAsync;
         vm.GenerateGraphReplayRequested = GenerateFromPngGraphAsync;
         vm.BuildGenerationGraphJsonAsync = BuildGenerationGraphJsonAsync;
@@ -1330,6 +1330,10 @@ public partial class MainWindowViewModel : ObservableObject
             finally
             {
                 _invokeGenerationGate.Release();
+            }
+            if (_settingsService.Settings.ServerSafetyModeEnabled)
+            {
+                await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
             }
 
             if (!cts.IsCancellationRequested)
@@ -1611,7 +1615,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (!string.Equals(NormalizeSchedulerForCompare(a.Scheduler), NormalizeSchedulerForCompare(b.Scheduler), StringComparison.Ordinal)) return false;
         if (!NearlyEqual(a.CfgRescaleMultiplier, b.CfgRescaleMultiplier)) return false;
         if (NormalizeBool(a.UseCpuNoise, false) != NormalizeBool(b.UseCpuNoise, false)) return false;
-        if (NormalizeBool(a.L2iFp32, true) != NormalizeBool(b.L2iFp32, true)) return false;
+        if (NormalizeBool(a.L2iFp32, false) != NormalizeBool(b.L2iFp32, false)) return false;
         if (!string.Equals(NormalizeVaePrecision(a.VaePrecision), NormalizeVaePrecision(b.VaePrecision), StringComparison.OrdinalIgnoreCase)) return false;
 
         if (!string.Equals(a.Model?.Name?.Trim(), b.Model?.Name?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
@@ -1669,7 +1673,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private static string NormalizeVaePrecision(string? value)
     {
-        return string.IsNullOrWhiteSpace(value) ? "fp32" : value.Trim();
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
     }
 
     private static bool NearlyEqual(double a, double b, double tolerance = 0.0001)
@@ -2119,7 +2123,77 @@ public partial class MainWindowViewModel : ObservableObject
         {
             previewVm.GenerationToken = new CancellationTokenSource();
         }
-            await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true);
+        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true);
+        previewVm.StatusText = StatusImagesReady;
+    }
+
+    private async Task GenerateModelPermutationsFromSlotAsync(ImageSlotViewModel slot, MultiImagePreviewViewModel previewVm)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return;
+        }
+
+        var baseParams = slot.GenerationParams ?? TryBuildParamsFromGraphJson(slot.GenerationGraphJson);
+        if (baseParams == null)
+        {
+            StatusText = "No generation parameters available for model permutations.";
+            return;
+        }
+
+        var prompt = ResolvePromptForSlot(baseParams, PromptText);
+        var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
+        {
+            Prompt = prompt,
+            NegativePrompt = _settingsService.Settings.DefaultNegativePrompt
+        };
+        dialogVm.ApplyGenerationParams(baseParams);
+        dialogVm.Prompt = prompt;
+        dialogVm.UseRandomSeed = false;
+        dialogVm.Seed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
+        dialogVm.NumImages = 1;
+        dialogVm.SkipDefaultPrefixes = true;
+        dialogVm.AllowLongPromptWarningOnly = true;
+        dialogVm.DisableAutoDefaults = true;
+        dialogVm.ModeBannerText = "Iterative: using original image params; defaults are disabled.";
+        dialogVm.ShowModeBanner = true;
+        dialogVm.DisableModelSelection(baseParams.Model?.Name);
+
+        var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, GetOwnerWindow(null));
+        if (!ok || parametersList == null || parametersList.Count == 0)
+        {
+            StatusText = "Model permutations cancelled.";
+            return;
+        }
+
+        var slotIndex = previewVm.Slots.IndexOf(slot);
+        if (slotIndex < 0) slotIndex = previewVm.Slots.Count - 1;
+
+        var jobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
+        var insertIndex = slotIndex + 1;
+        var counter = 1;
+        foreach (var param in parametersList)
+        {
+            var label = param.Model?.Name ?? $"Model {counter}";
+            if (parametersList.Count > 1)
+            {
+                label = $"{label} {counter}";
+            }
+
+            var newSlot = previewVm.CreatePlaceholderSlot(label);
+            previewVm.Slots.Insert(insertIndex, newSlot);
+            insertIndex++;
+            counter++;
+
+            jobs.Add((param, newSlot));
+        }
+
+        previewVm.StatusText = "Generating model permutations...";
+        if (previewVm.GenerationToken == null)
+        {
+            previewVm.GenerationToken = new CancellationTokenSource();
+        }
+        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true);
         previewVm.StatusText = StatusImagesReady;
     }
 
@@ -2204,6 +2278,10 @@ public partial class MainWindowViewModel : ObservableObject
             finally
             {
                 _invokeGenerationGate.Release();
+            }
+            if (_settingsService.Settings.ServerSafetyModeEnabled)
+            {
+                await _invokeAIClient.EmptyModelCacheAsync();
             }
             slot.GenerationParams = newParam;
             slot.GenerationGraphJson = graphJson;
@@ -2368,8 +2446,9 @@ public partial class MainWindowViewModel : ObservableObject
         _modelUsageTracker.Register(model);
         var vm = new EnhancementResultViewModel(_ollamaClient, model, prompt, enhancementPrompt, selectedVariations, Models);
         vm.RequestReleaseModel += m => { _ = ReleaseModelAsync(m); };
-        var win = new Views.EnhancementResultWindow(vm);
         var resolvedOwner = GetOwnerWindow(owner) ?? new Window();
+        vm.GenerateSampleRequested = samplePrompt => GenerateSampleFromEnhancementAsync(samplePrompt, entry, resolvedOwner);
+        var win = new Views.EnhancementResultWindow(vm);
         var result = await win.ShowDialog<EnhancementResult?>(resolvedOwner);
         if (result != null)
         {
@@ -2385,6 +2464,72 @@ public partial class MainWindowViewModel : ObservableObject
             }
         }
         await UnloadModelsAsync();
+    }
+
+    private async Task GenerateSampleFromEnhancementAsync(string prompt, HistoryEntry? entry, Window owner)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return;
+        }
+
+        if (_generationInProgress)
+        {
+            StatusText = "Image generation already in progress.";
+            return;
+        }
+
+        _generationInProgress = true;
+        try
+        {
+            var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
+            {
+                Prompt = prompt,
+                NegativePrompt = _settingsService.Settings.DefaultNegativePrompt
+            };
+
+            var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
+            if (!ok || parametersList == null || parametersList.Count == 0)
+            {
+                StatusText = "Sample generation cancelled.";
+                return;
+            }
+
+            var workflow = entry?.Workflow ?? Workflow;
+            var result = await RunGenerationPreviewAsync(parametersList, prompt, "Enhanced Sample", workflow, owner, "Generating sample images...", allowLongPrompts: true);
+            if (result.Saved == true)
+            {
+                if (entry != null)
+                {
+                    AppendImagesToEntry(entry.Id, result.Images);
+                }
+                else
+                {
+                    var newEntry = BuildHistoryEntryForGeneration(
+                        prompt,
+                        prompt,
+                        SelectedTemplate?.Name,
+                        SelectedModel ?? "",
+                        SelectedModel,
+                        workflow,
+                        result.Images);
+                    _historyManager.AddEntry(newEntry);
+                }
+                StatusText = "Sample images saved to history.";
+            }
+            else
+            {
+                StatusText = "Sample generation discarded.";
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Sample generation failed: {ex.Message}";
+        }
+        finally
+        {
+            _generationInProgress = false;
+        }
     }
 
     private async Task<FillMissingResult> FillMissingVariationsWithDialogAsync(HistoryEntry entry, IReadOnlyList<string> missingKeys, Window? owner)
@@ -3003,6 +3148,7 @@ public partial class MainWindowViewModel : ObservableObject
     private void ConfigurePreviewCommands(MultiImagePreviewViewModel previewVm)
     {
         previewVm.OnGenerateSeedVariations = async slot => await GenerateVariationsFromSlotAsync(slot, true);
+        previewVm.OnGenerateModelVariations = async slot => await GenerateModelPermutationsFromSlotAsync(slot, previewVm);
         previewVm.OnGenerateLoraVariations = async slot => await GenerateLoraPermutationsFromSlotAsync(slot, previewVm);
     }
 
@@ -3155,6 +3301,11 @@ public partial class MainWindowViewModel : ObservableObject
                 await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
             }
         }
+
+        if (_settingsService.Settings.ServerSafetyModeEnabled && !cts.IsCancellationRequested)
+        {
+            await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
+        }
     }
 
     private async Task GenerateImagesForSlotsAsync(
@@ -3262,6 +3413,11 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
             }
+        }
+
+        if (_settingsService.Settings.ServerSafetyModeEnabled && !cts.IsCancellationRequested)
+        {
+            await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
         }
     }
 

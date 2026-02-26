@@ -167,19 +167,24 @@
                                                                                 </MenuItem>
                                                                                 <MenuItem Header="Generate">
                                                                                     <MenuItem Header="Generate More (from Image)..."
-                                                                                              Command="{Binding DataContext.GenerateMoreCommand, ElementName=HistoryWindow}"/>
+                                                                                              Command="{Binding DataContext.GenerateMoreCommand, ElementName=HistoryWindow}"
+                                                                                              IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
                                                                                     <MenuItem Header="Generate New from Prompt..."
-                                                                                              Command="{Binding DataContext.GenerateNewCommand, ElementName=HistoryWindow}"/>
+                                                                                              Command="{Binding DataContext.GenerateNewCommand, ElementName=HistoryWindow}"
+                                                                                              IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
                                                                                     <MenuItem Header="Edit &amp; Regenerate..."
-                                                                                              Command="{Binding DataContext.EditAndRegenerateCommand, ElementName=HistoryWindow}"/>
+                                                                                              Command="{Binding DataContext.EditAndRegenerateCommand, ElementName=HistoryWindow}"
+                                                                                              IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
                                                                                 </MenuItem>
                                                                                 <MenuItem Header="Variations">
                                                                                     <MenuItem Header="Generate Seed Variations"
                                                                                               Command="{Binding DataContext.GenerateSeedVariationsCommand, ElementName=HistoryWindow}"
-                                                                                              CommandParameter="{Binding}"/>
+                                                                                              CommandParameter="{Binding}"
+                                                                                              IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
                                                                                     <MenuItem Header="Generate LoRA Variations"
                                                                                               Command="{Binding DataContext.GenerateLoraVariationsCommand, ElementName=HistoryWindow}"
-                                                                                              CommandParameter="{Binding}"/>
+                                                                                              CommandParameter="{Binding}"
+                                                                                              IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
                                                                                 </MenuItem>
                                                                                 <MenuItem Header="Metadata">
                                                                                     <MenuItem Header="Open in PNG Metadata Viewer"
@@ -204,7 +209,8 @@
                                                                                               Command="{Binding DataContext.SetCoverImageCommand, ElementName=HistoryWindow}"
                                                                                               CommandParameter="{Binding}"/>
                                                                                     <MenuItem Header="Enhance"
-                                                                                              Command="{Binding DataContext.EnhanceCommand, ElementName=HistoryWindow}"/>
+                                                                                              Command="{Binding DataContext.EnhanceCommand, ElementName=HistoryWindow}"
+                                                                                              IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
                                                                                     <MenuItem Header="Upscale..."
                                                                                               Command="{Binding DataContext.UpscaleImageCommand, ElementName=HistoryWindow}"
                                                                                               CommandParameter="{Binding}"/>
@@ -268,10 +274,20 @@
                 <Button Content="Delete Entry" Command="{Binding DeleteEntryCommand}"/>
                 <Button Content="Open Folder" Command="{Binding OpenContainingFolderCommand}" CommandParameter="{Binding SelectedImageItem}"/>
                 <Button Content="Refresh" Command="{Binding RefreshCommand}"/>
-                <Button Content="Enhance" Command="{Binding EnhanceCommand}" IsVisible="{Binding CanEnhanceSelected}"/>
-                <Button Content="Generate New..." Command="{Binding GenerateNewCommand}"/>
-                <Button Content="Generate More..." Command="{Binding GenerateMoreCommand}"/>
-                <Button Content="Generate Missing Enhancements" Command="{Binding FillMissingVariationsCommand}" IsVisible="{Binding CanFillMissingVariations}"/>
+                <Button Content="Enhance"
+                        Command="{Binding EnhanceCommand}"
+                        IsVisible="{Binding CanEnhanceSelected}"
+                        IsEnabled="{Binding IsEnhancing, Converter={StaticResource InverseBoolConverter}}"/>
+                <Button Content="Generate New..."
+                        Command="{Binding GenerateNewCommand}"
+                        IsEnabled="{Binding IsEnhancing, Converter={StaticResource InverseBoolConverter}}"/>
+                <Button Content="Generate More..."
+                        Command="{Binding GenerateMoreCommand}"
+                        IsEnabled="{Binding IsEnhancing, Converter={StaticResource InverseBoolConverter}}"/>
+                <Button Content="Generate Missing Enhancements"
+                        Command="{Binding FillMissingVariationsCommand}"
+                        IsVisible="{Binding CanFillMissingVariations}"
+                        IsEnabled="{Binding IsEnhancing, Converter={StaticResource InverseBoolConverter}}"/>
                 <Button Content="Load Prompt" Command="{Binding LoadPromptFromHistoryCommand}" Classes="accent"/>
                 <Button Content="Close" Command="{Binding CancelCommand}" IsCancel="True"/>
             </StackPanel>

@@ -21,6 +21,7 @@ namespace PromptTool.ViewModels;
 public partial class PngMetadataViewerViewModel : ObservableObject
 {
     private readonly HistoryManagerService? _historyManager;
+    private readonly SettingsService? _settingsService;
     [ObservableProperty] private string _fileLabel = "No file loaded";
     [ObservableProperty] private string _fileInfo = "";
     [ObservableProperty] private string _imageInfo = "";
@@ -39,6 +40,8 @@ public partial class PngMetadataViewerViewModel : ObservableObject
     [ObservableProperty] private bool _replayIncludeStyleNegative = true;
     [ObservableProperty] private bool _replayIncludePositiveStyle = true;
     [ObservableProperty] private string _replayVaePrecision = "";
+    [ObservableProperty] private string _replaySafetyWarning = "";
+    [ObservableProperty] private bool _hasReplaySafetyWarning;
 
     private string? _currentFilePath;
     private Bitmap? _previewBitmap;
@@ -54,9 +57,10 @@ public partial class PngMetadataViewerViewModel : ObservableObject
     public Func<string, string, string?, Task>? ShowJsonDiffRequested { get; set; }
     public Avalonia.Controls.Window? OwnerWindow { get; set; }
 
-    public PngMetadataViewerViewModel(HistoryManagerService? historyManager = null)
+    public PngMetadataViewerViewModel(HistoryManagerService? historyManager = null, SettingsService? settingsService = null)
     {
         _historyManager = historyManager;
+        _settingsService = settingsService;
     }
 
     public Bitmap? PreviewBitmap
@@ -1706,6 +1710,66 @@ public partial class PngMetadataViewerViewModel : ObservableObject
                 string.Equals(dest["node_id"]?.GetValue<string>(), "positive_conditioning", StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(dest["field"]?.GetValue<string>(), "style", StringComparison.OrdinalIgnoreCase));
         }
+
+        UpdateReplaySafetyWarning();
+    }
+
+    [RelayCommand]
+    private void ApplyReplaySafetyDefaults()
+    {
+        ReplayUseCpu = false;
+        ReplayFp32 = false;
+        ReplayVaePrecision = "fp16";
+        UpdateReplaySafetyWarning();
+    }
+
+    private void UpdateReplaySafetyWarning()
+    {
+        if (_settingsService?.Settings.ServerSafetyModeEnabled != true)
+        {
+            ReplaySafetyWarning = string.Empty;
+            HasReplaySafetyWarning = false;
+            return;
+        }
+
+        var warn = new List<string>();
+        if (ReplayUseCpu)
+        {
+            warn.Add("CPU noise is enabled");
+        }
+        if (ReplayFp32)
+        {
+            warn.Add("L2I fp32 is enabled");
+        }
+        if (string.Equals(ReplayVaePrecision?.Trim(), "fp32", StringComparison.OrdinalIgnoreCase))
+        {
+            warn.Add("VAE precision is fp32");
+        }
+
+        if (warn.Count == 0)
+        {
+            ReplaySafetyWarning = string.Empty;
+            HasReplaySafetyWarning = false;
+            return;
+        }
+
+        ReplaySafetyWarning = $"Server safety warning: {string.Join(", ", warn)}. This can increase VRAM usage on the server.";
+        HasReplaySafetyWarning = true;
+    }
+
+    partial void OnReplayUseCpuChanged(bool value)
+    {
+        UpdateReplaySafetyWarning();
+    }
+
+    partial void OnReplayFp32Changed(bool value)
+    {
+        UpdateReplaySafetyWarning();
+    }
+
+    partial void OnReplayVaePrecisionChanged(string value)
+    {
+        UpdateReplaySafetyWarning();
     }
 
     private JsonObject? ApplyReplayOverrides(string graphJson)

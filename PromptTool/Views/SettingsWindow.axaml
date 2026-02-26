@@ -148,6 +148,11 @@
                             <TextBlock Text="InvokeAI Cache Management:" FontWeight="Bold" Margin="0,8,0,0"/>
                             <CheckBox Content="Auto clear InvokeAI model cache between different models"
                                       IsChecked="{Binding AutoClearInvokeCacheBetweenModels}"/>
+                            <CheckBox Content="Server safety mode (clear cache after every batch)"
+                                      IsChecked="{Binding ServerSafetyModeEnabled}"/>
+                            <Button Content="Clear InvokeAI Cache Now"
+                                    Command="{Binding ClearInvokeCacheCommand}"
+                                    Margin="0,4,0,0"/>
 
                             <TextBlock Text="Image Cache:" FontWeight="Bold" Margin="0,8,0,0"/>
                             <TextBlock Text="{Binding ImageCacheSizeLabel}" Classes="subtle"/>

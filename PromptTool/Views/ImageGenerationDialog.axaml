@@ -58,17 +58,43 @@
                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemTemplate>
                                 <DataTemplate x:DataType="vm:SelectableModelViewModel">
-                                    <StackPanel>
-                                        <CheckBox IsChecked="{Binding IsSelected}" IsVisible="{Binding IsVisible}">
-                                            <CheckBox.Content>
-                                                <StackPanel>
-                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{Binding Metadata}" Classes="subtle"/>
+                                    <Grid>
+                                        <Border Padding="4"
+                                                Background="#1A000000"
+                                                IsVisible="{Binding IsSourceModel}"
+                                                ToolTip.Tip="Source model (already used for this image)."
+                                                CornerRadius="4">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <CheckBox IsChecked="{Binding IsSelected}" IsVisible="{Binding IsVisible}" IsEnabled="{Binding IsEnabled}">
+                                                        <CheckBox.Content>
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                                                <TextBlock Text="{Binding Metadata}" Classes="subtle"/>
+                                                            </StackPanel>
+                                                        </CheckBox.Content>
+                                                    </CheckBox>
+                                                    <Border Background="#2AFFFFFF" CornerRadius="3" Padding="4,1" VerticalAlignment="Center" IsVisible="{Binding IsSourceModel}">
+                                                        <TextBlock Text="Source" FontSize="10" Classes="subtle"/>
+                                                    </Border>
                                                 </StackPanel>
-                                            </CheckBox.Content>
-                                        </CheckBox>
-                                        <TextBlock Text="{Binding Hash, StringFormat='Hash: {0}'}" Classes="subtle" IsVisible="{Binding HasHash}"/>
-                                    </StackPanel>
+                                                <TextBlock Text="{Binding Hash, StringFormat='Hash: {0}'}" Classes="subtle" IsVisible="{Binding HasHash}"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Padding="4" IsVisible="{Binding IsSourceModel, Converter={StaticResource InverseBoolConverter}}">
+                                            <StackPanel>
+                                                <CheckBox IsChecked="{Binding IsSelected}" IsVisible="{Binding IsVisible}" IsEnabled="{Binding IsEnabled}">
+                                                    <CheckBox.Content>
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                                            <TextBlock Text="{Binding Metadata}" Classes="subtle"/>
+                                                        </StackPanel>
+                                                    </CheckBox.Content>
+                                                </CheckBox>
+                                                <TextBlock Text="{Binding Hash, StringFormat='Hash: {0}'}" Classes="subtle" IsVisible="{Binding HasHash}"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>

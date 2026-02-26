@@ -26,6 +26,7 @@ public partial class SettingsViewModel : ObservableObject
 {
     private readonly SettingsService _settingsService;
     private readonly OllamaClient _ollamaClient;
+    private readonly InvokeAIClient? _invokeAiClient;
     private readonly NotificationService? _notifications;
     private readonly ImageCacheService _imageCacheService;
     private readonly ScoringCacheService _scoringCacheService = new();
@@ -99,6 +100,9 @@ public partial class SettingsViewModel : ObservableObject
     private bool _autoClearInvokeCacheBetweenModels;
 
     [ObservableProperty]
+    private bool _serverSafetyModeEnabled;
+
+    [ObservableProperty]
     private string _scoringCacheDir;
 
     [ObservableProperty]
@@ -160,12 +164,18 @@ public partial class SettingsViewModel : ObservableObject
     {
     }
 
-    public SettingsViewModel(SettingsService settingsService, OllamaClient ollamaClient, NotificationService? notifications = null, ImageCacheService? imageCacheService = null)
+    public SettingsViewModel(
+        SettingsService settingsService,
+        OllamaClient ollamaClient,
+        NotificationService? notifications = null,
+        ImageCacheService? imageCacheService = null,
+        InvokeAIClient? invokeAiClient = null)
     {
         _settingsService = settingsService;
         _ollamaClient = ollamaClient;
         _notifications = notifications;
         _imageCacheService = imageCacheService ?? new ImageCacheService();
+        _invokeAiClient = invokeAiClient;
         var currentSettings = Clone(settingsService.Settings);
         _originalSettings = Clone(currentSettings);
         _workingDefaults = DeepCloneDefaults(settingsService.Settings.GenerationDefaults);
@@ -187,6 +197,7 @@ public partial class SettingsViewModel : ObservableObject
         _defaultBaseModelType = string.IsNullOrWhiteSpace(currentSettings.DefaultBaseModelType) ? "sdxl" : currentSettings.DefaultBaseModelType;
         _currentBaseModelType = _defaultBaseModelType;
         _autoClearInvokeCacheBetweenModels = currentSettings.AutoClearInvokeCacheBetweenModels;
+        _serverSafetyModeEnabled = currentSettings.ServerSafetyModeEnabled;
         _aestheticScoringBackend = string.IsNullOrWhiteSpace(currentSettings.AestheticScoringBackend) ? "local" : currentSettings.AestheticScoringBackend;
         _aestheticScoringRemoteUrl = currentSettings.AestheticScoringRemoteUrl ?? string.Empty;
         _aestheticScoringRemoteBatchSize = currentSettings.AestheticScoringRemoteBatchSize <= 0 ? 8 : currentSettings.AestheticScoringRemoteBatchSize;
@@ -902,6 +913,32 @@ public partial class SettingsViewModel : ObservableObject
         _notifications?.ShowInfo("Image cache cleared.", "Settings");
     }
 
+    [RelayCommand]
+    private async Task ClearInvokeCache()
+    {
+        if (_invokeAiClient == null)
+        {
+            _notifications?.ShowWarning("InvokeAI cache clearing is not available in this context.", "Settings");
+            return;
+        }
+        try
+        {
+            var ok = await _invokeAiClient.EmptyModelCacheAsync();
+            if (ok)
+            {
+                _notifications?.ShowInfo("InvokeAI model cache cleared.", "Settings");
+            }
+            else
+            {
+                _notifications?.ShowWarning("InvokeAI did not confirm cache clear.", "Settings");
+            }
+        }
+        catch (Exception ex)
+        {
+            _notifications?.ShowError($"Failed to clear InvokeAI cache: {ex.Message}", "Settings");
+        }
+    }
+
     private void UpdateImageCacheLabels()
     {
         var ramSize = FormatBytes(_imageCacheService.CurrentBytes);
@@ -1043,6 +1080,7 @@ public partial class SettingsViewModel : ObservableObject
             DefaultSaveToGallery = settings.DefaultSaveToGallery,
             DefaultBaseModelType = settings.DefaultBaseModelType,
             AutoClearInvokeCacheBetweenModels = settings.AutoClearInvokeCacheBetweenModels,
+            ServerSafetyModeEnabled = settings.ServerSafetyModeEnabled,
             Verbose = settings.Verbose,
             AestheticScoringBackend = settings.AestheticScoringBackend,
             AestheticScoringRemoteUrl = settings.AestheticScoringRemoteUrl,
@@ -1078,6 +1116,8 @@ public partial class SettingsViewModel : ObservableObject
                || current.DefaultHeight != original.DefaultHeight
                || current.DefaultSaveToGallery != original.DefaultSaveToGallery
                || !string.Equals(current.DefaultBaseModelType, original.DefaultBaseModelType, StringComparison.OrdinalIgnoreCase)
+               || current.AutoClearInvokeCacheBetweenModels != original.AutoClearInvokeCacheBetweenModels
+               || current.ServerSafetyModeEnabled != original.ServerSafetyModeEnabled
                || !string.Equals(current.AestheticScoringBackend, original.AestheticScoringBackend, StringComparison.OrdinalIgnoreCase)
                || !string.Equals(current.AestheticScoringRemoteUrl, original.AestheticScoringRemoteUrl, StringComparison.OrdinalIgnoreCase)
                || current.AestheticScoringRemoteBatchSize != original.AestheticScoringRemoteBatchSize
@@ -1128,6 +1168,7 @@ public partial class SettingsViewModel : ObservableObject
         settingsToSave.FontSize = FontSize <= 0 ? 11 : FontSize;
         settingsToSave.DefaultBaseModelType = string.IsNullOrWhiteSpace(DefaultBaseModelType) ? "sdxl" : DefaultBaseModelType;
         settingsToSave.AutoClearInvokeCacheBetweenModels = AutoClearInvokeCacheBetweenModels;
+        settingsToSave.ServerSafetyModeEnabled = ServerSafetyModeEnabled;
         settingsToSave.Verbose = Verbose;
         settingsToSave.AestheticScoringBackend = string.IsNullOrWhiteSpace(AestheticScoringBackend) ? "local" : AestheticScoringBackend;
         settingsToSave.AestheticScoringRemoteUrl = AestheticScoringRemoteUrl ?? string.Empty;

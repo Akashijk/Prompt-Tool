@@ -52,7 +52,16 @@
                 <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="6">
                     <Grid ColumnDefinitions="*,Auto" Grid.Row="0">
                         <TextBlock Text="Variations" FontWeight="Bold" Grid.Column="0"/>
-                        <Button Content="Regenerate Variations" Command="{Binding RegenerateVariationsCommand}" Grid.Column="1" HorizontalAlignment="Right"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                            <Button Content="Regenerate Variations"
+                                    Command="{Binding RegenerateVariationsCommand}"
+                                    IsVisible="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"
+                                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding IsBusy}">
+                                <ProgressBar IsIndeterminate="True" Width="80" Height="8"/>
+                                <TextBlock Text="Generating..." Classes="subtle"/>
+                            </StackPanel>
+                        </StackPanel>
                     </Grid>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <ItemsControl ItemsSource="{Binding Variations}" x:CompileBindings="False">
@@ -65,7 +74,17 @@
                                             <TextBlock Text="{Binding Status}" Classes="subtle"/>
                                             <TextBox Text="{Binding Text}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="120" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
-                                                <Button Content="Regenerate" Command="{Binding RegenerateCommand}"/>
+                                                <Button Content="Regenerate"
+                                                        Command="{Binding RegenerateCommand}"
+                                                        IsVisible="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"
+                                                        IsEnabled="{Binding $parent[Window].DataContext.IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
+                                                <Button Content="Sample Image"
+                                                        Command="{Binding GenerateSampleCommand}"
+                                                        IsEnabled="{Binding $parent[Window].DataContext.IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
+                                                <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding IsBusy}">
+                                                    <ProgressBar IsIndeterminate="True" Width="70" Height="8"/>
+                                                    <TextBlock Text="Generating..." Classes="subtle"/>
+                                                </StackPanel>
                                                 <Button Content="Copy" Command="{Binding $parent[Window].DataContext.CopyCommand}" CommandParameter="{Binding Text}"/>
                                             </StackPanel>
                                         </StackPanel>
@@ -79,7 +98,14 @@
 
             <StackPanel Grid.Row="2" Classes="dialog-footer">
                 <Button Content="Copy Enhanced" Command="{Binding CopyCommand}" CommandParameter="{Binding EnhancedPrompt}"/>
-                <Button Content="Regenerate" Command="{Binding RegenerateCommand}"/>
+                <Button Content="Regenerate"
+                        Command="{Binding RegenerateCommand}"
+                        IsVisible="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"
+                        IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"/>
+                <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding IsBusy}">
+                    <ProgressBar IsIndeterminate="True" Width="90" Height="8"/>
+                    <TextBlock Text="Generating..." Classes="subtle"/>
+                </StackPanel>
                 <Button Content="Save" Command="{Binding SaveCommand}" Classes="accent" IsDefault="True"/>
                 <Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding IsBusy}"/>
                 <Button Content="Close" Command="{Binding CloseCommand}" IsCancel="True"/>

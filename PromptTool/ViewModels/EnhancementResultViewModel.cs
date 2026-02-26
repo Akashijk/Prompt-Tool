@@ -35,6 +35,7 @@ public partial class EnhancementResultViewModel : ObservableObject
 
     public IAsyncRelayCommand RegenerateCommand { get; }
     public IAsyncRelayCommand RegenerateVariationsCommand { get; }
+    public IAsyncRelayCommand GenerateSampleCommand { get; }
     public IRelayCommand<string> CopyCommand { get; }
     public IRelayCommand CloseCommand { get; }
     public IRelayCommand SaveCommand { get; }
@@ -43,6 +44,7 @@ public partial class EnhancementResultViewModel : ObservableObject
     public event Action? RequestClose;
     public event Action<string>? RequestCopy;
     public event Action<string?>? RequestReleaseModel;
+    public Func<string, Task>? GenerateSampleRequested { get; set; }
 
     public EnhancementResultViewModel() : this(new OllamaClient(new System.Net.Http.HttpClient(), new SettingsService()), "", "", "")
     {
@@ -75,6 +77,7 @@ public partial class EnhancementResultViewModel : ObservableObject
 
         RegenerateCommand = new AsyncRelayCommand(RegenerateAsync, () => !IsBusy && CanGenerate);
         RegenerateVariationsCommand = new AsyncRelayCommand(RegenerateAllVariationsAsync, () => Variations.Count > 0 && !IsBusy && CanGenerate);
+        GenerateSampleCommand = new AsyncRelayCommand(GenerateSampleAsync, () => !IsBusy);
         CopyCommand = new RelayCommand<string>(s => RequestCopy?.Invoke(s ?? string.Empty));
         CloseCommand = new RelayCommand(() =>
         {
@@ -89,10 +92,36 @@ public partial class EnhancementResultViewModel : ObservableObject
 
         foreach (var variation in _variationPrompts)
         {
-            Variations.Add(new VariationViewModel(variation, RegenerateVariationSingleAsync));
+            Variations.Add(new VariationViewModel(variation, RegenerateVariationSingleAsync, GenerateSampleForVariationAsync));
         }
         RegenerateVariationsCommand.NotifyCanExecuteChanged();
 
+    }
+
+    private async Task GenerateSampleForVariationAsync(VariationViewModel variation)
+    {
+        if (GenerateSampleRequested == null) return;
+        var prompt = !string.IsNullOrWhiteSpace(variation.Text)
+            ? variation.Text
+            : (!string.IsNullOrWhiteSpace(EnhancedPrompt) ? EnhancedPrompt : OriginalPrompt);
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            Status = "No prompt available for sample generation.";
+            return;
+        }
+        await GenerateSampleRequested(prompt);
+    }
+
+    private async Task GenerateSampleAsync()
+    {
+        if (IsBusy || GenerateSampleRequested == null) return;
+        var prompt = !string.IsNullOrWhiteSpace(EnhancedPrompt) ? EnhancedPrompt : OriginalPrompt;
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            Status = "No prompt available for sample generation.";
+            return;
+        }
+        await GenerateSampleRequested(prompt);
     }
 
     private async Task RegenerateAsync()
@@ -319,6 +348,7 @@ public partial class EnhancementResultViewModel : ObservableObject
     {
         RegenerateCommand.NotifyCanExecuteChanged();
         RegenerateVariationsCommand.NotifyCanExecuteChanged();
+        GenerateSampleCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSelectedModelChanged(string value)
@@ -333,6 +363,7 @@ public partial class EnhancementResultViewModel : ObservableObject
 public partial class VariationViewModel : ObservableObject
 {
     private readonly Func<VariationViewModel, CancellationToken, Task> _regenerate;
+    private readonly Func<VariationViewModel, Task> _generateSample;
 
     [ObservableProperty] private string _title = "";
     [ObservableProperty] private string _description = "";
@@ -343,19 +374,26 @@ public partial class VariationViewModel : ObservableObject
     public VariationPrompt Definition { get; }
     public string Key => Definition.Key;
     public IAsyncRelayCommand RegenerateCommand { get; }
+    public IAsyncRelayCommand GenerateSampleCommand { get; }
 
-    public VariationViewModel(VariationPrompt definition, Func<VariationViewModel, CancellationToken, Task> regenerate)
+    public VariationViewModel(
+        VariationPrompt definition,
+        Func<VariationViewModel, CancellationToken, Task> regenerate,
+        Func<VariationViewModel, Task> generateSample)
     {
         Definition = definition;
         _regenerate = regenerate;
+        _generateSample = generateSample;
         Title = definition.Name;
         Description = definition.Description;
         Status = "Waiting...";
         RegenerateCommand = new AsyncRelayCommand(() => _regenerate(this, CancellationToken.None), () => !IsBusy);
+        GenerateSampleCommand = new AsyncRelayCommand(() => _generateSample(this), () => !IsBusy);
     }
 
     partial void OnIsBusyChanged(bool value)
     {
         RegenerateCommand.NotifyCanExecuteChanged();
+        GenerateSampleCommand.NotifyCanExecuteChanged();
     }
 }

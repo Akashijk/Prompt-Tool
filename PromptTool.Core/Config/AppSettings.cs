@@ -31,6 +31,7 @@ public class AppSettings
     public bool DefaultSaveToGallery { get; set; } = false;
     public string DefaultBaseModelType { get; set; } = "sdxl";
     public bool AutoClearInvokeCacheBetweenModels { get; set; } = true;
+    public bool ServerSafetyModeEnabled { get; set; } = true;
     public bool Verbose { get; set; } = false;
     public Dictionary<string, GenerationDefaultsSettings> GenerationDefaults { get; set; } = new();
     public Dictionary<string, ModelDefaultSettings> ModelDefaults { get; set; } = new();

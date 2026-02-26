@@ -31,6 +31,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
 
     private Func<ImageSlotViewModel, Task>? _onSaveSlot;
     private Func<ImageSlotViewModel, Task>? _onGenerateSeedVariations;
+    private Func<ImageSlotViewModel, Task>? _onGenerateModelVariations;
     private Func<ImageSlotViewModel, Task>? _onGenerateLoraVariations;
     private Func<ImageSlotViewModel, Task>? _onEditAndRegenerate;
     private Action<ImageSlotViewModel>? _onShowFullSize;
@@ -47,6 +48,16 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         set
         {
             _onGenerateSeedVariations = value;
+            SyncSlotActions();
+        }
+    }
+
+    public Func<ImageSlotViewModel, Task>? OnGenerateModelVariations
+    {
+        get => _onGenerateModelVariations;
+        set
+        {
+            _onGenerateModelVariations = value;
             SyncSlotActions();
         }
     }
@@ -86,6 +97,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         foreach (var slot in Slots)
         {
             slot.OnGenerateSeedVariations = _onGenerateSeedVariations;
+            slot.OnGenerateModelVariations = _onGenerateModelVariations;
             slot.OnGenerateLoraVariations = _onGenerateLoraVariations;
             slot.OnEditAndRegenerate = _onEditAndRegenerate;
             slot.OnShowFullSize = _onShowFullSize;
@@ -107,6 +119,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     {
         var slot = new ImageSlotViewModel { Label = label, IsLoading = true, IsSelected = true };
         slot.OnGenerateSeedVariations = _onGenerateSeedVariations;
+        slot.OnGenerateModelVariations = _onGenerateModelVariations;
         slot.OnGenerateLoraVariations = _onGenerateLoraVariations;
         slot.OnEditAndRegenerate = _onEditAndRegenerate;
         slot.OnShowFullSize = _onShowFullSize;
@@ -143,6 +156,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
             slot.ImageBytes = data;
             slot.IsLoading = false;
             slot.OnGenerateSeedVariations = _onGenerateSeedVariations;
+            slot.OnGenerateModelVariations = _onGenerateModelVariations;
             slot.OnGenerateLoraVariations = _onGenerateLoraVariations;
             slot.OnEditAndRegenerate = _onEditAndRegenerate;
             slot.OnShowFullSize = _onShowFullSize;
@@ -192,6 +206,13 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task GenerateModelVariations(ImageSlotViewModel? slot)
+    {
+        if (slot == null || OnGenerateModelVariations == null) return;
+        await OnGenerateModelVariations(slot);
+    }
+
+    [RelayCommand]
     private async Task GenerateLoraVariations(ImageSlotViewModel? slot)
     {
         if (slot == null || OnGenerateLoraVariations == null) return;
@@ -230,6 +251,7 @@ public partial class ImageSlotViewModel : ObservableObject
     public string? GenerationGraphJson { get; set; }
 
     public Func<ImageSlotViewModel, Task>? OnGenerateSeedVariations { get; set; }
+    public Func<ImageSlotViewModel, Task>? OnGenerateModelVariations { get; set; }
     public Func<ImageSlotViewModel, Task>? OnGenerateLoraVariations { get; set; }
     public Func<ImageSlotViewModel, Task>? OnEditAndRegenerate { get; set; }
     public Action<ImageSlotViewModel>? OnShowFullSize { get; set; }
@@ -238,6 +260,12 @@ public partial class ImageSlotViewModel : ObservableObject
     private Task GenerateSeedVariations()
     {
         return OnGenerateSeedVariations?.Invoke(this) ?? Task.CompletedTask;
+    }
+
+    [RelayCommand]
+    private Task GenerateModelVariations()
+    {
+        return OnGenerateModelVariations?.Invoke(this) ?? Task.CompletedTask;
     }
 
     [RelayCommand]
