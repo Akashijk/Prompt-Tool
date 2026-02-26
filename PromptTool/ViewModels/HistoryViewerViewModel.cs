@@ -46,6 +46,7 @@ public partial class HistoryViewerViewModel : ObservableObject
     public Func<HistoryEntry, IReadOnlyList<string>, Task<FillMissingResult>>? FillMissingVariationsRequested { get; set; }
     public Func<Task>? ShowAllImagesRequested { get; set; }
     public Func<HistoryEntry, HistoryImage, Task>? UpscaleRequested { get; set; }
+    public Func<string, Task>? ShowPngMetadataRequested { get; set; }
 
     public HistoryManagerService HistoryManager => _historyManager;
     public TemplateService TemplateService => _templateService;
@@ -1340,6 +1341,29 @@ public partial class HistoryViewerViewModel : ObservableObject
         {
             if (_settingsService.Settings.Verbose) Console.Error.WriteLine($"Error opening image: {ex.Message}");
         }
+    }
+
+    [RelayCommand]
+    private async Task ShowPngMetadata(HistoryImageItem? item)
+    {
+        var path = item?.Image.ImagePath ?? SelectedImageItem?.Image.ImagePath;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            StatusNote = "No image selected.";
+            return;
+        }
+        var full = Path.IsPathRooted(path) ? path : Path.Combine(_historyDir, path);
+        if (!File.Exists(full))
+        {
+            StatusNote = "Image file not found.";
+            return;
+        }
+        if (ShowPngMetadataRequested != null)
+        {
+            await ShowPngMetadataRequested(full);
+            return;
+        }
+        StatusNote = "PNG metadata viewer not configured.";
     }
 
     [RelayCommand]

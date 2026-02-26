@@ -78,6 +78,10 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     public bool AllowLongPromptWarningOnly { get; set; }
     public bool DisableAutoDefaults { get; set; }
     public bool UsePromptAsStyleWhenEmpty { get; set; } = true;
+    public bool? UseCpuNoise { get; set; }
+    public bool? L2iFp32 { get; set; }
+    public string? VaePrecision { get; set; }
+    public bool? UseAutoCfgRescale { get; set; }
     private string? _pendingModelSelection;
     private List<(string name, double weight)> _pendingLoraSelection = new();
 
@@ -223,6 +227,10 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         SetInitialModel(p.Model?.Name);
         SetInitialLoras(p.Loras ?? Enumerable.Empty<LoraParameter>());
         UsePromptAsStyleWhenEmpty = p.UsePromptAsStyleWhenEmpty;
+        UseCpuNoise = p.UseCpuNoise;
+        L2iFp32 = p.L2iFp32;
+        VaePrecision = p.VaePrecision;
+        UseAutoCfgRescale = p.UseAutoCfgRescale;
     }
 
     public bool HasUnsavedNegativePromptChanges => IsNegativePromptDirty;
@@ -457,7 +465,11 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
                     UsedRandomSeed = UseRandomSeed,
                     BaseSeed = baseSeed,
                     BaseModelType = BaseModelType,
-                    AutoClearedModelCacheBetweenModels = _settingsService.Settings.AutoClearInvokeCacheBetweenModels
+                    AutoClearedModelCacheBetweenModels = _settingsService.Settings.AutoClearInvokeCacheBetweenModels,
+                    UseCpuNoise = UseCpuNoise,
+                    L2iFp32 = L2iFp32,
+                    VaePrecision = VaePrecision,
+                    UseAutoCfgRescale = UseAutoCfgRescale
                 });
             }
         }

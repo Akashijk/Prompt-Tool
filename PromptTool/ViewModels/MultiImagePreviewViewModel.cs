@@ -180,6 +180,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     [RelayCommand]
     private void Cancel()
     {
+        GenerationToken?.Cancel();
         DialogResult = false;
     }
 
@@ -226,6 +227,7 @@ public partial class ImageSlotViewModel : ObservableObject
     [ObservableProperty] private string _loraLabel = "";
     [ObservableProperty] private bool _showGenerationActions = true;
     public InvokeAIGenerationParams? GenerationParams { get; set; }
+    public string? GenerationGraphJson { get; set; }
 
     public Func<ImageSlotViewModel, Task>? OnGenerateSeedVariations { get; set; }
     public Func<ImageSlotViewModel, Task>? OnGenerateLoraVariations { get; set; }

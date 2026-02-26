@@ -1,9 +1,11 @@
 using System;
+using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia;
 using PromptTool.Core.Services;
 using PromptTool.ViewModels;
+using Avalonia.Controls.ApplicationLifetimes;
 
 namespace PromptTool.Views;
 
@@ -17,6 +19,7 @@ public partial class AnalyticsStudioWindow : Window
         SizeChanged += (_, __) => UpdateThumbnailPriority();
         Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
+        DataContextChanged += (_, __) => WireContext();
     }
 
     private void UpdateThumbnailPriority()
@@ -104,4 +107,28 @@ public partial class AnalyticsStudioWindow : Window
         _ = settingsService.SaveSettingsAsync(settings);
     }
 
+    private void WireContext()
+    {
+        if (DataContext is AnalyticsStudioViewModel vm)
+        {
+            vm.ShowPngMetadataRequested = ShowPngMetadataAsync;
+        }
+    }
+
+    private async Task ShowPngMetadataAsync(string filePath)
+    {
+        var historyManager = (Application.Current as App)?.HistoryManagerService;
+        var vm = new PngMetadataViewerViewModel(historyManager);
+        var mainVm = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow?.DataContext as MainWindowViewModel;
+        if (mainVm != null)
+        {
+            vm.GenerateMergedRequested = mainVm.GenerateFromMergedPngAsync;
+            vm.GenerateGraphReplayRequested = mainVm.GenerateFromPngGraphAsync;
+            vm.BuildGenerationGraphJsonAsync = mainVm.BuildGenerationGraphJsonAsync;
+            vm.ShowJsonDiffRequested = mainVm.ShowJsonDiffAsync;
+        }
+        var win = new PngMetadataViewerWindow(vm);
+        win.Show(this);
+        await vm.LoadFileAsync(filePath);
+    }
 }

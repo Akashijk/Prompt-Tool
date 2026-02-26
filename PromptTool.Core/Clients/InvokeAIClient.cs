@@ -244,7 +244,7 @@ public class InvokeAIClient
         }
     }
     
-            public async Task<InvokeAIGenerationResult> GenerateImageAsync(InvokeAIGenerationParams parameters, CancellationToken ct = default)    {
+    public async Task<InvokeAIGenerationResult> GenerateImageAsync(InvokeAIGenerationParams parameters, CancellationToken ct = default)    {
         if (parameters.Model == null)
         {
             throw new ArgumentNullException(nameof(parameters.Model), "A model must be selected for generation.");
@@ -277,6 +277,23 @@ public class InvokeAIClient
                 Scheduler = parameters.Scheduler,
                 Vae = vaeUsed
             }
+        };
+    }
+
+    public async Task<InvokeAIGenerationResult> GenerateImageFromGraphJsonAsync(JsonObject graph, bool saveToGallery, CancellationToken ct = default)
+    {
+        if (graph == null) throw new ArgumentNullException(nameof(graph));
+
+        var queueItem = await EnqueueBatchJsonAsync(graph, ct);
+        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
+
+        var (imageBytes, imageName) = await WaitForResultAsync(itemId, saveToGallery, ct);
+
+        return new InvokeAIGenerationResult
+        {
+            ItemId = itemId,
+            ImageBytes = imageBytes,
+            ImageName = imageName
         };
     }
 
@@ -336,7 +353,7 @@ public class InvokeAIClient
         };
     }
 
-            private async Task<JsonObject> EnqueueBatchAsync(InvokeAIGraph graph, CancellationToken ct)    {
+    private async Task<JsonObject> EnqueueBatchAsync(InvokeAIGraph graph, CancellationToken ct)    {
         var batch = new
         {
             batch = new
@@ -372,6 +389,46 @@ public class InvokeAIClient
         
         response.EnsureSuccessStatusCode();
         
+        return await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct) ?? new JsonObject();
+    }
+
+    private async Task<JsonObject> EnqueueBatchJsonAsync(JsonObject graph, CancellationToken ct)
+    {
+        var batch = new JsonObject
+        {
+            ["batch"] = new JsonObject
+            {
+                ["graph"] = graph,
+                ["runs"] = 1
+            }
+        };
+
+        if (_settingsService.Settings.Verbose)
+        {
+            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+            Console.WriteLine("--- VERBOSE: InvokeAI Generation Graph (JSON) ---");
+            Console.WriteLine(batch.ToJsonString(jsonOptions));
+            Console.WriteLine("-------------------------------------------------");
+        }
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.PostAsJsonAsync("/api/v1/queue/default/enqueue_batch", batch, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HttpRequestException("Failed to enqueue batch.", ex);
+        }
+
+        if (response.StatusCode == System.Net.HttpStatusCode.UnprocessableEntity)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync(ct);
+            if (_settingsService.Settings.Verbose) Console.WriteLine($"--- InvokeAI 422 Error ---\n{errorContent}\n--------------------------");
+            throw new HttpRequestException($"Failed to enqueue batch. Server returned 422 Unprocessable Entity. Details: {errorContent}");
+        }
+
+        response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct) ?? new JsonObject();
     }
     

@@ -6,6 +6,7 @@
 # Build outputs
 **/bin/
 **/obj/
+/publish/
 
 # User-specific files
 *.user
@@ -23,6 +24,7 @@
 /cache/
 /image_cache/
 /scoring_cache/
+/binaries/
 
 # Local notes and backups
 /message_to_user.md

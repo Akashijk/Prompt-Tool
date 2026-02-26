@@ -36,6 +36,7 @@ public class HistoryImage
     public byte[]? ImageBytes { get; set; } // Transient
     public InvokeAIGenerationParams? GenerationParams { get; set; }
     public string? GenerationParamsJson { get; set; } // Raw JSON from legacy format
+    public string? GenerationGraphJson { get; set; } // Raw InvokeAI graph JSON for exact replay
     public bool IsFavorite { get; set; }
     public string? PromptType { get; set; } // Original/Enhanced/Variation:Name/etc
     public string? PromptTypeSuffix { get; set; } // Upscale info or other annotation

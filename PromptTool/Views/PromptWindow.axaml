@@ -59,6 +59,7 @@
                 <Separator/>
                 <MenuItem Header="Image _Interrogator" Command="{Binding ShowImageInterrogatorCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="Prompt _Evolver" Command="{Binding ShowPromptEvolverCommand}" CommandParameter="{Binding $parent[Window]}"/>
+                <MenuItem Header="PNG _Metadata Viewer" Command="{Binding ShowPngMetadataViewerCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="Clear Invoke Cache" Command="{Binding ClearInvokeCacheCommand}"/>
                 <Separator/>
                 <MenuItem Header="_Settings" Command="{Binding ShowSettingsCommand}" CommandParameter="{Binding $parent[Window]}"/>

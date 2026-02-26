@@ -24,26 +24,29 @@ public static class GraphBuilder
         IReadOnlyList<InvokeAIModel> availableVaes)
     {
         // SDXL-specific negative prompt splitting
-        var (contentNegativePrompt, styleNegativePrompt) = SplitSdxlNegativePrompt(genParams.NegativePrompt ?? "");
+        var (contentNegativePrompt, styleNegativePrompt) = SplitSdxlNegativePrompt(
+            genParams.NegativePrompt ?? "",
+            genParams.NegativeStylePrompt);
         var positiveStylePrompt = genParams.PositiveStylePrompt;
 
         var (compatibleVae, vaeSourceNodeId) = GetVaeOverride(genParams, availableVaes);
         var finalCfgRescale = genParams.CfgRescaleMultiplier;
         var isDiffusers = string.Equals(genParams.Model?.Format, "diffusers", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(genParams.Model?.Format);
-        if ((finalCfgRescale <= 0.0) && isDiffusers)
+        if ((finalCfgRescale <= 0.0) && isDiffusers && (genParams.UseAutoCfgRescale ?? true))
         {
             // Diffusers SDXL models frequently need a small cfg rescale to avoid color shifts.
             finalCfgRescale = 0.7;
         }
 
+        var vaePrecision = string.IsNullOrWhiteSpace(genParams.VaePrecision) ? "fp32" : genParams.VaePrecision!.Trim();
         var nodes = new Dictionary<string, IInvokeAINode>
         {
-            ["sdxl_model_loader"] = new SdxlModelLoaderNode { Model = genParams.Model!, VaePrecision = "fp32" },
+            ["sdxl_model_loader"] = new SdxlModelLoaderNode { Model = genParams.Model!, VaePrecision = vaePrecision },
             ["positive_prompt"] = new StringNode { Id = "positive_prompt", Value = genParams.Prompt },
             ["content_negative_prompt"] = new StringNode { Id = "content_negative_prompt", Value = contentNegativePrompt },
             ["positive_conditioning"] = new SdxlCompelPromptNode { Id = "positive_conditioning" },
             ["negative_conditioning"] = new SdxlCompelPromptNode { Id = "negative_conditioning" },
-            ["noise"] = new NoiseNode { Seed = genParams.Seed, Width = genParams.Width, Height = genParams.Height, UseCpu = false },
+            ["noise"] = new NoiseNode { Seed = genParams.Seed, Width = genParams.Width, Height = genParams.Height, UseCpu = genParams.UseCpuNoise ?? false },
             ["sdxl_denoise_latents"] = new DenoiseLatentsNode
             {
                 Id = "sdxl_denoise_latents",
@@ -54,7 +57,7 @@ public static class GraphBuilder
                 DenoisingEnd = 1.0,
                 CfgRescaleMultiplier = finalCfgRescale
             },
-            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = true }
+            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = genParams.L2iFp32 ?? true }
         };
 
         if (!string.IsNullOrWhiteSpace(positiveStylePrompt))
@@ -141,7 +144,9 @@ public static class GraphBuilder
     {
         var (compatibleVae, vaeSourceNodeId) = GetVaeOverride(genParams, availableVaes);
         var finalCfgRescale = genParams.CfgRescaleMultiplier;
-        if ((finalCfgRescale <= 0.0) && string.Equals(genParams.Model?.Format, "diffusers", StringComparison.OrdinalIgnoreCase))
+        if ((finalCfgRescale <= 0.0) &&
+            string.Equals(genParams.Model?.Format, "diffusers", StringComparison.OrdinalIgnoreCase) &&
+            (genParams.UseAutoCfgRescale ?? true))
         {
             finalCfgRescale = 0.7;
         }
@@ -153,7 +158,7 @@ public static class GraphBuilder
             ["negative_prompt"] = new StringNode { Id = "negative_prompt", Value = genParams.NegativePrompt ?? "" },
             ["positive_conditioning"] = new CompelNode { Id = "positive_conditioning" },
             ["negative_conditioning"] = new CompelNode { Id = "negative_conditioning" },
-            ["noise"] = new NoiseNode { Seed = genParams.Seed, Width = genParams.Width, Height = genParams.Height, UseCpu = false },
+            ["noise"] = new NoiseNode { Seed = genParams.Seed, Width = genParams.Width, Height = genParams.Height, UseCpu = genParams.UseCpuNoise ?? false },
             ["denoise_latents"] = new DenoiseLatentsNode
             {
                 Id = "denoise_latents",
@@ -164,7 +169,7 @@ public static class GraphBuilder
                 DenoisingEnd = 1.0,
                 CfgRescaleMultiplier = finalCfgRescale
             },
-            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = true }
+            ["l2i"] = new LatentsToImageNode { SaveToGallery = genParams.SaveToGallery, ImageCategory = "general", Fp32 = genParams.L2iFp32 ?? true }
         };
 
         if (compatibleVae != null)
@@ -197,10 +202,36 @@ public static class GraphBuilder
         return (new InvokeAIGraph { Nodes = nodes, Edges = edges }, compatibleVae);
     }
     
-    private static (string content, string style) SplitSdxlNegativePrompt(string negativePrompt)
+    private static (string content, string style) SplitSdxlNegativePrompt(string negativePrompt, string? negativeStylePrompt)
     {
-        // For now, avoid auto-splitting to a style bucket; only use the full negative prompt as content.
-        return (negativePrompt, string.Empty);
+        // Prefer the explicit style prompt when provided; otherwise keep the full negative prompt as content.
+        var content = (negativePrompt ?? string.Empty).Trim();
+        var style = (negativeStylePrompt ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(style))
+        {
+            return (content, string.Empty);
+        }
+
+        if (string.Equals(content, style, StringComparison.Ordinal))
+        {
+            return (string.Empty, style);
+        }
+
+        if (content.EndsWith(style, StringComparison.Ordinal))
+        {
+            content = content.Substring(0, content.Length - style.Length).TrimEnd();
+        }
+        else
+        {
+            var marker = "\n" + style;
+            var index = content.LastIndexOf(marker, StringComparison.Ordinal);
+            if (index >= 0 && index + marker.Length == content.Length)
+            {
+                content = content.Substring(0, index).TrimEnd();
+            }
+        }
+
+        return (content, style);
     }
     
     private static (List<IInvokeAINode> nodes, List<InvokeAIEdge> edges, string lastUnet, string lastClip, string lastClip2) ChainSdxlLoras(List<LoraParameter> loras)

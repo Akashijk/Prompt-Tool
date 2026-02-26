@@ -203,19 +203,27 @@
                                         DoubleTapped="OnImageDoubleTapped">
                                     <Border.ContextMenu>
                                         <ContextMenu DataContext="{Binding}">
-                                            <MenuItem Header="View Details"
-                                                      Command="{Binding DataContext.ViewDetailsCommand, ElementName=AnalyticsWindowRoot}"
-                                                      CommandParameter="{Binding}"/>
-                                            <Separator/>
-                                            <MenuItem Header="Generate More (from Image)..."
-                                                      Command="{Binding DataContext.GenerateMoreCommand, ElementName=AnalyticsWindowRoot}"
-                                                      CommandParameter="{Binding}"/>
-                                            <MenuItem Header="Generate Seed Variations"
-                                                      Command="{Binding DataContext.GenerateSeedVariationsCommand, ElementName=AnalyticsWindowRoot}"
-                                                      CommandParameter="{Binding}"/>
-                                            <MenuItem Header="Generate LoRA Variations"
-                                                      Command="{Binding DataContext.GenerateLoraVariationsCommand, ElementName=AnalyticsWindowRoot}"
-                                                      CommandParameter="{Binding}"/>
+                                            <MenuItem Header="Open">
+                                                <MenuItem Header="View Details"
+                                                          Command="{Binding DataContext.ViewDetailsCommand, ElementName=AnalyticsWindowRoot}"
+                                                          CommandParameter="{Binding}"/>
+                                                <MenuItem Header="Open in PNG Metadata Viewer"
+                                                          Command="{Binding DataContext.ShowPngMetadataCommand, ElementName=AnalyticsWindowRoot}"
+                                                          CommandParameter="{Binding}"/>
+                                            </MenuItem>
+                                            <MenuItem Header="Generate">
+                                                <MenuItem Header="Generate More (from Image)..."
+                                                          Command="{Binding DataContext.GenerateMoreCommand, ElementName=AnalyticsWindowRoot}"
+                                                          CommandParameter="{Binding}"/>
+                                            </MenuItem>
+                                            <MenuItem Header="Variations">
+                                                <MenuItem Header="Generate Seed Variations"
+                                                          Command="{Binding DataContext.GenerateSeedVariationsCommand, ElementName=AnalyticsWindowRoot}"
+                                                          CommandParameter="{Binding}"/>
+                                                <MenuItem Header="Generate LoRA Variations"
+                                                          Command="{Binding DataContext.GenerateLoraVariationsCommand, ElementName=AnalyticsWindowRoot}"
+                                                          CommandParameter="{Binding}"/>
+                                            </MenuItem>
                                         </ContextMenu>
                                     </Border.ContextMenu>
                                     <StackPanel Spacing="6">

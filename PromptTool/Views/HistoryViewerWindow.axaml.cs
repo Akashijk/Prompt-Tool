@@ -9,6 +9,7 @@ using Avalonia.Threading;
 using PromptTool.Core.Services;
 using PromptTool.Services;
 using PromptTool.ViewModels;
+using Avalonia.Controls.ApplicationLifetimes;
 using System.Collections.Specialized;
 using System.ComponentModel; // Added
 using System.Linq;
@@ -185,6 +186,7 @@ public partial class HistoryViewerWindow : Window
             vm.OnLargeImageRequested -= Vm_OnLargeImageRequested;
             vm.OnLargeImageRequested += Vm_OnLargeImageRequested;
             vm.ShowAllImagesRequested = ShowAllImagesAsync;
+            vm.ShowPngMetadataRequested = ShowPngMetadataAsync;
 
             if (vm.HistoryEntries is INotifyCollectionChanged collection)
             {
@@ -201,6 +203,23 @@ public partial class HistoryViewerWindow : Window
         {
             TrySelectFirstEntry(vm);
         }
+    }
+
+    private async Task ShowPngMetadataAsync(string filePath)
+    {
+        var historyManager = (Application.Current as App)?.HistoryManagerService;
+        var vm = new PngMetadataViewerViewModel(historyManager);
+        var mainVm = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow?.DataContext as MainWindowViewModel;
+        if (mainVm != null)
+        {
+            vm.GenerateMergedRequested = mainVm.GenerateFromMergedPngAsync;
+            vm.GenerateGraphReplayRequested = mainVm.GenerateFromPngGraphAsync;
+            vm.BuildGenerationGraphJsonAsync = mainVm.BuildGenerationGraphJsonAsync;
+            vm.ShowJsonDiffRequested = mainVm.ShowJsonDiffAsync;
+        }
+        var win = new PngMetadataViewerWindow(vm);
+        win.Show(this);
+        await vm.LoadFileAsync(filePath);
     }
 
     private void TrySelectFirstEntry(HistoryViewerViewModel vm)

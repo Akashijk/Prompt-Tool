@@ -17,6 +17,7 @@
     <PackageReference Include="Avalonia.ReactiveUI" Version="*" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.10" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.10" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
     <!--Condition below is needed to remove Avalonia.Diagnostics package from build output in Release configuration.-->
     <PackageReference Include="Avalonia.Diagnostics" Version="11.3.10">
       <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
@@ -46,6 +47,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\WildcardSyntax.xshd" />
+    <AvaloniaResource Include="App.axaml" />
     <AvaloniaResource Include="Assets\Icon.png" />
   </ItemGroup>
 
@@ -53,5 +55,6 @@
   <ItemGroup>
     <AvaloniaXaml Remove="**\*.axaml" />
     <AvaloniaXaml Include="**\*.axaml" Exclude="bin\**;obj\**" />
+    <AvaloniaXaml Remove="App.axaml" />
   </ItemGroup>
 </Project>

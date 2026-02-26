@@ -14,6 +14,10 @@ public class InvokeAIGenerationParams
     public int BaseSeed { get; set; }
     public bool AutoClearedModelCacheBetweenModels { get; set; }
     public string? VaeUsedName { get; set; }
+    public string? VaePrecision { get; set; }
+    public bool? UseCpuNoise { get; set; }
+    public bool? L2iFp32 { get; set; }
+    public bool? UseAutoCfgRescale { get; set; }
     public InvokeAIModel? Model { get; set; }
     public int Steps { get; set; } = 30;
     public double CfgScale { get; set; } = 7.0;

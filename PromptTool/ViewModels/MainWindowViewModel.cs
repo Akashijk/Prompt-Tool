@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -49,6 +51,7 @@ public partial class MainWindowViewModel : ObservableObject
     private CancellationTokenSource? _invokeMonitorCts;
     private bool? _invokeOnline;
     private readonly SemaphoreSlim _invokeGenerationGate = new(1, 1);
+    private CancellationTokenSource? _activeGenerationCts;
     private readonly SemaphoreSlim _unloadLock = new(1, 1);
     private static readonly Regex WildcardRegex = new(@"__(?<name>.+?)__|\{(?<name>[^{}]+)\}", RegexOptions.Compiled);
     private bool _initialized;
@@ -110,6 +113,7 @@ public partial class MainWindowViewModel : ObservableObject
     public IAsyncRelayCommand<Window?> ShowInvokeAIModelDefaultsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowInvokeAILoraDefaultsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSystemPromptsCommand { get; }
+    public IAsyncRelayCommand<Window?> ShowPngMetadataViewerCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSettingsSystemPromptsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSettingsInvokeAIModelDefaultsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSettingsInvokeAILoraDefaultsCommand { get; }
@@ -165,6 +169,7 @@ public partial class MainWindowViewModel : ObservableObject
         CreateMissingWildcardCommand = new RelayCommand<string?>(CreateMissingWildcard);
         InsertWildcardCommand = new RelayCommand<string?>(InsertWildcard);
         ShowPromptEvolverCommand = new AsyncRelayCommand<Window?>(ShowPromptEvolverAsync);
+        ShowPngMetadataViewerCommand = new AsyncRelayCommand<Window?>(ShowPngMetadataViewerAsync);
         ShowInvokeAIModelDefaultsCommand = new AsyncRelayCommand<Window?>(ShowInvokeAIModelDefaultsAsync);
         ShowInvokeAILoraDefaultsCommand = new AsyncRelayCommand<Window?>(ShowInvokeAILoraDefaultsAsync);
         ShowSystemPromptsCommand = new AsyncRelayCommand<Window?>(ShowSystemPromptsAsync);
@@ -1073,6 +1078,655 @@ public partial class MainWindowViewModel : ObservableObject
         return Task.CompletedTask;
     }
 
+    private async Task ShowPngMetadataViewerAsync(Window? owner)
+    {
+        var historyManager = (Avalonia.Application.Current as App)?.HistoryManagerService;
+        var vm = new PngMetadataViewerViewModel(historyManager);
+        vm.GenerateMergedRequested = GenerateFromMergedPngAsync;
+        vm.GenerateGraphReplayRequested = GenerateFromPngGraphAsync;
+        vm.BuildGenerationGraphJsonAsync = BuildGenerationGraphJsonAsync;
+        vm.ShowJsonDiffRequested = ShowJsonDiffAsync;
+        var win = new Views.PngMetadataViewerWindow(vm);
+        var resolved = GetOwnerWindow(owner) ?? new Window();
+        win.Show(resolved);
+        await Task.CompletedTask;
+    }
+
+    public async Task GenerateFromMergedPngAsync(PngMergedGenerationRequest request, Window? owner)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return;
+        }
+
+        if (_generationInProgress)
+        {
+            StatusText = "Generation already in progress.";
+            return;
+        }
+
+        _generationInProgress = true;
+        try
+        {
+            var prompt = string.IsNullOrWhiteSpace(request.Prompt) ? request.Parameters.Prompt : request.Prompt;
+            await ResolveInvokeModelsAsync(request.Parameters);
+            var parametersList = new List<InvokeAIGenerationParams> { request.Parameters };
+            var workflow = !string.IsNullOrWhiteSpace(request.Workflow) ? request.Workflow : Workflow;
+
+            var result = await RunGenerationPreviewAsync(
+                parametersList,
+                prompt,
+                request.PromptType,
+                workflow,
+                owner,
+                "Generating images...",
+                allowLongPrompts: true);
+
+            if (request.SaveToHistory && result.Saved == true)
+            {
+                if (request.TargetEntry != null && !request.CreateNewEntryOnSave)
+                {
+                    AppendImagesToEntry(request.TargetEntry.Id, result.Images);
+                    StatusText = "Saved merged images to history entry.";
+                }
+                else
+                {
+                    var entry = BuildHistoryEntryForGeneration(
+                        request.Metadata.OriginalPrompt ?? prompt,
+                        request.Metadata.ProcessedPrompt ?? prompt,
+                        request.Metadata.TemplateName,
+                        request.Metadata.OllamaModel ?? SelectedModel ?? string.Empty,
+                        request.Parameters.Model?.Name,
+                        workflow,
+                        result.Images);
+                    _historyManager.AddEntry(entry);
+                    StatusText = "Saved merged images to new history entry.";
+                }
+            }
+            else if (!request.SaveToHistory)
+            {
+                StatusText = "Merged generation complete (not saved).";
+            }
+            else
+            {
+                StatusText = "Merged generation discarded.";
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Merged generation failed: {ex.Message}";
+        }
+        finally
+        {
+            _generationInProgress = false;
+        }
+    }
+
+    public async Task GenerateFromPngGraphAsync(PngGraphReplayRequest request, Window? owner)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return;
+        }
+
+        if (_generationInProgress)
+        {
+            StatusText = "Generation already in progress.";
+            return;
+        }
+
+        _generationInProgress = true;
+        try
+        {
+            var workflow = !string.IsNullOrWhiteSpace(request.Workflow) ? request.Workflow : Workflow;
+            var prompt = string.IsNullOrWhiteSpace(request.Prompt) ? request.Parameters?.Prompt ?? string.Empty : request.Prompt;
+            var result = await RunGraphReplayPreviewAsync(
+                request.Graph,
+                request.Parameters,
+                prompt,
+                request.PromptType,
+                workflow,
+                owner,
+                "Replaying PNG graph...");
+
+            var shouldPersist = result.Saved == true && (request.SaveToHistory || request.TargetEntry != null || request.CreateNewEntryOnSave);
+            if (shouldPersist)
+            {
+                if (request.TargetEntry != null && !request.CreateNewEntryOnSave)
+                {
+                    AppendImagesToEntry(request.TargetEntry.Id, result.Images);
+                    StatusText = "Saved replayed image to history entry.";
+                }
+                else
+                {
+                    var entry = BuildHistoryEntryForGeneration(
+                        request.Metadata.OriginalPrompt ?? prompt,
+                        request.Metadata.ProcessedPrompt ?? prompt,
+                        request.Metadata.TemplateName,
+                        request.Metadata.OllamaModel ?? SelectedModel ?? string.Empty,
+                        request.Parameters?.Model?.Name,
+                        workflow,
+                        result.Images);
+                    _historyManager.AddEntry(entry);
+                    StatusText = "Saved replayed image to new history entry.";
+                }
+            }
+            else if (!request.SaveToHistory)
+            {
+                StatusText = "Replay complete (not saved).";
+            }
+            else
+            {
+                StatusText = "Replay discarded.";
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Replay failed: {ex.Message}";
+        }
+        finally
+        {
+            _generationInProgress = false;
+        }
+    }
+
+    public async Task<string?> BuildGenerationGraphJsonAsync(InvokeAIGenerationParams parameters)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return null;
+        }
+
+        if (parameters.Model == null)
+        {
+            StatusText = "Cannot build graph JSON without a model.";
+            return null;
+        }
+
+        try
+        {
+            await ResolveInvokeModelsAsync(parameters);
+            var baseModel = parameters.Model?.Base ?? parameters.BaseModelType ?? string.Empty;
+            var vaes = await _invokeAIClient.GetModelsAsync(baseModel, "vae");
+            var isSdxl = string.Equals(baseModel, "sdxl", StringComparison.OrdinalIgnoreCase);
+            var graph = isSdxl
+                ? GraphBuilder.BuildSdxlGraph(parameters, vaes).Graph
+                : GraphBuilder.BuildSd15Graph(parameters, vaes).Graph;
+
+            return JsonSerializer.Serialize(graph, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Failed to build generation graph: {ex.Message}";
+            return null;
+        }
+    }
+
+    public Task ShowJsonDiffAsync(string title, string leftJson, string? rightJson)
+    {
+        var vm = new JsonDiffViewModel(title, leftJson, rightJson);
+        if (string.IsNullOrWhiteSpace(rightJson))
+        {
+            vm.LeftTitle = title;
+        }
+        else
+        {
+            vm.LeftTitle = "PNG Graph JSON";
+            vm.RightTitle = "Generation Graph JSON";
+        }
+        var win = new Views.JsonDiffWindow(vm);
+        var resolved = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow ?? new Window();
+        win.Show(resolved);
+        return Task.CompletedTask;
+    }
+
+    private async Task<GenerationPreviewResult> RunGraphReplayPreviewAsync(
+        JsonObject graph,
+        InvokeAIGenerationParams? parameters,
+        string prompt,
+        string promptType,
+        string workflow,
+        Window? owner,
+        string statusText)
+    {
+        var savedImages = new List<HistoryImage>();
+        var previewVm = new MultiImagePreviewViewModel();
+        previewVm.InitializePlaceholders(1);
+        previewVm.StatusText = statusText;
+        previewVm.OnSaveSlot = async slot =>
+        {
+            savedImages.Add(new HistoryImage
+            {
+                ImageBytes = slot.ImageBytes,
+                GenerationParams = parameters,
+                GenerationParamsJson = parameters != null ? JsonSerializer.Serialize(parameters) : null,
+                GenerationGraphJson = slot.GenerationGraphJson,
+                Prompt = prompt,
+                PromptType = promptType,
+                Workflow = workflow,
+                IsFavorite = slot.IsFavorite
+            });
+        };
+        ConfigurePreviewCommands(previewVm);
+        var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
+        _activeGenerationCts = cts;
+        previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
+        StatusText = statusText;
+
+        try
+        {
+            var slot = previewVm.Slots.First();
+            slot.GenerationParams = parameters;
+            slot.GenerationGraphJson = graph.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+            ApplyReplaySlotMetadata(slot, parameters, graph);
+            slot.IsLoading = true;
+
+            await _invokeGenerationGate.WaitAsync(cts.Token);
+            InvokeAIGenerationResult result;
+            try
+            {
+                result = await _invokeAIClient.GenerateImageFromGraphJsonAsync(graph, parameters?.SaveToGallery ?? false, cts.Token);
+            }
+            finally
+            {
+                _invokeGenerationGate.Release();
+            }
+
+            if (!cts.IsCancellationRequested)
+            {
+                previewVm.SetImage(0, result.ImageBytes);
+                slot.IsLoading = false;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            previewVm.StatusText = StatusGenerationCancelled;
+            cts.Cancel();
+        }
+        finally
+        {
+            if (ReferenceEquals(_activeGenerationCts, cts))
+            {
+                _activeGenerationCts = null;
+            }
+        }
+
+        if (cts.IsCancellationRequested)
+        {
+            previewVm.StatusText = StatusGenerationCancelled;
+            return new GenerationPreviewResult(null, savedImages);
+        }
+
+        previewVm.StatusText = StatusImagesReady;
+        StatusText = StatusImagesReadyMain;
+        var saveResult = await saveTask;
+        return new GenerationPreviewResult(saveResult, savedImages);
+    }
+
+    private void ApplyReplaySlotMetadata(ImageSlotViewModel slot, InvokeAIGenerationParams? parameters, JsonObject graph)
+    {
+        if (parameters != null)
+        {
+            slot.ModelUsed = parameters.Model?.Name ?? "";
+            slot.Seed = FormatSeedLabel(parameters);
+            slot.Size = $"{parameters.Width}x{parameters.Height}";
+            slot.LoraLabel = FormatLoraLabel(parameters);
+            return;
+        }
+
+        var nodes = graph["nodes"] as JsonObject;
+        if (nodes == null)
+        {
+            return;
+        }
+
+        if (nodes["sdxl_model_loader"] is JsonObject modelNode &&
+            modelNode["model"] is JsonObject modelObj &&
+            modelObj["name"] is JsonValue modelNameVal &&
+            modelNameVal.TryGetValue(out string? modelName))
+        {
+            slot.ModelUsed = modelName ?? "";
+        }
+
+        if (nodes["noise"] is JsonObject noise)
+        {
+            if (noise["seed"] is JsonValue seedVal && seedVal.TryGetValue(out int seed))
+            {
+                slot.Seed = seed.ToString(CultureInfo.InvariantCulture);
+            }
+            if (noise["width"] is JsonValue widthVal && widthVal.TryGetValue(out int width) &&
+                noise["height"] is JsonValue heightVal && heightVal.TryGetValue(out int height))
+            {
+                slot.Size = $"{width}x{height}";
+            }
+        }
+    }
+
+    private static InvokeAIGenerationParams? TryBuildParamsFromGraphJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (!root.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Object) return null;
+
+            JsonElement? GetNode(string id)
+            {
+                if (nodes.TryGetProperty(id, out var node) && node.ValueKind == JsonValueKind.Object)
+                {
+                    return node;
+                }
+                return null;
+            }
+
+            string? GetNodeValue(string id)
+            {
+                var node = GetNode(id);
+                if (node.HasValue && node.Value.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    return value.GetString();
+                }
+                return null;
+            }
+
+            var p = new InvokeAIGenerationParams
+            {
+                Prompt = GetNodeValue("positive_prompt") ?? string.Empty,
+                PositiveStylePrompt = GetNodeValue("positive_style_prompt"),
+                NegativePrompt = GetNodeValue("content_negative_prompt"),
+                NegativeStylePrompt = GetNodeValue("style_negative_prompt"),
+                UseAutoCfgRescale = false
+            };
+
+            var modelNode = GetNode("sdxl_model_loader");
+            if (modelNode.HasValue &&
+                modelNode.Value.TryGetProperty("model", out var modelObj) &&
+                modelObj.ValueKind == JsonValueKind.Object)
+            {
+                var name = modelObj.TryGetProperty("name", out var modelName) && modelName.ValueKind == JsonValueKind.String
+                    ? modelName.GetString()
+                    : string.Empty;
+                var baseModel = modelObj.TryGetProperty("base", out var baseElem) && baseElem.ValueKind == JsonValueKind.String
+                    ? baseElem.GetString()
+                    : string.Empty;
+                var key = modelObj.TryGetProperty("key", out var keyElem) && keyElem.ValueKind == JsonValueKind.String
+                    ? keyElem.GetString()
+                    : string.Empty;
+                var hash = modelObj.TryGetProperty("hash", out var hashElem) && hashElem.ValueKind == JsonValueKind.String
+                    ? hashElem.GetString()
+                    : string.Empty;
+                p.Model = new InvokeAIModel { Name = name ?? "", Base = baseModel ?? "", Key = key ?? "", Hash = hash ?? "" };
+                p.BaseModelType = baseModel ?? p.BaseModelType;
+            }
+
+            var denoise = GetNode("sdxl_denoise_latents");
+            if (denoise.HasValue)
+            {
+                if (denoise.Value.TryGetProperty("steps", out var steps) && steps.TryGetInt32(out var st)) p.Steps = st;
+                if (denoise.Value.TryGetProperty("cfg_scale", out var cfg) && cfg.TryGetDouble(out var cfgVal)) p.CfgScale = cfgVal;
+                if (denoise.Value.TryGetProperty("scheduler", out var sched) && sched.ValueKind == JsonValueKind.String)
+                {
+                    p.Scheduler = sched.GetString() ?? p.Scheduler;
+                }
+                if (denoise.Value.TryGetProperty("cfg_rescale_multiplier", out var rescale) && rescale.TryGetDouble(out var r)) p.CfgRescaleMultiplier = r;
+            }
+
+            var noise = GetNode("noise");
+            if (noise.HasValue)
+            {
+                if (noise.Value.TryGetProperty("width", out var w) && w.TryGetInt32(out var wi)) p.Width = wi;
+                if (noise.Value.TryGetProperty("height", out var h) && h.TryGetInt32(out var he)) p.Height = he;
+                if (noise.Value.TryGetProperty("seed", out var seed) && seed.TryGetInt32(out var s)) p.Seed = s;
+                if (noise.Value.TryGetProperty("use_cpu", out var useCpu) && useCpu.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                {
+                    p.UseCpuNoise = useCpu.GetBoolean();
+                }
+            }
+
+            var vaeNode = GetNode("sdxl_fp32_vae_loader");
+            if (vaeNode.HasValue &&
+                vaeNode.Value.TryGetProperty("vae_model", out var vaeObj) &&
+                vaeObj.ValueKind == JsonValueKind.Object &&
+                vaeObj.TryGetProperty("name", out var vaeName) &&
+                vaeName.ValueKind == JsonValueKind.String)
+            {
+                p.VaeUsedName = vaeName.GetString();
+            }
+
+            if (modelNode.HasValue &&
+                modelNode.Value.TryGetProperty("vae_precision", out var vaePrecision) &&
+                vaePrecision.ValueKind == JsonValueKind.String)
+            {
+                p.VaePrecision = vaePrecision.GetString();
+            }
+
+            var l2iNode = GetNode("l2i");
+            if (l2iNode.HasValue &&
+                l2iNode.Value.TryGetProperty("fp32", out var fp32) &&
+                fp32.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                p.L2iFp32 = fp32.GetBoolean();
+            }
+
+            if (root.TryGetProperty("edges", out var edgesElem) && edgesElem.ValueKind == JsonValueKind.Array)
+            {
+                var hasStyleEdge = false;
+                var usesPromptAsStyle = false;
+                foreach (var edge in edgesElem.EnumerateArray())
+                {
+                    if (edge.ValueKind != JsonValueKind.Object) continue;
+                    if (!edge.TryGetProperty("destination", out var dest) || dest.ValueKind != JsonValueKind.Object) continue;
+                    var destNode = dest.TryGetProperty("node_id", out var destNodeElem) && destNodeElem.ValueKind == JsonValueKind.String
+                        ? destNodeElem.GetString()
+                        : null;
+                    var destField = dest.TryGetProperty("field", out var destFieldElem) && destFieldElem.ValueKind == JsonValueKind.String
+                        ? destFieldElem.GetString()
+                        : null;
+                    if (!string.Equals(destNode, "positive_conditioning", StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(destField, "style", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    hasStyleEdge = true;
+                    if (edge.TryGetProperty("source", out var src) && src.ValueKind == JsonValueKind.Object)
+                    {
+                        var srcNode = src.TryGetProperty("node_id", out var srcNodeElem) && srcNodeElem.ValueKind == JsonValueKind.String
+                            ? srcNodeElem.GetString()
+                            : null;
+                        if (string.Equals(srcNode, "positive_prompt", StringComparison.OrdinalIgnoreCase))
+                        {
+                            usesPromptAsStyle = true;
+                        }
+                    }
+                }
+
+                if (hasStyleEdge)
+                {
+                    p.UsePromptAsStyleWhenEmpty = usesPromptAsStyle;
+                }
+                else
+                {
+                    p.UsePromptAsStyleWhenEmpty = false;
+                }
+            }
+
+            var loras = new List<LoraParameter>();
+            foreach (var node in nodes.EnumerateObject())
+            {
+                if (!node.Name.StartsWith("lora_loader_", StringComparison.OrdinalIgnoreCase)) continue;
+                if (node.Value.ValueKind != JsonValueKind.Object) continue;
+                if (node.Value.TryGetProperty("lora", out var loraObj) && loraObj.ValueKind == JsonValueKind.Object)
+                {
+                    var loraName = loraObj.TryGetProperty("name", out var lName) && lName.ValueKind == JsonValueKind.String
+                        ? lName.GetString()
+                        : null;
+                    double? weight = null;
+                    if (node.Value.TryGetProperty("weight", out var weightElem) && weightElem.TryGetDouble(out var wVal))
+                    {
+                        weight = wVal;
+                    }
+                    if (!string.IsNullOrWhiteSpace(loraName))
+                    {
+                        loras.Add(new LoraParameter
+                        {
+                            Lora = new InvokeAIModel { Name = loraName ?? "" },
+                            Weight = weight ?? 1.0
+                        });
+                    }
+                }
+            }
+            if (loras.Count > 0)
+            {
+                p.Loras = loras;
+            }
+
+            return p;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool AreParamsEquivalent(InvokeAIGenerationParams a, InvokeAIGenerationParams b)
+    {
+        if (!string.Equals(a.Prompt?.Trim(), b.Prompt?.Trim(), StringComparison.Ordinal)) return false;
+
+        var aNeg = NormalizeNegativePrompts(a.NegativePrompt, a.NegativeStylePrompt);
+        var bNeg = NormalizeNegativePrompts(b.NegativePrompt, b.NegativeStylePrompt);
+        if (!string.Equals(aNeg.Content, bNeg.Content, StringComparison.Ordinal)) return false;
+        if (!string.Equals(aNeg.Style, bNeg.Style, StringComparison.Ordinal)) return false;
+
+        var aPosStyle = NormalizePositiveStylePrompt(a);
+        var bPosStyle = NormalizePositiveStylePrompt(b);
+        if (!string.Equals(aPosStyle, bPosStyle, StringComparison.Ordinal)) return false;
+        if (a.Steps != b.Steps) return false;
+        if (!NearlyEqual(a.CfgScale, b.CfgScale)) return false;
+        if (a.Width != b.Width) return false;
+        if (a.Height != b.Height) return false;
+        if (a.Seed != b.Seed) return false;
+        if (!string.Equals(NormalizeSchedulerForCompare(a.Scheduler), NormalizeSchedulerForCompare(b.Scheduler), StringComparison.Ordinal)) return false;
+        if (!NearlyEqual(a.CfgRescaleMultiplier, b.CfgRescaleMultiplier)) return false;
+        if (NormalizeBool(a.UseCpuNoise, false) != NormalizeBool(b.UseCpuNoise, false)) return false;
+        if (NormalizeBool(a.L2iFp32, true) != NormalizeBool(b.L2iFp32, true)) return false;
+        if (!string.Equals(NormalizeVaePrecision(a.VaePrecision), NormalizeVaePrecision(b.VaePrecision), StringComparison.OrdinalIgnoreCase)) return false;
+
+        if (!string.Equals(a.Model?.Name?.Trim(), b.Model?.Name?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.Equals(a.Model?.Base?.Trim(), b.Model?.Base?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.Equals(a.VaeUsedName?.Trim(), b.VaeUsedName?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+
+        var aLoras = NormalizeLoras(a.Loras);
+        var bLoras = NormalizeLoras(b.Loras);
+        return string.Equals(aLoras, bLoras, StringComparison.Ordinal);
+    }
+
+    private static string NormalizePositiveStylePrompt(InvokeAIGenerationParams p)
+    {
+        var style = p.PositiveStylePrompt?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(style)) return style;
+        if (p.UsePromptAsStyleWhenEmpty)
+        {
+            return p.Prompt?.Trim() ?? string.Empty;
+        }
+        return string.Empty;
+    }
+
+    private static (string Content, string Style) NormalizeNegativePrompts(string? negativePrompt, string? negativeStylePrompt)
+    {
+        var content = negativePrompt?.Trim() ?? string.Empty;
+        var style = negativeStylePrompt?.Trim() ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(style) && content.EndsWith(style, StringComparison.Ordinal))
+        {
+            content = content.Substring(0, content.Length - style.Length).TrimEnd();
+        }
+
+        return (content, style);
+    }
+
+    private static string NormalizeSchedulerForCompare(string? scheduler)
+    {
+        var value = scheduler?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        if (value.EndsWith("_karras", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value[..^"_karras".Length];
+        }
+        if (value.EndsWith("_k", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value[..^"_k".Length];
+        }
+        return value;
+    }
+
+    private static bool NormalizeBool(bool? value, bool defaultValue)
+    {
+        return value ?? defaultValue;
+    }
+
+    private static string NormalizeVaePrecision(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "fp32" : value.Trim();
+    }
+
+    private static bool NearlyEqual(double a, double b, double tolerance = 0.0001)
+    {
+        return Math.Abs(a - b) <= tolerance;
+    }
+
+    private static string NormalizeLoras(IReadOnlyList<LoraParameter>? loras)
+    {
+        if (loras == null || loras.Count == 0) return string.Empty;
+        return string.Join("|", loras
+            .Where(l => l?.Lora != null && !string.IsNullOrWhiteSpace(l.Lora.Name))
+            .Select(l => $"{l!.Lora!.Name}:{l.Weight:0.###}")
+            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private async Task ResolveInvokeModelsAsync(InvokeAIGenerationParams parameters)
+    {
+        var baseModel = parameters.BaseModelType;
+        var modelName = parameters.Model?.Name;
+        if (!string.IsNullOrWhiteSpace(modelName))
+        {
+            var models = await _invokeAIClient.GetModelsAsync(baseModel, "main");
+            var resolved = models.FirstOrDefault(m =>
+                string.Equals(m.Name, modelName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(m.Key, modelName, StringComparison.OrdinalIgnoreCase));
+            if (resolved != null)
+            {
+                parameters.Model = resolved;
+            }
+            else
+            {
+                parameters.Model = new InvokeAIModel
+                {
+                    Name = modelName,
+                    Base = baseModel ?? string.Empty,
+                    Type = "main"
+                };
+            }
+        }
+
+        if (parameters.Loras == null || parameters.Loras.Count == 0) return;
+        var loraModels = await _invokeAIClient.GetModelsAsync(baseModel, "lora");
+        foreach (var lora in parameters.Loras)
+        {
+            if (lora?.Lora == null || string.IsNullOrWhiteSpace(lora.Lora.Name)) continue;
+            var loraName = lora.Lora.Name;
+            var resolved = loraModels.FirstOrDefault(m =>
+                string.Equals(m.Name, loraName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(m.Key, loraName, StringComparison.OrdinalIgnoreCase));
+            if (resolved != null)
+            {
+                lora.Lora = resolved;
+            }
+        }
+    }
+
     private async Task ShowInfoAsync(Window owner, string title, string message)
     {
         var tcs = new TaskCompletionSource<bool>();
@@ -1477,6 +2131,12 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var baseParams = slot.GenerationParams;
+        var graphJson = slot.GenerationGraphJson;
+        var graphParams = TryBuildParamsFromGraphJson(graphJson);
+        if (graphParams != null)
+        {
+            baseParams = graphParams;
+        }
         if (baseParams == null)
         {
             StatusText = "No generation parameters available for edit/regenerate.";
@@ -1524,13 +2184,29 @@ public partial class MainWindowViewModel : ObservableObject
             InvokeAIGenerationResult result;
             try
             {
-                result = await _invokeAIClient.GenerateImageAsync(newParam);
+                if (!string.IsNullOrWhiteSpace(graphJson) && graphParams != null && AreParamsEquivalent(newParam, graphParams))
+                {
+                    var graphObj = JsonNode.Parse(graphJson) as JsonObject;
+                    if (graphObj == null)
+                    {
+                        result = await _invokeAIClient.GenerateImageAsync(newParam);
+                    }
+                    else
+                    {
+                        result = await _invokeAIClient.GenerateImageFromGraphJsonAsync(graphObj, newParam.SaveToGallery);
+                    }
+                }
+                else
+                {
+                    result = await _invokeAIClient.GenerateImageAsync(newParam);
+                }
             }
             finally
             {
                 _invokeGenerationGate.Release();
             }
             slot.GenerationParams = newParam;
+            slot.GenerationGraphJson = graphJson;
             slot.ModelUsed = newParam.Model?.Name ?? slot.ModelUsed;
             slot.Seed = FormatSeedLabel(newParam);
             slot.Size = $"{newParam.Width}x{newParam.Height}";
@@ -1586,7 +2262,10 @@ public partial class MainWindowViewModel : ObservableObject
         _generationInProgress = true;
         try
         {
-            var baseParams = image?.GenerationParams ?? entry.ImageParameters ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+        var graphJson = image?.GenerationGraphJson;
+        var graphParams = TryBuildParamsFromGraphJson(graphJson);
+        var baseParams = graphParams ?? image?.GenerationParams;
+        baseParams ??= entry.ImageParameters ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
             var (prompt, promptSource) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride, includeEnhanced: true);
             var promptType = !string.IsNullOrWhiteSpace(promptTypeOverride) ? promptTypeOverride : "Regenerated";
             var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
@@ -1622,7 +2301,33 @@ public partial class MainWindowViewModel : ObservableObject
             }
 
             var workflow = entry.Workflow ?? Workflow;
-            var result = await RunGenerationPreviewAsync(parametersList, prompt, promptType, workflow, owner, "Generating images...", allowLongPrompts: baseParams != null);
+            GenerationPreviewResult result;
+            if (!string.IsNullOrWhiteSpace(graphJson) &&
+                graphParams != null &&
+                parametersList.Count == 1 &&
+                AreParamsEquivalent(parametersList[0], graphParams))
+            {
+                var graphObj = JsonNode.Parse(graphJson) as JsonObject;
+                if (graphObj == null)
+                {
+                    result = await RunGenerationPreviewAsync(parametersList, prompt, promptType, workflow, owner, "Generating images...", allowLongPrompts: baseParams != null);
+                }
+                else
+                {
+                    result = await RunGraphReplayPreviewAsync(
+                        graphObj,
+                        parametersList[0],
+                        prompt,
+                        promptType,
+                        workflow,
+                        owner,
+                        "Replaying exact graph...");
+                }
+            }
+            else
+            {
+                result = await RunGenerationPreviewAsync(parametersList, prompt, promptType, workflow, owner, "Generating images...", allowLongPrompts: baseParams != null);
+            }
             if (result.Saved == true)
             {
                 AppendImagesToEntry(entry.Id, result.Images);
@@ -2165,10 +2870,21 @@ public partial class MainWindowViewModel : ObservableObject
         };
         ConfigurePreviewCommands(previewVm);
         var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
+        _activeGenerationCts = cts;
         previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
         StatusText = statusText;
 
-        await GenerateImagesAsync(parametersList, previewVm, cts, allowLongPrompts);
+        try
+        {
+            await GenerateImagesAsync(parametersList, previewVm, cts, allowLongPrompts);
+        }
+        finally
+        {
+            if (ReferenceEquals(_activeGenerationCts, cts))
+            {
+                _activeGenerationCts = null;
+            }
+        }
         if (cts.IsCancellationRequested)
         {
             previewVm.StatusText = StatusGenerationCancelled;
@@ -2321,6 +3037,10 @@ public partial class MainWindowViewModel : ObservableObject
             BaseSeed = src.BaseSeed,
             AutoClearedModelCacheBetweenModels = src.AutoClearedModelCacheBetweenModels,
             VaeUsedName = src.VaeUsedName,
+            VaePrecision = src.VaePrecision,
+            UseCpuNoise = src.UseCpuNoise,
+            L2iFp32 = src.L2iFp32,
+            UseAutoCfgRescale = src.UseAutoCfgRescale,
             Model = model,
             Steps = src.Steps,
             CfgScale = src.CfgScale,
@@ -2922,8 +3642,14 @@ public partial class MainWindowViewModel : ObservableObject
 
     public void DisposeCaches()
     {
+        CancelActiveGeneration();
         _imageCacheService.Dispose();
         _historyIndexService.Clear();
+    }
+
+    public void CancelActiveGeneration()
+    {
+        _activeGenerationCts?.Cancel();
     }
 
     private async Task CleanupInvokeAiAsync()

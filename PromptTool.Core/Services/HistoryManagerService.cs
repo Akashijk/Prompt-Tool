@@ -199,6 +199,7 @@ public class HistoryManagerService
     {
         var path = img.GetPropertyOrDefault("image_path") ?? img.GetPropertyOrDefault("path");
         var genParams = img.TryGetPropertyIgnoreCase("generation_params", out var gp) ? gp.GetRawText() : null;
+        var genGraph = img.TryGetPropertyIgnoreCase("generation_graph", out var gg) ? gg.GetRawText() : null;
         var explicitPromptType = img.GetPropertyOrDefault("prompt_type");
         var explicitPrompt = img.GetPropertyOrDefault("prompt");
         var aestheticScore = img.GetPropertyOrDefaultDouble("aesthetic_score");
@@ -210,6 +211,7 @@ public class HistoryManagerService
         {
             ImagePath = NormalizeIncomingPath(path, historyDir, entryId),
             GenerationParamsJson = genParams,
+            GenerationGraphJson = genGraph,
             IsFavorite = img.GetPropertyOrDefaultBool("is_favorite"),
             PromptType = string.IsNullOrWhiteSpace(explicitPromptType) ? promptType : explicitPromptType,
             Prompt = string.IsNullOrWhiteSpace(explicitPrompt) ? prompt : explicitPrompt,
@@ -361,10 +363,23 @@ public class HistoryManagerService
     private HistoryImageDto ToLegacyImage(string entryId, HistoryImage image)
     {
         var path = NormalizeForSave(image.ImagePath, entryId);
+        object? graphObject = null;
+        if (!string.IsNullOrWhiteSpace(image.GenerationGraphJson))
+        {
+            try
+            {
+                graphObject = JsonSerializer.Deserialize<JsonElement>(image.GenerationGraphJson);
+            }
+            catch
+            {
+                graphObject = image.GenerationGraphJson;
+            }
+        }
         return new HistoryImageDto
         {
             Image_Path = path, // Renamed from ImagePath
             Generation_Params = GetGenerationParamsObject(image), // Renamed from generation_params
+            Generation_Graph = graphObject,
             Is_Favorite = image.IsFavorite, // Renamed from is_favorite
             Prompt_Type = image.PromptType, // Renamed from PromptType
             Prompt = image.Prompt,
@@ -485,6 +500,7 @@ public class HistoryManagerService
             existing.PromptType = image.PromptType;
             existing.GenerationParams = image.GenerationParams;
             existing.GenerationParamsJson = image.GenerationParamsJson;
+            existing.GenerationGraphJson = image.GenerationGraphJson;
             
             if (save) SaveHistory();
         }
@@ -513,6 +529,7 @@ public class HistoryManagerService
             {
                 GenerationParams = img.GenerationParams,
                 GenerationParamsJson = img.GenerationParamsJson,
+                GenerationGraphJson = img.GenerationGraphJson,
                 IsFavorite = img.IsFavorite,
                 PromptType = img.PromptType,
                 PromptTypeSuffix = img.PromptTypeSuffix,
@@ -843,6 +860,7 @@ public class HistoryManagerService
     {
         [JsonPropertyName("image_path")] public string? Image_Path { get; set; } // Renamed from ImagePath
         [JsonPropertyName("generation_params")] public object? Generation_Params { get; set; } // Renamed from generation_params
+        [JsonPropertyName("generation_graph")] public object? Generation_Graph { get; set; }
         [JsonPropertyName("is_favorite")] public bool Is_Favorite { get; set; } // Renamed from is_favorite
         [JsonPropertyName("prompt_type")] public string? Prompt_Type { get; set; } // Renamed from PromptType
         [JsonPropertyName("prompt")] public string? Prompt { get; set; }

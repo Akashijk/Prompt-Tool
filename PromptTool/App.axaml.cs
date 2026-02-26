@@ -195,7 +195,11 @@ namespace PromptTool
                     Icon = LoadAppIcon()
                 };
                 NotificationService.Attach(desktop.MainWindow);
-                desktop.Exit += (_, __) => viewModel.DisposeCaches();
+                desktop.Exit += (_, __) =>
+                {
+                    viewModel.CancelActiveGeneration();
+                    viewModel.DisposeCaches();
+                };
                 // Get the ViewModel instance and call its InitializeAsync method
                 _ = viewModel.InitializeAsync(); // Fire and forget, or await if blocking is acceptable
                 if (settings.Settings.Verbose) Console.WriteLine("App: MainWindow (PromptWindow) setup complete.");

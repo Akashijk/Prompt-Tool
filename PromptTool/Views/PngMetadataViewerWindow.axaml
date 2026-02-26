@@ -1,0 +1,236 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d"
+        x:Class="PromptTool.Views.PngMetadataViewerWindow"
+        x:DataType="vm:PngMetadataViewerViewModel"
+        Title="PNG Metadata Viewer"
+        WindowStartupLocation="CenterOwner"
+        Width="900"
+        Height="700"
+        MinWidth="760"
+        MinHeight="560"
+        SizeToContent="Manual">
+
+    <Border Padding="14">
+        <Grid RowDefinitions="Auto,Auto,*">
+            <StackPanel Grid.Row="0" Spacing="6">
+                <TextBlock Text="PNG Metadata Viewer" FontSize="18" FontWeight="Bold"/>
+                <TextBlock Text="Open a PNG to view embedded text metadata (tEXt/iTXt chunks)." Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <Border Grid.Row="1"
+                    Margin="0,10,0,10"
+                    Padding="14"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource BorderBrushStrong}"
+                    Background="{DynamicResource CardBackgroundBrush}"
+                    CornerRadius="6"
+                    x:Name="DropZone">
+                <StackPanel HorizontalAlignment="Center" Spacing="8">
+                    <TextBlock Text="Drop PNG file here" FontWeight="SemiBold"/>
+                    <Button Content="Browse PNG..." Click="Browse_Click" Width="150"/>
+                </StackPanel>
+            </Border>
+
+            <Grid Grid.Row="2" ColumnDefinitions="320,*" ColumnSpacing="16">
+                <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="{Binding FileLabel}" FontWeight="Bold" TextWrapping="Wrap"/>
+
+                        <Border Background="{DynamicResource CardBackgroundBrush}"
+                                BorderBrush="{DynamicResource BorderBrushStrong}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8">
+                            <Grid RowDefinitions="Auto,Auto" RowSpacing="6">
+                                <Border Grid.Row="0"
+                                        Height="160"
+                                        Background="{DynamicResource PanelBackgroundBrush}"
+                                        BorderBrush="{DynamicResource BorderBrushStrong}"
+                                        BorderThickness="1"
+                                        CornerRadius="4">
+                                    <Grid>
+                                        <Image Source="{Binding PreviewBitmap}" Stretch="Uniform"/>
+                                        <TextBlock Text="No preview"
+                                                   Classes="subtle"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   IsVisible="{Binding HasPreview, Converter={StaticResource InverseBoolConverter}}"/>
+                                    </Grid>
+                                </Border>
+                                <StackPanel Grid.Row="1" Spacing="4">
+                                    <TextBlock Text="{Binding FileInfo}" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding ImageInfo}" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Border Background="{DynamicResource CardBackgroundBrush}"
+                                BorderBrush="{DynamicResource BorderBrushStrong}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="8">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="History Validation" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding ValidationStatus}" Classes="subtle" TextWrapping="Wrap"/>
+                                <WrapPanel Orientation="Horizontal">
+                                    <Button Content="Validate"
+                                            Command="{Binding ValidateAgainstHistoryCommand}"
+                                            IsEnabled="{Binding HasChunks}"
+                                            Margin="0,0,6,6"/>
+                                    <Button Content="Clear"
+                                            Command="{Binding ClearValidationCommand}"
+                                            IsEnabled="{Binding HasDiffs}"
+                                            Margin="0,0,6,6"/>
+                                </WrapPanel>
+                                <WrapPanel Orientation="Horizontal" IsVisible="{Binding HasGenerationMetadata}">
+                                    <Button Content="Show Generation JSON"
+                                            Command="{Binding ShowGenerationJsonCommand}"
+                                            Margin="0,0,6,6"/>
+                                    <Button Content="Diff PNG vs Generation"
+                                            Command="{Binding ShowGraphDiffCommand}"
+                                            IsEnabled="{Binding HasGraphJson}"
+                                            Margin="0,0,6,6"/>
+                                </WrapPanel>
+                                <Border Background="{DynamicResource PanelBackgroundBrush}"
+                                        BorderBrush="{DynamicResource BorderBrushStrong}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="8"
+                                        IsVisible="{Binding HasGraphJson}">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="Replay From PNG (Overrides)" FontWeight="SemiBold"/>
+                                        <WrapPanel Orientation="Horizontal">
+                                            <CheckBox Content="Use CPU noise"
+                                                      IsChecked="{Binding ReplayUseCpu}"
+                                                      Margin="0,0,12,6"/>
+                                            <CheckBox Content="L2I FP32"
+                                                      IsChecked="{Binding ReplayFp32}"
+                                                      Margin="0,0,12,6"/>
+                                        </WrapPanel>
+                                        <WrapPanel Orientation="Horizontal">
+                                            <CheckBox Content="Include style negative"
+                                                      IsChecked="{Binding ReplayIncludeStyleNegative}"
+                                                      Margin="0,0,12,6"/>
+                                            <CheckBox Content="Include prompt as style"
+                                                      IsChecked="{Binding ReplayIncludePositiveStyle}"
+                                                      Margin="0,0,12,6"/>
+                                        </WrapPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <TextBlock Text="VAE precision" VerticalAlignment="Center"/>
+                                            <TextBox Width="90" Text="{Binding ReplayVaePrecision}" Watermark="fp16/fp32"/>
+                                        </StackPanel>
+                                        <WrapPanel Orientation="Horizontal">
+                                            <Button Content="Replay (Preview)"
+                                                    Command="{Binding ReplayFromPngGraphCommand}"
+                                                    Margin="0,0,6,6"/>
+                                            <Button Content="Show Replay JSON"
+                                                    Command="{Binding ShowReplayGraphJsonCommand}"
+                                                    Margin="0,0,6,6"/>
+                                            <Button Content="Replay &amp; Save to Entry"
+                                                    Command="{Binding ReplayAndSaveToEntryCommand}"
+                                                    IsEnabled="{Binding HasHistoryMatch}"
+                                                    Margin="0,0,6,6"/>
+                                            <Button Content="Replay &amp; Save New Entry"
+                                                    Command="{Binding ReplayAndSaveNewEntryCommand}"
+                                                    Margin="0,0,6,6"/>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                                <WrapPanel Orientation="Horizontal" IsVisible="{Binding HasHistoryMatch}">
+                                    <Button Content="Test Generate (Merged)"
+                                            Command="{Binding TestGenerateMergedCommand}"
+                                            IsEnabled="{Binding HasGenerationMetadata}"
+                                            Margin="0,0,6,6"/>
+                                    <Button Content="Apply Selected"
+                                            Command="{Binding ApplySelectedDiffsCommand}"
+                                            IsEnabled="{Binding HasDiffs}"
+                                            Margin="0,0,6,6"/>
+                                </WrapPanel>
+                                <WrapPanel Orientation="Horizontal"
+                                            IsVisible="{Binding HasHistoryMatch, Converter={StaticResource InverseBoolConverter}}">
+                                    <Button Content="Generate &amp; Save New Entry"
+                                            Command="{Binding GenerateAndSaveNewEntryCommand}"
+                                            IsEnabled="{Binding HasGenerationMetadata}"
+                                            Margin="0,0,6,6"/>
+                                    <Button Content="Add Entry Only"
+                                            Command="{Binding AddEntryOnlyCommand}"
+                                            IsEnabled="{Binding HasGenerationMetadata}"
+                                            Margin="0,0,6,6"/>
+                                </WrapPanel>
+                                <ItemsControl ItemsSource="{Binding HistoryDiffs}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{DynamicResource PanelBackgroundBrush}"
+                                                    BorderBrush="{DynamicResource BorderBrushStrong}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="4"
+                                                    Padding="6"
+                                                    Margin="0,0,0,6">
+                                                <StackPanel Spacing="4">
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <CheckBox IsChecked="{Binding Apply}" IsEnabled="{Binding CanApply}"/>
+                                                        <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding CurrentDisplay}" Classes="subtle" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding NewDisplay}" TextWrapping="Wrap"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Button Content="Expand All" Click="ExpandAll_Click" IsEnabled="{Binding HasChunks}"/>
+                            <Button Content="Collapse All" Click="CollapseAll_Click" IsEnabled="{Binding HasChunks}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Button Content="Copy All" Click="CopyAll_Click" IsEnabled="{Binding HasChunks}"/>
+                            <Button Content="Export..." Click="Export_Click" IsEnabled="{Binding HasChunks}"/>
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding StatusMessage}" Foreground="Tomato" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Chunks}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{DynamicResource CardBackgroundBrush}"
+                                        BorderBrush="{DynamicResource BorderBrushStrong}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="8"
+                                        Margin="0,0,0,10">
+                                    <Expander IsExpanded="{Binding IsExpanded}">
+                                        <Expander.Header>
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <TextBlock Text="{Binding Key}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="(" Classes="subtle"/>
+                                                <TextBlock Text="{Binding Value.Length}" Classes="subtle"/>
+                                                <TextBlock Text="chars)" Classes="subtle"/>
+                                            </StackPanel>
+                                        </Expander.Header>
+                                        <TextBox Text="{Binding DisplayValue}"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="Wrap"
+                                                 IsReadOnly="True"
+                                                 MinHeight="140"
+                                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                 FontFamily="Consolas, Menlo, Courier New"/>
+                                    </Expander>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

@@ -269,6 +269,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateMoreRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateSeedVariationsRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateLoraVariationsRequested { get; set; }
+    public Func<string, Task>? ShowPngMetadataRequested { get; set; }
     public Func<string, Task<bool>>? ConfirmAsync { get; set; }
     public Func<ScoreByModelConfirmRequest, Task<ScoreByModelConfirmResult>>? ScoreByModelConfirmAsync { get; set; }
 
@@ -407,6 +408,34 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             return;
         }
         StatusText = "LoRA variation flow not configured.";
+    }
+
+    [RelayCommand]
+    private async Task ShowPngMetadata(AnalyticsImageItem? item)
+    {
+        if (item == null)
+        {
+            StatusText = "No image selected.";
+            return;
+        }
+        var path = item.Image.ImagePath;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            StatusText = "Image file missing.";
+            return;
+        }
+        var full = Path.IsPathRooted(path) ? path : Path.Combine(_historyDir, path);
+        if (!File.Exists(full))
+        {
+            StatusText = "Image file not found.";
+            return;
+        }
+        if (ShowPngMetadataRequested != null)
+        {
+            await ShowPngMetadataRequested(full);
+            return;
+        }
+        StatusText = "PNG metadata viewer not configured.";
     }
     partial void OnLoraMatchModeChanged(LoraMatchMode value) => ScheduleRefresh();
     partial void OnFavoritesFirstChanged(bool value) => ScheduleRefresh();
