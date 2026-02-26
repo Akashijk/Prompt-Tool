@@ -1,0 +1,85 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="520" d:DesignHeight="360"
+        x:Class="PromptTool.Views.UpscaleImageOptionsWindow"
+        x:DataType="vm:UpscaleImageOptionsViewModel"
+        Title="Upscale Image"
+        WindowStartupLocation="CenterOwner"
+        Width="620"
+        Height="520"
+        MinWidth="520"
+        MinHeight="420"
+        SizeToContent="Manual">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Upscale Image"/>
+                <TextBlock Text="Upscale a selected image using InvokeAI's Spandrel models."
+                           Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="{Binding StatusText}" Foreground="Orange" IsVisible="{Binding StatusText, Converter={StaticResource StringToBoolConverter}}"/>
+
+                    <Grid ColumnDefinitions="1.2*,0.8*" ColumnSpacing="12">
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="Upscaler Models" FontWeight="Bold"/>
+                            <Border BorderBrush="#3A3F4B" BorderThickness="1" CornerRadius="4" Padding="6" MaxHeight="180">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding ModelOptions}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Border>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Spacing="6">
+                            <TextBlock Text="Scales" FontWeight="Bold"/>
+                            <Border BorderBrush="#3A3F4B" BorderThickness="1" CornerRadius="4" Padding="6">
+                                <ItemsControl ItemsSource="{Binding ScaleOptions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox Content="{Binding Scale, StringFormat='{}{0}x'}" IsChecked="{Binding IsSelected}"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="1*,1*" ColumnSpacing="12">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Tile Size (0 disables tiling)" FontWeight="Bold"/>
+                            <ComboBox ItemsSource="{Binding TileSizeOptions}"
+                                      SelectedItem="{Binding SelectedTileSize}"
+                                      IsEnabled="{Binding HasModels}"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Spacing="6">
+                            <TextBlock Text="Processing" FontWeight="Bold"/>
+                            <CheckBox Content="Run in parallel (2 at a time)"
+                                      IsChecked="{Binding RunInParallel}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <CheckBox Content="Fit to multiple of 8"
+                              IsChecked="{Binding FitToMultipleOf8}"
+                              IsEnabled="{Binding HasModels}"/>
+                </StackPanel>
+            </ScrollViewer>
+
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Cancel" Click="Cancel_Click" IsCancel="True"/>
+                <Button Content="Start Upscale" Click="Start_Click" IsEnabled="{Binding HasModels}" IsDefault="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

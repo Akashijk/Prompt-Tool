@@ -1,0 +1,18 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PromptTool.Views.BackupProgressWindow"
+        Title="Creating Backup"
+        WindowStartupLocation="CenterOwner"
+        Width="460"
+        MinWidth="420"
+        SizeToContent="Height"
+        CanResize="False"
+        ShowInTaskbar="False">
+    <Border Padding="14">
+        <StackPanel Spacing="10">
+            <TextBlock x:Name="StageText" Text="Preparing backup..." FontWeight="Bold"/>
+            <ProgressBar x:Name="ProgressBar" Minimum="0" Maximum="1" Height="12"/>
+            <TextBlock x:Name="DetailText" Text=""/>
+        </StackPanel>
+    </Border>
+</Window>

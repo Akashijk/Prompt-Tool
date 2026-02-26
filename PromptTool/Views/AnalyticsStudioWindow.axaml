@@ -1,0 +1,260 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="760"
+        x:Class="PromptTool.Views.AnalyticsStudioWindow"
+        x:Name="AnalyticsWindowRoot"
+        x:DataType="vm:AnalyticsStudioViewModel"
+        Title="Analytics Studio"
+        WindowStartupLocation="CenterOwner"
+        Width="1200" MinWidth="980"
+        Height="760" MinHeight="640">
+
+    <Window.KeyBindings>
+        <KeyBinding Gesture="F5" Command="{Binding RefreshCommand}"/>
+    </Window.KeyBindings>
+
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_View">
+                <MenuItem Header="Sort By">
+                    <MenuItem Header="None"
+                              Command="{Binding SetSortCommand}"
+                              CommandParameter="{x:Static vm:AnalyticsSortMode.None}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="✓" IsVisible="{Binding IsSortNone}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="Favorites"
+                              Command="{Binding SetSortCommand}"
+                              CommandParameter="{x:Static vm:AnalyticsSortMode.Favorites}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="✓" IsVisible="{Binding IsSortFavorites}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="Score (High to Low)">
+                        <MenuItem Header="Heuristic"
+                                  Command="{Binding SetSortCommand}"
+                                  CommandParameter="{x:Static vm:AnalyticsSortMode.HeuristicScoreDesc}">
+                            <MenuItem.Icon>
+                                <TextBlock Text="✓" IsVisible="{Binding IsSortHeuristicScoreDesc}"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                        <MenuItem Header="Aesthetic"
+                                  Command="{Binding SetSortCommand}"
+                                  CommandParameter="{x:Static vm:AnalyticsSortMode.AestheticScoreDesc}">
+                            <MenuItem.Icon>
+                                <TextBlock Text="✓" IsVisible="{Binding IsSortAestheticScoreDesc}"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                    </MenuItem>
+                    <MenuItem Header="Score (Low to High)">
+                        <MenuItem Header="Heuristic"
+                                  Command="{Binding SetSortCommand}"
+                                  CommandParameter="{x:Static vm:AnalyticsSortMode.HeuristicScoreAsc}">
+                            <MenuItem.Icon>
+                                <TextBlock Text="✓" IsVisible="{Binding IsSortHeuristicScoreAsc}"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                        <MenuItem Header="Aesthetic"
+                                  Command="{Binding SetSortCommand}"
+                                  CommandParameter="{x:Static vm:AnalyticsSortMode.AestheticScoreAsc}">
+                            <MenuItem.Icon>
+                                <TextBlock Text="✓" IsVisible="{Binding IsSortAestheticScoreAsc}"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                    </MenuItem>
+                    <MenuItem Header="Date (Newest)"
+                              Command="{Binding SetSortCommand}"
+                              CommandParameter="{x:Static vm:AnalyticsSortMode.DateDesc}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="✓" IsVisible="{Binding IsSortDateDesc}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem Header="Date (Oldest)"
+                              Command="{Binding SetSortCommand}"
+                              CommandParameter="{x:Static vm:AnalyticsSortMode.DateAsc}">
+                        <MenuItem.Icon>
+                            <TextBlock Text="✓" IsVisible="{Binding IsSortDateAsc}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                </MenuItem>
+                <MenuItem Header="Clear Filters"
+                          Command="{Binding ClearFiltersCommand}"/>
+                <MenuItem Header="Enable Scoring (Heuristic)"
+                          Command="{Binding ToggleScoringCommand}">
+                    <MenuItem.Icon>
+                        <TextBlock Text="✓" IsVisible="{Binding EnableScoring}"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Refresh"
+                          Command="{Binding RefreshCommand}"
+                          InputGesture="F5"/>
+            </MenuItem>
+            <MenuItem Header="_Actions">
+                <MenuItem Header="Score Selected (Aesthetic)"
+                          Command="{Binding ScoreSelectedCommand}"
+                          IsEnabled="{Binding CanScoreSelected}"/>
+                <MenuItem Header="{Binding ScoreByModelMenuLabel}"
+                          Command="{Binding ScoreByModelCommand}"
+                          IsEnabled="{Binding CanScoreByModel}"/>
+                <MenuItem Header="Score All Images (Aesthetic)"
+                          Command="{Binding ScoreAllImagesCommand}"/>
+            </MenuItem>
+        </Menu>
+
+        <Grid RowDefinitions="Auto,*" ColumnDefinitions="300,8,*" Margin="12" RowSpacing="10" ColumnSpacing="10">
+            <Border Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Classes="card" Padding="10">
+                <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+                    <TextBlock Text="Analytics Studio" FontWeight="Bold" FontSize="16" Grid.Column="0"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <TextBlock Text="Template" VerticalAlignment="Center"/>
+                        <ComboBox ItemsSource="{Binding Templates}" SelectedItem="{Binding SelectedTemplate}" Width="160"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <TextBlock Text="Prompt Type" VerticalAlignment="Center"/>
+                        <ComboBox ItemsSource="{Binding PromptTypes}" SelectedItem="{Binding SelectedPromptType}" Width="160"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <TextBlock Text="Date" VerticalAlignment="Center"/>
+                        <DatePicker SelectedDate="{Binding FromDate}" Width="140"/>
+                        <TextBlock Text="to" VerticalAlignment="Center"/>
+                        <DatePicker SelectedDate="{Binding ToDate}" Width="140"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="0" Classes="card" Padding="10">
+            <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto,*" RowSpacing="8">
+                <TextBlock Text="Models" FontWeight="Bold" Margin="0,0,0,2"/>
+                <TextBox Grid.Row="1" Watermark="Search models..." Text="{Binding ModelSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                <ScrollViewer x:Name="ResultsScrollViewer" Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Models}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:FilterOption">
+                                <CheckBox Content="{Binding DisplayName}" IsChecked="{Binding IsSelected}" IsVisible="{Binding IsVisible}"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+                <TextBlock Grid.Row="3"
+                           Text="{Binding ScoreByModelHint}"
+                           Classes="subtle"
+                           TextWrapping="Wrap"
+                           Margin="0,4,0,0"
+                           IsVisible="{Binding ShowScoreByModelHint}"/>
+
+                <TextBlock Grid.Row="4" Text="LoRAs" FontWeight="Bold" Margin="0,4,0,2"/>
+                <StackPanel Grid.Row="5" Orientation="Horizontal" Spacing="6">
+                    <TextBox Watermark="Search LoRAs..." Text="{Binding LoraSearchText, UpdateSourceTrigger=PropertyChanged}" Width="150"/>
+                    <ComboBox ItemsSource="{Binding LoraMatchModes}"
+                              SelectedItem="{Binding LoraMatchMode}"
+                              Width="90"
+                              IsVisible="{Binding ShowLoraMatchMode}"
+                              ToolTip.Tip="Any = at least one selected LoRA. All = must contain all selected LoRAs."/>
+                </StackPanel>
+                <ScrollViewer Grid.Row="6" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Loras}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:FilterOption">
+                                <CheckBox Content="{Binding DisplayName}" IsChecked="{Binding IsSelected}" IsVisible="{Binding IsVisible}"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+            <GridSplitter Grid.Row="1" Grid.Column="1" Width="8" Background="Gray" HorizontalAlignment="Center"/>
+
+            <Border Grid.Row="1" Grid.Column="2" Classes="card" Padding="10">
+            <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8">
+                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+                    <TextBlock Text="{Binding StatusText}" Classes="subtle" VerticalAlignment="Center"/>
+                    <Button Grid.Column="1" Content="Compare Selected" Command="{Binding CompareSelectedCommand}"
+                            IsVisible="{Binding CanCompare}" IsEnabled="{Binding CanCompare}"/>
+                    <Button Grid.Column="2" Content="Clear Selection" Command="{Binding ClearSelectionCommand}"
+                            IsVisible="{Binding CanScoreSelected}" IsEnabled="{Binding CanScoreSelected}"/>
+                </Grid>
+                <StackPanel Grid.Row="1" Spacing="6">
+                    <StackPanel Spacing="4" IsVisible="{Binding IsDownloadActive}">
+                        <TextBlock Text="{Binding DownloadStatus}" Classes="subtle"/>
+                        <ProgressBar Minimum="0" Maximum="1" Value="{Binding DownloadProgress}"/>
+                    </StackPanel>
+                    <StackPanel Spacing="4" IsVisible="{Binding IsScoreRunActive}">
+                        <TextBlock Text="{Binding ScoreRunStatus}" Classes="subtle"/>
+                        <ProgressBar Minimum="0" Maximum="1" Value="{Binding ScoreRunProgress}"/>
+                        <Button Content="Cancel Scoring" Command="{Binding CancelScoreRunCommand}"
+                                IsEnabled="{Binding CanCancelScoreRun}" HorizontalAlignment="Left"/>
+                    </StackPanel>
+                </StackPanel>
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Results}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:AnalyticsImageItem">
+                                <Border Margin="6" Padding="6" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Width="260"
+                                        DoubleTapped="OnImageDoubleTapped">
+                                    <Border.ContextMenu>
+                                        <ContextMenu DataContext="{Binding}">
+                                            <MenuItem Header="View Details"
+                                                      Command="{Binding DataContext.ViewDetailsCommand, ElementName=AnalyticsWindowRoot}"
+                                                      CommandParameter="{Binding}"/>
+                                            <Separator/>
+                                            <MenuItem Header="Generate More (from Image)..."
+                                                      Command="{Binding DataContext.GenerateMoreCommand, ElementName=AnalyticsWindowRoot}"
+                                                      CommandParameter="{Binding}"/>
+                                            <MenuItem Header="Generate Seed Variations"
+                                                      Command="{Binding DataContext.GenerateSeedVariationsCommand, ElementName=AnalyticsWindowRoot}"
+                                                      CommandParameter="{Binding}"/>
+                                            <MenuItem Header="Generate LoRA Variations"
+                                                      Command="{Binding DataContext.GenerateLoraVariationsCommand, ElementName=AnalyticsWindowRoot}"
+                                                      CommandParameter="{Binding}"/>
+                                        </ContextMenu>
+                                    </Border.ContextMenu>
+                                    <StackPanel Spacing="6">
+                                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                                            <CheckBox Content="{Binding PromptTypeDisplay}"
+                                                      IsChecked="{Binding IsSelected}"/>
+                                            <StackPanel Grid.Column="1" Spacing="2" HorizontalAlignment="Right">
+                                                <TextBlock Text="{Binding HeuristicScoreLabel}" Classes="subtle" IsVisible="{Binding HasHeuristicScore}"/>
+                                                <TextBlock Text="{Binding AestheticScoreLabel}" Classes="subtle" IsVisible="{Binding HasAestheticScore}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Border Height="180" Background="#1a1a1a">
+                                            <Grid>
+                                                <Image Source="{Binding Bitmap}" Stretch="Uniform"/>
+                                                <Border Background="#C0222222"
+                                                        CornerRadius="10"
+                                                        Padding="4,2"
+                                                        HorizontalAlignment="Right"
+                                                        VerticalAlignment="Top"
+                                                        Margin="6"
+                                                        IsVisible="{Binding IsFavorite}">
+                                                    <TextBlock Text="★" Foreground="Gold" FontSize="14"/>
+                                                </Border>
+                                            </Grid>
+                                        </Border>
+                                        <TextBlock Text="{Binding ModelLabel, StringFormat='Model: {0}'}" Classes="subtle"/>
+                                        <TextBlock Text="{Binding SeedLabel}" Classes="subtle"/>
+                                        <TextBlock Text="{Binding LoraLabel, StringFormat='LoRAs: {0}'}" Classes="subtle" TextTrimming="CharacterEllipsis"
+                                                   IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                        <TextBlock Text="{Binding TemplateLabel, StringFormat='Template: {0}'}" Classes="subtle"/>
+                                        <TextBlock Text="{Binding Prompt}" TextWrapping="Wrap" MaxHeight="60" Classes="subtle"/>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

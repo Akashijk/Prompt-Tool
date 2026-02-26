@@ -1,0 +1,40 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PromptTool.Views.RequiresRulePickerDialog"
+        x:CompileBindings="False"
+        Title="Add Requirement Rule"
+        Width="600"
+        Height="520"
+        MinWidth="480"
+        MinHeight="380"
+        WindowStartupLocation="CenterOwner">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Add Requirement Rule"/>
+                <TextBlock Text="Pick a wildcard, operator, and value(s)." Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+            <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="12">
+                <Grid Grid.Column="0" RowDefinitions="Auto,Auto,*" RowSpacing="6">
+                    <TextBlock Text="Wildcard" FontWeight="Bold"/>
+                    <TextBox x:Name="WildcardFilterBox" Grid.Row="1" Watermark="Filter wildcards..."/>
+                    <ListBox x:Name="WildcardListBox" Grid.Row="2"
+                             MinHeight="200"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                </Grid>
+                <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,*" RowSpacing="6">
+                    <TextBlock Text="Operator" FontWeight="Bold"/>
+                    <ComboBox x:Name="OperatorBox" Grid.Row="1" />
+                    <TextBox x:Name="ValueFilterBox" Grid.Row="2" Watermark="Filter values..."/>
+                    <ListBox x:Name="ValueListBox" Grid.Row="3"
+                             MinHeight="200"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                </Grid>
+            </Grid>
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Cancel" Width="90" Click="OnCancel" IsCancel="True"/>
+                <Button Content="OK" Width="90" Click="OnOk" IsDefault="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

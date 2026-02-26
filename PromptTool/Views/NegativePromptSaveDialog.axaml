@@ -1,0 +1,28 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PromptTool.Views.NegativePromptSaveDialog"
+        Title="Save Negative Prompt"
+        WindowStartupLocation="CenterOwner"
+        Width="460"
+        MinWidth="420"
+        SizeToContent="Height"
+        Background="{DynamicResource BaseBackgroundBrush}">
+
+    <Grid RowDefinitions="Auto,* ,Auto" Margin="{StaticResource DialogOuterPadding}">
+        <StackPanel Grid.Row="0" Classes="dialog-header">
+            <TextBlock Text="Save changes to negative prompt?" Classes="dialog-title"/>
+            <TextBlock x:Name="MessageText" TextWrapping="Wrap" Classes="subtle"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Classes="card" Margin="0,10,0,0">
+            <TextBlock Text="Choose how to save the updated negative prompt." TextWrapping="Wrap"/>
+        </Border>
+
+        <StackPanel Grid.Row="2" Classes="dialog-footer">
+            <Button Content="Cancel" Click="OnCancel"/>
+            <Button Content="Don't Save" Click="OnSkip"/>
+            <Button Content="Save As New" Click="OnSaveAsNew" Classes="accent"/>
+            <Button Content="Update Selected" Click="OnOverwrite" Classes="accent"/>
+        </StackPanel>
+    </Grid>
+</Window>

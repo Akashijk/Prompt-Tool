@@ -1,0 +1,226 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="720"
+        x:Class="PromptTool.Views.ImageGenerationDialog"
+        x:DataType="vm:ImageGenerationOptionsViewModel"
+        Title="Image Generation Options"
+        WindowStartupLocation="CenterOwner"
+        Width="900" MinWidth="860"
+        Height="720" MinHeight="700"
+        Background="{DynamicResource BaseBackgroundBrush}">
+
+    <Grid RowDefinitions="Auto,* ,Auto" Margin="16" ColumnDefinitions="*">
+        <!-- Header -->
+        <Border Classes="card" Padding="14" Margin="0,0,0,14">
+            <Grid ColumnDefinitions="*,2*" RowDefinitions="Auto">
+                <StackPanel Grid.Column="0" Spacing="4">
+                    <TextBlock Text="Image Generation" FontSize="18" FontWeight="Bold"/>
+                    <TextBlock Text="Configure the run, choose models/LoRAs, and generate." Classes="subtle"/>
+                    <Border Classes="card" Padding="6" Margin="0,6,0,0" Background="#252525" IsVisible="{Binding ShowModeBanner}">
+                        <TextBlock Text="{Binding ModeBannerText}" TextWrapping="Wrap" Classes="subtle"/>
+                    </Border>
+                </StackPanel>
+                <WrapPanel Grid.Column="1" ItemSpacing="14" HorizontalAlignment="Right">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="Base Model Type" FontWeight="Bold"/>
+                        <ComboBox ItemsSource="{Binding BaseModelTypes}" SelectedItem="{Binding BaseModelType}" Width="170"/>
+                    </StackPanel>
+                    <StackPanel Spacing="2" Width="190">
+                        <TextBlock Text="Save to Gallery" FontWeight="Bold"/>
+                        <CheckBox IsChecked="{Binding SaveToGallery}" Content="Keep images on server"/>
+                        <TextBlock Text="{Binding TotalImagesLabel}" FontWeight="Bold" Margin="0,4,0,0" Classes="subtle"/>
+                    </StackPanel>
+                </WrapPanel>
+            </Grid>
+        </Border>
+
+        <!-- Body -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <Grid RowDefinitions="Auto, *" ColumnDefinitions="*,*" RowSpacing="14" ColumnSpacing="14">
+                <!-- Top row: Models and LoRAs side-by-side -->
+                <Border Grid.Row="0" Grid.Column="0" Classes="card" Padding="12">
+                    <Grid RowDefinitions="Auto,*" RowSpacing="6">
+                        <Grid ColumnDefinitions="Auto,*">
+                            <TextBlock Text="Models" FontWeight="Bold" Grid.Column="0" VerticalAlignment="Center"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6" Grid.Column="1" HorizontalAlignment="Right">
+                                <TextBox Width="150" Watermark="Search models..." Text="{Binding ModelSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                                <Button Content="Refresh" Command="{Binding RefreshDataCommand}"/>
+                                <Button Content="Clear" Command="{Binding ClearModelsCommand}"/>
+                                <Button Content="Toggle All" Command="{Binding ToggleAllModelsCommand}" Classes="accent"/>
+                            </StackPanel>
+                        </Grid>
+                        <ListBox Grid.Row="1"
+                                 ItemsSource="{Binding Models}"
+                                 Height="320"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:SelectableModelViewModel">
+                                    <StackPanel>
+                                        <CheckBox IsChecked="{Binding IsSelected}" IsVisible="{Binding IsVisible}">
+                                            <CheckBox.Content>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding Metadata}" Classes="subtle"/>
+                                                </StackPanel>
+                                            </CheckBox.Content>
+                                        </CheckBox>
+                                        <TextBlock Text="{Binding Hash, StringFormat='Hash: {0}'}" Classes="subtle" IsVisible="{Binding HasHash}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="0" Grid.Column="1" Classes="card" Padding="12">
+                    <Grid RowDefinitions="Auto,*" RowSpacing="6">
+                        <Grid ColumnDefinitions="Auto,*">
+                            <TextBlock Text="LoRAs" FontWeight="Bold" Grid.Column="0" VerticalAlignment="Center"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6" Grid.Column="1" HorizontalAlignment="Right">
+                                <TextBox Width="150" Watermark="Search LoRAs..." Text="{Binding LoraSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                                <Button Content="Clear" Command="{Binding ClearLorasCommand}" />
+                            </StackPanel>
+                        </Grid>
+                        <ListBox Grid.Row="1"
+                                 ItemsSource="{Binding Loras}"
+                                 Height="320"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:SelectableLoraViewModel">
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" Content="{Binding Lora.Name}" IsVisible="{Binding IsVisible}"/>
+                                        <NumericUpDown Grid.Column="1"
+                                                       Value="{Binding Weight}"
+                                                       IsVisible="{Binding IsSelected}"
+                                                       Increment="0.05"
+                                                       Minimum="-1"
+                                                       Maximum="2"
+                                                       Width="110"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+
+                <!-- Bottom row: prompts + settings spanning both columns -->
+                <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Classes="card" Padding="16">
+                    <StackPanel Spacing="16">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Prompt" FontWeight="Bold"/>
+                            <TextBox Text="{Binding Prompt}" AcceptsReturn="True" Height="110" TextWrapping="Wrap"/>
+                        </StackPanel>
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Negative Prompt" FontWeight="Bold"/>
+                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <TextBlock Text="Preset" FontWeight="Bold" VerticalAlignment="Center"/>
+                                <ComboBox Width="260"
+                                          ItemsSource="{Binding NegativePresets}"
+                                          SelectedItem="{Binding SelectedNegativePreset}">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Key}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+                            <TextBox Text="{Binding NegativePrompt}" AcceptsReturn="True" Height="110" TextWrapping="Wrap"/>
+
+                            <StackPanel Spacing="8" IsVisible="{Binding ShowStylePrompts}">
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                    <TextBlock Text="Positive Style (optional)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBox Width="320"
+                                             Watermark="Enter an optional positive style prompt..."
+                                             Text="{Binding PositiveStyleText}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                    <TextBlock Text="Negative Style (optional)" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBox Width="320"
+                                             Watermark="Enter an optional negative style prompt..."
+                                             Text="{Binding NegativeStyleText}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Full-width generation settings -->
+                        <Border Classes="card" Padding="14">
+                            <StackPanel Spacing="12">
+                                <TextBlock Text="Generation Settings" FontWeight="Bold"/>
+                                <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="12">
+                                    <StackPanel Grid.Column="0" Grid.Row="0" Spacing="4">
+                                        <TextBlock Text="Seed"/>
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <NumericUpDown Value="{Binding Seed}" Minimum="0" Maximum="2147483647" Width="140" IsEnabled="{Binding UseRandomSeed, Converter={StaticResource InverseBoolConverter}}"/>
+                                            <CheckBox Content="Random" IsChecked="{Binding UseRandomSeed}" VerticalAlignment="Center"/>
+                                            <Button Content="Randomize" Command="{Binding RandomizeSeedCommand}" Width="100" IsEnabled="{Binding UseRandomSeed, Converter={StaticResource InverseBoolConverter}}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Grid.Row="0" Spacing="4">
+                                        <TextBlock Text="Steps"/>
+                                        <NumericUpDown Value="{Binding Steps}" Minimum="1" Maximum="200" Width="180"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Grid.Row="0" Spacing="4">
+                                        <TextBlock Text="CFG Scale"/>
+                                        <NumericUpDown Value="{Binding CfgScale}" Minimum="0" Maximum="30" Increment="0.5" Width="180"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="0" Grid.Row="1" Spacing="4">
+                                        <TextBlock Text="CFG Rescale Multiplier"/>
+                                        <NumericUpDown Value="{Binding CfgRescaleMultiplier}" Minimum="0" Maximum="2" Increment="0.05" Width="180"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Grid.Row="1" Spacing="4">
+                                        <TextBlock Text="Width"/>
+                                        <NumericUpDown Value="{Binding Width}" Minimum="64" Maximum="4096" Increment="64" Width="180"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Grid.Row="1" Spacing="4">
+                                        <TextBlock Text="Height"/>
+                                        <NumericUpDown Value="{Binding Height}" Minimum="64" Maximum="4096" Increment="64" Width="180"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="0" Grid.Row="2" Spacing="4">
+                                        <TextBlock Text="Scheduler"/>
+                                    <ComboBox ItemsSource="{Binding Schedulers}" SelectedItem="{Binding SelectedSchedulerOption}" Width="180">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:SchedulerOption">
+                                                <TextBlock Text="{Binding Display}"/>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Grid.Row="2" Spacing="4">
+                                        <TextBlock Text="Images per Model"/>
+                                        <NumericUpDown Value="{Binding NumImages}" Minimum="1" Maximum="100" Width="180"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Grid.Row="2" Spacing="4">
+                                        <TextBlock Text="Aspect Ratios"/>
+                                        <WrapPanel ItemSpacing="6">
+                                            <Button Content="1:1" Command="{Binding SetAspectRatioCommand}" CommandParameter="1:1"/>
+                                            <Button Content="4:3" Command="{Binding SetAspectRatioCommand}" CommandParameter="4:3"/>
+                                            <Button Content="16:9" Command="{Binding SetAspectRatioCommand}" CommandParameter="16:9"/>
+                                            <Button Content="3:4" Command="{Binding SetAspectRatioCommand}" CommandParameter="3:4"/>
+                                            <Button Content="9:16" Command="{Binding SetAspectRatioCommand}" CommandParameter="9:16"/>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </ScrollViewer>
+
+        <!-- Footer -->
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="0,12,0,0">
+            <TextBlock Text="{Binding StatusMessage}" Foreground="Tomato" VerticalAlignment="Center"/>
+            <Button Grid.Column="1" Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True" Margin="8,0"/>
+            <Button Grid.Column="2" Content="Generate" Click="OnGenerateClicked" IsDefault="True" Classes="accent"/>
+        </Grid>
+    </Grid>
+</Window>

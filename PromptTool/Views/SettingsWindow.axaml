@@ -1,0 +1,327 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="250"
+        x:Class="PromptTool.Views.SettingsWindow"
+        x:DataType="vm:SettingsViewModel"
+        x:Name="SettingsRoot"
+        Title="Settings"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        SizeToContent="Manual"
+        Width="760"
+        Height="640"
+        MinWidth="640"
+        MinHeight="520">
+
+    <Design.DataContext>
+        <vm:SettingsViewModel />
+    </Design.DataContext>
+
+    <Border Padding="15">
+        <DockPanel LastChildFill="True" MinWidth="520">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,10,0,0" DockPanel.Dock="Bottom">
+                <Button Content="Save" Command="{Binding SaveCommand}" />
+                <Button Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True"/>
+            </StackPanel>
+
+            <TabControl x:Name="SettingsTabs" TabStripPlacement="Left">
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="🔌"/>
+                            <TextBlock Text="Connections"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Connections" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Configure servers and network endpoints." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="Ollama Base URL:" FontWeight="Bold"/>
+                            <TextBox Text="{Binding OllamaBaseUrl}" />
+
+                            <TextBlock Text="Default Ollama Model:" FontWeight="Bold"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <ComboBox Width="300"
+                                          ItemsSource="{Binding OllamaModels}"
+                                          SelectedItem="{Binding DefaultOllamaModel}"
+                                          Text="{Binding DefaultOllamaModel, Mode=TwoWay}"
+                                          IsEditable="True" />
+                                <Button Content="Load" Command="{Binding LoadOllamaModelsCommand}" />
+                            </StackPanel>
+
+                            <TextBlock Text="InvokeAI Base URL:" FontWeight="Bold"/>
+                            <TextBox Text="{Binding InvokeAIBaseUrl}" />
+
+                            <TextBlock Text="InvokeAI Timeout (seconds):" FontWeight="Bold"/>
+                            <NumericUpDown Value="{Binding InvokeAITimeoutSeconds}" Minimum="30" Maximum="600" Increment="10"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="✍"/>
+                            <TextBlock Text="Prompts"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Prompts" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Negative prompt presets." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="Negative Prompt:" FontWeight="Bold"/>
+                            <ComboBox ItemsSource="{Binding NegativePresets}"
+                                      SelectedItem="{Binding SelectedNegativePreset}"
+                                      DisplayMemberBinding="{Binding Key}"/>
+                            <TextBlock Text="Preset Name:" FontWeight="Bold"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBox Width="260" Text="{Binding EditingPresetName}" />
+                                <Button Content="Rename" Command="{Binding RenameNegativePresetCommand}"/>
+                            </StackPanel>
+                            <TextBlock Text="Preset Text:" FontWeight="Bold"/>
+                            <TextBox Text="{Binding EditingPresetText}" AcceptsReturn="True" TextWrapping="Wrap" Height="120"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="Add Preset" Command="{Binding AddNegativePresetCommand}"/>
+                                <Button Content="Save Preset" Command="{Binding SaveNegativePresetCommand}"/>
+                                <Button Content="Remove Preset" Command="{Binding RemoveNegativePresetCommand}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="🎨"/>
+                            <TextBlock Text="Appearance"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Appearance" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Theme and typography settings." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="Theme:" FontWeight="Bold"/>
+                            <ComboBox ItemsSource="{Binding Themes}" SelectedItem="{Binding Theme}"/>
+
+                            <TextBlock Text="Font Size:" FontWeight="Bold"/>
+                            <NumericUpDown Value="{Binding FontSize}" Minimum="8" Maximum="32" Increment="1"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem x:Name="GenerationTab">
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="⚙"/>
+                            <TextBlock Text="Generation"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <ScrollViewer x:Name="GenerationScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Generation" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Defaults and cache behavior for image generation." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <StackPanel x:Name="GenerationDefaultsSection" Spacing="6">
+                                <Button Content="Set Default Generation Options" Click="OpenGenerationDefaults" />
+                            </StackPanel>
+
+                            <StackPanel x:Name="SystemPromptsSection" Spacing="6" Margin="0,8,0,0">
+                                <TextBlock Text="System Prompts" FontWeight="Bold"/>
+                                <TextBlock Text="Edit system prompts used for enhancement and variants." Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Open System Prompts Editor" Click="OpenSystemPrompts_Click"/>
+                            </StackPanel>
+
+                            <StackPanel x:Name="InvokeAIModelDefaultsSection" Spacing="6" Margin="0,8,0,0">
+                                <TextBlock Text="InvokeAI Model Defaults" FontWeight="Bold"/>
+                                <TextBlock Text="Default models and per-model options for InvokeAI." Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Open InvokeAI Model Defaults" Click="OpenInvokeAIModelDefaults_Click"/>
+                            </StackPanel>
+
+                            <StackPanel x:Name="InvokeAILoraDefaultsSection" Spacing="6" Margin="0,8,0,0">
+                                <TextBlock Text="InvokeAI LoRA Defaults" FontWeight="Bold"/>
+                                <TextBlock Text="Default LoRAs and weights for InvokeAI." Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Open InvokeAI LoRA Defaults" Click="OpenInvokeAILoraDefaults_Click"/>
+                            </StackPanel>
+
+                            <TextBlock Text="InvokeAI Cache Management:" FontWeight="Bold" Margin="0,8,0,0"/>
+                            <CheckBox Content="Auto clear InvokeAI model cache between different models"
+                                      IsChecked="{Binding AutoClearInvokeCacheBetweenModels}"/>
+
+                            <TextBlock Text="Image Cache:" FontWeight="Bold" Margin="0,8,0,0"/>
+                            <TextBlock Text="{Binding ImageCacheSizeLabel}" Classes="subtle"/>
+                            <Button Content="{Binding ClearImageCacheLabel}" Command="{Binding ClearImageCacheCommand}"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="✨"/>
+                            <TextBlock Text="Aesthetic Scoring"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Aesthetic Scoring" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Model selection and scoring cache." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="Aesthetic Scoring:" FontWeight="Bold"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Text="Backend" VerticalAlignment="Center"/>
+                                <ComboBox Width="140" ItemsSource="{Binding AestheticScoringBackends}" SelectedItem="{Binding AestheticScoringBackend}"/>
+                                <TextBlock Text="Remote URL" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                <TextBox Width="240" Text="{Binding AestheticScoringRemoteUrl}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,0" IsVisible="{Binding IsRemoteBackend}">
+                                <TextBlock Text="Batch Size" VerticalAlignment="Center" Width="100"/>
+                                <NumericUpDown Value="{Binding AestheticScoringRemoteBatchSize}" Minimum="1" Maximum="64" Increment="1" Width="120"/>
+                                <TextBlock Text="(images per request)" VerticalAlignment="Center" Classes="subtle"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Text="Hugging Face API Key" VerticalAlignment="Center"/>
+                                <TextBox Width="300" Text="{Binding HuggingFaceApiKey}" PasswordChar="*"/>
+                            </StackPanel>
+
+                            <TextBlock Text="Aesthetic Models:" FontWeight="Bold" Margin="0,8,0,0"/>
+                            <TextBlock Text="{Binding AestheticModelsDir}" Classes="subtle" TextWrapping="Wrap"/>
+                            <TextBlock Text="Drop .onnx files into this folder, then click Refresh." Classes="subtle" TextWrapping="Wrap"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="Open Models Folder" Command="{Binding OpenAestheticModelsFolderCommand}"/>
+                                <Button Content="Refresh Models" Command="{Binding RefreshAestheticModelListsCommand}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Text="Active Model" VerticalAlignment="Center"/>
+                                <ComboBox Width="320"
+                                          ItemsSource="{Binding InstalledAestheticModels}"
+                                          SelectedItem="{Binding SelectedAestheticModel}">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding DisplayName}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+                            <ProgressBar Minimum="0"
+                                         Maximum="1"
+                                         Value="{Binding AestheticDownloadProgress}"
+                                         IsVisible="{Binding IsAestheticDownloadActive}"
+                                         Height="10"/>
+                            <TextBlock Text="{Binding AestheticDownloadStatus}"
+                                       Classes="subtle"
+                                       TextWrapping="Wrap"
+                                       IsVisible="{Binding IsAestheticDownloadActive}"/>
+                            <ItemsControl ItemsSource="{Binding AestheticModelCatalog}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource CardBackgroundBrush}" BorderBrush="{DynamicResource BorderBrushStrong}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,6,0,0">
+                                            <StackPanel Spacing="6">
+                                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding SizeLabel}" Classes="subtle"/>
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <Button Content="Download"
+                                                            Command="{Binding DataContext.DownloadAestheticModelCommand, ElementName=SettingsRoot}"
+                                                            CommandParameter="{Binding}"/>
+                                                    <TextBlock Text="Downloaded" IsVisible="{Binding IsDownloaded}" Classes="subtle"/>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBlock Text="Aesthetic Scoring Cache:" FontWeight="Bold" Margin="0,6,0,0"/>
+                            <TextBlock Text="{Binding ScoringCacheDir}" Classes="subtle" TextWrapping="Wrap"/>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="Open Cache Folder" Command="{Binding OpenScoringCacheCommand}"/>
+                                <Button Content="Clear Scoring Cache" Command="{Binding ClearScoringCacheCommand}"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="Deploy Remote Scoring Agent" Click="DeployScoringAgent_Click"/>
+                                <Button Content="Remove Remote Scoring Agent" Click="RemoveScoringAgent_Click"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="📁"/>
+                            <TextBlock Text="Paths"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Paths" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Filesystem locations for templates, history, and prompts." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="Template Base Directory:" FontWeight="Bold"/>
+                            <TextBox Text="{Binding TemplateBaseDir}" />
+
+                            <TextBlock Text="Wildcard Directory:" FontWeight="Bold"/>
+                            <TextBox Text="{Binding WildcardDir}" />
+
+                            <TextBlock Text="History Directory:" FontWeight="Bold"/>
+                            <TextBox Text="{Binding HistoryDir}" />
+
+                            <TextBlock Text="System Prompts Directory:" FontWeight="Bold"/>
+                            <TextBox Text="{Binding SystemPromptBaseDir}" />
+
+                            <TextBlock Text="Settings file in use:" FontWeight="Bold" Margin="0,6,0,0"/>
+                            <TextBox Text="{Binding SettingsFilePath}" IsReadOnly="True"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="🧰"/>
+                            <TextBlock Text="Backup/Restore"/>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Backup and Restore" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Create backups or restore config/history from a zip." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="Config Backup:" FontWeight="Bold"/>
+                                <TextBlock Text="Backs up settings, templates, wildcards, and system prompts." Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Backup Config as Zip..." Click="BackupConfig_Click"/>
+                            </StackPanel>
+
+                            <StackPanel Spacing="6" Margin="0,8,0,0">
+                                <TextBlock Text="History Backup:" FontWeight="Bold"/>
+                                <TextBlock Text="Compress your history files and images to a zip for backup." Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Backup History as Zip..." Click="BackupHistory_Click"/>
+                            </StackPanel>
+
+                            <StackPanel Spacing="6" Margin="0,8,0,0">
+                                <TextBlock Text="Full Backup:" FontWeight="Bold"/>
+                                <TextBlock Text="Create separate zips for config/content and history." Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Full Backup (Config + History)..." Click="BackupFull_Click"/>
+                            </StackPanel>
+
+                            <StackPanel Spacing="6" Margin="0,8,0,0">
+                                <TextBlock Text="Restore:" FontWeight="Bold"/>
+                                <TextBlock Text="Restore config and/or history from a backup zip." Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Restore from Backup Zip..." Click="RestoreBackup_Click"/>
+                                <Button Content="Verify Backup Zip..." Click="VerifyBackup_Click"/>
+                            </StackPanel>
+
+                            <StackPanel Spacing="6" Margin="0,8,0,0">
+                                <TextBlock Text="Auto backups:" FontWeight="Bold"/>
+                                <TextBlock Text="{Binding AutoBackupDir}" Classes="subtle" TextWrapping="Wrap"/>
+                                <Button Content="Delete Auto Backups" Click="DeleteAutoBackups_Click" IsVisible="{Binding HasAutoBackups}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+            </TabControl>
+        </DockPanel>
+    </Border>
+
+</Window>

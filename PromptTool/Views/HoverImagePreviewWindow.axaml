@@ -1,0 +1,37 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:media="using:Avalonia.Media.Imaging"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        x:Class="PromptTool.Views.HoverImagePreviewWindow"
+        x:DataType="media:Bitmap"
+        Title="Preview"
+        SystemDecorations="None"
+        ShowInTaskbar="False"
+        Topmost="True"
+        CanResize="False"
+        KeyDown="Window_KeyDown">
+    <Border Background="#111" BorderBrush="#3A3F4B" BorderThickness="1" Padding="6">
+        <Grid>
+            <ScrollViewer x:Name="ImageScroll"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto">
+                <Image x:Name="PreviewImage"
+                       Source="{Binding}"
+                       Stretch="None"
+                       PointerPressed="PreviewImage_PointerPressed"
+                       PointerReleased="PreviewImage_PointerReleased"
+                       PointerMoved="PreviewImage_PointerMoved"/>
+            </ScrollViewer>
+            <Button Content="X"
+                    Width="24"
+                    Height="24"
+                    Padding="0"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="4"
+                    Click="CloseButton_Click"/>
+        </Grid>
+    </Border>
+</Window>

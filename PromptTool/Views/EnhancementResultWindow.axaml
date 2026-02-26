@@ -1,0 +1,89 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="700"
+        x:Class="PromptTool.Views.EnhancementResultWindow"
+        x:DataType="vm:EnhancementResultViewModel"
+        Title="Enhancement"
+        WindowStartupLocation="CenterOwner"
+        Width="1000"
+        Height="700"
+        MinWidth="820"
+        MinHeight="560"
+        SizeToContent="Manual">
+
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Prompt Enhancement"/>
+                <TextBlock Text="{Binding Status}" Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <Grid Grid.Row="1" ColumnDefinitions="1.15*,*" ColumnSpacing="12">
+                <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="Model" FontWeight="Bold"/>
+                        <ComboBox ItemsSource="{Binding Models}"
+                                  SelectedItem="{Binding SelectedModel}"
+                                  IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"
+                                  MinWidth="240"/>
+                        <TextBlock Text="Original Prompt" FontWeight="Bold"/>
+                        <TextBlock Text="{Binding WordCount, StringFormat='Word Count: {0}'}" Classes="subtle"/>
+                        <TextBlock Text="{Binding Warning}" Classes="subtle" Foreground="OrangeRed"
+                                   IsVisible="{Binding Warning, Converter={StaticResource StringToBoolConverter}}"/>
+                        <TextBox Text="{Binding OriginalPrompt}"
+                                 AcceptsReturn="True"
+                                 MinHeight="120"
+                                 TextWrapping="Wrap"
+                                 IsReadOnly="True"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+
+                        <TextBlock Text="Enhanced Prompt" FontWeight="Bold"/>
+                        <TextBox Text="{Binding EnhancedPrompt}"
+                                 AcceptsReturn="True"
+                                 MinHeight="200"
+                                 TextWrapping="Wrap"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="6">
+                    <Grid ColumnDefinitions="*,Auto" Grid.Row="0">
+                        <TextBlock Text="Variations" FontWeight="Bold" Grid.Column="0"/>
+                        <Button Content="Regenerate Variations" Command="{Binding RegenerateVariationsCommand}" Grid.Column="1" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Variations}" x:CompileBindings="False">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:VariationViewModel">
+                                    <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Padding="6" Margin="0,4">
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                            <TextBlock Text="{Binding Description}" Classes="subtle" TextWrapping="Wrap"/>
+                                            <TextBlock Text="{Binding Status}" Classes="subtle"/>
+                                            <TextBox Text="{Binding Text}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="120" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
+                                                <Button Content="Regenerate" Command="{Binding RegenerateCommand}"/>
+                                                <Button Content="Copy" Command="{Binding $parent[Window].DataContext.CopyCommand}" CommandParameter="{Binding Text}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </Grid>
+
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Copy Enhanced" Command="{Binding CopyCommand}" CommandParameter="{Binding EnhancedPrompt}"/>
+                <Button Content="Regenerate" Command="{Binding RegenerateCommand}"/>
+                <Button Content="Save" Command="{Binding SaveCommand}" Classes="accent" IsDefault="True"/>
+                <Button Content="Cancel" Command="{Binding CancelCommand}" IsEnabled="{Binding IsBusy}"/>
+                <Button Content="Close" Command="{Binding CloseCommand}" IsCancel="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

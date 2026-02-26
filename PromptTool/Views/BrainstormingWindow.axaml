@@ -1,0 +1,33 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="450"
+        x:Class="PromptTool.Views.BrainstormingWindow"
+        x:DataType="vm:BrainstormingViewModel"
+        Title="AI Brainstorming"
+        WindowStartupLocation="CenterOwner">
+
+    <Design.DataContext>
+        <vm:BrainstormingViewModel />
+    </Design.DataContext>
+
+    <Border Padding="15">
+        <StackPanel Spacing="10">
+            <TextBlock Text="Brainstorming Prompt:" FontWeight="Bold"/>
+            <TextBox Text="{Binding BrainstormingPrompt}" AcceptsReturn="True" TextWrapping="Wrap" Height="80"/>
+
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Text="Model:" VerticalAlignment="Center" FontWeight="Bold"/>
+                <ComboBox ItemsSource="{Binding OllamaModels}" SelectedItem="{Binding SelectedOllamaModel}" MinWidth="200"/>
+                <Button Content="Brainstorm" Command="{Binding BrainstormAsyncCommand}" IsEnabled="{Binding !IsBusy}"/>
+                <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="100"/>
+            </StackPanel>
+
+            <TextBlock Text="Brainstorming Result:" FontWeight="Bold"/>
+            <TextBox Text="{Binding BrainstormingResult}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" Height="200"/>
+        </StackPanel>
+    </Border>
+
+</Window>

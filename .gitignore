@@ -1,0 +1,31 @@
+.DS_Store
+.idea/
+.vscode/
+.vs/
+
+# Build outputs
+**/bin/
+**/obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Repo-local content directories
+/wildcards/
+/templates/
+/_old_QT_app/
+/history/
+/system_prompts/
+/backups/
+/cache/
+/image_cache/
+/scoring_cache/
+
+# Local notes and backups
+/message_to_user.md
+*.log
+*.zip
+TestResults/

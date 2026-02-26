@@ -1,0 +1,82 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="700"
+        x:Class="PromptTool.Views.MultiImagePreviewView"
+        x:DataType="vm:MultiImagePreviewViewModel"
+        Title="Image Preview"
+        WindowStartupLocation="CenterScreen">
+
+    <Design.DataContext>
+        <vm:MultiImagePreviewViewModel />
+    </Design.DataContext>
+
+    <Grid RowDefinitions="Auto,*,Auto" Margin="10">
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+            <TextBlock Text="Generated Images" FontWeight="Bold" Grid.Column="0"/>
+            <TextBlock Text="{Binding StatusText}" Classes="subtle" Margin="10,0,0,0" Grid.Column="1" HorizontalAlignment="Right"/>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Slots}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel Orientation="Horizontal" HorizontalAlignment="Center" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ImageSlotViewModel">
+                        <Border Margin="6" Padding="6" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Width="280">
+                            <Border.ContextMenu>
+                                <ContextMenu DataContext="{Binding}">
+                                    <MenuItem Header="View Full Size" Command="{Binding ShowFullSizeCommand}"/>
+                                    <MenuItem Header="Generate Seed Variations"
+                                              Command="{Binding GenerateSeedVariationsCommand}"
+                                              IsVisible="{Binding ShowGenerationActions}"/>
+                                    <MenuItem Header="Generate LoRA Variations"
+                                              Command="{Binding GenerateLoraVariationsCommand}"
+                                              IsVisible="{Binding ShowGenerationActions}"/>
+                                    <MenuItem Header="Edit &amp; Regenerate"
+                                              Command="{Binding EditAndRegenerateCommand}"
+                                              IsVisible="{Binding ShowGenerationActions}"/>
+                                </ContextMenu>
+                            </Border.ContextMenu>
+                            <StackPanel Spacing="6">
+                                <Grid ColumnDefinitions="*,Auto" >
+                                    <CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Grid.Column="0"/>
+                                    <CheckBox Content="Favorite" IsChecked="{Binding IsFavorite}" Grid.Column="1" HorizontalAlignment="Right"/>
+                                </Grid>
+                                <Border Height="220" Background="#1a1a1a" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                                    <Grid>
+                                        <Image Source="{Binding Image}" Stretch="Uniform" />
+                                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding IsLoading}">
+                                            <ProgressBar IsIndeterminate="True" Width="120"/>
+                                            <TextBlock Text="Generating..." HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="{Binding ModelUsed, StringFormat='Model: {0}'}" Classes="subtle"/>
+                                    <TextBlock Text="{Binding Seed, StringFormat='Seed: {0}'}" Classes="subtle"/>
+                                    <TextBlock Text="{Binding Size, StringFormat='Size: {0}'}" Classes="subtle"/>
+                                    <TextBlock Text="{Binding LoraLabel, StringFormat='LoRAs: {0}'}"
+                                               Classes="subtle"
+                                               TextTrimming="CharacterEllipsis"
+                                               IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,10,0,0">
+            <Button Content="Discard" Command="{Binding CancelCommand}" />
+            <Button Content="Save Selected" Command="{Binding SaveSelectedCommand}" Classes="accent"/>
+        </StackPanel>
+    </Grid>
+
+</Window>

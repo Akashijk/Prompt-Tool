@@ -1,0 +1,87 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="750"
+        x:Class="PromptTool.Views.CompareImagesWindow"
+        x:DataType="vm:CompareImagesViewModel"
+        Title="Compare Images"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,*,8,Auto" ColumnSpacing="12" RowSpacing="8" Margin="12">
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding Left.Title}" FontWeight="Bold"/>
+        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Right.Title}" FontWeight="Bold"/>
+
+        <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="Zoom"/>
+            <Slider x:Name="LeftZoomSlider" Minimum="1" Maximum="3" Value="1" Width="180"
+                    TickFrequency="1" IsSnapToTickEnabled="True"
+                    SmallChange="1" LargeChange="1"/>
+        </StackPanel>
+        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="Zoom"/>
+            <Slider x:Name="RightZoomSlider" Minimum="1" Maximum="3" Value="1" Width="180"
+                    TickFrequency="1" IsSnapToTickEnabled="True"
+                    SmallChange="1" LargeChange="1"/>
+        </StackPanel>
+
+        <Border Grid.Row="2" Grid.Column="0" BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Background="#111">
+            <ScrollViewer x:Name="LeftScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                <Canvas x:Name="LeftCanvas">
+                    <Image x:Name="LeftImage" Source="{Binding Left.Image}" Stretch="None" RenderTransformOrigin="0,0">
+                        <Image.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform ScaleX="{Binding Value, ElementName=LeftZoomSlider}"
+                                                ScaleY="{Binding Value, ElementName=LeftZoomSlider}"/>
+                                <TranslateTransform />
+                            </TransformGroup>
+                        </Image.RenderTransform>
+                    </Image>
+                </Canvas>
+            </ScrollViewer>
+        </Border>
+        <Border Grid.Row="2" Grid.Column="1" BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Background="#111">
+            <ScrollViewer x:Name="RightScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                <Canvas x:Name="RightCanvas">
+                    <Image x:Name="RightImage" Source="{Binding Right.Image}" Stretch="None" RenderTransformOrigin="0,0">
+                        <Image.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform ScaleX="{Binding Value, ElementName=RightZoomSlider}"
+                                                ScaleY="{Binding Value, ElementName=RightZoomSlider}"/>
+                                <TranslateTransform />
+                            </TransformGroup>
+                        </Image.RenderTransform>
+                    </Image>
+                </Canvas>
+            </ScrollViewer>
+        </Border>
+
+        <GridSplitter Grid.Row="3" Grid.ColumnSpan="2" HorizontalAlignment="Stretch" Height="8" Background="Gray"/>
+
+        <ScrollViewer Grid.Row="4" Grid.Column="0" VerticalScrollBarVisibility="Auto" MaxHeight="220">
+            <ItemsControl ItemsSource="{Binding Left.Details}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ImageDetailRow">
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="0,2,0,2">
+                            <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding Value}" Grid.Column="1" TextWrapping="Wrap"/>
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+        <ScrollViewer Grid.Row="4" Grid.Column="1" VerticalScrollBarVisibility="Auto" MaxHeight="220">
+            <ItemsControl ItemsSource="{Binding Right.Details}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ImageDetailRow">
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="0,2,0,2">
+                            <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding Value}" Grid.Column="1" TextWrapping="Wrap"/>
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</Window>

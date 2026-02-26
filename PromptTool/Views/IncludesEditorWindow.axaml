@@ -1,0 +1,34 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PromptTool.Views.IncludesEditorWindow"
+        x:CompileBindings="False"
+        Title="Edit Includes"
+        Width="560"
+        Height="460"
+        MinWidth="440"
+        MinHeight="360"
+        WindowStartupLocation="CenterOwner">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Edit Includes"/>
+                <TextBlock Text="Edit includes for this choice." Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+            <Grid Grid.Row="1" RowDefinitions="*,Auto" RowSpacing="8">
+                <ListBox x:Name="IncludesList"
+                         MinHeight="220"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                    <Button Content="Add Include..." Click="OnAddClicked"/>
+                    <Button Content="Remove" Click="OnRemoveClicked"/>
+                    <Button Content="Up" Click="OnMoveUpClicked"/>
+                    <Button Content="Down" Click="OnMoveDownClicked"/>
+                </StackPanel>
+            </Grid>
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Cancel" Width="90" Click="OnCancel" IsCancel="True"/>
+                <Button Content="OK" Width="90" Click="OnOk" IsDefault="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

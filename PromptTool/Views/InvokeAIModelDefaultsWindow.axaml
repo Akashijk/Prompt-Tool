@@ -1,0 +1,114 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        x:Class="PromptTool.Views.InvokeAIModelDefaultsWindow"
+        x:DataType="vm:InvokeAIModelDefaultsViewModel"
+        Title="{Binding WindowTitle}"
+        WindowStartupLocation="CenterOwner"
+        Width="900"
+        Height="640"
+        MinWidth="760"
+        MinHeight="520"
+        SizeToContent="Manual">
+
+    <Design.DataContext>
+        <vm:InvokeAIModelDefaultsViewModel />
+    </Design.DataContext>
+
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="InvokeAI Model Defaults"/>
+                <TextBlock Text="{Binding StatusMessage}" Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <Grid Grid.Row="1" ColumnDefinitions="320,6,*">
+                <Grid Grid.Column="0" RowDefinitions="Auto,Auto,*" RowSpacing="6" Margin="0,0,10,0">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="Model Type" VerticalAlignment="Center"/>
+                        <ComboBox Width="160" ItemsSource="{Binding BaseModelTypes}" SelectedItem="{Binding SelectedBaseModelType}"/>
+                    </StackPanel>
+                    <TextBox Grid.Row="1" Text="{Binding SearchText}" Watermark="Search models..." />
+                    <ListBox Grid.Row="2"
+                             ItemsSource="{Binding AssetItems}"
+                             SelectedItem="{Binding SelectedAsset}"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="8">
+                                    <StackPanel Grid.Column="0" Spacing="2">
+                                        <TextBlock Text="{Binding Name}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{Binding HasDefaults, Converter={StaticResource BoolToAccentBrushConverter}}"/>
+                                        <TextBlock Text="{Binding GroupName}" Classes="subtle"/>
+                                    </StackPanel>
+                                    <Border Grid.Column="1"
+                                            Width="8"
+                                            Height="8"
+                                            CornerRadius="4"
+                                            Background="{DynamicResource AccentBrush}"
+                                            IsVisible="{Binding HasDefaults}"
+                                            VerticalAlignment="Center"
+                                            HorizontalAlignment="Right"
+                                            ToolTip.Tip="Defaults set"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+
+                <GridSplitter Grid.Column="1" Background="LightGray" Width="6"/>
+
+                <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" Margin="12,0,0,0">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Model Name:" FontWeight="Bold"/>
+                        <TextBox Text="{Binding CurrentModelName}" IsReadOnly="True"/>
+
+                        <TextBlock Text="Scheduler:" FontWeight="Bold"/>
+                        <ComboBox ItemsSource="{Binding SchedulerOptions}" SelectedItem="{Binding CurrentSampler}"/>
+
+                        <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="10">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Steps:" VerticalAlignment="Center"/>
+                            <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding CurrentSteps}" Minimum="0" Maximum="500" Increment="1"/>
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="CFG Scale:" VerticalAlignment="Center"/>
+                            <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding CurrentCfgScale}" Minimum="0" Maximum="30" Increment="0.1" FormatString="F1"/>
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="CFG Rescale:" VerticalAlignment="Center"/>
+                            <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding CurrentCfgRescaleMultiplier}" Minimum="0" Maximum="1" Increment="0.05" FormatString="F2"/>
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Width:" VerticalAlignment="Center"/>
+                            <NumericUpDown Grid.Row="3" Grid.Column="1" Value="{Binding CurrentWidth}" Minimum="0" Maximum="4096" Increment="64"/>
+
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Height:" VerticalAlignment="Center"/>
+                            <NumericUpDown Grid.Row="4" Grid.Column="1" Value="{Binding CurrentHeight}" Minimum="0" Maximum="4096" Increment="64"/>
+                        </Grid>
+
+                        <TextBlock Text="Positive Prompt Prefix:" FontWeight="Bold"/>
+                        <TextBox Text="{Binding CurrentPositivePromptPrefix}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+
+                        <TextBlock Text="Negative Prompt Prefix:" FontWeight="Bold"/>
+                        <TextBox Text="{Binding CurrentNegativePromptPrefix}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <DockPanel Grid.Row="2" LastChildFill="False">
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="8">
+                    <Button Content="Refresh Assets" Command="{Binding LoadAvailableInvokeAIModelsCommand}"/>
+                    <Button Content="Import All" Name="ImportButton"/>
+                    <Button Content="Export All" Name="ExportButton"/>
+                    <Button Content="{Binding SaveButtonLabel}" Command="{Binding SaveModelDefaultCommand}" IsEnabled="{Binding CanSave}"/>
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsDeferred}">
+                    <Button Content="Save" Command="{Binding ConfirmCommand}" IsDefault="True"/>
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True"/>
+                </StackPanel>
+            </DockPanel>
+        </Grid>
+    </Border>
+
+</Window>

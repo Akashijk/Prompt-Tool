@@ -1,0 +1,239 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        xmlns:core="using:PromptTool.Core.Models"
+        mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="300"
+        x:Class="PromptTool.Views.WildcardManagerWindow"
+        x:DataType="vm:WildcardManagerViewModel"
+        x:CompileBindings="False"
+        Title="Wildcard Manager"
+        WindowStartupLocation="CenterOwner">
+    <Window.KeyBindings>
+        <KeyBinding Gesture="Ctrl+F" Command="{Binding ToggleFindCommand}"/>
+        <KeyBinding Gesture="F3" Command="{Binding FindNextCommand}"/>
+    </Window.KeyBindings>
+    <Grid Margin="10" RowDefinitions="Auto,*" ColumnDefinitions="1.25*,2*" RowSpacing="8" ColumnSpacing="10">
+        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="8">
+            <Button Content="New" Command="{Binding NewWildcardCommand}"/>
+            <Button Content="Save" Command="{Binding SaveWildcardCommand}"/>
+            <Button Content="Delete" Click="OnDeleteWildcardClicked"/>
+            <Button Content="Validate" Command="{Binding ValidateCommand}"/>
+            <Button Content="Find Duplicates" Command="{Binding FindDuplicatesCommand}"/>
+            <Button Content="Dedup" Command="{Binding DeduplicateChoicesCommand}"/>
+            <Button Content="Rename" Click="OnRenameWildcardClicked"/>
+            <Button Content="Archive" Command="{Binding ArchiveWildcardCommand}" IsEnabled="{Binding CanArchive}"/>
+            <Button Content="Unarchive" Command="{Binding UnarchiveWildcardCommand}" IsEnabled="{Binding CanUnarchive}"/>
+            <Button Content="Convert Legacy TXT" Command="{Binding ConvertAllLegacyCommand}"/>
+            <Button Content="Refresh Deps" Command="{Binding RefreshDependenciesCommand}"/>
+        </StackPanel>
+        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Status}" HorizontalAlignment="Right" VerticalAlignment="Center" Classes="subtle"/>
+
+        <Grid Grid.Row="1" Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="6">
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6">
+                <TextBox Width="200" Watermark="Filter wildcards..." Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="{Binding WildcardCount, StringFormat='Total: {0}'}" VerticalAlignment="Center" Classes="subtle"/>
+                <CheckBox Content="Show archived" IsChecked="{Binding ShowArchived}" VerticalAlignment="Center"/>
+            </StackPanel>
+            <ListBox x:Name="WildcardListBox"
+                     Grid.Row="1"
+                     ItemsSource="{Binding Wildcards}"
+                     SelectedItem="{Binding SelectedWildcard}"
+                     BorderThickness="1"
+                     SelectionChanged="WildcardListBox_SelectionChanged"
+                     VerticalAlignment="Stretch">
+                <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="core:WildcardFileEntry">
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock Text="{Binding Name}"/>
+                            <TextBlock Text="(archived)" IsVisible="{Binding IsArchived}" Classes="subtle"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" Grid.Column="1" VerticalScrollBarVisibility="Auto">
+            <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="6">
+                <TextBox Grid.Row="0" Watermark="Wildcard name" Text="{Binding CurrentWildcardName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                <Border Grid.Row="1" IsVisible="{Binding IsFindVisible}" Padding="6" BorderThickness="1" CornerRadius="4" BorderBrush="#404040">
+                    <StackPanel Spacing="6">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBox Width="160" Watermark="Find" Text="{Binding FindText, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Width="160" Watermark="Replace" Text="{Binding ReplaceText, UpdateSourceTrigger=PropertyChanged}"/>
+                            <Button Content="Find Next" Command="{Binding FindNextCommand}"/>
+                            <Button Content="Replace" Command="{Binding ReplaceNextCommand}"/>
+                            <Button Content="Replace All" Command="{Binding ReplaceAllCommand}"/>
+                            <Button Content="Close" Command="{Binding ToggleFindCommand}"/>
+                        </StackPanel>
+                        <TextBlock Text="Ctrl+F: find, F3: next, Enter: add row, Delete: remove row." Classes="subtle"/>
+                    </StackPanel>
+                </Border>
+                <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTabIndex}">
+                    <TabItem Header="Structured">
+                        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="6" Margin="4">
+                            <TextBlock Grid.Row="0" Text="Choices" FontWeight="Bold"/>
+                            <DataGrid Grid.Row="1"
+                                      ItemsSource="{Binding Choices}"
+                                      SelectedItem="{Binding SelectedChoice}"
+                                      AutoGenerateColumns="False"
+                                      CanUserResizeColumns="True"
+                                      CanUserSortColumns="False"
+                                      IsReadOnly="False"
+                                      HeadersVisibility="Column"
+                                      SelectionMode="Single"
+                                      RowHeight="36"
+                                      KeyDown="ChoicesGrid_KeyDown">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="#" Binding="{Binding Index}" Width="40" IsReadOnly="True"/>
+                                    <DataGridTemplateColumn Header="Value" Width="2*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Value}" TextWrapping="Wrap"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                        <DataGridTemplateColumn.CellEditingTemplate>
+                                            <DataTemplate>
+                                                <TextBox Text="{Binding Value, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellEditingTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Weight" Binding="{Binding Weight}" Width="80"/>
+                                    <DataGridTextColumn Header="Tags (comma separated)" Binding="{Binding Tags}" Width="1.5*"/>
+                                    <DataGridTemplateColumn Header="Includes" Width="1.2*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="{Binding IncludesCount}"
+                                                        Padding="6,2"
+                                                        MinWidth="36"
+                                                        HorizontalAlignment="Center"
+                                                        ToolTip.ShowDelay="600"
+                                                        DoubleTapped="OnIncludesDoubleTapped">
+                                                    <ToolTip.Tip>
+                                                        <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
+                                                            <TextBlock Text="{Binding IncludesTooltip}" TextWrapping="Wrap"/>
+                                                        </ScrollViewer>
+                                                    </ToolTip.Tip>
+                                                </Button>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Requires" Width="1.5*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="{Binding RequiresCount}"
+                                                        Padding="6,2"
+                                                        MinWidth="36"
+                                                        HorizontalAlignment="Center"
+                                                        ToolTip.ShowDelay="600"
+                                                        DoubleTapped="OnRequiresDoubleTapped">
+                                                    <ToolTip.Tip>
+                                                        <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
+                                                            <TextBlock Text="{Binding RequiresTooltip}" TextWrapping="Wrap"/>
+                                                        </ScrollViewer>
+                                                    </ToolTip.Tip>
+                                                </Button>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Warning" Width="1.1*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="!"
+                                                           FontWeight="Bold"
+                                                           Foreground="OrangeRed"
+                                                           IsVisible="{Binding Warning, Converter={StaticResource StringToBoolConverter}}"
+                                                           ToolTip.Tip="{Binding Warning}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                <Button Content="Add" Command="{Binding AddChoiceCommand}"/>
+                                <Button Content="Delete" Command="{Binding DeleteChoiceCommand}"/>
+                                <Button Content="Move Up" Command="{Binding MoveChoiceUpCommand}"/>
+                                <Button Content="Move Down" Command="{Binding MoveChoiceDownCommand}"/>
+                                <Button Content="Set Include..." Click="OnSetIncludeClicked"/>
+                                <Button Content="Clear Include" Click="OnClearIncludeClicked"/>
+                                <Button Content="Set Requires..." Click="OnSetRequiresClicked"/>
+                                <Button Content="Clear Requires" Click="OnClearRequiresClicked"/>
+                                <Button Content="Refresh from Raw" Command="{Binding ReloadStructuredFromRawCommand}"/>
+                                <Button Content="Apply to Raw JSON" Command="{Binding ApplyStructuredToRawCommand}"/>
+                            </StackPanel>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="Raw JSON">
+                        <TextBox AcceptsReturn="True" TextWrapping="Wrap"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 MinHeight="260"
+                                 Text="{Binding CurrentWildcardContent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                    </TabItem>
+                </TabControl>
+                <StackPanel Grid.Row="3" Spacing="6">
+                    <DataGrid ItemsSource="{Binding ValidationErrors}"
+                              AutoGenerateColumns="False"
+                              CanUserResizeColumns="True"
+                              HeadersVisibility="Column"
+                              SelectionMode="Single"
+                              SelectedItem="{Binding SelectedValidationIssue}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Location" Binding="{Binding Location}" Width="120"/>
+                            <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Button Content="Insert Weighted" Command="{Binding InsertWeightedChoiceTemplateCommand}"/>
+                        <Button Content="Insert Include" Command="{Binding InsertIncludeTemplateCommand}"/>
+                        <Button Content="Insert Requires" Command="{Binding InsertRequiresTemplateCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Grid.Row="4" Spacing="8">
+                    <Expander Header="Dependencies" IsExpanded="False">
+                        <Border BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="6">
+                            <ItemsControl ItemsSource="{Binding Dependencies}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:DependencyInfo">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                            <TextBlock Classes="subtle" Text="{Binding References, StringFormat='Referenced by {0} file(s)'}"/>
+                                            <TextBlock Classes="subtle" Text="{Binding Includes, StringFormat='Includes: {0}'}"/>
+                                            <TextBlock Classes="subtle" Text="{Binding RequiredBy, StringFormat='Required by: {0}'}"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <Button Content="Open" Command="{Binding DataContext.SelectWildcardByNameCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Name}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Border>
+                    </Expander>
+                    <Expander Header="Unused Wildcards" IsExpanded="False">
+                        <Border BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="6">
+                            <StackPanel Spacing="4">
+                                <ItemsControl ItemsSource="{Binding UnusedWildcards}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="x:String">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <TextBlock Text="{Binding}"/>
+                                                <Button Content="Open" Command="{Binding DataContext.SelectWildcardByNameCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
+                                                <Button Content="Delete"
+                                                        Tag="{Binding}"
+                                                        Click="OnDeleteUnusedClicked"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Button Content="Delete All Unused"
+                                        HorizontalAlignment="Right"
+                                        Margin="0,4,0,0"
+                                        Click="OnDeleteAllUnusedClicked"/>
+                            </StackPanel>
+                        </Border>
+                    </Expander>
+                </StackPanel>
+            </Grid>
+        </ScrollViewer>
+    </Grid>
+</Window>

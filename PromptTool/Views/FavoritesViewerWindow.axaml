@@ -1,0 +1,52 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        x:Class="PromptTool.Views.FavoritesViewerWindow"
+        x:DataType="vm:FavoritesViewerViewModel"
+        x:Name="FavoritesWindow"
+        Title="Favorite Images"
+        WindowStartupLocation="CenterOwner">
+
+    <Design.DataContext>
+        <vm:FavoritesViewerViewModel />
+    </Design.DataContext>
+
+    <Grid RowDefinitions="*,Auto">
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding FavoriteImages}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:FavoriteImageItem">
+                        <Border Margin="8" Padding="4" BorderBrush="#404040" BorderThickness="1" CornerRadius="4">
+                             <Border.ContextMenu>
+                                <ContextMenu Tag="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                             DataContext="{Binding DataContext, ElementName=FavoritesWindow}">
+                                    <MenuItem Header="Unfavorite"
+                                              Command="{Binding DataContext.UnfavoriteImageCommand, ElementName=FavoritesWindow}"
+                                              CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                </ContextMenu>
+                            </Border.ContextMenu>
+                            <StackPanel Spacing="4" Width="200">
+                                <Image Source="{Binding Bitmap}" Height="150" Stretch="Uniform" />
+                                <TextBlock Text="{Binding Prompt}" TextWrapping="Wrap" MaxHeight="100" />
+                                <TextBlock Text="{Binding Timestamp, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Foreground="Gray" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Margin="10">
+            <TextBlock Text="{Binding StatusText}" />
+            <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsLoading}" />
+        </StackPanel>
+    </Grid>
+</Window>

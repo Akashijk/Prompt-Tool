@@ -1,0 +1,86 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+        x:Class="PromptTool.Views.LoraPermutationDialog"
+        x:DataType="vm:LoraPermutationDialogViewModel"
+        x:CompileBindings="False"
+        Title="Generate LoRA Permutations"
+        WindowStartupLocation="CenterOwner"
+        Width="900"
+        Height="640"
+        MinWidth="760"
+        MinHeight="520"
+        SizeToContent="Manual">
+
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Generate LoRA Permutations"/>
+            </StackPanel>
+
+            <Grid Grid.Row="1" ColumnDefinitions="2*,3*" ColumnSpacing="12">
+                <StackPanel Grid.Column="0" Spacing="6">
+                    <TextBlock Text="Permutations" FontWeight="Bold"/>
+                    <ListBox ItemsSource="{Binding Permutations}" SelectedItem="{Binding SelectedPermutation, Mode=TwoWay}"
+                             MinHeight="220"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding DisplayName}"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Button Content="Add" Command="{Binding AddPermutationCommand}"/>
+                        <Button Content="Duplicate" Command="{Binding DuplicatePermutationCommand}"/>
+                        <Button Content="Remove" Command="{Binding RemovePermutationCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Spacing="6">
+                    <TextBlock Text="LoRAs for Selected Permutation" FontWeight="Bold"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding SelectedPermutation.Rows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:LoraPermutationRowViewModel">
+                                    <Grid ColumnDefinitions="*,120,Auto" ColumnSpacing="8" Margin="0,0,0,6">
+                                        <ComboBox Grid.Column="0"
+                                                  HorizontalAlignment="Stretch"
+                                                  HorizontalContentAlignment="Stretch"
+                                                  ItemsSource="{Binding DataContext.LoraOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  SelectedItem="{Binding SelectedOption, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Name}"/>
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                        <NumericUpDown Grid.Column="1"
+                                                       Value="{Binding Weight, Mode=TwoWay}"
+                                                       Minimum="-1"
+                                                       Maximum="2"
+                                                       Increment="0.05"
+                                                       FormatString="F2"
+                                                       />
+                                        <Button Grid.Column="2" Content="Delete"
+                                                Command="{Binding DataContext.DeleteLoraRowCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding .}"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <Button Content="Add LoRA to Permutation" Command="{Binding AddLoraRowCommand}" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Grid>
+
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True"/>
+                <Button Content="Generate" Command="{Binding GenerateCommand}" IsDefault="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

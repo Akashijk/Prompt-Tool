@@ -1,0 +1,51 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PromptTool.Views.RequiresPickerDialog"
+        x:CompileBindings="False"
+        Title="Set Requires"
+        Width="560"
+        Height="480"
+        MinWidth="460"
+        MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Set Requires"/>
+                <TextBlock Text="Pick a wildcard and the required value." Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+            <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="12">
+                <Grid Grid.Column="0" RowDefinitions="Auto,Auto,*" RowSpacing="6">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="Wildcard" FontWeight="Bold"/>
+                        <CheckBox x:Name="RecentFirstToggle" Content="Recent first"/>
+                    </StackPanel>
+                    <TextBox x:Name="WildcardFilterBox" Grid.Row="1" Watermark="Filter wildcards..."/>
+                    <ListBox x:Name="WildcardListBox" Grid.Row="2"
+                             MinHeight="200"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}"
+                                           ToolTip.ShowDelay="600"
+                                           ToolTip.Tip="{Binding Preview}" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+                <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" RowSpacing="6">
+                    <TextBlock Text="Value" FontWeight="Bold"/>
+                    <TextBox x:Name="ValueFilterBox" Grid.Row="1" Watermark="Filter values..."/>
+                    <ListBox x:Name="ValueListBox" Grid.Row="2"
+                             MinHeight="200"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                </Grid>
+            </Grid>
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Cancel" Width="90" Click="OnCancel" IsCancel="True"/>
+                <Button Content="OK" Width="90" Click="OnOk" IsDefault="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

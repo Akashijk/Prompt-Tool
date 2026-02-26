@@ -1,0 +1,24 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PromptTool.Views.ConfirmDialog"
+        Title="Confirm"
+        SizeToContent="WidthAndHeight"
+        MinWidth="320"
+        MinHeight="160"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="{Binding $parent[Window].Title}"/>
+            </StackPanel>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <TextBlock x:Name="MessageText" TextWrapping="Wrap"/>
+            </ScrollViewer>
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Cancel" Width="90" Click="OnNo" IsCancel="True"/>
+                <Button Content="Delete" Width="90" Click="OnYes" IsDefault="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

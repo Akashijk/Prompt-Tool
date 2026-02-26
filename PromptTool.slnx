@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="PromptTool.Core/PromptTool.Core.csproj" />
+  <Project Path="PromptTool/PromptTool.csproj" />
+  <Project Path="PromptTool.Tests/PromptTool.Tests.csproj" />
+</Solution>

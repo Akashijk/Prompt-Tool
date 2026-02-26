@@ -1,0 +1,181 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="720"
+        x:Class="PromptTool.Views.ImageJsonEditorWindow"
+        x:DataType="vm:ImageJsonEditorViewModel"
+        Title="Edit Image Data"
+        WindowStartupLocation="CenterOwner"
+        Width="900"
+        Height="720"
+        MinWidth="720"
+        MinHeight="560"
+        SizeToContent="Manual">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Edit Image Data"/>
+                <TextBlock Text="Review and update the stored data for this image. Changes save to history immediately."
+                           Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="12">
+                <Border BorderBrush="#3A3F4B" BorderThickness="1" CornerRadius="6" Padding="10">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Entry" FontWeight="Bold"/>
+                        <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6" ColumnSpacing="8">
+                            <TextBlock Grid.Row="0" Text="Entry ID"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EntryId}" IsReadOnly="True"/>
+
+                            <TextBlock Grid.Row="1" Text="Timestamp"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Timestamp}" IsReadOnly="True"/>
+
+                            <TextBlock Grid.Row="2" Text="Template Name"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding TemplateName}"/>
+
+                            <TextBlock Grid.Row="3" Text="Workflow"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Workflow}"/>
+
+                            <TextBlock Grid.Row="4" Text="Status"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Status}"/>
+
+                            <TextBlock Grid.Row="5" Text="Ollama Model"/>
+                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding OllamaModel}"/>
+
+                            <TextBlock Grid.Row="6" Text="InvokeAI Model"/>
+                            <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding InvokeAIModel}"/>
+
+                            <TextBlock Grid.Row="7" Text="Cover Image Path"/>
+                            <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding CoverImagePath}"/>
+
+                            <TextBlock Grid.Row="8" Text="Original Prompt"/>
+                            <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding OriginalPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+
+                            <TextBlock Grid.Row="9" Text="Processed Prompt"/>
+                            <TextBox Grid.Row="9" Grid.Column="1" Text="{Binding ProcessedPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+                        </Grid>
+
+                        <TextBlock Text="Enhanced Prompt"/>
+                        <TextBox Text="{Binding EnhancedPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+                    </StackPanel>
+                </Border>
+
+                <Border BorderBrush="#3A3F4B" BorderThickness="1" CornerRadius="6" Padding="10">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Image" FontWeight="Bold"/>
+                        <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="6" ColumnSpacing="8">
+                            <TextBlock Grid.Row="0" Text="Prompt Type"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding PromptType}"/>
+
+                            <TextBlock Grid.Row="1" Text="Prompt"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Prompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+
+                            <TextBlock Grid.Row="2" Text="Image Path"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ImagePath}"/>
+
+                            <TextBlock Grid.Row="3" Text="Image Workflow"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding ImageWorkflow}"/>
+
+                            <TextBlock Grid.Row="4" Text="Favorite"/>
+                            <CheckBox Grid.Row="4" Grid.Column="1" IsChecked="{Binding IsFavorite}"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border BorderBrush="#3A3F4B" BorderThickness="1" CornerRadius="6" Padding="10">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Generation Params" FontWeight="Bold"/>
+                        <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6" ColumnSpacing="8">
+                            <TextBlock Grid.Row="0" Text="Prompt"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding GenPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+
+                            <TextBlock Grid.Row="1" Text="Negative Prompt"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding NegativePrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60"/>
+
+                            <TextBlock Grid.Row="2" Text="Positive Style Prompt"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PositiveStylePrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60"/>
+
+                            <TextBlock Grid.Row="3" Text="Negative Style Prompt"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding NegativeStylePrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60"/>
+
+                            <TextBlock Grid.Row="4" Text="Model Name"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding ModelName}"/>
+
+                            <TextBlock Grid.Row="5" Text="Model Base"/>
+                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding ModelBase}"/>
+
+                            <TextBlock Grid.Row="6" Text="Model Format"/>
+                            <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding ModelFormat}"/>
+
+                            <TextBlock Grid.Row="7" Text="VAE Used Name"/>
+                            <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding VaeUsedName}"/>
+
+                            <TextBlock Grid.Row="8" Text="Base Model Type"/>
+                            <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding BaseModelType}"/>
+
+                            <TextBlock Grid.Row="9" Text="Steps"/>
+                            <TextBox Grid.Row="9" Grid.Column="1" Text="{Binding Steps}"/>
+
+                            <TextBlock Grid.Row="10" Text="CFG Scale"/>
+                            <TextBox Grid.Row="10" Grid.Column="1" Text="{Binding CfgScale}"/>
+
+                            <TextBlock Grid.Row="11" Text="Width"/>
+                            <TextBox Grid.Row="11" Grid.Column="1" Text="{Binding Width}"/>
+
+                            <TextBlock Grid.Row="12" Text="Height"/>
+                            <TextBox Grid.Row="12" Grid.Column="1" Text="{Binding Height}"/>
+
+                            <TextBlock Grid.Row="13" Text="Seed"/>
+                            <TextBox Grid.Row="13" Grid.Column="1" Text="{Binding Seed}"/>
+
+                            <TextBlock Grid.Row="14" Text="Base Seed"/>
+                            <TextBox Grid.Row="14" Grid.Column="1" Text="{Binding BaseSeed}"/>
+
+                            <TextBlock Grid.Row="15" Text="Used Random Seed"/>
+                            <CheckBox Grid.Row="15" Grid.Column="1" IsChecked="{Binding UsedRandomSeed}"/>
+
+                            <TextBlock Grid.Row="16" Text="Scheduler"/>
+                            <TextBox Grid.Row="16" Grid.Column="1" Text="{Binding Scheduler}"/>
+
+                            <TextBlock Grid.Row="17" Text="CFG Rescale Multiplier"/>
+                            <TextBox Grid.Row="17" Grid.Column="1" Text="{Binding CfgRescaleMultiplier}"/>
+                        </Grid>
+
+                        <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="6" ColumnSpacing="8">
+                            <TextBlock Grid.Row="0" Text="Save To Gallery"/>
+                            <CheckBox Grid.Row="0" Grid.Column="1" IsChecked="{Binding SaveToGallery}"/>
+
+                            <TextBlock Grid.Row="1" Text="Auto Clear Model Cache"/>
+                            <CheckBox Grid.Row="1" Grid.Column="1" IsChecked="{Binding AutoClearedModelCacheBetweenModels}"/>
+
+                            <TextBlock Grid.Row="2" Text="LoRAs (name:weight)"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Loras}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border BorderBrush="#3A3F4B" BorderThickness="1" CornerRadius="6" Padding="10">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Raw JSON (advanced)" FontWeight="Bold"/>
+                        <CheckBox Content="Use raw JSON on save" IsChecked="{Binding UseRawJson}"/>
+                        <TextBox Text="{Binding RawJson}" AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="220"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+                    </StackPanel>
+                </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <DockPanel Grid.Row="2" LastChildFill="False">
+                <TextBlock Text="{Binding StatusText}" Foreground="Orange" VerticalAlignment="Center"/>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                    <Button Content="Cancel" Click="Cancel_Click" IsCancel="True"/>
+                    <Button Content="Save" Click="Save_Click" IsDefault="True"/>
+                </StackPanel>
+            </DockPanel>
+        </Grid>
+    </Border>
+</Window>

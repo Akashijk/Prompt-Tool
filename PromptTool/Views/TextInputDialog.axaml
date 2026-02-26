@@ -1,0 +1,25 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PromptTool.Views.TextInputDialog"
+        Title="Input"
+        SizeToContent="WidthAndHeight"
+        MinWidth="360"
+        MinHeight="180"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="{Binding $parent[Window].Title}"/>
+            </StackPanel>
+            <StackPanel Grid.Row="1" Spacing="{StaticResource DialogSectionSpacing}">
+                <TextBlock x:Name="MessageText" TextWrapping="Wrap"/>
+                <TextBox x:Name="InputBox"/>
+            </StackPanel>
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Cancel" Width="90" Click="OnCancel" IsCancel="True"/>
+                <Button Content="OK" Width="90" Click="OnOk" IsDefault="True"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

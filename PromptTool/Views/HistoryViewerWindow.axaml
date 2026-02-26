@@ -1,0 +1,266 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="700"
+        x:Class="PromptTool.Views.HistoryViewerWindow"
+        x:Name="HistoryWindow"
+        x:DataType="vm:HistoryViewerViewModel"
+        Title="{Binding WorkflowFilter, StringFormat='History Viewer ({0})'}"
+        WindowStartupLocation="CenterOwner">
+
+    <Design.DataContext>
+        <vm:HistoryViewerViewModel />
+    </Design.DataContext>
+
+        <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="2*,8,2*" Margin="10" ColumnSpacing="10" RowSpacing="8">
+            <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="10">
+                <TextBox Width="260" Watermark="Search prompt, status, template..." Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                <CheckBox Content="Favorites only" IsChecked="{Binding ShowFavoritesOnly}"/>
+                <ComboBox Width="120" SelectedItem="{Binding WorkflowFilter}">
+                    <ComboBoxItem Content="All"/>
+                    <ComboBoxItem Content="SFW"/>
+                    <ComboBoxItem Content="NSFW"/>
+                </ComboBox>
+                <Button Content="Refresh" Command="{Binding RefreshCommand}"/>
+                <Button Content="All Images" Command="{Binding ShowAllImagesCommand}"/>
+                <Button Content="Prune Missing" Command="{Binding PruneMissingImagesCommand}"/>
+                <Button Content="GC Orphans" Command="{Binding GarbageCollectOrphansCommand}"/>
+                <TextBlock Text="{Binding StatusNote}" Classes="subtle" VerticalAlignment="Center"/>
+            </StackPanel>
+
+        <Grid Grid.Row="1" Grid.Column="0" RowDefinitions="Auto,*">
+            <Border BorderBrush="#404040" BorderThickness="0,0,0,1" Padding="6,4">
+                <Grid ColumnDefinitions="50,120,150,*,120">
+                    <TextBlock Text="★" HorizontalAlignment="Center" FontWeight="Bold"/>
+                    <TextBlock Text="Thumbnail" Grid.Column="1" FontWeight="Bold"/>
+                    <TextBlock Text="Timestamp" Grid.Column="2" FontWeight="Bold"/>
+                    <TextBlock Text="Template" Grid.Column="3" FontWeight="Bold"/>
+                    <TextBlock Text="Status" Grid.Column="4" FontWeight="Bold"/>
+                </Grid>
+            </Border>
+            <DataGrid Grid.Row="1"
+                      ItemsSource="{Binding HistoryEntries}"
+                      SelectedItem="{Binding SelectedHistoryEntry}"
+                      AutoGenerateColumns="False"
+                      CanUserResizeColumns="True"
+                      CanUserSortColumns="True"
+                      CanUserReorderColumns="True"
+                      HeadersVisibility="None">
+                <DataGrid.ContextMenu>
+                    <ContextMenu DataContext="{Binding}">
+                        <MenuItem Header="Enhance"
+                                  Command="{Binding EnhanceCommand}"
+                                  IsVisible="{Binding CanEnhanceSelected}"/>
+                    </ContextMenu>
+                </DataGrid.ContextMenu>
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="★" Width="50">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Button Background="Transparent"
+                                        BorderThickness="0"
+                                        Padding="0"
+                                        HorizontalAlignment="Center"
+                                        Command="{Binding DataContext.ToggleEntryFavoriteCommand, ElementName=HistoryWindow}"
+                                        CommandParameter="{Binding}">
+                                    <PathIcon Width="16" Height="16"
+                                              Data="M12,2 L14.9,8.6 L22,9.3 L16.5,13.8 L18.2,21 L12,17.3 L5.8,21 L7.5,13.8 L2,9.3 L9.1,8.6 Z"
+                                              Foreground="{Binding IsFavorite, Converter={StaticResource BoolToBrushConverter}}"/>
+                                </Button>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="Thumbnail" Width="120">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="#404040" BorderThickness="1" Padding="2">
+                                    <Image Source="{Binding Cover}" Height="70" Stretch="UniformToFill"/>
+                                </Border>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150"/>
+                    <DataGridTextColumn Header="Template" Binding="{Binding Template}" Width="*" />
+                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="120"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+
+        <GridSplitter Grid.Row="1" Grid.Column="1" Width="8" Background="Gray" HorizontalAlignment="Center"/>
+
+        <ScrollViewer Grid.Row="1" Grid.Column="2" VerticalScrollBarVisibility="Auto" x:Name="DetailsScroll">
+            <StackPanel Spacing="8">
+                <TextBlock Text="{Binding WorkflowFilter}" FontWeight="Bold"/>
+
+                <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Background="#2D2D30" Padding="6" Height="320">
+                    <Grid>
+                        <Image Source="{Binding SelectedImage}" Stretch="Uniform"/>
+                        <Button Content="View Large" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,4,4"
+                                Command="{Binding ViewLargeCommand}" CommandParameter="{Binding SelectedImageItem}" />
+                    </Grid>
+                </Border>
+
+                <Expander IsExpanded="True">
+                    <Expander.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="Summary" FontWeight="Bold"/>
+                            <TextBlock Text="(click to collapse)" Classes="subtle"/>
+                        </StackPanel>
+                    </Expander.Header>
+                    <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Padding="6">
+                        <StackPanel Spacing="6">
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="Prompt view:" VerticalAlignment="Center"/>
+                                <ComboBox ItemsSource="{Binding PromptVariants}"
+                                          SelectedItem="{Binding SelectedPromptVariant}"
+                                          MinWidth="200">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Label}"/>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+                            <TextBlock Text="{Binding SelectedPromptBanner}"
+                                       Classes="subtle"
+                                       IsVisible="{Binding ShowSelectedPromptBanner}"/>
+                            <TextBox Text="{Binding DetailsText}"
+                                     TextWrapping="Wrap"
+                                     IsReadOnly="True"
+                                     BorderThickness="0"
+                                     Background="Transparent"/>
+                            <TextBlock Text="Double-click an image for full details." Classes="subtle"/>
+                            <Button Content="Copy Prompt" Command="{Binding CopyPromptCommand}" HorizontalAlignment="Left"/>
+                        </StackPanel>
+                    </Border>
+                </Expander>
+
+                <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Padding="6">
+                        <ListBox x:Name="SelectedImagesList"
+                                 ItemsSource="{Binding SelectedImages}"
+                             SelectedItem="{Binding SelectedImageItem}"
+                             SelectionMode="Single"
+                             BorderThickness="0">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:HistoryImageItem">
+                                <Border Margin="4" Padding="4" BorderBrush="#404040" BorderThickness="1" CornerRadius="4"
+                                        DoubleTapped="Image_DoubleTapped">
+                                                                         <Border.ContextMenu>
+                                                                            <ContextMenu>
+                                                                                <MenuItem Header="Favorite Entry"
+                                                                                          Command="{Binding DataContext.SetEntryFavoriteCommand, ElementName=HistoryWindow}"/>
+                                                                                <MenuItem Header="Toggle Image Favorite"
+                                                                                          Command="{Binding DataContext.ToggleImageFavoriteCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Set as Cover Image"
+                                                                                          Command="{Binding DataContext.SetCoverImageCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Delete Image"
+                                                                                          Command="{Binding DataContext.DeleteImageCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Open Image"
+                                                                                          Command="{Binding DataContext.OpenImageCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Open Containing Folder"
+                                                                                          Command="{Binding DataContext.OpenContainingFolderCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Copy Prompt"
+                                                                                          Command="{Binding DataContext.CopyPromptCommand, ElementName=HistoryWindow}"/>
+                                                                                <MenuItem Header="Copy Generation JSON"
+                                                                                          Command="{Binding DataContext.CopyGenerationJsonCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Edit Generation JSON"
+                                                                                          Command="{Binding DataContext.EditGenerationJsonCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Generate More (from Image)..."
+                                                                                          Command="{Binding DataContext.GenerateMoreCommand, ElementName=HistoryWindow}"/>
+                                                                                <MenuItem Header="Generate New from Prompt..."
+                                                                                          Command="{Binding DataContext.GenerateNewCommand, ElementName=HistoryWindow}"/>
+                                                                                <MenuItem Header="Edit &amp; Regenerate..."
+                                                                                          Command="{Binding DataContext.EditAndRegenerateCommand, ElementName=HistoryWindow}"/>
+                                                                                <MenuItem Header="Generate Seed Variations"
+                                                                                          Command="{Binding DataContext.GenerateSeedVariationsCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Generate LoRA Variations"
+                                                                                          Command="{Binding DataContext.GenerateLoraVariationsCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="Enhance"
+                                                                                          Command="{Binding DataContext.EnhanceCommand, ElementName=HistoryWindow}"/>
+                                                                                <MenuItem Header="Upscale..."
+                                                                                          Command="{Binding DataContext.UpscaleImageCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                                <MenuItem Header="View Large"
+                                                                                          Command="{Binding DataContext.ViewLargeCommand, ElementName=HistoryWindow}"
+                                                                                          CommandParameter="{Binding}"/>
+                                                                            </ContextMenu>
+                                                                        </Border.ContextMenu>
+                                    <Border ToolTip.Tip="{Binding Bitmap}">
+                                        <StackPanel Spacing="4">
+                                            <Image Source="{Binding Bitmap}" Width="110" Height="78" Stretch="UniformToFill"/>
+                                            <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding ModelLabel}"
+                                                       Classes="subtle"
+                                                       IsVisible="{Binding ModelLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                            <TextBlock Text="{Binding SeedLabel}"
+                                                       Classes="subtle"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       IsVisible="{Binding SeedLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                            <TextBlock Text="{Binding LoraLabel}"
+                                                       Classes="subtle"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <Button Padding="4"
+                                                        ToolTip.Tip="Favorite image"
+                                                        Command="{Binding DataContext.ToggleImageFavoriteCommand, ElementName=HistoryWindow}"
+                                                        CommandParameter="{Binding}">
+                                                    <PathIcon Width="14" Height="14"
+                                                              Data="M12,2 L14.9,8.6 L22,9.3 L16.5,13.8 L18.2,21 L12,17.3 L5.8,21 L7.5,13.8 L2,9.3 L9.1,8.6 Z"
+                                                              Foreground="{Binding Image.IsFavorite, Converter={StaticResource BoolToBrushConverter}}"/>
+                                                </Button>
+                                                <Button Padding="4"
+                                                        ToolTip.Tip="Set cover image"
+                                                        Command="{Binding DataContext.SetCoverImageCommand, ElementName=HistoryWindow}"
+                                                        CommandParameter="{Binding}">
+                                                    <PathIcon Width="14" Height="14"
+                                                              Data="M3,4 H21 V20 H3 Z M5,6 V18 H19 V6 Z M7,16 L11,12 L14,15 L16,13 L18,16 V18 H7 Z"/>
+                                                </Button>
+                                                <Button Padding="4"
+                                                        ToolTip.Tip="Edit JSON"
+                                                        Command="{Binding DataContext.EditGenerationJsonCommand, ElementName=HistoryWindow}"
+                                                        CommandParameter="{Binding}">
+                                                    <TextBlock Text="{}" FontFamily="Consolas, Menlo, Courier New" FontSize="12"/>
+                                                </Button>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+            <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+                <Button Content="Favorite" Command="{Binding ToggleFavoriteCommand}"/>
+                <Button Content="Delete Entry" Command="{Binding DeleteEntryCommand}"/>
+                <Button Content="Open Folder" Command="{Binding OpenContainingFolderCommand}" CommandParameter="{Binding SelectedImageItem}"/>
+                <Button Content="Refresh" Command="{Binding RefreshCommand}"/>
+                <Button Content="Enhance" Command="{Binding EnhanceCommand}" IsVisible="{Binding CanEnhanceSelected}"/>
+                <Button Content="Generate New..." Command="{Binding GenerateNewCommand}"/>
+                <Button Content="Generate More..." Command="{Binding GenerateMoreCommand}"/>
+                <Button Content="Generate Missing Enhancements" Command="{Binding FillMissingVariationsCommand}" IsVisible="{Binding CanFillMissingVariations}"/>
+                <Button Content="Load Prompt" Command="{Binding LoadPromptFromHistoryCommand}" Classes="accent"/>
+                <Button Content="Close" Command="{Binding CancelCommand}" IsCancel="True"/>
+            </StackPanel>
+        </Grid>
+
+</Window>

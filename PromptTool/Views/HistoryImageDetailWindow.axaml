@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="720"
+        x:Class="PromptTool.Views.HistoryImageDetailWindow"
+        x:DataType="vm:HistoryImageDetailViewModel"
+        Title="Image Details"
+        WindowStartupLocation="Manual"
+        SystemDecorations="Full"
+        CanResize="True">
+
+    <Grid x:Name="RootGrid" RowDefinitions="Auto,*,Auto" Margin="12" RowSpacing="10">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Zoom"/>
+            <Slider x:Name="ZoomSlider" Minimum="1" Maximum="3" Value="1" Width="180"
+                    TickFrequency="1" IsSnapToTickEnabled="True"
+                    SmallChange="1" LargeChange="1"
+                    PointerWheelChanged="ZoomSlider_PointerWheelChanged"/>
+            <Button Content="Edit Image Data" Click="EditImageData_Click"/>
+            <Button Content="Upscale" Command="{Binding UpscaleCommand}"/>
+            <Button Content="Copy Processed" Command="{Binding CopyTextCommand}" CommandParameter="{Binding ProcessedPrompt}" IsVisible="{Binding HasProcessedPrompt}"/>
+            <Button Content="Copy Original" Command="{Binding CopyTextCommand}" CommandParameter="{Binding OriginalPrompt}"/>
+            <Button Content="Copy Details" Command="{Binding CopyTextCommand}" CommandParameter="{Binding DetailsText}"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1" ColumnDefinitions="2*,1*" ColumnSpacing="10">
+            <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Background="#111">
+                <ScrollViewer x:Name="ImageScrollViewer"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto"
+                              SizeChanged="ImageScrollViewer_SizeChanged">
+                    <Canvas x:Name="ImageCanvas"
+                            PointerPressed="Image_PointerPressed"
+                            PointerReleased="Image_PointerReleased"
+                            PointerMoved="Image_PointerMoved"
+                            PointerWheelChanged="DetailImage_PointerWheelChanged">
+                        <Image x:Name="DetailImage"
+                               Source="{Binding Bitmap}"
+                               Stretch="None"
+                               RenderTransformOrigin="0,0">
+                            <Image.RenderTransform>
+                                <TransformGroup>
+                                    <ScaleTransform ScaleX="{Binding Value, ElementName=ZoomSlider}"
+                                                    ScaleY="{Binding Value, ElementName=ZoomSlider}"/>
+                                    <TranslateTransform />
+                                </TransformGroup>
+                            </Image.RenderTransform>
+                        </Image>
+                    </Canvas>
+                </ScrollViewer>
+            </Border>
+
+            <Grid x:Name="DetailsPanel" Grid.Column="1" RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
+                <TextBlock Text="Original Prompt" FontWeight="Bold"/>
+                <TextBox Grid.Row="1" Text="{Binding OriginalPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" IsReadOnly="True"/>
+                <StackPanel Grid.Row="2" Spacing="4" IsVisible="{Binding HasProcessedPrompt}">
+                    <TextBlock Text="Processed Prompt" FontWeight="Bold"/>
+                    <TextBox Text="{Binding ProcessedPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" IsReadOnly="True"/>
+                </StackPanel>
+                <TextBlock Grid.Row="3" Text="Details" FontWeight="Bold" Margin="0,6,0,0"/>
+                <TextBox Grid.Row="4" Text="{Binding DetailsText}" AcceptsReturn="True" TextWrapping="Wrap" IsReadOnly="True"
+                         VerticalAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+            </Grid>
+        </Grid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <Button Content="Close" Click="Close_Click" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -1,0 +1,136 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:PromptTool.ViewModels"
+             xmlns:views="using:PromptTool"
+             xmlns:services="using:PromptTool.Services"
+             xmlns:converters="using:PromptTool.Converters"
+             mc:Ignorable="d"
+             x:Class="PromptTool.App"
+             Name="Prompt Tool"
+             RequestedThemeVariant="Default">
+
+    <Application.Styles>
+        <FluentTheme />
+        <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+        <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
+
+        <!-- Palette defaults to ensure StaticResource resolution; runtime updates override these. -->
+        <Style>
+            <Style.Resources>
+                <Color x:Key="BaseBackground">#0E1524</Color>
+                <Color x:Key="CardBackground">#162035</Color>
+                <Color x:Key="BorderColor">#24304A</Color>
+                <Color x:Key="AccentColor">#4CC9F0</Color>
+                <Color x:Key="TextPrimary">#E8EDF5</Color>
+                <Color x:Key="TextSecondary">#A7B3C9</Color>
+                <Thickness x:Key="DialogOuterPadding">14</Thickness>
+                <Thickness x:Key="DialogSectionPadding">10</Thickness>
+                <x:Double x:Key="DialogRowSpacing">10</x:Double>
+                <x:Double x:Key="DialogSectionSpacing">8</x:Double>
+
+                <SolidColorBrush x:Key="BaseBackgroundBrush" Color="{StaticResource BaseBackground}" />
+                <SolidColorBrush x:Key="CardBackgroundBrush" Color="{StaticResource CardBackground}" />
+                <SolidColorBrush x:Key="BorderBrushStrong" Color="{StaticResource BorderColor}" />
+                <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}" />
+                <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource TextPrimary}" />
+                <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource TextSecondary}" />
+            </Style.Resources>
+        </Style>
+
+        <!-- Window & text defaults -->
+        <Style Selector="Window">
+            <Setter Property="Background" Value="{StaticResource BaseBackgroundBrush}" />
+            <Setter Property="FontFamily" Value="Segoe UI, Inter, Arial" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Icon" Value="avares://PromptTool/Assets/Icon.png" />
+        </Style>
+
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+        </Style>
+
+        <Style Selector="TextBlock.subtle">
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+        </Style>
+
+        <Style Selector="Border.dialog-root">
+            <Setter Property="Padding" Value="{StaticResource DialogOuterPadding}" />
+        </Style>
+
+        <Style Selector="StackPanel.dialog-header">
+            <Setter Property="Spacing" Value="{StaticResource DialogSectionSpacing}" />
+        </Style>
+
+        <Style Selector="TextBlock.dialog-title">
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+
+        <Style Selector="StackPanel.dialog-footer">
+            <Setter Property="Orientation" Value="Horizontal" />
+            <Setter Property="HorizontalAlignment" Value="Right" />
+            <Setter Property="Spacing" Value="{StaticResource DialogSectionSpacing}" />
+            <Setter Property="Margin" Value="0,6,0,0" />
+        </Style>
+
+        <!-- Cards/Borders -->
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{StaticResource CardBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushStrong}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="10" />
+        </Style>
+
+        <!-- Buttons -->
+        <Style Selector="Button">
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+        <Style Selector="Button.accent">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="Black" />
+        </Style>
+
+        <!-- Slim scrollbars -->
+        <Style Selector="ScrollBar">
+            <Setter Property="Width" Value="8" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="ScrollBar /template/ Thumb#PART_Thumb">
+            <Setter Property="Background" Value="#56627a" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+        <Style Selector="ScrollBar:PointerOver /template/ Thumb#PART_Thumb">
+            <Setter Property="Background" Value="#7f8aa7" />
+        </Style>
+        <Style Selector="ScrollBar:Pressed /template/ Thumb#PART_Thumb">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+        </Style>
+    </Application.Styles>
+
+    <Application.DataTemplates>
+        
+    </Application.DataTemplates>
+
+    <Application.Resources>
+        <converters:BoolToAccentBrushConverter x:Key="BoolToAccentBrushConverter"/>
+        <!-- Design-time & converters -->
+        <services:DesignTimeMainWindowViewModel x:Key="DesignTimeMainViewModel" />
+        <converters:IntToBoolConverter x:Key="IntToBoolConverter" />
+        <converters:StringToBoolConverter x:Key="StringToBoolConverter" /> <!-- New Converter -->
+        <converters:BoolToStarConverter x:Key="BoolToStarConverter" />
+        <converters:InverseBoolConverter x:Key="InverseBoolConverter" />
+        <converters:BoolToBrushConverter x:Key="BoolToBrushConverter" />
+    </Application.Resources>
+
+    <d:Application.DataContext>
+        <!-- This provides a design-time data context for the application. -->
+        <services:DesignTimeMainWindowViewModel />
+    </d:Application.DataContext>
+
+</Application>

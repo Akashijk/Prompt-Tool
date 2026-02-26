@@ -1,0 +1,9 @@
+<SyntaxDefinition name="Wildcard" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+    <Color name="Wildcard" foreground="Blue" fontWeight="bold" />
+
+    <RuleSet>
+        <Rule color="Wildcard">
+            __[\w_]+__
+        </Rule>
+    </RuleSet>
+</SyntaxDefinition>

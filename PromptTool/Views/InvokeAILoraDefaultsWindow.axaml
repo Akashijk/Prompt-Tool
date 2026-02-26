@@ -1,0 +1,104 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        x:Class="PromptTool.Views.InvokeAILoraDefaultsWindow"
+        x:DataType="vm:InvokeAILoraDefaultsViewModel"
+        Title="{Binding WindowTitle}"
+        WindowStartupLocation="CenterOwner"
+        Width="820"
+        Height="600"
+        MinWidth="680"
+        MinHeight="480"
+        SizeToContent="Manual">
+
+    <Design.DataContext>
+        <vm:InvokeAILoraDefaultsViewModel />
+    </Design.DataContext>
+
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="InvokeAI LoRA Defaults"/>
+                <TextBlock Text="{Binding StatusMessage}" Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <Grid Grid.Row="1" ColumnDefinitions="320,6,*">
+                <Grid Grid.Column="0" RowDefinitions="Auto,Auto,*" RowSpacing="6" Margin="0,0,10,0">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="Model Type" VerticalAlignment="Center"/>
+                        <ComboBox Width="160" ItemsSource="{Binding BaseModelTypes}" SelectedItem="{Binding SelectedBaseModelType}"/>
+                    </StackPanel>
+                    <TextBox Grid.Row="1" Text="{Binding SearchText}" Watermark="Search LoRAs..." />
+                    <ListBox Grid.Row="2"
+                             ItemsSource="{Binding AssetItems}"
+                             SelectedItem="{Binding SelectedAsset}"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="8">
+                                    <StackPanel Grid.Column="0" Spacing="2">
+                                        <TextBlock Text="{Binding Name}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{Binding HasDefaults, Converter={StaticResource BoolToAccentBrushConverter}}"/>
+                                        <TextBlock Text="{Binding GroupName}" Classes="subtle"/>
+                                    </StackPanel>
+                                    <Border Grid.Column="1"
+                                            Width="8"
+                                            Height="8"
+                                            CornerRadius="4"
+                                            Background="{DynamicResource AccentBrush}"
+                                            IsVisible="{Binding HasDefaults}"
+                                            VerticalAlignment="Center"
+                                            HorizontalAlignment="Right"
+                                            ToolTip.Tip="Defaults set"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+
+                <GridSplitter Grid.Column="1" Background="LightGray" Width="6"/>
+
+                <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" Margin="12,0,0,0">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="LoRA Name:" FontWeight="Bold"/>
+                        <TextBox Text="{Binding CurrentLoraName}" IsReadOnly="True"/>
+
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <CheckBox Content="Override Weight" IsChecked="{Binding UseWeightOverride}" VerticalAlignment="Center"/>
+                            <NumericUpDown Width="120"
+                                           Value="{Binding CurrentLoraWeight}"
+                                           Minimum="-2"
+                                           Maximum="4"
+                                           Increment="0.05"
+                                           IsEnabled="{Binding UseWeightOverride}"/>
+                        </StackPanel>
+
+                        <TextBlock Text="Positive Prompt Prefix:" FontWeight="Bold"/>
+                        <TextBox Text="{Binding CurrentPositivePromptPrefix}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+
+                        <TextBlock Text="Negative Prompt Prefix:" FontWeight="Bold"/>
+                        <TextBox Text="{Binding CurrentNegativePromptPrefix}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <DockPanel Grid.Row="2" LastChildFill="False">
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="8">
+                    <Button Content="Refresh Assets" Command="{Binding LoadAvailableLorasCommand}"/>
+                    <Button Content="Import All" Name="ImportButton"/>
+                    <Button Content="Export All" Name="ExportButton"/>
+                    <Button Content="{Binding SaveButtonLabel}" Command="{Binding SaveLoraDefaultCommand}" IsEnabled="{Binding CanSave}"/>
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsDeferred}">
+                    <Button Content="Save" Command="{Binding ConfirmCommand}" IsDefault="True"/>
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True"/>
+                </StackPanel>
+            </DockPanel>
+        </Grid>
+    </Border>
+
+</Window>

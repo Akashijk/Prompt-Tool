@@ -1,0 +1,44 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="700"
+        x:Class="PromptTool.Views.ImagePreviewWindow"
+        Title="Preview"
+        WindowStartupLocation="CenterOwner"
+        Width="900"
+        Height="700"
+        MinWidth="640"
+        MinHeight="480"
+        SizeToContent="Manual">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="{StaticResource DialogRowSpacing}">
+            <StackPanel Grid.Row="0" Classes="dialog-header">
+                <TextBlock Classes="dialog-title" Text="Preview"/>
+            </StackPanel>
+            <Grid Grid.Row="1" RowDefinitions="Auto,*" RowSpacing="6">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="Zoom"/>
+                    <Slider x:Name="ZoomSlider" Minimum="0.2" Maximum="3" Value="1" Width="160"/>
+                </StackPanel>
+                <Border Grid.Row="1" BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Background="#111">
+                    <ScrollViewer x:Name="PreviewScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                        <Image x:Name="PreviewImage" Stretch="Uniform" RenderTransformOrigin="0.5,0.5"
+                               Cursor="Hand"
+                               PointerPressed="Image_PointerPressed"
+                               PointerReleased="Image_PointerReleased"
+                               PointerMoved="Image_PointerMoved">
+                            <Image.RenderTransform>
+                                <ScaleTransform ScaleX="{Binding Value, ElementName=ZoomSlider}"
+                                                ScaleY="{Binding Value, ElementName=ZoomSlider}"/>
+                            </Image.RenderTransform>
+                        </Image>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+            <StackPanel Grid.Row="2" Classes="dialog-footer">
+                <Button Content="Close" IsCancel="True" Click="Close_Click"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>
