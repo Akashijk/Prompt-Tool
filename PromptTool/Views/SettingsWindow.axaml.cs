@@ -374,6 +374,56 @@ public partial class SettingsWindow : Window
         vm.DeleteAutoBackups();
     }
 
+    private async void PickTemplateDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        await PickPathAsync("Select Template Base Directory", (vm, path) => vm.TemplateBaseDir = path, vm => vm.TemplateBaseDir);
+    }
+
+    private async void PickWildcardDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        await PickPathAsync("Select Wildcard Directory", (vm, path) => vm.WildcardDir = path, vm => vm.WildcardDir);
+    }
+
+    private async void PickHistoryDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        await PickPathAsync("Select History Directory", (vm, path) => vm.HistoryDir = path, vm => vm.HistoryDir);
+    }
+
+    private async void PickSystemPromptsDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        await PickPathAsync("Select System Prompts Directory", (vm, path) => vm.SystemPromptBaseDir = path, vm => vm.SystemPromptBaseDir);
+    }
+
+    private async Task PickPathAsync(
+        string title,
+        Action<SettingsViewModel, string> apply,
+        Func<SettingsViewModel, string?> current)
+    {
+        if (DataContext is not SettingsViewModel vm)
+        {
+            return;
+        }
+
+        var provider = StorageProvider;
+        if (provider == null)
+        {
+            return;
+        }
+
+        var options = new FolderPickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false
+        };
+        var picked = await FilePickerHelper.PickFolderAsync(provider, options);
+        if (string.IsNullOrWhiteSpace(picked))
+        {
+            return;
+        }
+
+        apply(vm, picked);
+    }
+
     private static async Task<string?> PickBackupFolderAsync(IStorageProvider provider, string title)
     {
         var options = new FolderPickerOpenOptions

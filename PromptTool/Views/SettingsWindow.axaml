@@ -263,16 +263,28 @@
                             <TextBlock Text="Paths" FontSize="18" FontWeight="Bold"/>
                             <TextBlock Text="Filesystem locations for templates, history, and prompts." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
                             <TextBlock Text="Template Base Directory:" FontWeight="Bold"/>
-                            <TextBox Text="{Binding TemplateBaseDir}" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBox Text="{Binding TemplateBaseDir}" Width="380"/>
+                                <Button Content="Browse..." Click="PickTemplateDir_Click"/>
+                            </StackPanel>
 
                             <TextBlock Text="Wildcard Directory:" FontWeight="Bold"/>
-                            <TextBox Text="{Binding WildcardDir}" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBox Text="{Binding WildcardDir}" Width="380"/>
+                                <Button Content="Browse..." Click="PickWildcardDir_Click"/>
+                            </StackPanel>
 
                             <TextBlock Text="History Directory:" FontWeight="Bold"/>
-                            <TextBox Text="{Binding HistoryDir}" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBox Text="{Binding HistoryDir}" Width="380"/>
+                                <Button Content="Browse..." Click="PickHistoryDir_Click"/>
+                            </StackPanel>
 
                             <TextBlock Text="System Prompts Directory:" FontWeight="Bold"/>
-                            <TextBox Text="{Binding SystemPromptBaseDir}" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBox Text="{Binding SystemPromptBaseDir}" Width="380"/>
+                                <Button Content="Browse..." Click="PickSystemPromptsDir_Click"/>
+                            </StackPanel>
 
                             <TextBlock Text="Settings file in use:" FontWeight="Bold" Margin="0,6,0,0"/>
                             <TextBox Text="{Binding SettingsFilePath}" IsReadOnly="True"/>

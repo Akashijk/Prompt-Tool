@@ -516,7 +516,7 @@ public class SettingsService
 
     private AppSettings ApplyDefaultPaths(AppSettings settings)
     {
-        var appRoot = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var appRoot = _configDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         settings.TemplateBaseDir = string.IsNullOrWhiteSpace(settings.TemplateBaseDir)
             ? Path.Combine(appRoot, "templates")
