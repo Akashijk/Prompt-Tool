@@ -90,7 +90,7 @@ public partial class SettingsWindow : Window
         if (_closePromptActive) return;
         if (DataContext is not SettingsViewModel vm) return;
         if (vm.DialogResult.HasValue) return;
-        if (!vm.HasPendingChanges()) return;
+        if (!vm.HasPendingChanges) return;
 
         e.Cancel = true;
         _closePromptActive = true;
@@ -307,20 +307,20 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var overwriteExisting = await ShowRestoreModeAsync();
-        if (overwriteExisting == null)
+        var restoreOptions = await ShowRestoreOptionsAsync();
+        if (restoreOptions == null)
         {
             return;
         }
 
-        var summary = vm.BuildRestoreSummary(zipPath, sections.HasConfig, sections.HasHistory, overwriteExisting.Value);
+        var summary = vm.BuildRestoreSummary(zipPath, sections.HasConfig, sections.HasHistory, restoreOptions.OverwriteExisting);
         if (summary.TotalAdd + summary.TotalOverwrite + summary.TotalSkip == 0)
         {
             await ShowInfoAsync("Restore", "No matching entries found in the selected backup.");
             return;
         }
 
-        var proceed = await ShowRestoreSummaryAsync(summary, overwriteExisting.Value);
+        var proceed = await ShowRestoreSummaryAsync(summary, restoreOptions.OverwriteExisting, restoreOptions.RestorePaths);
         if (!proceed)
         {
             return;
@@ -331,13 +331,15 @@ public partial class SettingsWindow : Window
             await vm.CreateAutoBackupAsync(sections.HasConfig, sections.HasHistory, ct);
             if (sections.HasConfig)
             {
-                await vm.RestoreConfigAsync(zipPath, overwriteExisting.Value, ct);
+                await vm.RestoreConfigAsync(zipPath, restoreOptions.OverwriteExisting, restoreOptions.RestorePaths, ct);
             }
             if (sections.HasHistory)
             {
-                await vm.RestoreHistoryAsync(zipPath, overwriteExisting.Value, ct);
+                await vm.RestoreHistoryAsync(zipPath, restoreOptions.OverwriteExisting, ct);
             }
         }, "Restore");
+
+        await ShowRestoreResultSummaryAsync(vm, summary, restoreOptions.OverwriteExisting, restoreOptions.RestorePaths);
     }
 
     private async void VerifyBackup_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -454,15 +456,16 @@ public partial class SettingsWindow : Window
         return await FilePickerHelper.PickOpenFileAsync(provider, options);
     }
 
-    private async Task<bool?> ShowRestoreModeAsync()
+    private async Task<RestoreOptions?> ShowRestoreOptionsAsync()
     {
-        var tcs = new TaskCompletionSource<bool?>();
+        var tcs = new TaskCompletionSource<RestoreOptions?>();
         var overwriteCheck = new CheckBox { Content = "Overwrite existing files (recommended for full restore)", IsChecked = false };
+        var pathsCheck = new CheckBox { Content = "Restore paths from backup (may not be valid on this machine)", IsChecked = false };
 
         var dialog = new Window
         {
             Width = 420,
-            Height = 200,
+            Height = 240,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Title = "Restore Mode",
             Content = new StackPanel
@@ -477,6 +480,7 @@ public partial class SettingsWindow : Window
                         TextWrapping = Avalonia.Media.TextWrapping.Wrap
                     },
                     overwriteCheck,
+                    pathsCheck,
                     new StackPanel
                     {
                         Orientation = Orientation.Horizontal,
@@ -509,7 +513,7 @@ public partial class SettingsWindow : Window
         {
             ok.Click += (_, __) =>
             {
-                tcs.TrySetResult(overwriteCheck.IsChecked == true);
+                tcs.TrySetResult(new RestoreOptions(overwriteCheck.IsChecked == true, pathsCheck.IsChecked == true));
                 dialog.Close();
             };
         }
@@ -526,14 +530,15 @@ public partial class SettingsWindow : Window
         return await tcs.Task;
     }
 
-    private async Task<bool> ShowRestoreSummaryAsync(SettingsViewModel.RestoreSummary summary, bool overwriteExisting)
+    private async Task<bool> ShowRestoreSummaryAsync(SettingsViewModel.RestoreSummary summary, bool overwriteExisting, bool restorePaths)
     {
         var tcs = new TaskCompletionSource<bool>();
         var overwriteLabel = overwriteExisting ? "Overwrite existing: ON" : "Overwrite existing: OFF (merge-only)";
+        var pathsLabel = restorePaths ? "Restore paths: ON" : "Restore paths: OFF";
         var message =
             $"Config: add {summary.ConfigAdd}, overwrite {summary.ConfigOverwrite}, skip {summary.ConfigSkip}\n" +
             $"History: add {summary.HistoryAdd}, overwrite {summary.HistoryOverwrite}, skip {summary.HistorySkip}\n\n" +
-            $"{overwriteLabel}\n\nProceed with restore?";
+            $"{overwriteLabel}\n{pathsLabel}\n\nProceed with restore?";
 
         var dialog = new Window
         {
@@ -596,6 +601,89 @@ public partial class SettingsWindow : Window
         await dialog.ShowDialog(this);
         return await tcs.Task;
     }
+
+    private async Task ShowRestoreResultSummaryAsync(
+        SettingsViewModel vm,
+        SettingsViewModel.RestoreSummary summary,
+        bool overwriteExisting,
+        bool restorePaths)
+    {
+        var overwriteLabel = overwriteExisting ? "Overwrite existing: ON" : "Overwrite existing: OFF (merge-only)";
+        var pathsLabel = restorePaths ? "Restore paths: ON" : "Restore paths: OFF";
+        var summaryText =
+            $"Config: add {summary.ConfigAdd}, overwrite {summary.ConfigOverwrite}, skip {summary.ConfigSkip}\n" +
+            $"History: add {summary.HistoryAdd}, overwrite {summary.HistoryOverwrite}, skip {summary.HistorySkip}\n\n" +
+            $"{overwriteLabel}\n{pathsLabel}";
+        var pathsText =
+            $"Config base: {vm.SettingsService.ConfigDir}\n" +
+            $"Templates: {vm.TemplateBaseDir}\n" +
+            $"Wildcards: {vm.WildcardDir}\n" +
+            $"System prompts: {vm.SystemPromptBaseDir}\n" +
+            $"History base: {vm.HistoryDir}\n" +
+            $"Paths file: {vm.SettingsService.PathsFilePath}";
+        var notesText = "History indexes are merged per workflow subfolder (sfw/nsfw) when present in the backup.";
+
+        var dialog = new Window
+        {
+            Width = 520,
+            Height = 420,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = "Restore Summary",
+            Content = new StackPanel
+            {
+                Margin = new Thickness(12),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Restore complete.",
+                        FontWeight = Avalonia.Media.FontWeight.Bold
+                    },
+                    new Expander
+                    {
+                        Header = "Summary",
+                        IsExpanded = true,
+                        Content = new TextBlock { Text = summaryText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                    },
+                    new Expander
+                    {
+                        Header = "Paths",
+                        IsExpanded = false,
+                        Content = new TextBlock { Text = pathsText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                    },
+                    new Expander
+                    {
+                        Header = "Notes",
+                        IsExpanded = false,
+                        Content = new TextBlock { Text = notesText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children =
+                        {
+                            new Button { Content = "Close", IsDefault = true }
+                        }
+                    }
+                }
+            }
+        };
+
+        var button = ((dialog.Content as StackPanel)?.Children.LastOrDefault() as StackPanel)?.Children
+            .OfType<Button>()
+            .FirstOrDefault();
+        if (button != null)
+        {
+            button.Click += (_, __) => dialog.Close();
+        }
+
+        await dialog.ShowDialog(this);
+    }
+
+    private sealed record RestoreOptions(bool OverwriteExisting, bool RestorePaths);
 
     private BackupProgressWindow? _backupProgressWindow;
 

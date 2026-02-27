@@ -24,7 +24,7 @@
         <DockPanel LastChildFill="True" MinWidth="520">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,10,0,0" DockPanel.Dock="Bottom">
                 <Button Content="Save" Command="{Binding SaveCommand}" />
-                <Button Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True"/>
+                <Button Content="{Binding CancelLabel}" Command="{Binding CancelCommand}" IsCancel="True"/>
             </StackPanel>
 
             <TabControl x:Name="SettingsTabs" TabStripPlacement="Left">
@@ -302,38 +302,100 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Spacing="10">
                             <TextBlock Text="Backup and Restore" FontSize="18" FontWeight="Bold"/>
-                            <TextBlock Text="Create backups or restore config/history from a zip." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="Create backups, validate an archive, or recover your config and history from a zip." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
 
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="Config Backup:" FontWeight="Bold"/>
-                                <TextBlock Text="Backs up settings, templates, wildcards, and system prompts." Classes="subtle" TextWrapping="Wrap"/>
-                                <Button Content="Backup Config as Zip..." Click="BackupConfig_Click"/>
-                            </StackPanel>
+                            <Border Classes="card">
+                                <StackPanel Spacing="12">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Create New Backups" FontSize="15" FontWeight="Bold"/>
+                                        <TextBlock Text="Choose the scope based on what you need to protect right now." Classes="subtle" TextWrapping="Wrap"/>
+                                    </StackPanel>
 
-                            <StackPanel Spacing="6" Margin="0,8,0,0">
-                                <TextBlock Text="History Backup:" FontWeight="Bold"/>
-                                <TextBlock Text="Compress your history files and images to a zip for backup." Classes="subtle" TextWrapping="Wrap"/>
-                                <Button Content="Backup History as Zip..." Click="BackupHistory_Click"/>
-                            </StackPanel>
+                                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="2">
+                                        <TextBlock Grid.Row="0" Text="Config only" FontWeight="Bold"/>
+                                        <TextBlock Grid.Row="1"
+                                                   Text="Back up settings, templates, wildcards, and system prompts."
+                                                   Classes="subtle"
+                                                   TextWrapping="Wrap"/>
+                                        <Button Grid.Column="1"
+                                                Grid.RowSpan="2"
+                                                Content="Backup Config as Zip..."
+                                                Click="BackupConfig_Click"
+                                                VerticalAlignment="Center"/>
+                                    </Grid>
 
-                            <StackPanel Spacing="6" Margin="0,8,0,0">
-                                <TextBlock Text="Full Backup:" FontWeight="Bold"/>
-                                <TextBlock Text="Create separate zips for config/content and history." Classes="subtle" TextWrapping="Wrap"/>
-                                <Button Content="Full Backup (Config + History)..." Click="BackupFull_Click"/>
-                            </StackPanel>
+                                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="2">
+                                        <TextBlock Grid.Row="0" Text="History only" FontWeight="Bold"/>
+                                        <TextBlock Grid.Row="1"
+                                                   Text="Compress history files and generated images into a zip."
+                                                   Classes="subtle"
+                                                   TextWrapping="Wrap"/>
+                                        <Button Grid.Column="1"
+                                                Grid.RowSpan="2"
+                                                Content="Backup History as Zip..."
+                                                Click="BackupHistory_Click"
+                                                VerticalAlignment="Center"/>
+                                    </Grid>
 
-                            <StackPanel Spacing="6" Margin="0,8,0,0">
-                                <TextBlock Text="Restore:" FontWeight="Bold"/>
-                                <TextBlock Text="Restore config and/or history from a backup zip." Classes="subtle" TextWrapping="Wrap"/>
-                                <Button Content="Restore from Backup Zip..." Click="RestoreBackup_Click"/>
-                                <Button Content="Verify Backup Zip..." Click="VerifyBackup_Click"/>
-                            </StackPanel>
+                                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="2">
+                                        <TextBlock Grid.Row="0" Text="Complete snapshot" FontWeight="Bold"/>
+                                        <TextBlock Grid.Row="1"
+                                                   Text="Create both config and history archives in one pass."
+                                                   Classes="subtle"
+                                                   TextWrapping="Wrap"/>
+                                        <Button Grid.Column="1"
+                                                Grid.RowSpan="2"
+                                                Content="Full Backup (Config + History)..."
+                                                Click="BackupFull_Click"
+                                                VerticalAlignment="Center"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
 
-                            <StackPanel Spacing="6" Margin="0,8,0,0">
-                                <TextBlock Text="Auto backups:" FontWeight="Bold"/>
-                                <TextBlock Text="{Binding AutoBackupDir}" Classes="subtle" TextWrapping="Wrap"/>
-                                <Button Content="Delete Auto Backups" Click="DeleteAutoBackups_Click" IsVisible="{Binding HasAutoBackups}"/>
-                            </StackPanel>
+                            <Border Classes="card">
+                                <StackPanel Spacing="12">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Restore or Inspect" FontSize="15" FontWeight="Bold"/>
+                                        <TextBlock Text="Validate a backup before you import it, or restore data directly from an archive." Classes="subtle" TextWrapping="Wrap"/>
+                                    </StackPanel>
+
+                                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="2">
+                                        <TextBlock Grid.Row="0" Text="Restore from archive" FontWeight="Bold"/>
+                                        <TextBlock Grid.Row="1"
+                                                   Text="Recover config and/or history from a backup zip."
+                                                   Classes="subtle"
+                                                   TextWrapping="Wrap"/>
+                                        <Button Grid.Column="1"
+                                                Grid.RowSpan="2"
+                                                Content="Restore from Backup Zip..."
+                                                Click="RestoreBackup_Click"
+                                                VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="2">
+                                        <TextBlock Grid.Row="0" Text="Verify archive contents" FontWeight="Bold"/>
+                                        <TextBlock Grid.Row="1"
+                                                   Text="Check a zip file for expected backup data before using it."
+                                                   Classes="subtle"
+                                                   TextWrapping="Wrap"/>
+                                        <Button Grid.Column="1"
+                                                Grid.RowSpan="2"
+                                                Content="Verify Backup Zip..."
+                                                Click="VerifyBackup_Click"
+                                                VerticalAlignment="Center"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Classes="card">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="Automatic Backups" FontSize="15" FontWeight="Bold"/>
+                                    <TextBlock Text="Stored in:" Classes="subtle"/>
+                                    <TextBlock Text="{Binding AutoBackupDir}" TextWrapping="Wrap"/>
+                                    <TextBlock Text="Use this to clear accumulated automatic snapshots when you no longer need them." Classes="subtle" TextWrapping="Wrap"/>
+                                    <Button Content="Delete Auto Backups" Click="DeleteAutoBackups_Click" IsVisible="{Binding HasAutoBackups}" HorizontalAlignment="Left"/>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>

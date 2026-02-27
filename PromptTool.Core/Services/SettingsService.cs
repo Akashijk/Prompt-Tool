@@ -15,6 +15,7 @@ public class SettingsService
 {
     private readonly string _configDir;
     private readonly string _settingsFilePath;
+    private readonly string _pathsFilePath;
     private readonly string _invokeAIModelDefaultsFilePath;
     private readonly string _loraDefaultsFilePath;
     private readonly string _wildcardCacheFilePath;
@@ -26,6 +27,7 @@ public class SettingsService
     public List<ModelDefaults> InvokeAILoraDefaults { get; private set; }
     public string ConfigDir => _configDir;
     public string SettingsFileInUse => _settingsFileInUse;
+    public string PathsFilePath => _pathsFilePath;
 
     public SettingsService()
     {
@@ -34,6 +36,7 @@ public class SettingsService
 
         // Mirror the Qt app file set, but scoped to the C# directory for clean separation.
         _settingsFilePath = Path.Combine(_configDir, "settings.json");
+        _pathsFilePath = Path.Combine(_configDir, "paths.json");
         _invokeAIModelDefaultsFilePath = Path.Combine(_configDir, "model_defaults.json");
         _loraDefaultsFilePath = Path.Combine(_configDir, "lora_defaults.json");
         _wildcardCacheFilePath = Path.Combine(_configDir, "wildcards.cache.json");
@@ -74,6 +77,15 @@ public class SettingsService
                 if (!string.IsNullOrWhiteSpace(loaded.DefaultScheduler))
                 {
                     loaded.DefaultScheduler = GraphBuilder.NormalizeScheduler(loaded.DefaultScheduler);
+                }
+                var paths = LoadPathsSettings();
+                if (paths != null)
+                {
+                    ApplyPaths(loaded, paths);
+                }
+                else if (HasExplicitPaths(loaded))
+                {
+                    SavePathsSettings(loaded);
                 }
                 return loaded;
             }
@@ -299,8 +311,10 @@ public class SettingsService
                 persisted.HuggingFaceApiKeyEncrypted = EncryptHfKey(persisted.HuggingFaceApiKey);
                 persisted.HuggingFaceApiKey = "";
             }
+            SavePathsSettings(persisted);
+            var settingsPayload = StripPaths(persisted);
             var options = new JsonSerializerOptions { WriteIndented = true };
-            var json = JsonSerializer.Serialize(persisted, options);
+            var json = JsonSerializer.Serialize(settingsPayload, options);
             await File.WriteAllTextAsync(_settingsFilePath, json); // Use async version
             EnsureBaseDirectories();
             return true;
@@ -336,6 +350,77 @@ public class SettingsService
         {
             if (Settings.Verbose) Console.Error.WriteLine($"Error decrypting Hugging Face API key: {ex.Message}");
         }
+    }
+
+    private PathsSettings? LoadPathsSettings()
+    {
+        if (!File.Exists(_pathsFilePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(_pathsFilePath);
+            if (string.IsNullOrWhiteSpace(json)) return null;
+            return JsonSerializer.Deserialize<PathsSettings>(json);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void SavePathsSettings(AppSettings settings)
+    {
+        try
+        {
+            Directory.CreateDirectory(_configDir);
+            var paths = new PathsSettings
+            {
+                TemplateBaseDir = settings.TemplateBaseDir,
+                WildcardDir = settings.WildcardDir,
+                HistoryDir = settings.HistoryDir,
+                SystemPromptBaseDir = settings.SystemPromptBaseDir,
+                CacheDir = settings.CacheDir
+            };
+            var json = JsonSerializer.Serialize(paths, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_pathsFilePath, json);
+        }
+        catch
+        {
+            // Best effort only.
+        }
+    }
+
+    private static void ApplyPaths(AppSettings settings, PathsSettings paths)
+    {
+        if (!string.IsNullOrWhiteSpace(paths.TemplateBaseDir)) settings.TemplateBaseDir = paths.TemplateBaseDir;
+        if (!string.IsNullOrWhiteSpace(paths.WildcardDir)) settings.WildcardDir = paths.WildcardDir;
+        if (!string.IsNullOrWhiteSpace(paths.HistoryDir)) settings.HistoryDir = paths.HistoryDir;
+        if (!string.IsNullOrWhiteSpace(paths.SystemPromptBaseDir)) settings.SystemPromptBaseDir = paths.SystemPromptBaseDir;
+        if (!string.IsNullOrWhiteSpace(paths.CacheDir)) settings.CacheDir = paths.CacheDir;
+    }
+
+    private static AppSettings StripPaths(AppSettings settings)
+    {
+        var clone = JsonSerializer.Deserialize<AppSettings>(
+            JsonSerializer.Serialize(settings)) ?? settings;
+        clone.TemplateBaseDir = "";
+        clone.WildcardDir = "";
+        clone.HistoryDir = "";
+        clone.SystemPromptBaseDir = "";
+        clone.CacheDir = "";
+        return clone;
+    }
+
+    private static bool HasExplicitPaths(AppSettings settings)
+    {
+        return !string.IsNullOrWhiteSpace(settings.TemplateBaseDir)
+               || !string.IsNullOrWhiteSpace(settings.WildcardDir)
+               || !string.IsNullOrWhiteSpace(settings.HistoryDir)
+               || !string.IsNullOrWhiteSpace(settings.SystemPromptBaseDir)
+               || !string.IsNullOrWhiteSpace(settings.CacheDir);
     }
 
     private string EncryptHfKey(string plain)

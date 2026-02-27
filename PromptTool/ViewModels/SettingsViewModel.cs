@@ -20,6 +20,7 @@ using PromptTool.Services;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Threading;
+using System.ComponentModel;
 
 namespace PromptTool.ViewModels;
 
@@ -139,6 +140,8 @@ public partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _verbose;
+    [ObservableProperty]
+    private bool _hasPendingChanges;
     public ObservableCollection<string> BaseModelTypes { get; } = new() { "sdxl", "sd-1.5" };
     public ObservableCollection<string> Themes { get; } = new() { "light", "dark", "system" };
     public ObservableCollection<string> AestheticScoringBackends { get; } = new() { "local", "remote" };
@@ -220,6 +223,7 @@ public partial class SettingsViewModel : ObservableObject
         SelectedNegativePreset = NegativePresets.FirstOrDefault(p => string.Equals(p.Key, _defaultNegativePromptKey, StringComparison.OrdinalIgnoreCase)) ?? NegativePresets.FirstOrDefault();
         if (SelectedNegativePreset != null) EditingPresetText = SelectedNegativePreset.Value;
         LoadDefaultsForBase(_defaultBaseModelType);
+        UpdatePendingChanges();
     }
 
     [RelayCommand]
@@ -257,6 +261,7 @@ public partial class SettingsViewModel : ObservableObject
                 _notifications?.ShowInfo("Hugging Face API key validated.", "Settings");
             }
             _notifications?.ShowInfo("Settings saved.", "Success");
+            UpdatePendingChanges();
         }
         else
         {
@@ -418,7 +423,7 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    public async Task RestoreConfigAsync(string zipPath, bool overwriteExisting, CancellationToken ct)
+    public async Task RestoreConfigAsync(string zipPath, bool overwriteExisting, bool restorePaths, CancellationToken ct)
     {
         if (!File.Exists(zipPath))
         {
@@ -440,6 +445,7 @@ public partial class SettingsViewModel : ObservableObject
                 ExtractZipFolder(archive, "templates/", templateDir, overwriteExisting, ct);
                 ExtractZipFolder(archive, "wildcards/", wildcardDir, overwriteExisting, ct);
                 ExtractZipFolder(archive, "system_prompts/", systemPromptsDir, overwriteExisting, ct);
+                RestoreConfigFilesFromZip(archive, configDir, restorePaths);
             }, ct);
 
             _notifications?.ShowInfo("Config/content restored. Restart the app to reload settings.", "Restore");
@@ -648,25 +654,78 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    private static void RestoreConfigFilesFromZip(ZipArchive archive, string configDir, bool restorePaths)
+    {
+        var files = new[]
+        {
+            "settings.json",
+            "paths.json",
+            "model_defaults.json",
+            "lora_defaults.json",
+            "model_defaults_csharp.json",
+            "lora_defaults_csharp.json"
+        };
+
+        foreach (var name in files)
+        {
+            var entry = archive.Entries.FirstOrDefault(e =>
+                e.FullName.Equals($"config/{name}", StringComparison.OrdinalIgnoreCase));
+            if (entry == null)
+            {
+                continue;
+            }
+
+            Directory.CreateDirectory(configDir);
+            var targetPath = Path.Combine(configDir, name);
+            var tempPath = Path.Combine(configDir, $"{name}.tmp");
+            if (!restorePaths && name.Equals("paths.json", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            entry.ExtractToFile(tempPath, overwrite: true);
+            ReplaceFileWithRetry(tempPath, targetPath);
+        }
+    }
+
     private void MergeHistoryIndexes(string stagingDir, string historyDir, bool overwriteExisting)
     {
-        var backupEntries = ReadHistoryEntriesFromFile(Path.Combine(stagingDir, "history.json"));
-        backupEntries.AddRange(ReadHistoryEntriesFromFile(Path.Combine(stagingDir, "history.jsonl")));
+        MergeHistoryIndex(stagingDir, historyDir, overwriteExisting);
+
+        foreach (var dir in Directory.EnumerateDirectories(stagingDir))
+        {
+            var workflow = Path.GetFileName(dir);
+            if (string.IsNullOrWhiteSpace(workflow))
+            {
+                continue;
+            }
+
+            var targetDir = Path.Combine(historyDir, workflow);
+            MergeHistoryIndex(dir, targetDir, overwriteExisting);
+        }
+    }
+
+    private static void MergeHistoryIndex(string sourceDir, string targetDir, bool overwriteExisting)
+    {
+        var backupEntries = ReadHistoryEntriesFromFile(Path.Combine(sourceDir, "history.json"));
+        backupEntries.AddRange(ReadHistoryEntriesFromFile(Path.Combine(sourceDir, "history.jsonl")));
 
         if (backupEntries.Count == 0)
         {
             return;
         }
 
+        Directory.CreateDirectory(targetDir);
+
         var existingEntries = overwriteExisting
             ? new List<JsonElement>()
-            : ReadHistoryEntriesFromFile(Path.Combine(historyDir, "history.json"))
-                .Concat(ReadHistoryEntriesFromFile(Path.Combine(historyDir, "history.jsonl")))
+            : ReadHistoryEntriesFromFile(Path.Combine(targetDir, "history.json"))
+                .Concat(ReadHistoryEntriesFromFile(Path.Combine(targetDir, "history.jsonl")))
                 .ToList();
 
         var merged = MergeHistoryById(existingEntries, backupEntries);
-        WriteHistoryJson(Path.Combine(historyDir, "history.json"), merged);
-        WriteHistoryJsonl(Path.Combine(historyDir, "history.jsonl"), merged);
+        WriteHistoryJson(Path.Combine(targetDir, "history.json"), merged);
+        WriteHistoryJsonl(Path.Combine(targetDir, "history.jsonl"), merged);
     }
 
     private static List<JsonElement> ReadHistoryEntriesFromFile(string path)
@@ -913,12 +972,13 @@ public partial class SettingsViewModel : ObservableObject
         if ((excludedDirs == null || excludedDirs.Count == 0) &&
             (excludedDirNames == null || excludedDirNames.Count == 0))
         {
-            return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count();
+            return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                .Count(file => !IsExcludedFileName(file));
         }
 
         var excluded = NormalizeExcludeDirs(excludedDirs);
         return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
-            .Count(file => !IsExcluded(file, excluded, excludedDirNames));
+            .Count(file => !IsExcluded(file, excluded, excludedDirNames) && !IsExcludedFileName(file));
     }
 
     private static void ExtractZipFolder(ZipArchive archive, string prefix, string targetDir, bool overwriteExisting, CancellationToken ct)
@@ -1124,7 +1184,7 @@ public partial class SettingsViewModel : ObservableObject
         foreach (var file in Directory.EnumerateFiles(basePath, "*", SearchOption.AllDirectories))
         {
             ct.ThrowIfCancellationRequested();
-            if (IsExcluded(file, excluded, excludedDirNames))
+            if (IsExcluded(file, excluded, excludedDirNames) || IsExcludedFileName(file))
             {
                 continue;
             }
@@ -1192,6 +1252,17 @@ public partial class SettingsViewModel : ObservableObject
         return false;
     }
 
+    private static bool IsExcludedFileName(string filePath)
+    {
+        var name = Path.GetFileName(filePath);
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        return name.Equals(".DS_Store", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("Thumbs.db", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)
+               || name.Equals(".Trash", StringComparison.OrdinalIgnoreCase)
+               || name.Equals(".localized", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool ContainsPathSegment(string fullPath, IReadOnlyList<string> names)
     {
         var separators = new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
@@ -1231,12 +1302,34 @@ public partial class SettingsViewModel : ObservableObject
         public string? Item { get; }
     }
 
-    public bool HasPendingChanges()
+    public bool ComputeHasPendingChanges()
     {
         var settingsToCheck = BuildSettingsSnapshot();
         var defaultsChanged = !ModelDefaultsEqual(_workingModelDefaults, _settingsService.InvokeAIModelDefaults)
                               || !ModelDefaultsEqual(_workingLoraDefaults, _settingsService.InvokeAILoraDefaults);
         return HasChanges(settingsToCheck, _originalSettings) || defaultsChanged;
+    }
+
+    public string CancelLabel => HasPendingChanges ? "Cancel" : "Close";
+
+    partial void OnHasPendingChangesChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CancelLabel));
+    }
+
+    protected override void OnPropertyChanged(PropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.PropertyName == nameof(HasPendingChanges) || e.PropertyName == nameof(CancelLabel))
+        {
+            return;
+        }
+        UpdatePendingChanges();
+    }
+
+    private void UpdatePendingChanges()
+    {
+        HasPendingChanges = ComputeHasPendingChanges();
     }
 
     [RelayCommand]
