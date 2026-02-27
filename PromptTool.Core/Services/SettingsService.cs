@@ -66,7 +66,7 @@ public class SettingsService
                     _settingsFileInUse = _settingsFilePath;
                     var emptyDefaults = ApplyDefaultPaths(new AppSettings());
                     emptyDefaults.Theme = LoadThemeValue(emptyDefaults.Theme);
-                    SaveSettingsAsync(emptyDefaults).GetAwaiter().GetResult();
+                    SaveSettings(emptyDefaults);
                     return emptyDefaults;
                 }
                 var loaded = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
@@ -104,7 +104,7 @@ public class SettingsService
         {
             defaults.DefaultScheduler = GraphBuilder.NormalizeScheduler(defaults.DefaultScheduler);
         }
-        SaveSettingsAsync(defaults).GetAwaiter().GetResult();
+        SaveSettings(defaults);
         return defaults;
     }
 
@@ -303,19 +303,8 @@ public class SettingsService
     {
         try
         {
-            Settings = ApplyDefaultPaths(newSettings); // Update the internal Settings property
-            SaveThemeValue(Settings.Theme);
-            var persisted = ApplyDefaultPaths(newSettings);
-            if (!string.IsNullOrWhiteSpace(persisted.HuggingFaceApiKey))
-            {
-                persisted.HuggingFaceApiKeyEncrypted = EncryptHfKey(persisted.HuggingFaceApiKey);
-                persisted.HuggingFaceApiKey = "";
-            }
-            SavePathsSettings(persisted);
-            var settingsPayload = StripPaths(persisted);
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            var json = JsonSerializer.Serialize(settingsPayload, options);
-            await File.WriteAllTextAsync(_settingsFilePath, json); // Use async version
+            var json = PrepareSettingsForSave(newSettings);
+            await File.WriteAllTextAsync(_settingsFilePath, json).ConfigureAwait(false);
             EnsureBaseDirectories();
             return true;
         }
@@ -329,6 +318,45 @@ public class SettingsService
             if (Settings.Verbose) Console.Error.WriteLine($"Error saving settings: {ex.Message}");
             return false;
         }
+    }
+
+    private bool SaveSettings(AppSettings newSettings)
+    {
+        try
+        {
+            var json = PrepareSettingsForSave(newSettings);
+            File.WriteAllText(_settingsFilePath, json);
+            EnsureBaseDirectories();
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            if (Settings.Verbose) Console.Error.WriteLine($"Error saving settings: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            if (Settings.Verbose) Console.Error.WriteLine($"Error saving settings: {ex.Message}");
+            return false;
+        }
+    }
+
+    private string PrepareSettingsForSave(AppSettings newSettings)
+    {
+        Settings = ApplyDefaultPaths(newSettings);
+        SaveThemeValue(Settings.Theme);
+
+        var persisted = ApplyDefaultPaths(newSettings);
+        if (!string.IsNullOrWhiteSpace(persisted.HuggingFaceApiKey))
+        {
+            persisted.HuggingFaceApiKeyEncrypted = EncryptHfKey(persisted.HuggingFaceApiKey);
+            persisted.HuggingFaceApiKey = "";
+        }
+
+        SavePathsSettings(persisted);
+        var settingsPayload = StripPaths(persisted);
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        return JsonSerializer.Serialize(settingsPayload, options);
     }
 
     private void TryDecryptHfKey(AppSettings settings)

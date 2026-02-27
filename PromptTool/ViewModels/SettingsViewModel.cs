@@ -516,7 +516,10 @@ public partial class SettingsViewModel : ObservableObject
 
     public RestoreSummary BuildRestoreSummary(string zipPath, bool restoreConfig, bool restoreHistory, bool overwriteExisting)
     {
-        var summary = new RestoreSummary();
+        var summary = new RestoreSummary
+        {
+            ZipPath = zipPath
+        };
         if (!File.Exists(zipPath))
         {
             return summary;
@@ -536,31 +539,47 @@ public partial class SettingsViewModel : ObservableObject
                 continue;
             }
 
+            summary.ArchiveFileCount++;
+
             if (restoreConfig && TryMapEntry(entry.FullName, "config/", configDir, out var configTarget))
             {
+                summary.ConfigArchiveFiles++;
                 UpdateSummary(summary, configTarget, overwriteExisting, isConfig: true);
                 continue;
             }
             if (restoreConfig && TryMapEntry(entry.FullName, "templates/", templateDir, out var templateTarget))
             {
+                summary.ConfigArchiveFiles++;
                 UpdateSummary(summary, templateTarget, overwriteExisting, isConfig: true);
                 continue;
             }
             if (restoreConfig && TryMapEntry(entry.FullName, "wildcards/", wildcardDir, out var wildcardTarget))
             {
+                summary.ConfigArchiveFiles++;
                 UpdateSummary(summary, wildcardTarget, overwriteExisting, isConfig: true);
                 continue;
             }
             if (restoreConfig && TryMapEntry(entry.FullName, "system_prompts/", systemPromptsDir, out var systemTarget))
             {
+                summary.ConfigArchiveFiles++;
                 UpdateSummary(summary, systemTarget, overwriteExisting, isConfig: true);
                 continue;
             }
             if (restoreHistory && TryMapEntry(entry.FullName, "history/", historyDir, out var historyTarget))
             {
+                summary.HistoryArchiveFiles++;
                 UpdateSummary(summary, historyTarget, overwriteExisting, isConfig: false);
+                TrackHistoryLayout(summary, entry.FullName);
             }
         }
+
+        summary.ConfigTargetDir = configDir;
+        summary.TemplateTargetDir = templateDir;
+        summary.WildcardTargetDir = wildcardDir;
+        summary.SystemPromptsTargetDir = systemPromptsDir;
+        summary.HistoryBaseTargetDir = historyDir;
+        summary.ActiveWorkflow = string.IsNullOrWhiteSpace(_settingsService.Settings.Workflow) ? "sfw" : _settingsService.Settings.Workflow;
+        summary.HistoryWorkflowTargetDir = Path.Combine(historyDir, summary.ActiveWorkflow);
 
         return summary;
     }
@@ -690,7 +709,18 @@ public partial class SettingsViewModel : ObservableObject
 
     private void MergeHistoryIndexes(string stagingDir, string historyDir, bool overwriteExisting)
     {
-        MergeHistoryIndex(stagingDir, historyDir, overwriteExisting);
+        var activeWorkflow = string.IsNullOrWhiteSpace(_settingsService.Settings.Workflow)
+            ? "sfw"
+            : _settingsService.Settings.Workflow;
+        var activeWorkflowDir = Path.Combine(historyDir, activeWorkflow);
+
+        var rootBackupEntries = ReadHistoryEntriesFromFile(Path.Combine(stagingDir, "history.json"));
+        rootBackupEntries.AddRange(ReadHistoryEntriesFromFile(Path.Combine(stagingDir, "history.jsonl")));
+        if (rootBackupEntries.Count > 0)
+        {
+            PromoteLegacyRootHistoryFiles(historyDir, activeWorkflowDir, overwriteExisting);
+            MergeHistoryIndex(stagingDir, activeWorkflowDir, overwriteExisting);
+        }
 
         foreach (var dir in Directory.EnumerateDirectories(stagingDir))
         {
@@ -702,6 +732,50 @@ public partial class SettingsViewModel : ObservableObject
 
             var targetDir = Path.Combine(historyDir, workflow);
             MergeHistoryIndex(dir, targetDir, overwriteExisting);
+        }
+    }
+
+    private static void PromoteLegacyRootHistoryFiles(string sourceDir, string workflowDir, bool overwriteExisting)
+    {
+        var workflowSegment = Path.GetFileName(workflowDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        foreach (var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories).ToList())
+        {
+            var relative = Path.GetRelativePath(sourceDir, file);
+            if (string.IsNullOrWhiteSpace(relative))
+            {
+                continue;
+            }
+
+            var normalizedRelative = relative.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            var firstSegment = normalizedRelative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(firstSegment) ||
+                firstSegment.Equals(workflowSegment, StringComparison.OrdinalIgnoreCase) ||
+                firstSegment.Equals("sfw", StringComparison.OrdinalIgnoreCase) ||
+                firstSegment.Equals("nsfw", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var fileName = Path.GetFileName(file);
+            if (fileName.Equals("history.json", StringComparison.OrdinalIgnoreCase) ||
+                fileName.Equals("history.jsonl", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var targetPath = Path.Combine(workflowDir, normalizedRelative);
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? workflowDir);
+
+            if (overwriteExisting)
+            {
+                ReplaceFileWithRetry(file, targetPath);
+            }
+            else if (!File.Exists(targetPath))
+            {
+                ReplaceFileWithRetry(file, targetPath);
+            }
         }
     }
 
@@ -1091,12 +1165,27 @@ public partial class SettingsViewModel : ObservableObject
 
     public sealed class RestoreSummary
     {
+        public string ZipPath { get; set; } = string.Empty;
+        public int ArchiveFileCount { get; set; }
+        public int ConfigArchiveFiles { get; set; }
+        public int HistoryArchiveFiles { get; set; }
         public int ConfigAdd { get; set; }
         public int ConfigOverwrite { get; set; }
         public int ConfigSkip { get; set; }
         public int HistoryAdd { get; set; }
         public int HistoryOverwrite { get; set; }
         public int HistorySkip { get; set; }
+        public bool HasLegacyRootHistory { get; set; }
+        public bool HasRootHistoryMetadata { get; set; }
+        public bool HasRootHistoryImages { get; set; }
+        public HashSet<string> HistoryWorkflowFolders { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public string ConfigTargetDir { get; set; } = string.Empty;
+        public string TemplateTargetDir { get; set; } = string.Empty;
+        public string WildcardTargetDir { get; set; } = string.Empty;
+        public string SystemPromptsTargetDir { get; set; } = string.Empty;
+        public string HistoryBaseTargetDir { get; set; } = string.Empty;
+        public string ActiveWorkflow { get; set; } = "sfw";
+        public string HistoryWorkflowTargetDir { get; set; } = string.Empty;
         public int TotalAdd => ConfigAdd + HistoryAdd;
         public int TotalOverwrite => ConfigOverwrite + HistoryOverwrite;
         public int TotalSkip => ConfigSkip + HistorySkip;
@@ -1160,6 +1249,42 @@ public partial class SettingsViewModel : ObservableObject
     {
         HasAutoBackups = Directory.Exists(AutoBackupDir)
             && Directory.EnumerateFiles(AutoBackupDir, "*.zip").Any();
+    }
+
+    private static void TrackHistoryLayout(RestoreSummary summary, string entryName)
+    {
+        var relative = entryName["history/".Length..].Replace('\\', '/');
+        if (string.IsNullOrWhiteSpace(relative))
+        {
+            return;
+        }
+
+        var segments = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
+        {
+            return;
+        }
+
+        var first = segments[0];
+        if (first.Equals("sfw", StringComparison.OrdinalIgnoreCase) ||
+            first.Equals("nsfw", StringComparison.OrdinalIgnoreCase))
+        {
+            summary.HistoryWorkflowFolders.Add(first.ToLowerInvariant());
+            return;
+        }
+
+        summary.HasLegacyRootHistory = true;
+        if (first.Equals("history.json", StringComparison.OrdinalIgnoreCase) ||
+            first.Equals("history.jsonl", StringComparison.OrdinalIgnoreCase))
+        {
+            summary.HasRootHistoryMetadata = true;
+            return;
+        }
+
+        if (first.Equals("images", StringComparison.OrdinalIgnoreCase))
+        {
+            summary.HasRootHistoryImages = true;
+        }
     }
 
     private static void AddDirectoryToZip(

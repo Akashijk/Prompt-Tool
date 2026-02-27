@@ -30,6 +30,8 @@ public class HistoryManagerService
 
     private void LoadHistory()
     {
+        MigrateLegacyRootHistoryIfNeeded();
+
         var historyDir = _settings.GetHistoryDir();
         var jsonlPath = Path.Combine(historyDir, "history.jsonl");
         var jsonPath = Path.Combine(historyDir, "history.json");
@@ -72,6 +74,95 @@ public class HistoryManagerService
                     _historyEntries = new List<HistoryEntry>();
                 }
             }
+        }
+    }
+
+    private void MigrateLegacyRootHistoryIfNeeded()
+    {
+        try
+        {
+            var baseHistoryDir = _settings.Settings.HistoryDir;
+            var workflowHistoryDir = _settings.GetHistoryDir();
+            if (string.IsNullOrWhiteSpace(baseHistoryDir) || string.IsNullOrWhiteSpace(workflowHistoryDir))
+            {
+                return;
+            }
+
+            var baseFullPath = Path.GetFullPath(baseHistoryDir);
+            var workflowFullPath = Path.GetFullPath(workflowHistoryDir);
+            if (string.Equals(baseFullPath, workflowFullPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var rootJsonPath = Path.Combine(baseFullPath, "history.json");
+            var rootJsonlPath = Path.Combine(baseFullPath, "history.jsonl");
+            var workflowJsonPath = Path.Combine(workflowFullPath, "history.json");
+            var workflowJsonlPath = Path.Combine(workflowFullPath, "history.jsonl");
+
+            var hasRootHistory = File.Exists(rootJsonPath) || File.Exists(rootJsonlPath);
+            var hasWorkflowHistory = File.Exists(workflowJsonPath) || File.Exists(workflowJsonlPath);
+            if (!hasRootHistory || hasWorkflowHistory)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(workflowFullPath);
+            PromoteLegacyRootFile(rootJsonPath, workflowJsonPath);
+            PromoteLegacyRootFile(rootJsonlPath, workflowJsonlPath);
+
+            var rootImagesDir = Path.Combine(baseFullPath, "images");
+            var workflowImagesDir = Path.Combine(workflowFullPath, "images");
+            PromoteLegacyRootDirectory(rootImagesDir, workflowImagesDir);
+        }
+        catch (Exception ex)
+        {
+            if (_settings.Settings.Verbose)
+            {
+                Console.Error.WriteLine($"Error migrating legacy root history: {ex.Message}");
+            }
+        }
+    }
+
+    private static void PromoteLegacyRootFile(string sourcePath, string targetPath)
+    {
+        if (!File.Exists(sourcePath))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? Path.GetTempPath());
+        if (!File.Exists(targetPath))
+        {
+            File.Move(sourcePath, targetPath);
+        }
+    }
+
+    private static void PromoteLegacyRootDirectory(string sourceDir, string targetDir)
+    {
+        if (!Directory.Exists(sourceDir))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories).ToList())
+        {
+            var relative = Path.GetRelativePath(sourceDir, file);
+            var targetPath = Path.Combine(targetDir, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? targetDir);
+            if (!File.Exists(targetPath))
+            {
+                File.Move(file, targetPath);
+            }
+        }
+
+        try
+        {
+            Directory.Delete(sourceDir, recursive: true);
+        }
+        catch
+        {
+            // Best effort cleanup only.
         }
     }
 

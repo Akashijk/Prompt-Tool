@@ -11,6 +11,7 @@ using PromptTool.Views;
 using Avalonia;
 using Avalonia.Layout;
 using Avalonia.Threading;
+using Avalonia.Controls.ApplicationLifetimes;
 using CommunityToolkit.Mvvm.Input;
 using Avalonia.Platform.Storage;
 using PromptTool.Helpers;
@@ -339,6 +340,11 @@ public partial class SettingsWindow : Window
             }
         }, "Restore");
 
+        if (sections.HasHistory)
+        {
+            RefreshHistoryViewsAfterRestore();
+        }
+
         await ShowRestoreResultSummaryAsync(vm, summary, restoreOptions.OverwriteExisting, restoreOptions.RestorePaths);
     }
 
@@ -535,24 +541,57 @@ public partial class SettingsWindow : Window
         var tcs = new TaskCompletionSource<bool>();
         var overwriteLabel = overwriteExisting ? "Overwrite existing: ON" : "Overwrite existing: OFF (merge-only)";
         var pathsLabel = restorePaths ? "Restore paths: ON" : "Restore paths: OFF";
-        var message =
-            $"Config: add {summary.ConfigAdd}, overwrite {summary.ConfigOverwrite}, skip {summary.ConfigSkip}\n" +
-            $"History: add {summary.HistoryAdd}, overwrite {summary.HistoryOverwrite}, skip {summary.HistorySkip}\n\n" +
-            $"{overwriteLabel}\n{pathsLabel}\n\nProceed with restore?";
+        var archiveText = BuildRestoreArchiveText(summary);
+        var targetsText = BuildRestoreTargetsText(summary);
+        var behaviorText = BuildRestoreBehaviorText(summary, overwriteLabel, pathsLabel, includePrompt: true);
 
         var dialog = new Window
         {
-            Width = 420,
-            Height = 240,
+            Width = 620,
+            Height = 520,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Title = "Restore Summary",
+            Title = "Restore Review",
             Content = new StackPanel
             {
                 Margin = new Thickness(12),
                 Spacing = 12,
                 Children =
                 {
-                    new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                    new ScrollViewer
+                    {
+                        Height = 430,
+                        Content = new StackPanel
+                        {
+                            Spacing = 12,
+                            Children =
+                            {
+                                new TextBlock
+                                {
+                                    Text = "Review what was found before the restore runs.",
+                                    FontWeight = Avalonia.Media.FontWeight.Bold,
+                                    TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                                },
+                                new Expander
+                                {
+                                    Header = "Archive",
+                                    IsExpanded = true,
+                                    Content = new TextBlock { Text = archiveText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                                },
+                                new Expander
+                                {
+                                    Header = "Targets",
+                                    IsExpanded = false,
+                                    Content = new TextBlock { Text = targetsText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                                },
+                                new Expander
+                                {
+                                    Header = "Behavior",
+                                    IsExpanded = false,
+                                    Content = new TextBlock { Text = behaviorText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                                }
+                            }
+                        }
+                    },
                     new StackPanel
                     {
                         Orientation = Orientation.Horizontal,
@@ -568,7 +607,7 @@ public partial class SettingsWindow : Window
             }
         };
 
-        var buttons = ((dialog.Content as StackPanel)?.Children.LastOrDefault() as StackPanel)?.Children;
+        var buttons = ((dialog.Content as StackPanel)?.Children.OfType<StackPanel>().LastOrDefault())?.Children;
         var cancel = buttons?.OfType<Button>().FirstOrDefault(b => string.Equals(b.Content?.ToString(), "Cancel", StringComparison.OrdinalIgnoreCase));
         var ok = buttons?.OfType<Button>().FirstOrDefault(b => string.Equals(b.Content?.ToString(), "Restore", StringComparison.OrdinalIgnoreCase));
 
@@ -610,53 +649,55 @@ public partial class SettingsWindow : Window
     {
         var overwriteLabel = overwriteExisting ? "Overwrite existing: ON" : "Overwrite existing: OFF (merge-only)";
         var pathsLabel = restorePaths ? "Restore paths: ON" : "Restore paths: OFF";
-        var summaryText =
-            $"Config: add {summary.ConfigAdd}, overwrite {summary.ConfigOverwrite}, skip {summary.ConfigSkip}\n" +
-            $"History: add {summary.HistoryAdd}, overwrite {summary.HistoryOverwrite}, skip {summary.HistorySkip}\n\n" +
-            $"{overwriteLabel}\n{pathsLabel}";
-        var pathsText =
-            $"Config base: {vm.SettingsService.ConfigDir}\n" +
-            $"Templates: {vm.TemplateBaseDir}\n" +
-            $"Wildcards: {vm.WildcardDir}\n" +
-            $"System prompts: {vm.SystemPromptBaseDir}\n" +
-            $"History base: {vm.HistoryDir}\n" +
-            $"Paths file: {vm.SettingsService.PathsFilePath}";
-        var notesText = "History indexes are merged per workflow subfolder (sfw/nsfw) when present in the backup.";
+        var summaryText = BuildRestoreOutcomeText(summary);
+        var pathsText = BuildRestoreTargetsText(summary) + $"\nPaths file: {vm.SettingsService.PathsFilePath}";
+        var notesText = BuildRestoreBehaviorText(summary, overwriteLabel, pathsLabel, includePrompt: false);
 
         var dialog = new Window
         {
-            Width = 520,
-            Height = 420,
+            Width = 620,
+            Height = 520,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Title = "Restore Summary",
+            Title = "Restore Report",
             Content = new StackPanel
             {
                 Margin = new Thickness(12),
                 Spacing = 12,
                 Children =
                 {
-                    new TextBlock
+                    new ScrollViewer
                     {
-                        Text = "Restore complete.",
-                        FontWeight = Avalonia.Media.FontWeight.Bold
-                    },
-                    new Expander
-                    {
-                        Header = "Summary",
-                        IsExpanded = true,
-                        Content = new TextBlock { Text = summaryText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
-                    },
-                    new Expander
-                    {
-                        Header = "Paths",
-                        IsExpanded = false,
-                        Content = new TextBlock { Text = pathsText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
-                    },
-                    new Expander
-                    {
-                        Header = "Notes",
-                        IsExpanded = false,
-                        Content = new TextBlock { Text = notesText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                        Height = 430,
+                        Content = new StackPanel
+                        {
+                            Spacing = 12,
+                            Children =
+                            {
+                                new TextBlock
+                                {
+                                    Text = "Restore complete.",
+                                    FontWeight = Avalonia.Media.FontWeight.Bold
+                                },
+                                new Expander
+                                {
+                                    Header = "Results",
+                                    IsExpanded = true,
+                                    Content = new TextBlock { Text = summaryText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                                },
+                                new Expander
+                                {
+                                    Header = "Targets",
+                                    IsExpanded = false,
+                                    Content = new TextBlock { Text = pathsText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                                },
+                                new Expander
+                                {
+                                    Header = "Behavior",
+                                    IsExpanded = false,
+                                    Content = new TextBlock { Text = notesText, TextWrapping = Avalonia.Media.TextWrapping.Wrap }
+                                }
+                            }
+                        }
                     },
                     new StackPanel
                     {
@@ -672,7 +713,7 @@ public partial class SettingsWindow : Window
             }
         };
 
-        var button = ((dialog.Content as StackPanel)?.Children.LastOrDefault() as StackPanel)?.Children
+        var button = ((dialog.Content as StackPanel)?.Children.OfType<StackPanel>().LastOrDefault())?.Children
             .OfType<Button>()
             .FirstOrDefault();
         if (button != null)
@@ -684,6 +725,141 @@ public partial class SettingsWindow : Window
     }
 
     private sealed record RestoreOptions(bool OverwriteExisting, bool RestorePaths);
+
+    private static string BuildRestoreArchiveText(SettingsViewModel.RestoreSummary summary)
+    {
+        var historyLayout = summary.HistoryArchiveFiles == 0
+            ? "No history content in this restore."
+            : BuildHistoryLayoutText(summary);
+        return
+            $"Archive: {summary.ZipPath}\n" +
+            $"Files found: {summary.ArchiveFileCount}\n" +
+            $"Config/content files: {summary.ConfigArchiveFiles}\n" +
+            $"History files: {summary.HistoryArchiveFiles}\n\n" +
+            $"{historyLayout}";
+    }
+
+    private static string BuildRestoreTargetsText(SettingsViewModel.RestoreSummary summary)
+    {
+        var lines = new List<string>
+        {
+            $"Config base: {summary.ConfigTargetDir}",
+            $"Templates: {summary.TemplateTargetDir}",
+            $"Wildcards: {summary.WildcardTargetDir}",
+            $"System prompts: {summary.SystemPromptsTargetDir}",
+            $"History base: {summary.HistoryBaseTargetDir}"
+        };
+
+        if (summary.HistoryArchiveFiles > 0)
+        {
+            lines.Add($"Active workflow: {summary.ActiveWorkflow}");
+            lines.Add($"History loads from: {summary.HistoryWorkflowTargetDir}");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildRestoreBehaviorText(
+        SettingsViewModel.RestoreSummary summary,
+        string overwriteLabel,
+        string pathsLabel,
+        bool includePrompt)
+    {
+        var lines = new List<string>
+        {
+            overwriteLabel,
+            pathsLabel
+        };
+
+        if (summary.HistoryArchiveFiles > 0)
+        {
+            lines.Add("History indexes are merged by workflow folder when present in the archive.");
+            if (summary.HasLegacyRootHistory)
+            {
+                lines.Add($"Legacy root-level history will be promoted into {summary.HistoryWorkflowTargetDir} so the app can load it.");
+            }
+        }
+
+        if (includePrompt)
+        {
+            lines.Add("Proceed with restore?");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildRestoreOutcomeText(SettingsViewModel.RestoreSummary summary)
+    {
+        var lines = new List<string>
+        {
+            $"Config/content: {summary.ConfigArchiveFiles} file(s) inspected",
+            $"Config changes: add {summary.ConfigAdd}, overwrite {summary.ConfigOverwrite}, skip {summary.ConfigSkip}",
+            $"History: {summary.HistoryArchiveFiles} file(s) inspected",
+            $"History changes: add {summary.HistoryAdd}, overwrite {summary.HistoryOverwrite}, skip {summary.HistorySkip}"
+        };
+
+        if (summary.HistoryArchiveFiles > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add(BuildHistoryLayoutText(summary));
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildHistoryLayoutText(SettingsViewModel.RestoreSummary summary)
+    {
+        var lines = new List<string>();
+        if (summary.HasLegacyRootHistory)
+        {
+            var parts = new List<string>();
+            if (summary.HasRootHistoryMetadata) parts.Add("history.json/history.jsonl");
+            if (summary.HasRootHistoryImages) parts.Add("images/");
+            var partText = parts.Count == 0 ? "root-level history files" : string.Join(" and ", parts);
+            lines.Add($"Legacy layout detected: {partText} at the history root.");
+            lines.Add($"Those files will be routed into the active workflow folder: {summary.HistoryWorkflowTargetDir}");
+        }
+
+        if (summary.HistoryWorkflowFolders.Count > 0)
+        {
+            lines.Add($"Workflow folders in archive: {string.Join(", ", summary.HistoryWorkflowFolders.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))}");
+        }
+
+        if (lines.Count == 0)
+        {
+            lines.Add("History layout: workflow-aware archive.");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static void RefreshHistoryViewsAfterRestore()
+    {
+        if (Application.Current is not App app)
+        {
+            return;
+        }
+
+        app.HistoryManagerService?.Reload();
+
+        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            return;
+        }
+
+        foreach (var window in desktop.Windows)
+        {
+            switch (window)
+            {
+                case HistoryViewerWindow { DataContext: HistoryViewerViewModel historyVm }:
+                    historyVm.RefreshCommand.Execute(null);
+                    break;
+                case AllImagesWindow { DataContext: AllImagesViewerViewModel allImagesVm }:
+                    _ = allImagesVm.RefreshAsync();
+                    break;
+            }
+        }
+    }
 
     private BackupProgressWindow? _backupProgressWindow;
 
