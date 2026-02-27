@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using PromptTool.Core.Clients; // For OllamaClient
 using Avalonia.Platform.Storage; // For IStorageProvider and StorageFile
 using Avalonia.Controls; // For TopLevel
+using PromptTool.Helpers;
 
 namespace PromptTool.ViewModels;
 
@@ -72,7 +73,7 @@ public partial class ImageInterrogatorViewModel : ObservableObject
         var storageProvider = owner.StorageProvider;
         if (storageProvider == null) return;
 
-        var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var path = await FilePickerHelper.PickOpenFileAsync(storageProvider, new FilePickerOpenOptions
         {
             Title = "Select Image File",
             AllowMultiple = false,
@@ -85,9 +86,9 @@ public partial class ImageInterrogatorViewModel : ObservableObject
             }
         });
 
-        if (files?.Count > 0)
+        if (!string.IsNullOrWhiteSpace(path))
         {
-            ImagePath = files[0].Path.LocalPath;
+            ImagePath = path;
         }
     }
 

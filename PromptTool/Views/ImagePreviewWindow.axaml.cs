@@ -17,6 +17,18 @@ public partial class ImagePreviewWindow : Window
         InitializeComponent();
     }
 
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            Close();
+            e.Handled = true;
+            return;
+        }
+
+        base.OnKeyDown(e);
+    }
+
     public ImagePreviewWindow(Bitmap bitmap) : this()
     {
         SetImage(bitmap);

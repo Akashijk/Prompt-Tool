@@ -1,0 +1,80 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PromptTool.ViewModels"
+        x:Class="PromptTool.Views.SchedulerTunerSeedSweepWindow"
+        x:DataType="vm:SchedulerSeedSweepViewModel"
+        Title="Seed Sweep"
+        Width="1100"
+        Height="760"
+        WindowStartupLocation="CenterOwner">
+    <Grid RowDefinitions="Auto,*,Auto" Margin="12" RowSpacing="10">
+        <StackPanel Grid.Row="0" Spacing="6">
+            <TextBlock Text="{Binding SchedulerName}" FontWeight="Bold"/>
+            <TextBlock Text="{Binding StatusText}" Classes="subtle"/>
+            <TextBlock Text="{Binding ScoreSummary}" Classes="subtle"
+                       IsVisible="{Binding ScoreSummary, Converter={StaticResource StringToBoolConverter}}"/>
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Results}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SchedulerSeedResultItem">
+                        <Border Margin="6"
+                                Padding="6"
+                                BorderBrush="#404040"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Width="240"
+                                DoubleTapped="Result_DoubleTapped">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="{Binding Label}" FontWeight="Bold"/>
+                                <Border Height="170" Background="#1a1a1a" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                                    <Grid>
+                                        <Image Source="{Binding Image}" Stretch="Uniform"/>
+                                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding IsLoading}">
+                                            <ProgressBar IsIndeterminate="True" Width="100"/>
+                                            <TextBlock Text="Generating..." HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                                <TextBlock Text="{Binding DurationLabel}"
+                                           Classes="subtle"
+                                           IsVisible="{Binding DurationLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding AestheticScore, StringFormat=Aesthetic {0:0.00}}"
+                                               Classes="subtle"
+                                               IsVisible="{Binding HasAestheticScore}"/>
+                                    <TextBlock Text="{Binding HeuristicScore, StringFormat=Heuristic {0:0.0}}"
+                                               Classes="subtle"
+                                               IsVisible="{Binding HasHeuristicScore}"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="Banding"
+                                               Classes="subtle"
+                                               IsVisible="{Binding BandingRisk}"/>
+                                    <TextBlock Text="Over-smooth"
+                                               Classes="subtle"
+                                               IsVisible="{Binding OverSmoothRisk}"/>
+                                    <TextBlock Text="Warp"
+                                               Classes="subtle"
+                                               IsVisible="{Binding WarpRisk}"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding Error}" Classes="subtle" IsVisible="{Binding Error}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <Button Content="Cancel" Command="{Binding CancelCommand}" IsVisible="{Binding IsGenerating}"/>
+            <Button Content="Close" IsCancel="True" Click="Close_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

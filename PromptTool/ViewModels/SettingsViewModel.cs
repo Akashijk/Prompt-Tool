@@ -18,6 +18,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using PromptTool.Services;
 using System.IO.Compression;
+using System.Text.Json;
 using System.Threading;
 
 namespace PromptTool.ViewModels;
@@ -303,13 +304,13 @@ public partial class SettingsViewModel : ObservableObject
                 File.Delete(tempPath);
             }
 
-            var total = CountFiles(historyFullPath);
+            var total = CountFiles(historyFullPath, excludedDirs: null, excludedDirNames: new[] { ".thumbs" });
             var current = 0;
-            progress?.Report(new BackupProgress("History", current, total));
+            progress?.Report(new BackupProgress("History", current, total, null));
             await Task.Run(() =>
             {
                 using var archive = ZipFile.Open(tempPath, ZipArchiveMode.Create);
-                AddDirectoryToZip(archive, historyFullPath, "history", progress, ref current, total, ct, "History");
+                AddDirectoryToZip(archive, historyFullPath, "history", progress, ref current, total, ct, "History", excludedDirs: null, excludedDirNames: new[] { ".thumbs" });
             }, ct);
 
             if (!string.Equals(tempPath, targetFullPath, StringComparison.OrdinalIgnoreCase))
@@ -351,6 +352,9 @@ public partial class SettingsViewModel : ObservableObject
         var templateDir = string.IsNullOrWhiteSpace(TemplateBaseDir) ? _settingsService.Settings.TemplateBaseDir : TemplateBaseDir;
         var wildcardDir = string.IsNullOrWhiteSpace(WildcardDir) ? _settingsService.Settings.WildcardDir : WildcardDir;
         var systemPromptsDir = string.IsNullOrWhiteSpace(SystemPromptBaseDir) ? _settingsService.Settings.SystemPromptBaseDir : SystemPromptBaseDir;
+        var historyDir = string.IsNullOrWhiteSpace(HistoryDir) ? _settingsService.Settings.HistoryDir : HistoryDir;
+        var scoringCacheDir = _scoringCacheService.GetCacheDir();
+        var aestheticModelsDir = _scoringCacheService.GetModelsDir();
 
         try
         {
@@ -360,6 +364,18 @@ public partial class SettingsViewModel : ObservableObject
             AddIfExists(sourceRoots, templateDir);
             AddIfExists(sourceRoots, wildcardDir);
             AddIfExists(sourceRoots, systemPromptsDir);
+            var excludedRoots = new List<string>();
+            AddIfExists(excludedRoots, historyDir);
+            AddIfExists(excludedRoots, AutoBackupDir);
+            AddIfExists(excludedRoots, scoringCacheDir);
+            AddIfExists(excludedRoots, aestheticModelsDir);
+            if (excludedRoots.Count > 0)
+            {
+                var excludedCopy = excludedRoots.ToList();
+                sourceRoots = sourceRoots
+                    .Where(root => !excludedCopy.Any(exclude => IsSameOrUnder(root, exclude)))
+                    .ToList();
+            }
 
             if (sourceRoots.Count == 0)
             {
@@ -373,16 +389,16 @@ public partial class SettingsViewModel : ObservableObject
                 File.Delete(tempPath);
             }
 
-            var total = sourceRoots.Sum(CountFiles);
+            var total = sourceRoots.Sum(root => CountFiles(root, excludedRoots, excludedDirNames: new[] { ".thumbs" }));
             var current = 0;
-            progress?.Report(new BackupProgress("Config", current, total));
+            progress?.Report(new BackupProgress("Config", current, total, null));
             await Task.Run(() =>
             {
                 using var archive = ZipFile.Open(tempPath, ZipArchiveMode.Create);
-                AddDirectoryToZip(archive, configDir, "config", progress, ref current, total, ct, "Config");
-                AddDirectoryToZip(archive, templateDir, "templates", progress, ref current, total, ct, "Config");
-                AddDirectoryToZip(archive, wildcardDir, "wildcards", progress, ref current, total, ct, "Config");
-                AddDirectoryToZip(archive, systemPromptsDir, "system_prompts", progress, ref current, total, ct, "Config");
+                AddDirectoryToZip(archive, configDir, "config", progress, ref current, total, ct, "Config", excludedRoots, excludedDirNames: new[] { ".thumbs" });
+                AddDirectoryToZip(archive, templateDir, "templates", progress, ref current, total, ct, "Config", excludedRoots, excludedDirNames: new[] { ".thumbs" });
+                AddDirectoryToZip(archive, wildcardDir, "wildcards", progress, ref current, total, ct, "Config", excludedRoots, excludedDirNames: new[] { ".thumbs" });
+                AddDirectoryToZip(archive, systemPromptsDir, "system_prompts", progress, ref current, total, ct, "Config", excludedRoots, excludedDirNames: new[] { ".thumbs" });
             }, ct);
 
             if (!string.Equals(tempPath, targetPath, StringComparison.OrdinalIgnoreCase))
@@ -457,7 +473,7 @@ public partial class SettingsViewModel : ObservableObject
             await Task.Run(() =>
             {
                 using var archive = ZipFile.OpenRead(zipPath);
-                ExtractZipFolder(archive, "history/", historyDir, overwriteExisting, ct);
+                RestoreHistoryFromZip(archive, historyDir, overwriteExisting, ct);
             }, ct);
 
             _notifications?.ShowInfo("History restored.", "Restore");
@@ -465,6 +481,30 @@ public partial class SettingsViewModel : ObservableObject
         catch (Exception ex)
         {
             _notifications?.ShowError($"Failed to restore history: {ex.Message}", "Restore");
+        }
+    }
+
+    public BackupSections InspectBackupSections(string zipPath)
+    {
+        if (!File.Exists(zipPath))
+        {
+            return new BackupSections(false, false);
+        }
+
+        try
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            var hasConfig = archive.Entries.Any(e =>
+                e.FullName.StartsWith("config/", StringComparison.OrdinalIgnoreCase) ||
+                e.FullName.StartsWith("templates/", StringComparison.OrdinalIgnoreCase) ||
+                e.FullName.StartsWith("wildcards/", StringComparison.OrdinalIgnoreCase) ||
+                e.FullName.StartsWith("system_prompts/", StringComparison.OrdinalIgnoreCase));
+            var hasHistory = archive.Entries.Any(e => e.FullName.StartsWith("history/", StringComparison.OrdinalIgnoreCase));
+            return new BackupSections(hasConfig, hasHistory);
+        }
+        catch
+        {
+            return new BackupSections(false, false);
         }
     }
 
@@ -561,6 +601,280 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    private void RestoreHistoryFromZip(ZipArchive archive, string historyDir, bool overwriteExisting, CancellationToken ct)
+    {
+        var stagingDir = Path.Combine(Path.GetTempPath(), $"prompttool_restore_{DateTime.Now:yyyyMMdd_HHmmss}");
+        Directory.CreateDirectory(stagingDir);
+
+        try
+        {
+            ExtractZipFolder(archive, "history/", stagingDir, overwriteExisting: true, ct);
+
+            foreach (var file in Directory.EnumerateFiles(stagingDir, "*", SearchOption.AllDirectories))
+            {
+                var fileName = Path.GetFileName(file);
+                if (fileName.Equals("history.json", StringComparison.OrdinalIgnoreCase) ||
+                    fileName.Equals("history.jsonl", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var relative = Path.GetRelativePath(stagingDir, file);
+                var targetPath = Path.Combine(historyDir, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? historyDir);
+
+                if (overwriteExisting)
+                {
+                    ReplaceFileWithRetry(file, targetPath);
+                }
+                else if (!File.Exists(targetPath))
+                {
+                    ReplaceFileWithRetry(file, targetPath);
+                }
+            }
+
+            MergeHistoryIndexes(stagingDir, historyDir, overwriteExisting);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(stagingDir, recursive: true);
+            }
+            catch
+            {
+                // Best effort cleanup.
+            }
+        }
+    }
+
+    private void MergeHistoryIndexes(string stagingDir, string historyDir, bool overwriteExisting)
+    {
+        var backupEntries = ReadHistoryEntriesFromFile(Path.Combine(stagingDir, "history.json"));
+        backupEntries.AddRange(ReadHistoryEntriesFromFile(Path.Combine(stagingDir, "history.jsonl")));
+
+        if (backupEntries.Count == 0)
+        {
+            return;
+        }
+
+        var existingEntries = overwriteExisting
+            ? new List<JsonElement>()
+            : ReadHistoryEntriesFromFile(Path.Combine(historyDir, "history.json"))
+                .Concat(ReadHistoryEntriesFromFile(Path.Combine(historyDir, "history.jsonl")))
+                .ToList();
+
+        var merged = MergeHistoryById(existingEntries, backupEntries);
+        WriteHistoryJson(Path.Combine(historyDir, "history.json"), merged);
+        WriteHistoryJsonl(Path.Combine(historyDir, "history.jsonl"), merged);
+    }
+
+    private static List<JsonElement> ReadHistoryEntriesFromFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return new List<JsonElement>();
+        }
+
+        try
+        {
+            using var stream = OpenReadShared(path);
+            if (path.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
+            {
+                using var reader = new StreamReader(stream);
+                var entries = new List<JsonElement>();
+                while (!reader.EndOfStream)
+                {
+                    var line = reader.ReadLine();
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    using var doc = JsonDocument.Parse(line);
+                    entries.Add(doc.RootElement.Clone());
+                }
+
+                return entries;
+            }
+
+            using var docArray = JsonDocument.Parse(stream);
+            if (docArray.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return new List<JsonElement>();
+            }
+
+            return docArray.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
+        }
+        catch
+        {
+            return new List<JsonElement>();
+        }
+    }
+
+    private static void WriteHistoryJson(string targetPath, IReadOnlyList<JsonElement> entries)
+    {
+        var tempPath = Path.Combine(Path.GetDirectoryName(targetPath) ?? Path.GetTempPath(), $"{Path.GetFileName(targetPath)}.tmp");
+        using (var output = File.Create(tempPath))
+        using (var writer = new Utf8JsonWriter(output, new JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartArray();
+            foreach (var entry in entries)
+            {
+                entry.WriteTo(writer);
+            }
+            writer.WriteEndArray();
+        }
+        ReplaceFileWithRetry(tempPath, targetPath);
+    }
+
+    private static void WriteHistoryJsonl(string targetPath, IReadOnlyList<JsonElement> entries)
+    {
+        var tempPath = Path.Combine(Path.GetDirectoryName(targetPath) ?? Path.GetTempPath(), $"{Path.GetFileName(targetPath)}.tmp");
+        using (var output = File.Create(tempPath))
+        using (var writer = new StreamWriter(output))
+        {
+            foreach (var entry in entries)
+            {
+                writer.WriteLine(entry.GetRawText());
+            }
+        }
+        ReplaceFileWithRetry(tempPath, targetPath);
+    }
+
+    private static List<JsonElement> ReadHistoryJson(Stream stream)
+    {
+        using var doc = JsonDocument.Parse(stream);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return new List<JsonElement>();
+        }
+        return doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
+    }
+
+    private static List<string> ReadHistoryJsonl(Stream stream)
+    {
+        using var reader = new StreamReader(stream);
+        var lines = new List<string>();
+        while (!reader.EndOfStream)
+        {
+            var line = reader.ReadLine();
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            lines.Add(line);
+        }
+        return lines;
+    }
+
+    private static FileStream OpenReadShared(string path)
+    {
+        return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    }
+
+    private static void ReplaceFileWithRetry(string sourcePath, string targetPath)
+    {
+        const int maxAttempts = 5;
+        var delayMs = 150;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                if (File.Exists(targetPath))
+                {
+                    File.Replace(sourcePath, targetPath, null);
+                }
+                else
+                {
+                    File.Move(sourcePath, targetPath, overwrite: true);
+                }
+                return;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                Thread.Sleep(delayMs);
+                delayMs *= 2;
+            }
+        }
+        if (File.Exists(targetPath))
+        {
+            File.Replace(sourcePath, targetPath, null);
+        }
+        else
+        {
+            File.Move(sourcePath, targetPath, overwrite: true);
+        }
+    }
+
+    private static List<JsonElement> MergeHistoryById(List<JsonElement> existingEntries, List<JsonElement> backupEntries)
+    {
+        var map = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in existingEntries)
+        {
+            var id = GetHistoryId(entry);
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                map[id] = entry;
+            }
+        }
+        foreach (var entry in backupEntries)
+        {
+            var id = GetHistoryId(entry);
+            if (!string.IsNullOrWhiteSpace(id) && !map.ContainsKey(id))
+            {
+                map[id] = entry;
+            }
+        }
+        return map.Values.ToList();
+    }
+
+    private static List<string> MergeHistoryJsonlById(List<string> existing, List<string> backup)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in existing)
+        {
+            var id = GetHistoryId(line);
+            if (!string.IsNullOrWhiteSpace(id) && !map.ContainsKey(id))
+            {
+                map[id] = line;
+            }
+        }
+        foreach (var line in backup)
+        {
+            var id = GetHistoryId(line);
+            if (!string.IsNullOrWhiteSpace(id) && !map.ContainsKey(id))
+            {
+                map[id] = line;
+            }
+        }
+        return map.Values.ToList();
+    }
+
+    private static string? GetHistoryId(JsonElement entry)
+    {
+        if (entry.ValueKind != JsonValueKind.Object) return null;
+        if (entry.TryGetProperty("Id", out var idProp) && idProp.ValueKind == JsonValueKind.String)
+        {
+            return idProp.GetString();
+        }
+        if (entry.TryGetProperty("id", out var idLower) && idLower.ValueKind == JsonValueKind.String)
+        {
+            return idLower.GetString();
+        }
+        return null;
+    }
+
+    private static string? GetHistoryId(string jsonLine)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonLine);
+            return GetHistoryId(doc.RootElement);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static string EnsureZipPath(string path)
     {
         return path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ? path : $"{path}.zip";
@@ -587,13 +901,24 @@ public partial class SettingsViewModel : ObservableObject
         return targetFullPath;
     }
 
-    private static int CountFiles(string directory)
+    private static int CountFiles(
+        string directory,
+        IReadOnlyList<string>? excludedDirs = null,
+        IReadOnlyList<string>? excludedDirNames = null)
     {
         if (!Directory.Exists(directory))
         {
             return 0;
         }
-        return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count();
+        if ((excludedDirs == null || excludedDirs.Count == 0) &&
+            (excludedDirNames == null || excludedDirNames.Count == 0))
+        {
+            return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count();
+        }
+
+        var excluded = NormalizeExcludeDirs(excludedDirs);
+        return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+            .Count(file => !IsExcluded(file, excluded, excludedDirNames));
     }
 
     private static void ExtractZipFolder(ZipArchive archive, string prefix, string targetDir, bool overwriteExisting, CancellationToken ct)
@@ -718,6 +1043,7 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     public sealed record BackupVerifyResult(bool IsValid, string Message);
+    public sealed record BackupSections(bool HasConfig, bool HasHistory);
 
     public async Task CreateAutoBackupAsync(bool includeConfig, bool includeHistory, CancellationToken ct)
     {
@@ -784,7 +1110,9 @@ public partial class SettingsViewModel : ObservableObject
         ref int current,
         int total,
         CancellationToken ct,
-        string stage)
+        string stage,
+        IReadOnlyList<string>? excludedDirs = null,
+        IReadOnlyList<string>? excludedDirNames = null)
     {
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
         {
@@ -792,29 +1120,115 @@ public partial class SettingsViewModel : ObservableObject
         }
 
         var basePath = Path.GetFullPath(directory);
+        var excluded = NormalizeExcludeDirs(excludedDirs);
         foreach (var file in Directory.EnumerateFiles(basePath, "*", SearchOption.AllDirectories))
         {
             ct.ThrowIfCancellationRequested();
+            if (IsExcluded(file, excluded, excludedDirNames))
+            {
+                continue;
+            }
             var relative = Path.GetRelativePath(basePath, file);
             var entryName = Path.Combine(prefix, relative).Replace('\\', '/');
             archive.CreateEntryFromFile(file, entryName, CompressionLevel.Optimal);
             current++;
-            progress?.Report(new BackupProgress(stage, current, total));
+            progress?.Report(new BackupProgress(stage, current, total, relative));
         }
+    }
+
+    private static IReadOnlyList<string> NormalizeExcludeDirs(IReadOnlyList<string>? excludedDirs)
+    {
+        if (excludedDirs == null || excludedDirs.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var list = new List<string>(excludedDirs.Count);
+        foreach (var dir in excludedDirs)
+        {
+            if (string.IsNullOrWhiteSpace(dir))
+            {
+                continue;
+            }
+            list.Add(NormalizeDir(dir));
+        }
+        return list;
+    }
+
+    private static string NormalizeDir(string dir)
+    {
+        var full = Path.GetFullPath(dir);
+        return full.EndsWith(Path.DirectorySeparatorChar)
+            ? full
+            : full + Path.DirectorySeparatorChar;
+    }
+
+    private static bool IsExcluded(
+        string filePath,
+        IReadOnlyList<string> excludedDirs,
+        IReadOnlyList<string>? excludedDirNames)
+    {
+        if (excludedDirs.Count == 0 && (excludedDirNames == null || excludedDirNames.Count == 0))
+        {
+            return false;
+        }
+
+        var full = Path.GetFullPath(filePath);
+        foreach (var exclude in excludedDirs)
+        {
+            if (full.StartsWith(exclude, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        if (excludedDirNames != null && excludedDirNames.Count > 0)
+        {
+            if (ContainsPathSegment(full, excludedDirNames))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool ContainsPathSegment(string fullPath, IReadOnlyList<string> names)
+    {
+        var separators = new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
+        foreach (var part in fullPath.Split(separators, StringSplitOptions.RemoveEmptyEntries))
+        {
+            foreach (var name in names)
+            {
+                if (string.Equals(part, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static bool IsSameOrUnder(string path, string root)
+    {
+        var fullPath = NormalizeDir(path);
+        var fullRoot = NormalizeDir(root);
+        return fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     public sealed class BackupProgress
     {
-        public BackupProgress(string stage, int current, int total)
+        public BackupProgress(string stage, int current, int total, string? item)
         {
             Stage = stage;
             Current = current;
             Total = total;
+            Item = item;
         }
 
         public string Stage { get; }
         public int Current { get; }
         public int Total { get; }
+        public string? Item { get; }
     }
 
     public bool HasPendingChanges()

@@ -212,13 +212,26 @@
 
                                     <StackPanel Grid.Column="0" Grid.Row="2" Spacing="4">
                                         <TextBlock Text="Scheduler"/>
-                                    <ComboBox ItemsSource="{Binding Schedulers}" SelectedItem="{Binding SelectedSchedulerOption}" Width="180">
-                                        <ComboBox.ItemTemplate>
-                                            <DataTemplate x:DataType="vm:SchedulerOption">
-                                                <TextBlock Text="{Binding Display}"/>
-                                            </DataTemplate>
-                                        </ComboBox.ItemTemplate>
-                                    </ComboBox>
+                                        <ComboBox ItemsSource="{Binding Schedulers}" SelectedItem="{Binding SelectedSchedulerOption}" Width="180">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:SchedulerOption">
+                                                    <TextBlock Text="{Binding Display}"/>
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                        <CheckBox Content="Use model scheduler defaults"
+                                                  IsChecked="{Binding UseModelDefaultsForScheduler}"/>
+                                        <Border Background="#1E2737"
+                                                BorderBrush="#2E3A52"
+                                                BorderThickness="1"
+                                                CornerRadius="4"
+                                                Padding="6,2"
+                                                ToolTip.Tip="{Binding ModelSchedulerDefaultToolTip}"
+                                                IsVisible="{Binding HasModelSchedulerDefault}">
+                                            <TextBlock Text="{Binding ModelSchedulerDefaultLabel}"
+                                                       Classes="subtle"
+                                                       TextWrapping="NoWrap"/>
+                                        </Border>
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Grid.Row="2" Spacing="4">
                                         <TextBlock Text="Images per Model"/>

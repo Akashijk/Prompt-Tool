@@ -1,0 +1,87 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        xmlns:services="using:PromptTool.Services"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+        x:Class="PromptTool.Views.GenerationQueueWindow"
+        x:DataType="vm:GenerationQueueViewModel"
+        Title="Generation Queue"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+
+    <Grid RowDefinitions="Auto,*" Margin="12" RowSpacing="10">
+        <Border Padding="10">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="8">
+                <CheckBox Grid.Row="0" Grid.Column="0" Content="Pause queue" IsChecked="{Binding IsPaused}"/>
+                <TextBlock Grid.Row="0" Grid.Column="1" Text="Delay between jobs (ms)" VerticalAlignment="Center"/>
+                <NumericUpDown Grid.Row="0" Grid.Column="2" Width="100"
+                              Minimum="0" Maximum="10000"
+                              Value="{Binding DelayBetweenJobsMs}"/>
+                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5"
+                           Classes="subtle"
+                           Text="Queued jobs run sequentially. Cancel a running job to stop it; queued jobs can be canceled or retried."/>
+            </Grid>
+        </Border>
+
+        <DataGrid Grid.Row="1"
+                  ItemsSource="{Binding Jobs}"
+                  SelectionMode="Extended"
+                  SelectionChanged="OnSelectionChanged"
+                  AutoGenerateColumns="False"
+                  CanUserReorderColumns="False"
+                  CanUserResizeColumns="True"
+                  IsReadOnly="True">
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Cancel selected"
+                              Command="{Binding CancelSelectedJobsCommand}"
+                              IsVisible="{Binding HasCancelableSelection}"
+                              IsEnabled="{Binding HasCancelableSelection}"/>
+                </ContextMenu>
+            </DataGrid.ContextMenu>
+            <DataGrid.Styles>
+                <Style Selector="DataGridRow">
+                    <Setter Property="ContextMenu">
+                        <Setter.Value>
+                            <ContextMenu x:DataType="services:GenerationJob">
+                                <MenuItem Header="Cancel job"
+                                          Command="{Binding $parent[Window].DataContext.CancelJobCommand}"
+                                          CommandParameter="{Binding}"
+                                          IsVisible="{Binding CanCancel}"/>
+                                <MenuItem Header="Retry job"
+                                          Command="{Binding $parent[Window].DataContext.RetryJobCommand}"
+                                          CommandParameter="{Binding}"
+                                          IsVisible="{Binding CanRetry}"/>
+                            </ContextMenu>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </DataGrid.Styles>
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Job" Binding="{Binding Name}" Width="2*"/>
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"/>
+                <DataGridTextColumn Header="Progress" Binding="{Binding ProgressCurrent}" Width="*"/>
+                <DataGridTextColumn Header="Total" Binding="{Binding ProgressTotal}" Width="*"/>
+                <DataGridTextColumn Header="Message" Binding="{Binding StatusMessage}" Width="2*"/>
+                <DataGridTemplateColumn Header="Actions" Width="Auto">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate x:DataType="services:GenerationJob">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="Cancel"
+                                        Command="{Binding $parent[Window].DataContext.CancelJobCommand}"
+                                        CommandParameter="{Binding}"
+                                        IsVisible="{Binding CanCancel}"/>
+                                <Button Content="Retry"
+                                        Command="{Binding $parent[Window].DataContext.RetryJobCommand}"
+                                        CommandParameter="{Binding}"
+                                        IsVisible="{Binding CanRetry}"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</Window>

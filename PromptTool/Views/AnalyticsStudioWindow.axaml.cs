@@ -11,15 +11,17 @@ namespace PromptTool.Views;
 
 public partial class AnalyticsStudioWindow : Window
 {
+    private bool _stateRestored;
+
     public AnalyticsStudioWindow()
     {
         InitializeComponent();
         ResultsScrollViewer.ScrollChanged += (_, __) => UpdateThumbnailPriority();
         Opened += (_, __) => UpdateThumbnailPriority();
         SizeChanged += (_, __) => UpdateThumbnailPriority();
-        Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
         DataContextChanged += (_, __) => WireContext();
+        RestoreWindowState();
     }
 
     private void UpdateThumbnailPriority()
@@ -59,9 +61,21 @@ public partial class AnalyticsStudioWindow : Window
 
     private void RestoreWindowState()
     {
+        if (_stateRestored)
+        {
+            return;
+        }
+        _stateRestored = true;
+
         var settings = GetSettingsService()?.Settings;
         if (settings == null)
         {
+            return;
+        }
+
+        if (Enum.TryParse<WindowState>(settings.AnalyticsWindowState, out var state) && state != WindowState.Normal)
+        {
+            WindowState = state;
             return;
         }
 
@@ -76,10 +90,7 @@ public partial class AnalyticsStudioWindow : Window
             Position = new PixelPoint((int)settings.AnalyticsWindowX, (int)settings.AnalyticsWindowY);
         }
 
-        if (Enum.TryParse<WindowState>(settings.AnalyticsWindowState, out var state))
-        {
-            WindowState = state;
-        }
+        WindowState = WindowState.Normal;
     }
 
     private void SaveWindowState()

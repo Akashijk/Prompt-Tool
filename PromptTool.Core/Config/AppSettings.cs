@@ -33,6 +33,9 @@ public class AppSettings
     public bool AutoClearInvokeCacheBetweenModels { get; set; } = true;
     public bool ServerSafetyModeEnabled { get; set; } = true;
     public bool Verbose { get; set; } = false;
+    public string LastPromptText { get; set; } = "";
+    public string? LastTemplateName { get; set; }
+    public string? LastOllamaModel { get; set; }
     public Dictionary<string, GenerationDefaultsSettings> GenerationDefaults { get; set; } = new();
     public Dictionary<string, ModelDefaultSettings> ModelDefaults { get; set; } = new();
     public Dictionary<string, ModelDefaultSettings> LoraDefaults { get; set; } = new();

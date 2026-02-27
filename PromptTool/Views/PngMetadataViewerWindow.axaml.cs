@@ -7,6 +7,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Platform.Storage;
 using PromptTool.ViewModels;
+using PromptTool.Helpers;
 
 namespace PromptTool.Views;
 
@@ -80,9 +81,7 @@ public partial class PngMetadataViewerWindow : Window
             }
         };
 
-        var files = await StorageProvider.OpenFilePickerAsync(options);
-        var file = files?.FirstOrDefault();
-        var path = file?.TryGetLocalPath() ?? file?.Path.LocalPath;
+        var path = await FilePickerHelper.PickOpenFileAsync(StorageProvider, options);
         if (!string.IsNullOrWhiteSpace(path))
         {
             await vm.LoadFileAsync(path);
@@ -134,8 +133,7 @@ public partial class PngMetadataViewerWindow : Window
             }
         };
 
-        var file = await StorageProvider.SaveFilePickerAsync(options);
-        var path = file?.TryGetLocalPath() ?? file?.Path.LocalPath;
+        var path = await FilePickerHelper.PickSaveFileAsync(StorageProvider, options);
         if (string.IsNullOrWhiteSpace(path))
         {
             return;

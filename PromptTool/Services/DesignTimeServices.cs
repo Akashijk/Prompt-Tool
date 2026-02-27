@@ -87,10 +87,6 @@ public class DesignTimeWindowManager : IWindowManager
         // Do nothing in design time
     }
 
-    public void ShowFavoritesViewer(object? owner)
-    {
-        // Do nothing in design time
-    }
 }
 
 
@@ -106,6 +102,7 @@ public class DesignTimeMainWindowViewModel : MainWindowViewModel
             null!, // ollamaClient
             null!, // invokeAIClient
             null!, // historyManager
+            null!, // kpiStats
             null!, // templateService
             new ModelUsageTracker()
         )

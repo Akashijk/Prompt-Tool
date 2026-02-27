@@ -13,6 +13,7 @@ using Avalonia.Platform;
 using Avalonia.Controls;
 using System.Linq; // Added
 using PromptTool.Services;
+using PromptTool.Core.Config;
 
 namespace PromptTool
 {
@@ -48,6 +49,7 @@ namespace PromptTool
         public OllamaClient? OllamaClient { get; private set; }
         public InvokeAIClient? InvokeAIClient { get; private set; }
         public HistoryManagerService? HistoryManagerService { get; private set; }
+        public KpiStatsService? KpiStatsService { get; private set; }
         public NotificationService NotificationService { get; private set; } = new();
 
 
@@ -172,6 +174,9 @@ namespace PromptTool
             HistoryManagerService = new HistoryManagerService(settings); // Needs SettingsService
             if (settings.Settings.Verbose) Console.WriteLine("App: HistoryManagerService instantiated.");
 
+            if (settings.Settings.Verbose) Console.WriteLine("App: Instantiating KpiStatsService...");
+            KpiStatsService = new KpiStatsService(settings);
+            if (settings.Settings.Verbose) Console.WriteLine("App: KpiStatsService instantiated.");
 
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
@@ -184,16 +189,17 @@ namespace PromptTool
                     OllamaClient,
                     InvokeAIClient,
                     HistoryManagerService,
+                    KpiStatsService,
                     TemplateService,
                     ModelUsageTracker,
                     NotificationService
                 );
-
-                desktop.MainWindow = new PromptWindow
+                var mainWindow = new PromptWindow(settings.Settings)
                 {
                     DataContext = viewModel,
                     Icon = LoadAppIcon()
                 };
+                desktop.MainWindow = mainWindow;
                 NotificationService.Attach(desktop.MainWindow);
                 desktop.Exit += (_, __) =>
                 {
@@ -208,6 +214,7 @@ namespace PromptTool
             base.OnFrameworkInitializationCompleted();
             if (settings.Settings.Verbose) Console.WriteLine("App: OnFrameworkInitializationCompleted finished.");
         }
+
 
         public static void ApplyThemeResources(string themeName)
         {

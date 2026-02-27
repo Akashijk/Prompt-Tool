@@ -1,4 +1,5 @@
 ﻿using Avalonia;
+using Avalonia.Native;
 using System;
 using Microsoft.Extensions.DependencyInjection;
 using PromptTool.Core.Clients;
@@ -19,8 +20,25 @@ class Program
 
     // Avalonia configuration, don't remove; also used by visual designer.
     public static AppBuilder BuildAvaloniaApp()
-        => AppBuilder.Configure<App>()
+    {
+        var builder = AppBuilder.Configure<App>()
             .UsePlatformDetect()
             .WithInterFont()
             .LogToTrace();
+
+        if (OperatingSystem.IsMacOS())
+        {
+            builder = builder.With(new AvaloniaNativePlatformOptions
+            {
+                RenderingMode = new[]
+                {
+                    AvaloniaNativeRenderingMode.Metal,
+                    AvaloniaNativeRenderingMode.OpenGl,
+                    AvaloniaNativeRenderingMode.Software
+                }
+            });
+        }
+
+        return builder;
+    }
 }

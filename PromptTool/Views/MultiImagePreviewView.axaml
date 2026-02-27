@@ -14,9 +14,10 @@
     </Design.DataContext>
 
     <Grid RowDefinitions="Auto,*,Auto" Margin="10">
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,6">
             <TextBlock Text="Generated Images" FontWeight="Bold" Grid.Column="0"/>
             <TextBlock Text="{Binding StatusText}" Classes="subtle" Margin="10,0,0,0" Grid.Column="1" HorizontalAlignment="Right"/>
+            <TextBlock Text="{Binding ProgressText}" Classes="subtle" Margin="10,0,0,0" Grid.Column="2" HorizontalAlignment="Right"/>
         </Grid>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
@@ -28,49 +29,58 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:ImageSlotViewModel">
-                        <Border Margin="6" Padding="6" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Width="280">
-                            <Border.ContextMenu>
-                                <ContextMenu DataContext="{Binding}">
-                                    <MenuItem Header="View Full Size" Command="{Binding ShowFullSizeCommand}"/>
-                                    <MenuItem Header="Generate Seed Variations"
-                                              Command="{Binding GenerateSeedVariationsCommand}"
-                                              IsVisible="{Binding ShowGenerationActions}"/>
-                                    <MenuItem Header="Generate Model Variations"
-                                              Command="{Binding GenerateModelVariationsCommand}"
-                                              IsVisible="{Binding ShowGenerationActions}"/>
-                                    <MenuItem Header="Generate LoRA Variations"
-                                              Command="{Binding GenerateLoraVariationsCommand}"
-                                              IsVisible="{Binding ShowGenerationActions}"/>
-                                    <MenuItem Header="Edit &amp; Regenerate"
-                                              Command="{Binding EditAndRegenerateCommand}"
-                                              IsVisible="{Binding ShowGenerationActions}"/>
-                                </ContextMenu>
-                            </Border.ContextMenu>
-                            <StackPanel Spacing="6">
-                                <Grid ColumnDefinitions="*,Auto" >
-                                    <CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Grid.Column="0"/>
-                                    <CheckBox Content="Favorite" IsChecked="{Binding IsFavorite}" Grid.Column="1" HorizontalAlignment="Right"/>
-                                </Grid>
-                                <Border Height="220" Background="#1a1a1a" HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                                    <Grid>
-                                        <Image Source="{Binding Image}" Stretch="Uniform" />
-                                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding IsLoading}">
-                                            <ProgressBar IsIndeterminate="True" Width="120"/>
-                                            <TextBlock Text="Generating..." HorizontalAlignment="Center" Margin="0,6,0,0"/>
-                                        </StackPanel>
+                        <Grid Margin="6" Width="280" DoubleTapped="Slot_DoubleTapped">
+                            <Border BorderBrush="{StaticResource AccentBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="6"
+                                    IsVisible="{Binding IsRootSeed}"/>
+                            <Border Padding="6" BorderThickness="0" CornerRadius="4">
+                                <Border.ContextMenu>
+                                    <ContextMenu DataContext="{Binding}">
+                                        <MenuItem Header="View Full Size" Command="{Binding ShowFullSizeCommand}"/>
+                                        <MenuItem Header="Generate Seed Variations"
+                                                  Command="{Binding GenerateSeedVariationsCommand}"
+                                                  IsVisible="{Binding ShowGenerationActions}"/>
+                                        <MenuItem Header="Generate Model Variations"
+                                                  Command="{Binding GenerateModelVariationsCommand}"
+                                                  IsVisible="{Binding ShowGenerationActions}"/>
+                                        <MenuItem Header="Generate LoRA Variations"
+                                                  Command="{Binding GenerateLoraVariationsCommand}"
+                                                  IsVisible="{Binding ShowGenerationActions}"/>
+                                        <MenuItem Header="Edit &amp; Regenerate"
+                                                  Command="{Binding EditAndRegenerateCommand}"
+                                                  IsVisible="{Binding ShowGenerationActions}"/>
+                                    </ContextMenu>
+                                </Border.ContextMenu>
+                                <StackPanel Spacing="6">
+                                    <Grid ColumnDefinitions="*,Auto" >
+                                        <CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Grid.Column="0"/>
+                                        <CheckBox Content="Favorite" IsChecked="{Binding IsFavorite}" Grid.Column="1" HorizontalAlignment="Right"/>
                                     </Grid>
-                                </Border>
-                                <StackPanel Spacing="4">
-                                    <TextBlock Text="{Binding ModelUsed, StringFormat='Model: {0}'}" Classes="subtle"/>
-                                    <TextBlock Text="{Binding Seed, StringFormat='Seed: {0}'}" Classes="subtle"/>
-                                    <TextBlock Text="{Binding Size, StringFormat='Size: {0}'}" Classes="subtle"/>
-                                    <TextBlock Text="{Binding LoraLabel, StringFormat='LoRAs: {0}'}"
-                                               Classes="subtle"
-                                               TextTrimming="CharacterEllipsis"
-                                               IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                    <Border Height="220" Background="#1a1a1a" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                                        <Grid>
+                                            <Image Source="{Binding Image}" Stretch="Uniform" />
+                                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding IsLoading}">
+                                                <ProgressBar IsIndeterminate="True" Width="120"/>
+                                                <TextBlock Text="Generating..." HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="{Binding ModelUsed, StringFormat='Model: {0}'}" Classes="subtle"/>
+                                        <TextBlock Text="{Binding Seed, StringFormat='Seed: {0}'}" Classes="subtle"/>
+                                        <TextBlock Text="{Binding RootSeedLabel}"
+                                                   Classes="subtle"
+                                                   IsVisible="{Binding RootSeedLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                        <TextBlock Text="{Binding Size, StringFormat='Size: {0}'}" Classes="subtle"/>
+                                        <TextBlock Text="{Binding LoraLabel, StringFormat='LoRAs: {0}'}"
+                                                   Classes="subtle"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                    </StackPanel>
                                 </StackPanel>
-                            </StackPanel>
-                        </Border>
+                            </Border>
+                        </Grid>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>

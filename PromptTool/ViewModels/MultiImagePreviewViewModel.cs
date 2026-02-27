@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Media.Imaging;
@@ -23,6 +24,15 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     private string _statusText = "Generating images...";
 
     [ObservableProperty]
+    private string _progressText = "";
+
+    [ObservableProperty]
+    private int _generatedCount;
+
+    [ObservableProperty]
+    private int _totalCount;
+
+    [ObservableProperty]
     private bool _showGenerationActions = true;
 
     public IReadOnlyList<HistoryEntry> SavedEntries { get; private set; } = Array.Empty<HistoryEntry>();
@@ -30,6 +40,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     public CancellationTokenSource? GenerationToken { get; set; }
 
     private Func<ImageSlotViewModel, Task>? _onSaveSlot;
+    private Func<Task>? _onSaveCompleted;
     private Func<ImageSlotViewModel, Task>? _onGenerateSeedVariations;
     private Func<ImageSlotViewModel, Task>? _onGenerateModelVariations;
     private Func<ImageSlotViewModel, Task>? _onGenerateLoraVariations;
@@ -40,6 +51,12 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     {
         get => _onSaveSlot;
         set => _onSaveSlot = value;
+    }
+
+    public Func<Task>? OnSaveCompleted
+    {
+        get => _onSaveCompleted;
+        set => _onSaveCompleted = value;
     }
 
     public Func<ImageSlotViewModel, Task>? OnGenerateSeedVariations
@@ -113,6 +130,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
             var slot = CreatePlaceholderSlot($"Image {i + 1}");
             Slots.Add(slot);
         }
+        SyncProgressFromSlots();
     }
 
     public ImageSlotViewModel CreatePlaceholderSlot(string label)
@@ -165,6 +183,24 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         }
     }
 
+    public void SyncProgressFromSlots()
+    {
+        TotalCount = Slots.Count;
+        GeneratedCount = Slots.Count(s => s.ImageBytes != null);
+        UpdateProgressText();
+    }
+
+    public void IncrementGenerated()
+    {
+        GeneratedCount = Math.Min(GeneratedCount + 1, TotalCount);
+        UpdateProgressText();
+    }
+
+    private void UpdateProgressText()
+    {
+        ProgressText = TotalCount > 0 ? $"{GeneratedCount}/{TotalCount}" : "";
+    }
+
     public IReadOnlyList<ImageSlotViewModel> GetSelectedSlots()
     {
         var list = new List<ImageSlotViewModel>();
@@ -187,6 +223,10 @@ public partial class MultiImagePreviewViewModel : ObservableObject
             {
                 await OnSaveSlot(slot);
             }
+        }
+        if (OnSaveCompleted != null)
+        {
+            await OnSaveCompleted();
         }
         DialogResult = true;
     }
@@ -244,9 +284,18 @@ public partial class ImageSlotViewModel : ObservableObject
     [ObservableProperty] private bool _isFavorite;
     [ObservableProperty] private string _modelUsed = "";
     [ObservableProperty] private string _seed = "";
+    [ObservableProperty] private string _rootSeedLabel = "";
+    [ObservableProperty] private bool _isRootSeed;
     [ObservableProperty] private string _size = "";
     [ObservableProperty] private string _loraLabel = "";
     [ObservableProperty] private bool _showGenerationActions = true;
+    [ObservableProperty] private int? _generationDurationMs;
+    [ObservableProperty] private int? _queueWaitMs;
+    [ObservableProperty] private int? _totalDurationMs;
+    [ObservableProperty] private string? _generationStatus;
+    [ObservableProperty] private string? _errorType;
+    [ObservableProperty] private string? _errorMessage;
+    [ObservableProperty] private string? _errorTraceback;
     public InvokeAIGenerationParams? GenerationParams { get; set; }
     public string? GenerationGraphJson { get; set; }
 

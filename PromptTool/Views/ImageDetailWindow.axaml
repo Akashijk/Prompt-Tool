@@ -4,8 +4,8 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:PromptTool.ViewModels"
         mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="720"
-        x:Class="PromptTool.Views.HistoryImageDetailWindow"
-        x:DataType="vm:HistoryImageDetailViewModel"
+        x:Class="PromptTool.Views.ImageDetailWindow"
+        x:DataType="vm:ImageDetailViewModel"
         Title="Image Details"
         WindowStartupLocation="Manual"
         SystemDecorations="Full"
@@ -18,8 +18,20 @@
                     TickFrequency="1" IsSnapToTickEnabled="True"
                     SmallChange="1" LargeChange="1"
                     PointerWheelChanged="ZoomSlider_PointerWheelChanged"/>
-            <Button Content="Edit Image Data" Click="EditImageData_Click"/>
-            <Button Content="Upscale" Command="{Binding UpscaleCommand}"/>
+            <Button Content="Edit Image Data" Click="EditImageData_Click" IsVisible="{Binding ShowHistoryActions}"/>
+            <Button Content="Upscale" Command="{Binding UpscaleCommand}" IsVisible="{Binding ShowHistoryActions}"/>
+            <Button Content="Generate More"
+                    Command="{Binding GenerateMoreCommand}"
+                    IsVisible="{Binding CanGenerateMore}"/>
+            <Button Content="Seed Variations"
+                    Command="{Binding GenerateSeedVariationsCommand}"
+                    IsVisible="{Binding CanGenerateSeedVariations}"/>
+            <Button Content="LoRA Variations"
+                    Command="{Binding GenerateLoraVariationsCommand}"
+                    IsVisible="{Binding CanGenerateLoraVariations}"/>
+            <Button Content="Model Variations"
+                    Command="{Binding GenerateModelVariationsCommand}"
+                    IsVisible="{Binding CanGenerateModelVariations}"/>
             <Button Content="Copy Processed" Command="{Binding CopyTextCommand}" CommandParameter="{Binding ProcessedPrompt}" IsVisible="{Binding HasProcessedPrompt}"/>
             <Button Content="Copy Original" Command="{Binding CopyTextCommand}" CommandParameter="{Binding OriginalPrompt}"/>
             <Button Content="Copy Details" Command="{Binding CopyTextCommand}" CommandParameter="{Binding DetailsText}"/>

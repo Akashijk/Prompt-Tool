@@ -23,28 +23,37 @@ public partial class HistoryViewerWindow : Window
     private ScrollViewer? _detailsScroll;
     private bool _legacyPromptShown;
     private bool _hasAutoSelected;
+    private bool _stateRestored;
 
     public HistoryViewerWindow()
     {
         InitializeComponent();
-        Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
         Opened += HistoryViewerWindow_OnOpened;
         HookDataContext();
         WireContext();
+        RestoreWindowState();
     }
 
     public HistoryViewerWindow(HistoryViewerViewModel viewModel)
     {
         InitializeComponent();
-        Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
         Opened += HistoryViewerWindow_OnOpened;
         DataContext = viewModel;
         WireContext();
+        RestoreWindowState();
         
         // Subscribe to PropertyChanged event to observe DialogResult
         viewModel.PropertyChanged += ViewModel_PropertyChanged;
+    }
+
+    private void OnHistorySelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (DataContext is not HistoryViewerViewModel vm) return;
+        if (sender is not DataGrid grid) return;
+        var items = grid.SelectedItems?.OfType<HistoryEntryItem>() ?? Enumerable.Empty<HistoryEntryItem>();
+        vm.SetSelectedEntries(items);
     }
 
     private async void HistoryViewerWindow_OnOpened(object? sender, System.EventArgs e)
@@ -88,9 +97,21 @@ public partial class HistoryViewerWindow : Window
 
     private void RestoreWindowState()
     {
+        if (_stateRestored)
+        {
+            return;
+        }
+        _stateRestored = true;
+
         var settings = GetSettingsService()?.Settings;
         if (settings == null)
         {
+            return;
+        }
+
+        if (Enum.TryParse<WindowState>(settings.HistoryViewerWindowState, out var state) && state != WindowState.Normal)
+        {
+            WindowState = state;
             return;
         }
 
@@ -105,10 +126,7 @@ public partial class HistoryViewerWindow : Window
             Position = new PixelPoint((int)settings.HistoryViewerWindowX, (int)settings.HistoryViewerWindowY);
         }
 
-        if (Enum.TryParse<WindowState>(settings.HistoryViewerWindowState, out var state))
-        {
-            WindowState = state;
-        }
+        WindowState = WindowState.Normal;
     }
 
     private void SaveWindowState()
@@ -250,7 +268,7 @@ public partial class HistoryViewerWindow : Window
     {
         if (context?.Item.Bitmap == null) return;
         if (DataContext is not HistoryViewerViewModel vm) return;
-        HistoryImageDetailPresenter.Show(
+        ImageDetailPresenter.Show(
             context.Entry,
             context.Item.Image!,
             context.Item.Bitmap,
@@ -258,7 +276,11 @@ public partial class HistoryViewerWindow : Window
             vm.HistoryManager,
             vm.HistoryIndexService,
             vm.ImageCacheService,
-            (entry, image) => vm.UpscaleRequested?.Invoke(entry, image) ?? Task.CompletedTask);
+            (entry, image) => vm.UpscaleRequested?.Invoke(entry, image) ?? Task.CompletedTask,
+            (entry, image) => vm.RegenerateRequested?.Invoke(entry, image, null, null) ?? Task.CompletedTask,
+            (entry, image) => vm.SeedVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask,
+            (entry, image) => vm.LoraVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask,
+            (entry, image) => vm.ModelVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask);
     }
 
     private void Image_DoubleTapped(object? sender, RoutedEventArgs e)
@@ -292,6 +314,10 @@ public partial class HistoryViewerWindow : Window
             vm.HistoryIndexService,
             vm.WorkflowFilter);
         allVm.UpscaleRequested = (entry, image) => vm.UpscaleRequested?.Invoke(entry, image) ?? Task.CompletedTask;
+        allVm.GenerateMoreRequested = (entry, image) => vm.RegenerateRequested?.Invoke(entry, image, null, null) ?? Task.CompletedTask;
+        allVm.SeedVariationsRequested = (entry, image) => vm.SeedVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask;
+        allVm.LoraVariationsRequested = (entry, image) => vm.LoraVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask;
+        allVm.ModelVariationsRequested = (entry, image) => vm.ModelVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask;
         var win = new AllImagesWindow(allVm);
         win.Show(this);
         return Task.CompletedTask;

@@ -114,30 +114,45 @@ public partial class PngMetadataViewerViewModel : ObservableObject
                 PreviewBitmap = null;
             }
 
+            var chunkList = new List<PngTextChunkViewModel>();
+            string? fileInfoText = null;
+            string? imageInfoText = null;
+            bool hasChunks = false;
+            string? statusText = null;
+
             await Task.Run(() =>
             {
                 using var image = Image.Load(path);
                 var info = new FileInfo(path);
 
                 var fileSizeMb = info.Length / (1024.0 * 1024.0);
-                FileInfo = $"Path: {path}\nSize: {fileSizeMb:0.00} MB ({info.Length:N0} bytes)\nModified: {info.LastWriteTime}";
+                fileInfoText = $"Path: {path}\nSize: {fileSizeMb:0.00} MB ({info.Length:N0} bytes)\nModified: {info.LastWriteTime}";
                 var colorMode = image.PixelType.BitsPerPixel > 0
                     ? $"{image.PixelType.BitsPerPixel} bpp"
                     : "unknown";
-                ImageInfo = $"Dimensions: {image.Width} x {image.Height}\nColor Mode: {colorMode}";
+                imageInfoText = $"Dimensions: {image.Width} x {image.Height}\nColor Mode: {colorMode}";
 
                 var textChunks = ReadTextChunks(image);
-                foreach (var chunk in textChunks)
+                chunkList.AddRange(textChunks);
+                hasChunks = chunkList.Count > 0;
+                if (!hasChunks)
                 {
-                    Chunks.Add(chunk);
-                }
-
-                HasChunks = Chunks.Count > 0;
-                if (!HasChunks)
-                {
-                    StatusMessage = "No text metadata found in this PNG.";
+                    statusText = "No text metadata found in this PNG.";
                 }
             });
+
+            FileInfo = fileInfoText ?? string.Empty;
+            ImageInfo = imageInfoText ?? string.Empty;
+            Chunks.Clear();
+            foreach (var chunk in chunkList)
+            {
+                Chunks.Add(chunk);
+            }
+            HasChunks = hasChunks;
+            if (!string.IsNullOrWhiteSpace(statusText))
+            {
+                StatusMessage = statusText;
+            }
 
             _lastMetadata = BuildMetadataSnapshot();
             HasGenerationMetadata = HasMetadataContent(_lastMetadata);

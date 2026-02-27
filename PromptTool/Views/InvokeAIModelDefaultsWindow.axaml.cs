@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Layout;
 using PromptTool.ViewModels;
+using PromptTool.Helpers;
 
 namespace PromptTool.Views;
 
@@ -154,8 +155,7 @@ public partial class InvokeAIModelDefaultsWindow : Window
                     new FilePickerFileType("JSON") { Patterns = new[] { "*.json" } }
                 }
             };
-            var file = await provider.SaveFilePickerAsync(options);
-            var path = ToLocalPath(file);
+            var path = await FilePickerHelper.PickSaveFileAsync(provider, options);
             if (string.IsNullOrWhiteSpace(path)) return;
             vm.ExportAll(path);
         });
@@ -175,17 +175,9 @@ public partial class InvokeAIModelDefaultsWindow : Window
                     new FilePickerFileType("JSON") { Patterns = new[] { "*.json" } }
                 }
             };
-            var files = await provider.OpenFilePickerAsync(options);
-            var path = ToLocalPath(files?.FirstOrDefault());
+            var path = await FilePickerHelper.PickOpenFileAsync(provider, options);
             if (string.IsNullOrWhiteSpace(path)) return;
             vm.ImportAll(path);
         });
-    }
-
-    private static string? ToLocalPath(IStorageFile? file)
-    {
-        if (file == null) return null;
-        var local = file.TryGetLocalPath();
-        return !string.IsNullOrWhiteSpace(local) ? local : file.Path?.LocalPath;
     }
 }

@@ -13,10 +13,19 @@ namespace PromptTool.ViewModels;
 public partial class LoraPermutationDialogViewModel : ObservableObject
 {
     public ObservableCollection<LoraOptionViewModel> LoraOptions { get; }
+    public ObservableCollection<LoraOptionViewModel> FilteredLoraOptions { get; } = new();
     public ObservableCollection<LoraPermutationViewModel> Permutations { get; } = new();
 
     [ObservableProperty]
     private LoraPermutationViewModel? _selectedPermutation;
+    [ObservableProperty]
+    private double _loraOptionsDropdownWidth;
+    [ObservableProperty]
+    private string _loraSearchText = "";
+    [ObservableProperty]
+    private string _summaryText = "";
+    [ObservableProperty]
+    private LoraOptionViewModel? _selectedLoraOption;
 
     public event EventHandler? RequestClose;
 
@@ -27,15 +36,18 @@ public partial class LoraPermutationDialogViewModel : ObservableObject
         IEnumerable<LoraParameter>? initialLoras)
     {
         LoraOptions = new ObservableCollection<LoraOptionViewModel>(
-            new[] { new LoraOptionViewModel("(None)", null) }
-                .Concat(availableLoras
-                    .OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
-                    .Select(m => new LoraOptionViewModel(m.Name ?? "(Unnamed)", m))));
+            availableLoras
+                .OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(m => new LoraOptionViewModel(m.Name ?? "(Unnamed)", m)));
+
+        LoraOptionsDropdownWidth = CalculateDropdownWidth(LoraOptions.Select(o => o.Name), 240, 420);
 
         AddPermutation(initialLoras);
         SelectedPermutation = Permutations.FirstOrDefault();
         Permutations.CollectionChanged += OnPermutationsChanged;
         ReindexPermutations();
+        ApplyLoraFilter();
+        UpdateSummaryText();
     }
 
     [RelayCommand]
@@ -71,6 +83,7 @@ public partial class LoraPermutationDialogViewModel : ObservableObject
             return;
         }
         SelectedPermutation = Permutations[Math.Clamp(index, 0, Permutations.Count - 1)];
+        UpdateSummaryText();
     }
 
     [RelayCommand]
@@ -80,10 +93,34 @@ public partial class LoraPermutationDialogViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private void AddLoraOption(LoraOptionViewModel? option)
+    {
+        if (option?.Model == null || SelectedPermutation == null) return;
+        if (SelectedPermutation.ContainsModel(option.Model)) return;
+        SelectedPermutation.AddRow(CreateRow(new LoraParameter { Lora = option.Model, Weight = 0.75 }));
+        UpdateSummaryText();
+    }
+
+    [RelayCommand]
+    private void AddSelectedLoraOption()
+    {
+        AddLoraOption(SelectedLoraOption);
+    }
+
+    [RelayCommand]
+    private void ClearSelectedPermutation()
+    {
+        if (SelectedPermutation == null) return;
+        SelectedPermutation.ClearRows();
+        UpdateSummaryText();
+    }
+
+    [RelayCommand]
     private void DeleteLoraRow(LoraPermutationRowViewModel? row)
     {
         if (row == null || SelectedPermutation == null) return;
         SelectedPermutation.RemoveRow(row);
+        UpdateSummaryText();
     }
 
     [RelayCommand]
@@ -128,14 +165,11 @@ public partial class LoraPermutationDialogViewModel : ObservableObject
                 perm.AddRow(CreateRow(lora));
             }
         }
-        else
-        {
-            perm.AddRow(CreateRow(null));
-        }
 
         Permutations.Add(perm);
         SelectedPermutation = perm;
         ReindexPermutations();
+        UpdateSummaryText();
     }
 
     private LoraPermutationRowViewModel CreateRow(LoraParameter? lora)
@@ -150,7 +184,7 @@ public partial class LoraPermutationDialogViewModel : ObservableObject
         }
         else
         {
-            row.SelectedOption = LoraOptions.FirstOrDefault();
+            row.SelectedOption = null;
             row.Weight = 0.75;
         }
         return row;
@@ -159,6 +193,14 @@ public partial class LoraPermutationDialogViewModel : ObservableObject
     private void OnPermutationsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         ReindexPermutations();
+        UpdateSummaryText();
+    }
+
+    private static double CalculateDropdownWidth(IEnumerable<string> items, double minWidth, double maxWidth)
+    {
+        var maxLen = items.Select(i => i?.Length ?? 0).DefaultIfEmpty(0).Max();
+        var width = maxLen * 7.5 + 48;
+        return Math.Min(maxWidth, Math.Max(minWidth, width));
     }
 
     private void ReindexPermutations()
@@ -167,6 +209,40 @@ public partial class LoraPermutationDialogViewModel : ObservableObject
         {
             Permutations[i].SetIndex(i + 1);
         }
+    }
+
+    partial void OnSelectedPermutationChanged(LoraPermutationViewModel? value)
+    {
+        UpdateSummaryText();
+    }
+
+    partial void OnLoraSearchTextChanged(string value)
+    {
+        ApplyLoraFilter();
+    }
+
+    private void ApplyLoraFilter()
+    {
+        FilteredLoraOptions.Clear();
+        var term = (LoraSearchText ?? string.Empty).Trim();
+        var filtered = string.IsNullOrWhiteSpace(term)
+            ? LoraOptions
+            : LoraOptions.Where(o => o.Name.Contains(term, StringComparison.OrdinalIgnoreCase));
+        foreach (var option in filtered)
+        {
+            FilteredLoraOptions.Add(option);
+        }
+        if (SelectedLoraOption != null && !FilteredLoraOptions.Contains(SelectedLoraOption))
+        {
+            SelectedLoraOption = FilteredLoraOptions.FirstOrDefault();
+        }
+    }
+
+    private void UpdateSummaryText()
+    {
+        var totalPerms = Permutations.Count;
+        var totalRows = Permutations.Sum(p => p.Rows.Count);
+        SummaryText = $"Permutations: {totalPerms} · LoRAs: {totalRows}";
     }
 }
 
@@ -201,6 +277,18 @@ public partial class LoraPermutationRowViewModel : ObservableObject
         }
     }
 
+    public bool HasModel => SelectedOption?.Model != null;
+
+    public string DisplayName => SelectedOption?.Name ?? "(None)";
+
+    [RelayCommand]
+    private void SetWeight(string? value)
+    {
+        if (double.TryParse(value, out var weight))
+        {
+            Weight = weight;
+        }
+    }
 }
 
 public partial class LoraPermutationViewModel : ObservableObject
@@ -209,6 +297,12 @@ public partial class LoraPermutationViewModel : ObservableObject
 
     [ObservableProperty]
     private string _displayName = "";
+    [ObservableProperty]
+    private string _summary = "";
+    [ObservableProperty]
+    private bool _hasDuplicates;
+    [ObservableProperty]
+    private string _duplicateLabel = "";
 
     private int _index;
 
@@ -222,6 +316,16 @@ public partial class LoraPermutationViewModel : ObservableObject
     {
         HookRow(row);
         Rows.Add(row);
+        UpdateDisplayName();
+    }
+
+    public void ClearRows()
+    {
+        foreach (var row in Rows.ToList())
+        {
+            UnhookRow(row);
+        }
+        Rows.Clear();
         UpdateDisplayName();
     }
 
@@ -244,7 +348,8 @@ public partial class LoraPermutationViewModel : ObservableObject
 
     private void RowOnPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(LoraPermutationRowViewModel.SelectedOption))
+        if (e.PropertyName == nameof(LoraPermutationRowViewModel.SelectedOption)
+            || e.PropertyName == nameof(LoraPermutationRowViewModel.Weight))
         {
             UpdateDisplayName();
         }
@@ -254,11 +359,36 @@ public partial class LoraPermutationViewModel : ObservableObject
     {
         var loraNames = Rows
             .Select(r => r.SelectedOption?.Name)
-            .Where(n => !string.IsNullOrWhiteSpace(n) && n != "(None)")
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToList();
+
+        var summaryParts = Rows
+            .Where(r => r.SelectedOption?.Name != null)
+            .Select(r => $"{r.SelectedOption!.Name} ({r.Weight:0.##})")
             .ToList();
 
         DisplayName = loraNames.Count == 0
             ? $"Permutation {_index}"
             : $"Permutation {_index} ({string.Join(" + ", loraNames)})";
+
+        Summary = summaryParts.Count == 0
+            ? "No LoRAs selected"
+            : string.Join(" + ", summaryParts);
+
+        var dupes = loraNames
+            .GroupBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        HasDuplicates = dupes.Count > 0;
+        DuplicateLabel = HasDuplicates ? $"Duplicate: {string.Join(", ", dupes)}" : string.Empty;
+    }
+
+    public bool ContainsModel(InvokeAIModel model)
+    {
+        return Rows.Any(r =>
+            r.SelectedOption?.Model != null &&
+            string.Equals(r.SelectedOption.Model.Name, model.Name, StringComparison.OrdinalIgnoreCase));
     }
 }

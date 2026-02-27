@@ -1,0 +1,20 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PromptTool.ViewModels"
+        x:Class="PromptTool.Views.SchedulerTunerImagePreviewWindow"
+        x:DataType="vm:SchedulerTunerImagePreviewViewModel"
+        Title="{Binding Title}"
+        Width="960"
+        Height="720"
+        WindowStartupLocation="CenterOwner">
+    <Border Padding="12">
+        <ScrollViewer x:Name="PreviewScrollViewer"
+                      HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Auto"
+                      PointerPressed="ScrollViewer_PointerPressed"
+                      PointerMoved="ScrollViewer_PointerMoved"
+                      PointerReleased="ScrollViewer_PointerReleased">
+            <Image Source="{Binding Image}" Stretch="Uniform"/>
+        </ScrollViewer>
+    </Border>
+</Window>

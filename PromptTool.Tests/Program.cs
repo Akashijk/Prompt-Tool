@@ -114,8 +114,9 @@ public static class Program
             settings,
             systemPrompts,
             new FakeOllamaClient(),
-            new InvokeAIClient(new System.Net.Http.HttpClient()),
+            new InvokeAIClient(new System.Net.Http.HttpClient(), settings),
             new HistoryManagerService(settings),
+            new KpiStatsService(settings),
             templateService,
             usageTracker);
         return (settings, wildcardService, vm);

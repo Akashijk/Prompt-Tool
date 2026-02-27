@@ -199,8 +199,4 @@ public class WindowManager : IWindowManager
         }
     }
 
-    public void ShowFavoritesViewer(object? owner)
-    {
-        throw new NotImplementedException();
-    }
 }

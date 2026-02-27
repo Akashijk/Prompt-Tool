@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using PromptTool.ViewModels;
+using PromptTool.Services;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -55,38 +56,25 @@ public partial class AllImagesWindow : Window
 
     private void ShowLarge(GalleryImageItem item)
     {
-        if (item.Bitmap == null) return;
-        var details = HistoryViewerViewModel.BuildDetailsTextForImage(item.Entry, item.Image);
-        var processed = item.Entry.ProcessedPrompt;
-        if (string.IsNullOrWhiteSpace(processed))
-        {
-            processed = item.Image?.Prompt
-                        ?? item.Entry.EnhancedPrompt
-                        ?? item.Entry.VariationPrompts?.Values.FirstOrDefault()
-                        ?? item.Entry.OriginalPrompt;
-        }
+        if (DataContext is not AllImagesViewerViewModel vm) return;
+        if (item.Image == null) return;
 
-        var detailVm = new HistoryImageDetailViewModel(
+        var fallback = item.Bitmap ?? vm.ImageCacheService.GetOrLoadForUi(item.Image.ImagePath, 320, vm.HistoryManager.GetHistoryDir());
+        if (fallback == null) return;
+
+        ImageDetailPresenter.Show(
             item.Entry,
-            item.Image!,
-            item.Bitmap,
-            details,
-            processed,
-            item.Entry.OriginalPrompt);
-        detailVm.Clipboard = Clipboard;
-        detailVm.UpscaleRequested = (entry, image) =>
-        {
-            var vm = DataContext as AllImagesViewerViewModel;
-            return vm?.UpscaleRequested?.Invoke(entry, image) ?? Task.CompletedTask;
-        };
-
-        var lightbox = new HistoryImageDetailWindow
-        {
-            DataContext = detailVm
-        };
-        lightbox.HistoryManager = (DataContext as AllImagesViewerViewModel)?.HistoryManager;
-        lightbox.HistoryIndexService = (DataContext as AllImagesViewerViewModel)?.HistoryIndexService;
-        lightbox.Show(this);
+            item.Image,
+            fallback,
+            this,
+            vm.HistoryManager,
+            vm.HistoryIndexService,
+            vm.ImageCacheService,
+            (entry, image) => vm.UpscaleRequested?.Invoke(entry, image) ?? Task.CompletedTask,
+            (entry, image) => vm.GenerateMoreRequested?.Invoke(entry, image) ?? Task.CompletedTask,
+            (entry, image) => vm.SeedVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask,
+            (entry, image) => vm.LoraVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask,
+            (entry, image) => vm.ModelVariationsRequested?.Invoke(entry, image) ?? Task.CompletedTask);
     }
 
     private Task ShowCompareAsync(IReadOnlyList<GalleryImageItem> items)

@@ -13,7 +13,9 @@ using Avalonia.Layout;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using Avalonia.Platform.Storage;
+using PromptTool.Helpers;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 
 namespace PromptTool.Views;
@@ -216,23 +218,14 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var options = new FilePickerSaveOptions
-        {
-            Title = "Backup History",
-            SuggestedFileName = $"prompttool_history_{DateTime.Now:yyyyMMdd_HHmmss}.zip",
-            FileTypeChoices = new List<FilePickerFileType>
-            {
-                new FilePickerFileType("Zip archive") { Patterns = new[] { "*.zip" } }
-            }
-        };
-        var file = await provider.SaveFilePickerAsync(options);
-        var path = file?.TryGetLocalPath() ?? file?.Path?.LocalPath;
-        if (string.IsNullOrWhiteSpace(path))
+        var folder = await PickBackupFolderAsync(provider, "Backup History");
+        if (string.IsNullOrWhiteSpace(folder))
         {
             return;
         }
 
-        await RunBackupWithProgressAsync(() => vm.BackupHistoryAsync(path, CreateProgress(), CancellationToken.None), "History");
+        var path = BuildBackupPath(folder, "prompttool_history");
+        await RunBackupWithProgressAsync(ct => vm.BackupHistoryAsync(path, CreateProgress(), ct), "History");
     }
 
     private async void BackupConfig_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -248,13 +241,14 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var path = await PickZipPathAsync(provider, "Backup Config/Content", "prompttool_config");
-        if (string.IsNullOrWhiteSpace(path))
+        var folder = await PickBackupFolderAsync(provider, "Backup Config/Content");
+        if (string.IsNullOrWhiteSpace(folder))
         {
             return;
         }
 
-        await RunBackupWithProgressAsync(() => vm.BackupConfigAsync(path, CreateProgress(), CancellationToken.None), "Config");
+        var path = BuildBackupPath(folder, "prompttool_config");
+        await RunBackupWithProgressAsync(ct => vm.BackupConfigAsync(path, CreateProgress(), ct), "Config");
     }
 
     private async void BackupFull_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -270,19 +264,17 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var configPath = await PickZipPathAsync(provider, "Backup Config/Content", "prompttool_config");
-        if (string.IsNullOrWhiteSpace(configPath))
+        var folder = await PickBackupFolderAsync(provider, "Full Backup");
+        if (string.IsNullOrWhiteSpace(folder))
         {
             return;
         }
 
-        var historyPath = await PickZipPathAsync(provider, "Backup History", "prompttool_history");
-        if (string.IsNullOrWhiteSpace(historyPath))
-        {
-            return;
-        }
+        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var configPath = Path.Combine(folder, $"prompttool_config_{timestamp}.zip");
+        var historyPath = Path.Combine(folder, $"prompttool_history_{timestamp}.zip");
 
-        await RunBackupWithProgressAsync(() => vm.BackupFullAsync(configPath, historyPath, CreateProgress(), CancellationToken.None), "Full");
+        await RunBackupWithProgressAsync(ct => vm.BackupFullAsync(configPath, historyPath, CreateProgress(), ct), "Full");
     }
 
     private async void RestoreBackup_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -298,46 +290,52 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        var priorCursor = Cursor;
+        Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Wait);
+        await Task.Yield();
         var zipPath = await PickZipFileAsync(provider, "Restore from Backup Zip");
+        Cursor = priorCursor;
         if (string.IsNullOrWhiteSpace(zipPath))
         {
             return;
         }
 
-        var options = await ShowRestoreOptionsAsync();
-        if (options == null)
+        var sections = vm.InspectBackupSections(zipPath);
+        if (!sections.HasConfig && !sections.HasHistory)
+        {
+            await ShowInfoAsync("Restore", "No matching entries found in the selected backup.");
+            return;
+        }
+
+        var overwriteExisting = await ShowRestoreModeAsync();
+        if (overwriteExisting == null)
         {
             return;
         }
 
-        if (!options.Value.restoreConfig && !options.Value.restoreHistory)
-        {
-            return;
-        }
-
-        var summary = vm.BuildRestoreSummary(zipPath, options.Value.restoreConfig, options.Value.restoreHistory, options.Value.overwriteExisting);
+        var summary = vm.BuildRestoreSummary(zipPath, sections.HasConfig, sections.HasHistory, overwriteExisting.Value);
         if (summary.TotalAdd + summary.TotalOverwrite + summary.TotalSkip == 0)
         {
             await ShowInfoAsync("Restore", "No matching entries found in the selected backup.");
             return;
         }
 
-        var proceed = await ShowRestoreSummaryAsync(summary, options.Value.overwriteExisting);
+        var proceed = await ShowRestoreSummaryAsync(summary, overwriteExisting.Value);
         if (!proceed)
         {
             return;
         }
 
-        await RunBackupWithProgressAsync(async () =>
+        await RunBackupWithProgressAsync(async ct =>
         {
-            await vm.CreateAutoBackupAsync(options.Value.restoreConfig, options.Value.restoreHistory, CancellationToken.None);
-            if (options.Value.restoreConfig)
+            await vm.CreateAutoBackupAsync(sections.HasConfig, sections.HasHistory, ct);
+            if (sections.HasConfig)
             {
-                await vm.RestoreConfigAsync(zipPath, options.Value.overwriteExisting, CancellationToken.None);
+                await vm.RestoreConfigAsync(zipPath, overwriteExisting.Value, ct);
             }
-            if (options.Value.restoreHistory)
+            if (sections.HasHistory)
             {
-                await vm.RestoreHistoryAsync(zipPath, options.Value.overwriteExisting, CancellationToken.None);
+                await vm.RestoreHistoryAsync(zipPath, overwriteExisting.Value, ct);
             }
         }, "Restore");
     }
@@ -376,19 +374,20 @@ public partial class SettingsWindow : Window
         vm.DeleteAutoBackups();
     }
 
-    private static async Task<string?> PickZipPathAsync(IStorageProvider provider, string title, string baseName)
+    private static async Task<string?> PickBackupFolderAsync(IStorageProvider provider, string title)
     {
-        var options = new FilePickerSaveOptions
+        var options = new FolderPickerOpenOptions
         {
             Title = title,
-            SuggestedFileName = $"{baseName}_{DateTime.Now:yyyyMMdd_HHmmss}.zip",
-            FileTypeChoices = new List<FilePickerFileType>
-            {
-                new FilePickerFileType("Zip archive") { Patterns = new[] { "*.zip" } }
-            }
+            AllowMultiple = false
         };
-        var file = await provider.SaveFilePickerAsync(options);
-        return file?.TryGetLocalPath() ?? file?.Path?.LocalPath;
+        return await FilePickerHelper.PickFolderAsync(provider, options);
+    }
+
+    private static string BuildBackupPath(string folder, string baseName)
+    {
+        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        return Path.Combine(folder, $"{baseName}_{timestamp}.zip");
     }
 
     private static async Task<string?> PickZipFileAsync(IStorageProvider provider, string title)
@@ -402,24 +401,20 @@ public partial class SettingsWindow : Window
                 new FilePickerFileType("Zip archive") { Patterns = new[] { "*.zip" } }
             }
         };
-        var files = await provider.OpenFilePickerAsync(options);
-        var file = files?.FirstOrDefault();
-        return file?.TryGetLocalPath() ?? file?.Path?.LocalPath;
+        return await FilePickerHelper.PickOpenFileAsync(provider, options);
     }
 
-    private async Task<(bool restoreConfig, bool restoreHistory, bool overwriteExisting)?> ShowRestoreOptionsAsync()
+    private async Task<bool?> ShowRestoreModeAsync()
     {
-        var tcs = new TaskCompletionSource<(bool, bool, bool)?>();
-        var configCheck = new CheckBox { Content = "Restore config/content", IsChecked = true };
-        var historyCheck = new CheckBox { Content = "Restore history", IsChecked = false };
-        var overwriteCheck = new CheckBox { Content = "Overwrite existing files", IsChecked = false };
+        var tcs = new TaskCompletionSource<bool?>();
+        var overwriteCheck = new CheckBox { Content = "Overwrite existing files (recommended for full restore)", IsChecked = false };
 
         var dialog = new Window
         {
             Width = 420,
-            Height = 260,
+            Height = 200,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Title = "Restore Options",
+            Title = "Restore Mode",
             Content = new StackPanel
             {
                 Margin = new Thickness(12),
@@ -428,11 +423,9 @@ public partial class SettingsWindow : Window
                 {
                     new TextBlock
                     {
-                        Text = "Choose what to restore from the selected zip.",
+                        Text = "Choose how to apply the backup.",
                         TextWrapping = Avalonia.Media.TextWrapping.Wrap
                     },
-                    configCheck,
-                    historyCheck,
                     overwriteCheck,
                     new StackPanel
                     {
@@ -466,7 +459,7 @@ public partial class SettingsWindow : Window
         {
             ok.Click += (_, __) =>
             {
-                tcs.TrySetResult((configCheck.IsChecked == true, historyCheck.IsChecked == true, overwriteCheck.IsChecked == true));
+                tcs.TrySetResult(overwriteCheck.IsChecked == true);
                 dialog.Close();
             };
         }
@@ -560,24 +553,30 @@ public partial class SettingsWindow : Window
     {
         return new Progress<SettingsViewModel.BackupProgress>(p =>
         {
-            _backupProgressWindow?.UpdateProgress($"{p.Stage} backup", p.Current, p.Total);
+            _backupProgressWindow?.UpdateProgress($"{p.Stage} backup", p.Current, p.Total, p.Item);
         });
     }
 
-    private async Task RunBackupWithProgressAsync(Func<Task> runBackup, string title)
+    private async Task RunBackupWithProgressAsync(Func<CancellationToken, Task> runBackup, string title)
     {
+        using var cts = new CancellationTokenSource();
         _backupProgressWindow = new BackupProgressWindow
         {
             Title = $"{title} Backup"
         };
         _backupProgressWindow.ShowInTaskbar = false;
         _backupProgressWindow.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        _backupProgressWindow.CancelRequested = () => cts.Cancel();
         _backupProgressWindow.Show(this);
-        _backupProgressWindow.UpdateProgress("Preparing backup...", 0, 0);
+        _backupProgressWindow.UpdateProgress("Preparing backup...", 0, 0, null);
 
         try
         {
-            await runBackup();
+            await runBackup(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            await ShowInfoAsync("Backup", $"{title} backup canceled.");
         }
         finally
         {

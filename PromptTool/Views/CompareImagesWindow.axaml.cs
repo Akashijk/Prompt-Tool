@@ -34,6 +34,18 @@ public partial class CompareImagesWindow : Window
         HookZoom();
     }
 
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            Close();
+            e.Handled = true;
+            return;
+        }
+
+        base.OnKeyDown(e);
+    }
+
     private void HookZoom()
     {
         _leftPane.Hook();

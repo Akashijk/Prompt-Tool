@@ -117,12 +117,18 @@ public partial class AllImagesViewerViewModel : ObservableObject
     [ObservableProperty] private bool _canCompare;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _expandAllLabel = "Collapse All";
+    [ObservableProperty] private bool _showFavoritesOnly;
 
     public Func<IReadOnlyList<GalleryImageItem>, Task>? CompareRequested { get; set; }
     public Action<GalleryImageItem>? ViewLargeRequested { get; set; }
     public Func<HistoryEntry, HistoryImage, Task>? UpscaleRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage, Task>? GenerateMoreRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage, Task>? SeedVariationsRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage, Task>? LoraVariationsRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage, Task>? ModelVariationsRequested { get; set; }
     public HistoryManagerService HistoryManager => _historyManager;
     public HistoryIndexService HistoryIndexService => _historyIndexService;
+    public ImageCacheService ImageCacheService => _imageCache;
 
     public AllImagesViewerViewModel(HistoryManagerService historyManager, TemplateService templateService, ImageCacheService imageCache, HistoryIndexService historyIndexService, string workflowFilter)
     {
@@ -138,6 +144,11 @@ public partial class AllImagesViewerViewModel : ObservableObject
     public Task RefreshAsync()
     {
         return LoadImagesAsync();
+    }
+
+    partial void OnShowFavoritesOnlyChanged(bool value)
+    {
+        _ = LoadImagesAsync();
     }
 
     [RelayCommand]
@@ -220,14 +231,19 @@ public partial class AllImagesViewerViewModel : ObservableObject
                 var groupKey = normalized != null && validTemplates.Contains(normalized)
                     ? normalized
                     : "(No Template)";
-                if (!grouped.TryGetValue(groupKey, out var list))
-                {
-                    list = new List<GalleryImageItem>();
-                    grouped[groupKey] = list;
-                }
 
                 foreach (var img in entry.Images)
                 {
+                    if (ShowFavoritesOnly && !img.IsFavorite && !entry.IsFavorite)
+                    {
+                        continue;
+                    }
+
+                    if (!grouped.TryGetValue(groupKey, out var list))
+                    {
+                        list = new List<GalleryImageItem>();
+                        grouped[groupKey] = list;
+                    }
                     list.Add(new GalleryImageItem(entry, img, null));
                 }
             }
@@ -264,7 +280,7 @@ public partial class AllImagesViewerViewModel : ObservableObject
                 foreach (var item in group.Images)
                 {
                     if (token.IsCancellationRequested) return;
-                    var bmp = LoadBitmap(item.Image.ImagePath, 200);
+                    var bmp = LoadBitmap(item.Image.ImagePath, 320);
                     if (bmp != null)
                     {
                         Dispatcher.UIThread.Post(() => item.Bitmap = bmp);
@@ -334,6 +350,6 @@ public partial class AllImagesViewerViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         using var _ = PerfLogger.Measure("AllImages.Decode");
-        return _imageCache.GetOrLoad(path, decodeWidth, _historyDir);
+        return _imageCache.GetOrLoadForUi(path, decodeWidth, _historyDir);
     }
 }

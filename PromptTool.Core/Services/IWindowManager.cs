@@ -8,7 +8,6 @@ public interface IWindowManager
     Task<(bool, List<InvokeAIGenerationParams>?)> ShowImageGenerationOptionsDialog(string initialPrompt, object? owner);
     void ShowImagePreview(IReadOnlyList<byte[]> imageData);
     Task<HistoryEntry?> ShowHistoryViewer(object? owner);
-    void ShowFavoritesViewer(object? owner);
     void ShowWildcardManager(object? owner);
     void ShowBrainstormingWindow(object? owner);
     void ShowImageInterrogatorWindow(object? owner);

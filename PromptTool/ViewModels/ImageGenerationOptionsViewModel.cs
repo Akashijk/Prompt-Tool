@@ -25,6 +25,8 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     private readonly Random _rng = new();
     private GenerationDefaultsSettings _activeDefaults;
     private string? _pendingSchedulerValue;
+    private bool _suppressSchedulerTracking;
+    private bool _schedulerManuallySet;
 
     [ObservableProperty] private string _prompt = "";
     [ObservableProperty] private string _negativePrompt = "";
@@ -44,6 +46,10 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     
     [ObservableProperty] private ObservableCollection<SchedulerOption> _schedulers = new();
     [ObservableProperty] private SchedulerOption? _selectedSchedulerOption;
+    [ObservableProperty] private bool _useModelDefaultsForScheduler = true;
+    [ObservableProperty] private bool _hasModelSchedulerDefault;
+    [ObservableProperty] private string _modelSchedulerDefaultLabel = string.Empty;
+    [ObservableProperty] private string _modelSchedulerDefaultToolTip = string.Empty;
 
     [ObservableProperty] private ObservableCollection<SelectableLoraViewModel> _loras = new();
     private List<SelectableLoraViewModel> _allLoras = new();
@@ -155,9 +161,12 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
                 .Select(s => new SchedulerOption(s, NormalizeSchedulerDisplay(s))).ToList();
             Schedulers = new ObservableCollection<SchedulerOption>(schedulerOptions);
             var defaultScheduler = _pendingSchedulerValue ?? _activeDefaults.Scheduler ?? _settingsService.Settings.DefaultScheduler ?? "dpmpp_2m_k";
+            _suppressSchedulerTracking = true;
             SelectedSchedulerOption = schedulerOptions.FirstOrDefault(s => string.Equals(s.Value, defaultScheduler, StringComparison.OrdinalIgnoreCase))
                                      ?? schedulerOptions.FirstOrDefault(s => s.Value == "dpmpp_2m_k")
                                      ?? schedulerOptions.FirstOrDefault();
+            _suppressSchedulerTracking = false;
+            _schedulerManuallySet = !string.IsNullOrWhiteSpace(_pendingSchedulerValue);
             _pendingSchedulerValue = null;
             
             var loras = await _invokeAiClient.GetModelsAsync(baseModel: BaseModelType, modelType: "lora");
@@ -289,6 +298,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     partial void OnBaseModelTypeChanged(string value)
     {
         _activeDefaults = ResolveDefaultsForBase(value);
+        _schedulerManuallySet = false;
         if (!DisableAutoDefaults)
         {
             Steps = _activeDefaults.Steps;
@@ -329,6 +339,26 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         NegativePrompt = value.Value;
         IsNegativePromptDirty = false;
         _suppressNegativePresetSync = false;
+    }
+
+    partial void OnSelectedSchedulerOptionChanged(SchedulerOption? value)
+    {
+        if (_suppressSchedulerTracking)
+        {
+            return;
+        }
+
+        _schedulerManuallySet = true;
+        UpdateModelSchedulerDefaultInfo();
+    }
+
+    partial void OnUseModelDefaultsForSchedulerChanged(bool value)
+    {
+        UpdateModelSchedulerDefaultInfo();
+        if (value && !_schedulerManuallySet)
+        {
+            ApplyDefaultsForSelection();
+        }
     }
 
     private void InitializeNegativePresets()
@@ -438,7 +468,15 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
                     negativeForModel,
                     schedulerForModel,
                     invokeModel,
-                    selectedLoras);
+                    selectedLoras,
+                    allowSchedulerOverride: UseModelDefaultsForScheduler && !_schedulerManuallySet);
+            }
+            else
+            {
+                schedulerForModel = ApplyModelSchedulerDefault(
+                    schedulerForModel,
+                    invokeModel,
+                    allowSchedulerOverride: UseModelDefaultsForScheduler && !_schedulerManuallySet);
             }
 
             var finalNegativeForModel = string.IsNullOrWhiteSpace(styleNegative)
@@ -507,6 +545,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             model.IsSelected = anyUnchecked;
         }
         UpdateTotalImagesLabel();
+        UpdateModelSchedulerDefaultInfo();
     }
 
     private void Cancel()
@@ -542,7 +581,8 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         string negativePrompt,
         string scheduler,
         InvokeAIModel model,
-        IReadOnlyList<SelectableLoraViewModel> selectedLoras)
+        IReadOnlyList<SelectableLoraViewModel> selectedLoras,
+        bool allowSchedulerOverride)
     {
         var promptOut = prompt?.Trim() ?? string.Empty;
         var negativeOut = negativePrompt?.Trim() ?? string.Empty;
@@ -562,7 +602,9 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
                 var prefix = modelDefaults.NegativePromptPrefix.Trim();
                 negativeOut = string.IsNullOrWhiteSpace(negativeOut) ? prefix : $"{prefix}, {negativeOut}";
             }
-            if (!string.IsNullOrWhiteSpace(modelDefaults.Sampler) && modelDefaults.Sampler != "(None)")
+            if (allowSchedulerOverride &&
+                !string.IsNullOrWhiteSpace(modelDefaults.Sampler) &&
+                modelDefaults.Sampler != "(None)")
             {
                 schedulerOut = modelDefaults.Sampler;
             }
@@ -597,6 +639,28 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         return (promptOut, negativeOut, schedulerOut);
     }
 
+    private string ApplyModelSchedulerDefault(string scheduler, InvokeAIModel model, bool allowSchedulerOverride)
+    {
+        if (!allowSchedulerOverride)
+        {
+            return scheduler;
+        }
+
+        var modelDefaults = _settingsService.InvokeAIModelDefaults.FirstOrDefault(d =>
+            string.Equals(d.ModelName, model.Name, StringComparison.OrdinalIgnoreCase));
+        if (modelDefaults == null)
+        {
+            return scheduler;
+        }
+
+        if (!string.IsNullOrWhiteSpace(modelDefaults.Sampler) && modelDefaults.Sampler != "(None)")
+        {
+            return modelDefaults.Sampler;
+        }
+
+        return scheduler;
+    }
+
     private static void AddPrefixes(HashSet<string> target, string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return;
@@ -618,6 +682,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             m.IsSelected = false;
         }
         UpdateTotalImagesLabel();
+        UpdateModelSchedulerDefaultInfo();
     }
 
     private void ClearLoras()
@@ -767,10 +832,18 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
     {
         if (DisableAutoDefaults) return;
         var selected = (_allModels.Count > 0 ? _allModels.AsEnumerable() : Models).Where(m => m.IsSelected).Select(m => m.Model).FirstOrDefault();
-        if (selected == null) return;
+        if (selected == null)
+        {
+            UpdateModelSchedulerDefaultInfo();
+            return;
+        }
 
         var defaults = _settingsService.InvokeAIModelDefaults.FirstOrDefault(d => d.ModelName == selected.Name);
-        if (defaults == null) return;
+        if (defaults == null)
+        {
+            UpdateModelSchedulerDefaultInfo();
+            return;
+        }
 
         // Only override if values are still at their initial defaults to avoid clobbering user edits.
         if ((Steps == 30 || Steps == 0) && defaults.Steps > 0) Steps = defaults.Steps;
@@ -779,12 +852,15 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         if ((Width == 1024 || Width == 0) && defaults.Width > 0) Width = defaults.Width;
         if ((Height == 1024 || Height == 0) && defaults.Height > 0) Height = defaults.Height;
 
-        if (!string.IsNullOrWhiteSpace(defaults.Sampler) && defaults.Sampler != "(None)")
+        if (UseModelDefaultsForScheduler && !_schedulerManuallySet && !string.IsNullOrWhiteSpace(defaults.Sampler) && defaults.Sampler != "(None)")
         {
             var match = Schedulers.FirstOrDefault(s => string.Equals(s.Value, defaults.Sampler, StringComparison.OrdinalIgnoreCase));
             if (match != null)
             {
+                _suppressSchedulerTracking = true;
                 SelectedSchedulerOption = match;
+                _suppressSchedulerTracking = false;
+                _schedulerManuallySet = false;
             }
         }
 
@@ -798,6 +874,8 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         {
             NegativePrompt = $"{defaults.NegativePromptPrefix.Trim()} {NegativePrompt}".Trim();
         }
+
+        UpdateModelSchedulerDefaultInfo();
     }
 
     private void ApplyPendingModelSelection()
@@ -809,6 +887,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             match.IsSelected = true;
             _pendingModelSelection = null;
             UpdateTotalImagesLabel();
+            UpdateModelSchedulerDefaultInfo();
         }
     }
 
@@ -834,6 +913,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             _pendingModelSelection = null;
         }
         UpdateTotalImagesLabel();
+        UpdateModelSchedulerDefaultInfo();
     }
 
     private void ApplyPendingLoraSelection()
@@ -874,10 +954,16 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         if ((Width == 1024 || Width == 0) && defaults.Width > 0) Width = defaults.Width;
         if ((Height == 1024 || Height == 0) && defaults.Height > 0) Height = defaults.Height;
 
-        if (!string.IsNullOrWhiteSpace(defaults.Sampler) && defaults.Sampler != "(None)")
+        if (UseModelDefaultsForScheduler && !_schedulerManuallySet && !string.IsNullOrWhiteSpace(defaults.Sampler) && defaults.Sampler != "(None)")
         {
             var match = Schedulers.FirstOrDefault(s => string.Equals(s.Value, defaults.Sampler, StringComparison.OrdinalIgnoreCase));
-            if (match != null) SelectedSchedulerOption = match;
+            if (match != null)
+            {
+                _suppressSchedulerTracking = true;
+                SelectedSchedulerOption = match;
+                _suppressSchedulerTracking = false;
+                _schedulerManuallySet = false;
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(defaults.PositivePromptPrefix) && string.IsNullOrWhiteSpace(Prompt))
@@ -890,6 +976,70 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         {
             NegativePrompt = $"{defaults.NegativePromptPrefix.Trim()} {NegativePrompt}".Trim();
         }
+
+        UpdateModelSchedulerDefaultInfo();
+    }
+
+    private void UpdateModelSchedulerDefaultInfo()
+    {
+        var selected = (_allModels.Count > 0 ? _allModels.AsEnumerable() : Models)
+            .Where(m => m.IsSelected)
+            .Select(m => m.Model)
+            .ToList();
+
+        if (selected.Count == 0)
+        {
+            HasModelSchedulerDefault = false;
+            ModelSchedulerDefaultLabel = string.Empty;
+            ModelSchedulerDefaultToolTip = string.Empty;
+            return;
+        }
+
+        var defaults = selected
+            .Select(m => new
+            {
+                Model = m.Name,
+                Scheduler = _settingsService.InvokeAIModelDefaults
+                    .FirstOrDefault(d => string.Equals(d.ModelName, m.Name, StringComparison.OrdinalIgnoreCase))
+                    ?.Sampler
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Scheduler) && x.Scheduler != "(None)")
+            .Select(x => new { x.Model, Scheduler = x.Scheduler! })
+            .ToList();
+
+        if (defaults.Count == 0)
+        {
+            HasModelSchedulerDefault = false;
+            ModelSchedulerDefaultLabel = string.Empty;
+            ModelSchedulerDefaultToolTip = string.Empty;
+            return;
+        }
+
+        var uniqueSchedulers = defaults
+            .Select(d => d.Scheduler)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        HasModelSchedulerDefault = true;
+        var suffix = !UseModelDefaultsForScheduler
+            ? " (disabled)"
+            : _schedulerManuallySet ? " (overridden)" : string.Empty;
+
+        if (uniqueSchedulers.Count == 1)
+        {
+            var display = NormalizeSchedulerDisplay(uniqueSchedulers[0]);
+            ModelSchedulerDefaultLabel = $"Model default: {display}{suffix}";
+        }
+        else
+        {
+            ModelSchedulerDefaultLabel = $"Model defaults: Mixed ({uniqueSchedulers.Count}){suffix}";
+        }
+
+        ModelSchedulerDefaultToolTip = string.Join(
+            "\n",
+            defaults
+                .OrderBy(d => d.Model, StringComparer.OrdinalIgnoreCase)
+                .Select(d => $"{d.Model}: {NormalizeSchedulerDisplay(d.Scheduler)}"));
     }
 
     private GenerationDefaultsSettings ResolveDefaultsForBase(string baseModelType)

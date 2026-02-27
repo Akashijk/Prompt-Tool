@@ -71,6 +71,9 @@ public partial class AnalyticsImageItem : ObservableObject
     [ObservableProperty] private double? _score;
     [ObservableProperty] private double? _aestheticScore;
     [ObservableProperty] private int? _aestheticScoreMs;
+    [ObservableProperty] private double? _sharpnessScore;
+    [ObservableProperty] private double? _promptMatchScore;
+    [ObservableProperty] private double? _compositeScore;
     [ObservableProperty] private bool _hasScore;
 
     public AnalyticsImageItem(HistoryEntry entry, HistoryImage image, Bitmap? bitmap)
@@ -81,6 +84,9 @@ public partial class AnalyticsImageItem : ObservableObject
         // Use the property setter to ensure OnAestheticScoreChanged is triggered
         AestheticScore = image.AestheticScore;
         AestheticScoreMs = image.AestheticScoreMs;
+        SharpnessScore = image.SharpnessScore;
+        PromptMatchScore = image.PromptMatchScore;
+        CompositeScore = image.CompositeScore;
         UpdateScoreFlags(); // Ensure initial flags are set correctly
     }
 
@@ -98,6 +104,16 @@ public partial class AnalyticsImageItem : ObservableObject
         OnPropertyChanged(nameof(DisplayScore));
         OnPropertyChanged(nameof(AestheticScoreLabel));
         OnPropertyChanged(nameof(HasAestheticScore));
+    }
+
+    partial void OnSharpnessScoreChanged(double? value)
+    {
+        UpdateScoreFlags();
+    }
+
+    partial void OnCompositeScoreChanged(double? value)
+    {
+        UpdateScoreFlags();
     }
 
     partial void OnAestheticScoreMsChanged(int? value)
@@ -187,7 +203,7 @@ public partial class AnalyticsImageItem : ObservableObject
 
     private void UpdateScoreFlags()
     {
-        HasScore = AestheticScore.HasValue || Score.HasValue;
+        HasScore = AestheticScore.HasValue || Score.HasValue || SharpnessScore.HasValue || CompositeScore.HasValue || PromptMatchScore.HasValue;
     }
 }
 
@@ -206,6 +222,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     private readonly HistoryManagerService _historyManager;
     private readonly TemplateService _templateService;
     private readonly AestheticScoringService _aestheticScoringService;
+    private readonly PromptMatchScoringService _promptMatchScoringService;
     private readonly SettingsService _settingsService;
     private readonly ImageCacheService _imageCache;
     private readonly HistoryIndexService _historyIndexService;
@@ -250,6 +267,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     [ObservableProperty] private bool _isSortDateDesc;
     [ObservableProperty] private bool _isSortDateAsc;
     [ObservableProperty] private bool _canScoreSelected;
+    [ObservableProperty] private bool _canDeleteSelected;
     [ObservableProperty] private bool _isDownloadActive;
     [ObservableProperty] private double _downloadProgress;
     [ObservableProperty] private string _downloadStatus = "";
@@ -278,6 +296,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         TemplateService templateService,
         string workflowFilter,
         AestheticScoringService aestheticScoringService,
+        PromptMatchScoringService promptMatchScoringService,
         SettingsService settingsService,
         ImageCacheService imageCache,
         HistoryIndexService historyIndexService)
@@ -285,6 +304,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         _historyManager = historyManager;
         _templateService = templateService;
         _aestheticScoringService = aestheticScoringService;
+        _promptMatchScoringService = promptMatchScoringService;
         _settingsService = settingsService;
         _imageCache = imageCache;
         _historyIndexService = historyIndexService;
@@ -462,6 +482,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         _selected.Clear();
         CanCompare = false;
         CanScoreSelected = false;
+        CanDeleteSelected = false;
 
         if (newValue != null)
         {
@@ -475,6 +496,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             }
             CanCompare = _selected.Count == 2;
             CanScoreSelected = _selected.Count > 0;
+            CanDeleteSelected = _selected.Count > 0;
         }
 
         UpdateScoreByModelStatus();
@@ -546,7 +568,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                 await Task.Delay(200, token);
                 if (!token.IsCancellationRequested)
                 {
-                    await RefreshAsync();
+                    Dispatcher.UIThread.Post(async () => await RefreshAsync());
                 }
             }
             catch (OperationCanceledException)
@@ -566,14 +588,23 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         if (e.PropertyName == nameof(AnalyticsImageItem.Bitmap))
         {
             if (!EnableScoring) return;
-            if (item.Score.HasValue) return;
+            if (item.Score.HasValue && item.SharpnessScore.HasValue) return;
             var bmp = item.Bitmap;
             if (bmp == null) return;
 
             _ = Task.Run(() =>
             {
-                var score = ScoringHelper.CalculateScore(bmp);
-                Dispatcher.UIThread.Post(() => item.Score = score);
+                var heuristic = ScoringHelper.CalculateScore(bmp);
+                var sharpness = ScoringHelper.CalculateSharpnessScore(bmp);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    item.Score = heuristic;
+                    item.SharpnessScore = sharpness;
+                    item.Image.HeuristicScore = heuristic;
+                    item.Image.SharpnessScore = sharpness;
+                    TryUpdateCompositeScore(item);
+                    _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+                });
             });
             return;
         }
@@ -597,6 +628,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
 
         CanCompare = _selected.Count == 2;
         CanScoreSelected = _selected.Count > 0;
+        CanDeleteSelected = _selected.Count > 0;
     }
 
     private AnalyticsImageItem? ResolveSingleTarget(AnalyticsImageItem? item)
@@ -629,6 +661,59 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         {
             item.IsSelected = false;
         }
+    }
+
+    [RelayCommand]
+    private async Task DeleteSelected()
+    {
+        if (_selected.Count == 0)
+        {
+            StatusText = "Select one or more images to delete.";
+            return;
+        }
+
+        if (ConfirmAsync == null)
+        {
+            StatusText = "Delete confirmation dialog unavailable.";
+            return;
+        }
+
+        var confirm = await ConfirmAsync($"Delete {_selected.Count} selected image(s)? This cannot be undone.");
+        if (!confirm)
+        {
+            StatusText = "Delete canceled.";
+            return;
+        }
+
+        var toDelete = _selected.ToList();
+        var deleted = 0;
+        var failed = 0;
+
+        foreach (var item in toDelete)
+        {
+            var path = item.Image.ImagePath;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                failed++;
+                continue;
+            }
+
+            if (_historyManager.DeleteImage(item.Entry.Id, path))
+            {
+                deleted++;
+            }
+            else
+            {
+                failed++;
+            }
+        }
+
+        ClearSelection();
+        await RefreshAsync();
+
+        StatusText = failed > 0
+            ? $"Deleted {deleted} images. {failed} failed."
+            : $"Deleted {deleted} images.";
     }
 
     [RelayCommand]
@@ -824,6 +909,66 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         await ScoreItemsAsync(toScore, $"Scoring {toScore.Count} images (entire history)...");
     }
 
+    [RelayCommand]
+    private async Task ScoreAllUnscored()
+    {
+        if (ConfirmAsync == null && ScoreByModelConfirmAsync == null)
+        {
+            StatusText = "Scoring confirmation dialog unavailable.";
+            return;
+        }
+
+        var entries = _historyManager.GetAllEntries();
+        var items = new List<AnalyticsImageItem>();
+        foreach (var entry in entries)
+        {
+            foreach (var img in entry.Images)
+            {
+                if (img.AestheticScore.HasValue) continue;
+                items.Add(new AnalyticsImageItem(entry, img, null));
+            }
+        }
+
+        if (items.Count == 0)
+        {
+            StatusText = "All images are already scored.";
+            return;
+        }
+
+        var avgMs = Results.Where(r => r.AestheticScoreMs.HasValue && r.AestheticScoreMs.Value > 0)
+            .Select(r => r.AestheticScoreMs!.Value)
+            .DefaultIfEmpty(3000)
+            .Average();
+
+        if (ScoreByModelConfirmAsync != null)
+        {
+            var result = await ScoreByModelConfirmAsync(new ScoreByModelConfirmRequest(
+                "All Unscored Images",
+                items.Count,
+                items.Count,
+                avgMs / 1000));
+            if (!result.Confirmed)
+            {
+                StatusText = "Scoring canceled.";
+                return;
+            }
+        }
+        else if (ConfirmAsync != null)
+        {
+            var estimate = TimeSpan.FromMilliseconds(avgMs * Math.Max(1, items.Count));
+            var estimateLabel = FormatDuration(estimate);
+            var confirmMessage = $"Score {items.Count} unscored images in the entire history?\n\n" +
+                                 $"Estimated time: {estimateLabel} (avg {avgMs / 1000:0.0}s per image).";
+            if (!await ConfirmAsync(confirmMessage))
+            {
+                StatusText = "Scoring canceled.";
+                return;
+            }
+        }
+
+        await ScoreItemsAsync(items, $"Scoring {items.Count} unscored images...");
+    }
+
     private async Task ScoreItemsAsync(IReadOnlyList<AnalyticsImageItem> items, string startStatus)
     {
         if (items.Count == 0)
@@ -902,7 +1047,9 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                             item.Image.AestheticScoreMs = result.ElapsedMs;
                             item.Image.AestheticScoreModel = result.ModelName;
                             item.Image.AestheticScoreTimestamp = DateTime.Now;
+                            await TryApplyLocalScoresAsync(item, tuple.Path, token);
                             _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+                            SyncLiveScore(item.Entry, item.Image, result.Score, result.ElapsedMs);
                             updated = true;
                         }
                     }
@@ -957,7 +1104,9 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                     item.Image.AestheticScoreMs = result.ElapsedMs;
                     item.Image.AestheticScoreModel = result.ModelName;
                     item.Image.AestheticScoreTimestamp = DateTime.Now;
+                    await TryApplyLocalScoresAsync(item, full, token);
                     _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+                    SyncLiveScore(item.Entry, item.Image, result.Score, result.ElapsedMs);
                     updated = true;
                     completed++;
                     UpdateScoreRunProgress(completed, total);
@@ -986,6 +1135,108 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             StatusText = updated ? "Aesthetic scoring complete." : "No images scored.";
             UpdateScoreByModelStatus();
         }
+    }
+
+    private void SyncLiveScore(HistoryEntry entry, HistoryImage image, double score, int? elapsedMs)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var result in Results)
+            {
+                if (ReferenceEquals(result.Entry, entry) && ReferenceEquals(result.Image, image))
+                {
+                    result.AestheticScore = score;
+                    result.AestheticScoreMs = elapsedMs;
+                    continue;
+                }
+
+                var leftPath = result.Image.ImagePath;
+                var rightPath = image.ImagePath;
+                if (!string.IsNullOrWhiteSpace(leftPath) &&
+                    !string.IsNullOrWhiteSpace(rightPath) &&
+                    string.Equals(leftPath, rightPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.AestheticScore = score;
+                    result.AestheticScoreMs = elapsedMs;
+                }
+            }
+        });
+    }
+
+    private async Task TryApplyLocalScoresAsync(AnalyticsImageItem item, string fullPath, CancellationToken token)
+    {
+        var hasLocalScores = item.Score.HasValue && item.SharpnessScore.HasValue && item.PromptMatchScore.HasValue;
+        if (hasLocalScores || !File.Exists(fullPath))
+        {
+            TryUpdateCompositeScore(item);
+            return;
+        }
+
+        try
+        {
+            using var bmp = new Bitmap(fullPath);
+            var heuristic = ScoringHelper.CalculateScore(bmp);
+            var sharpness = ScoringHelper.CalculateSharpnessScore(bmp);
+            var prompt = item.Prompt;
+            double? promptMatch = null;
+            if (!string.IsNullOrWhiteSpace(prompt))
+            {
+                promptMatch = await _promptMatchScoringService.ScorePromptMatchAsync(
+                    bmp,
+                    prompt,
+                    ConfirmAsync,
+                    msg => Dispatcher.UIThread.Post(() => StatusText = msg),
+                    null,
+                    token);
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                item.Score = heuristic;
+                item.SharpnessScore = sharpness;
+                item.Image.HeuristicScore = heuristic;
+                item.Image.SharpnessScore = sharpness;
+                if (promptMatch.HasValue)
+                {
+                    item.PromptMatchScore = promptMatch;
+                    item.Image.PromptMatchScore = promptMatch;
+                }
+                TryUpdateCompositeScore(item);
+                _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            // ignore
+        }
+        catch
+        {
+            // ignore local score failures
+        }
+    }
+
+    private static void TryUpdateCompositeScore(AnalyticsImageItem item)
+    {
+        if (!item.Image.AestheticScore.HasValue ||
+            !item.Image.HeuristicScore.HasValue ||
+            !item.Image.SharpnessScore.HasValue)
+        {
+            return;
+        }
+
+        var composite = ComputeCompositeScore(
+            item.Image.AestheticScore.Value,
+            item.Image.HeuristicScore.Value,
+            item.Image.SharpnessScore.Value);
+        item.Image.CompositeScore = composite;
+        item.CompositeScore = composite;
+    }
+
+    private static double ComputeCompositeScore(double aestheticScore, double heuristicScore, double sharpnessScore)
+    {
+        var aestheticScaled = Math.Clamp(aestheticScore, 0, 10) * 10;
+        var composite = (aestheticScaled * 0.5) + (heuristicScore * 0.3) + (sharpnessScore * 0.2);
+        return Math.Round(composite, 1);
     }
 
     private void UpdateScoreRunProgress(int completed, int total)
@@ -1169,6 +1420,11 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                                     if (EnableScoring && !item.Score.HasValue)
                                     {
                                         item.Score = ScoringHelper.CalculateScore(cached);
+                                        item.SharpnessScore = ScoringHelper.CalculateSharpnessScore(cached);
+                                        item.Image.HeuristicScore = item.Score;
+                                        item.Image.SharpnessScore = item.SharpnessScore;
+                                        TryUpdateCompositeScore(item);
+                                        _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
                                     }
                                 }
                                 else
@@ -1244,6 +1500,11 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                             if (EnableScoring && !next.Item.Score.HasValue)
                             {
                                 next.Item.Score = ScoringHelper.CalculateScore(bmp);
+                                next.Item.SharpnessScore = ScoringHelper.CalculateSharpnessScore(bmp);
+                                next.Item.Image.HeuristicScore = next.Item.Score;
+                                next.Item.Image.SharpnessScore = next.Item.SharpnessScore;
+                                TryUpdateCompositeScore(next.Item);
+                                _historyManager.UpdateImage(next.Item.Entry.Id, next.Item.Image, save: false);
                             }
                         });
                     }
@@ -1356,7 +1617,16 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                 var bmp = item.Bitmap;
                 if (bmp == null) continue;
                 var score = ScoringHelper.CalculateScore(bmp);
-                Dispatcher.UIThread.Post(() => item.Score = score);
+                var sharpness = ScoringHelper.CalculateSharpnessScore(bmp);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    item.Score = score;
+                    item.SharpnessScore = sharpness;
+                    item.Image.HeuristicScore = score;
+                    item.Image.SharpnessScore = sharpness;
+                    TryUpdateCompositeScore(item);
+                    _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+                });
             }
             if (enable && SelectedSortMode is AnalyticsSortMode.HeuristicScoreAsc or AnalyticsSortMode.HeuristicScoreDesc
                 or AnalyticsSortMode.AestheticScoreAsc or AnalyticsSortMode.AestheticScoreDesc)
@@ -1561,7 +1831,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         using var _ = PerfLogger.Measure("AnalyticsStudio.Decode");
-        return _imageCache.GetOrLoad(path, decodeWidth, _historyDir);
+        return _imageCache.GetOrLoadForUi(path, decodeWidth, _historyDir);
     }
 
     private void UpdateFilterCounts(IReadOnlyList<AnalyticsImageItem> items)

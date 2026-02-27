@@ -13,6 +13,7 @@
         <StackPanel Orientation="Horizontal" Spacing="10">
             <Button Content="Compare Selected" Command="{Binding CompareSelectedCommand}" IsEnabled="{Binding CanCompare}"/>
             <Button Content="{Binding ExpandAllLabel}" Command="{Binding ToggleExpandAllCommand}"/>
+            <CheckBox Content="Favorites only" IsChecked="{Binding ShowFavoritesOnly}" VerticalAlignment="Center"/>
             <TextBlock Text="{Binding StatusText}" Classes="subtle" VerticalAlignment="Center"/>
         </StackPanel>
 
@@ -30,30 +31,43 @@
                             <ItemsControl ItemsSource="{Binding Images}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
-                                        <WrapPanel />
+                                        <WrapPanel ItemWidth="200" ItemHeight="240" />
                                     </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="vm:GalleryImageItem">
-                                        <Border Margin="4" Padding="4"
+                                        <Border Margin="4" Padding="6"
                                                 BorderBrush="{Binding IsSelected, Converter={StaticResource BoolToBrushConverter}}"
                                                 BorderThickness="1"
                                                 CornerRadius="4"
+                                                Width="190"
+                                                Height="230"
                                                 PointerPressed="Image_PointerPressed"
                                                 DoubleTapped="Image_DoubleTapped">
                                             <StackPanel Spacing="4">
-                                                <Image Source="{Binding Bitmap}" Width="140" Height="100" Stretch="UniformToFill"/>
-                                                <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                                                <Image Source="{Binding Bitmap}" Width="176" Height="110" Stretch="UniformToFill"/>
+                                                <TextBlock Text="{Binding Label}"
+                                                           FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="176"
+                                                           ToolTip.Tip="{Binding Label}"/>
                                                 <TextBlock Text="{Binding ModelLabel}"
                                                            Classes="subtle"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="176"
+                                                           ToolTip.Tip="{Binding ModelLabel}"
                                                            IsVisible="{Binding ModelLabel, Converter={StaticResource StringToBoolConverter}}"/>
                                                 <TextBlock Text="{Binding SeedLabel}"
                                                            Classes="subtle"
                                                            TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="176"
+                                                           ToolTip.Tip="{Binding SeedLabel}"
                                                            IsVisible="{Binding SeedLabel, Converter={StaticResource StringToBoolConverter}}"/>
                                                 <TextBlock Text="{Binding LoraLabel}"
                                                            Classes="subtle"
                                                            TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="176"
+                                                           ToolTip.Tip="{Binding LoraLabel}"
                                                            IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
                                             </StackPanel>
                                         </Border>

@@ -9,6 +9,7 @@ using System.Diagnostics;
 using Avalonia;
 using Avalonia.Input.Platform;
 using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PromptTool.Core.Models;
@@ -26,10 +27,11 @@ public partial class HistoryViewerViewModel : ObservableObject
     private readonly ImageCacheService _imageCache;
     private readonly HistoryIndexService _historyIndexService;
     private readonly string _historyDir;
+    private CancellationTokenSource? _imageLoadCts;
     private IReadOnlyList<VariationPrompt> _variationDefinitions;
     private List<string> _missingVariationKeys = new();
     private bool _fillInProgress;
-    private readonly Dictionary<string, Bitmap?> _coverCache = new(StringComparer.OrdinalIgnoreCase);
+    private const int CoverPrefetchCount = 30;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _refreshCts;
     private readonly SettingsService _settingsService;
@@ -42,6 +44,7 @@ public partial class HistoryViewerViewModel : ObservableObject
     public Func<HistoryEntry, HistoryImage?, string?, string?, Task>? EditRegenerateRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? SeedVariationsRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? LoraVariationsRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage?, Task>? ModelVariationsRequested { get; set; }
     public Func<HistoryEntry, Task>? EnhanceRequested { get; set; }
     public Func<HistoryEntry, IReadOnlyList<string>, Task<FillMissingResult>>? FillMissingVariationsRequested { get; set; }
     public Func<Task>? ShowAllImagesRequested { get; set; }
@@ -54,6 +57,7 @@ public partial class HistoryViewerViewModel : ObservableObject
     public HistoryIndexService HistoryIndexService => _historyIndexService;
 
     [ObservableProperty] private ObservableCollection<HistoryEntryItem> _historyEntries = new();
+    [ObservableProperty] private ObservableCollection<HistoryEntryItem> _selectedHistoryEntries = new();
     [ObservableProperty] private ObservableCollection<HistoryImageItem> _selectedImages = new();
     [ObservableProperty] private HistoryEntryItem? _selectedHistoryEntry;
     [ObservableProperty] private HistoryImageItem? _selectedImageItem;
@@ -71,9 +75,13 @@ public partial class HistoryViewerViewModel : ObservableObject
     [ObservableProperty] private bool _canEnhanceSelected;
     [ObservableProperty] private bool _isEnhancing;
     [ObservableProperty] private bool _canFillMissingVariations;
+    [ObservableProperty] private bool _canDeleteSelectedImages;
+    [ObservableProperty] private bool _canMergeEntries;
     // Result set when dialog closes.
     [ObservableProperty] private HistoryEntry? _dialogResult;
     [ObservableProperty] private string? _loadPromptOverride;
+
+    private readonly List<HistoryImageItem> _selectedForDelete = new();
 
     // Parameterless constructor for design-time support
     public HistoryViewerViewModel()
@@ -104,6 +112,13 @@ public partial class HistoryViewerViewModel : ObservableObject
         LoadHistoryEntries();
     }
 
+    public void SetSelectedEntries(IEnumerable<HistoryEntryItem> entries)
+    {
+        var list = entries.Where(e => e != null).Distinct().ToList();
+        SelectedHistoryEntries = new ObservableCollection<HistoryEntryItem>(list);
+        CanMergeEntries = SelectedHistoryEntries.Count > 1;
+    }
+
     [RelayCommand]
     private void LoadHistoryEntries()
     {
@@ -116,6 +131,20 @@ public partial class HistoryViewerViewModel : ObservableObject
 
     [RelayCommand]
     private void Refresh() => _ = LoadHistoryEntriesAsync();
+
+    [RelayCommand]
+    private async Task RecoverOrphanImages()
+    {
+        if (!await ConfirmAsyncSafe("Recover orphan images from disk? This will create new entries for any image folders not present in the history file."))
+        {
+            StatusNote = "Recovery canceled.";
+            return;
+        }
+
+        var (entriesCreated, imagesAdded) = _historyManager.RecoverOrphanedImages();
+        StatusNote = $"Recovered {imagesAdded} images across {entriesCreated} entries.";
+        _ = LoadHistoryEntriesAsync();
+    }
 
     private void ScheduleRefresh()
     {
@@ -130,7 +159,7 @@ public partial class HistoryViewerViewModel : ObservableObject
                 await Task.Delay(150, token);
                 if (!token.IsCancellationRequested)
                 {
-                    await LoadHistoryEntriesAsync(token);
+                    Dispatcher.UIThread.Post(async () => await LoadHistoryEntriesAsync(token));
                 }
             }
             catch (OperationCanceledException)
@@ -166,7 +195,7 @@ public partial class HistoryViewerViewModel : ObservableObject
                                 (e.TemplateName ?? string.Empty).ToLowerInvariant().Contains(search) ||
                                 (e.Status ?? string.Empty).ToLowerInvariant().Contains(search))
                     .OrderByDescending(e => e.Timestamp)
-                    .Select(e => new HistoryEntryItem(e, ResolveCoverImage(e)))
+                    .Select(e => new HistoryEntryItem(e, ResolveCoverPath(e), _imageCache, _historyDir))
                     .ToList();
             }, cancellationToken);
 
@@ -174,8 +203,9 @@ public partial class HistoryViewerViewModel : ObservableObject
 
             HistoryEntries = new ObservableCollection<HistoryEntryItem>(entries);
             SelectedHistoryEntry = HistoryEntries.FirstOrDefault(h => h.Entry.Id == currentEntryId) ?? HistoryEntries.FirstOrDefault();
-            PerfLogger.Log($"HistoryViewer.LoadEntries entries={entries.Count} coverCacheHit={PerfLogger.GetCount("HistoryViewer.CoverCacheHit")} coverCacheMiss={PerfLogger.GetCount("HistoryViewer.CoverCacheMiss")}");
+            PerfLogger.Log($"HistoryViewer.LoadEntries entries={entries.Count}");
             PerfLogger.LogSummary("HistoryViewer.LoadEntries", "HistoryViewer.Decode");
+            _ = PrefetchCoversAsync(entries.Take(CoverPrefetchCount).ToList(), cancellationToken);
 
             if (SelectedHistoryEntry != null && currentImagePath != null)
             {
@@ -192,8 +222,20 @@ public partial class HistoryViewerViewModel : ObservableObject
     partial void OnSelectedHistoryEntryChanged(HistoryEntryItem? value)
     {
         using var perf = PerfLogger.Time("HistoryViewer.LoadEntryImages");
+        _imageLoadCts?.Cancel();
+        _imageLoadCts?.Dispose();
+        _imageLoadCts = new CancellationTokenSource();
+        var loadToken = _imageLoadCts.Token;
+
+        if (SelectedImages.Count > 0)
+        {
+            ClearSelectionTracking(SelectedImages.ToList());
+        }
+
         SelectedImage = null;
         SelectedImages.Clear();
+        _selectedForDelete.Clear();
+        CanDeleteSelectedImages = false;
         PromptVariants.Clear();
         DetailsText = string.Empty;
         SelectedImageItem = null;
@@ -201,8 +243,9 @@ public partial class HistoryViewerViewModel : ObservableObject
 
         foreach (var img in value.Entry.Images)
         {
-            var bmp = LoadBitmap(img.ImagePath, 320);
-            SelectedImages.Add(new HistoryImageItem(img, bmp));
+            var item = new HistoryImageItem(img, null);
+            item.PropertyChanged += OnSelectedImagePropertyChanged;
+            SelectedImages.Add(item);
         }
 
         // Fallback to single ImageFilePath or cover for legacy entries
@@ -211,8 +254,9 @@ public partial class HistoryViewerViewModel : ObservableObject
             var altPath = value.Entry.ImageFilePath ?? value.Entry.CoverImagePath;
             if (!string.IsNullOrWhiteSpace(altPath))
             {
-                var bmp = LoadBitmap(altPath, 320);
-                SelectedImages.Add(new HistoryImageItem(new HistoryImage { ImagePath = altPath }, bmp));
+                var item = new HistoryImageItem(new HistoryImage { ImagePath = altPath }, null);
+                item.PropertyChanged += OnSelectedImagePropertyChanged;
+                SelectedImages.Add(item);
             }
         }
 
@@ -244,6 +288,38 @@ public partial class HistoryViewerViewModel : ObservableObject
         UpdateMissingVariationState(value.Entry!);
         PerfLogger.Log($"HistoryViewer.LoadEntryImages images={SelectedImages.Count}");
         PerfLogger.LogSummary("HistoryViewer.LoadEntryImages", "HistoryViewer.Decode");
+
+        _ = LoadSelectedImagesAsync(SelectedImages.ToList(), loadToken);
+    }
+
+    private Task LoadSelectedImagesAsync(IReadOnlyList<HistoryImageItem> items, CancellationToken token)
+    {
+        if (items.Count == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(async () =>
+        {
+            foreach (var item in items)
+            {
+                if (token.IsCancellationRequested) break;
+                if (item.Bitmap != null) continue;
+                var bmp = LoadBitmap(item.Image.ImagePath, 320);
+                if (bmp == null) continue;
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        item.Bitmap = bmp;
+                        if (ReferenceEquals(SelectedImageItem, item))
+                        {
+                            SelectedImage = bmp;
+                        }
+                    }
+                }, DispatcherPriority.Background);
+            }
+        }, token);
     }
 
     partial void OnSelectedImageItemChanged(HistoryImageItem? value)
@@ -259,28 +335,67 @@ public partial class HistoryViewerViewModel : ObservableObject
         }
     }
 
-    private Bitmap? ResolveCoverImage(HistoryEntry entry)
+    private void OnSelectedImagePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        var path = entry.CoverImagePath
+        if (e.PropertyName != nameof(HistoryImageItem.IsSelected))
+        {
+            return;
+        }
+
+        if (sender is not HistoryImageItem item)
+        {
+            return;
+        }
+
+        if (item.IsSelected)
+        {
+            if (!_selectedForDelete.Contains(item))
+            {
+                _selectedForDelete.Add(item);
+            }
+        }
+        else
+        {
+            _selectedForDelete.Remove(item);
+        }
+
+        CanDeleteSelectedImages = _selectedForDelete.Count > 0;
+    }
+
+    private void ClearSelectionTracking(IReadOnlyList<HistoryImageItem> items)
+    {
+        foreach (var item in items)
+        {
+            item.PropertyChanged -= OnSelectedImagePropertyChanged;
+        }
+    }
+
+    private static string? ResolveCoverPath(HistoryEntry entry)
+    {
+        return entry.CoverImagePath
                    ?? entry.Images.FirstOrDefault()?.ImagePath
                    ?? entry.ImageFilePath;
-        if (string.IsNullOrWhiteSpace(path)) return null;
-        if (_coverCache.TryGetValue(path, out var cached))
+    }
+
+    private async Task PrefetchCoversAsync(IReadOnlyList<HistoryEntryItem> items, CancellationToken cancellationToken)
+    {
+        foreach (var item in items)
         {
-            PerfLogger.Count("HistoryViewer.CoverCacheHit");
-            return cached;
+            if (cancellationToken.IsCancellationRequested) break;
+            await item.WarmCoverAsync();
         }
-        PerfLogger.Count("HistoryViewer.CoverCacheMiss");
-        var bmp = LoadBitmap(path, 128);
-        _coverCache[path] = bmp;
-        return bmp;
     }
 
     private Bitmap? LoadBitmap(string? path, int? decodeWidth = null)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         using var _ = PerfLogger.Measure("HistoryViewer.Decode");
-        return _imageCache.GetOrLoad(path, decodeWidth, _historyDir);
+        return _imageCache.GetOrLoadForUi(path, decodeWidth, _historyDir);
+    }
+
+    internal static Bitmap? CloneBitmapForUi(Bitmap? bitmap)
+    {
+        return UiBitmapHelper.CloneForUi(bitmap);
     }
 
     private string BuildDetailsText(HistoryEntry entry, HistoryImage? image)
@@ -422,6 +537,7 @@ public partial class HistoryViewerViewModel : ObservableObject
         {
             $"Timestamp: {entry.Timestamp:g}",
             $"Template: {WithPlaceholder(entry.TemplateName, "(none)")}",
+            $"Model: {WithPlaceholder(ResolveModelName(entry, image), "(unknown)")}",
             !string.IsNullOrWhiteSpace(image?.PromptType) ? $"Type: {image?.PromptType}" : null,
             !string.IsNullOrWhiteSpace(prompt) ? $"Prompt: {prompt}" : "Prompt: (not saved)",
             gen != null && !string.IsNullOrWhiteSpace(gen.NegativePrompt) ? $"Negative: {gen.NegativePrompt}" : "Negative: (not saved)",
@@ -430,7 +546,12 @@ public partial class HistoryViewerViewModel : ObservableObject
                 : "LoRAs: (none)",
             gen != null
                 ? $"Seed: {gen.Seed}, CFG: {gen.CfgScale}, Steps: {gen.Steps}, Size: {gen.Width}x{gen.Height}, Scheduler: {(!string.IsNullOrWhiteSpace(gen.Scheduler) ? NormalizeSchedulerDisplay(gen.Scheduler) : gen.Scheduler)}, Rescale: {gen.CfgRescaleMultiplier}, SaveToGallery: {gen.SaveToGallery}"
-                : "(no generation parameters saved)"
+                : "(no generation parameters saved)",
+            image?.AestheticScore.HasValue == true ? $"Aesthetic Score: {image.AestheticScore:0.00}" : null,
+            image?.HeuristicScore.HasValue == true ? $"Heuristic Score: {image.HeuristicScore:0.0}" : null,
+            image?.SharpnessScore.HasValue == true ? $"Sharpness Score: {image.SharpnessScore:0.0}" : null,
+            image?.PromptMatchScore.HasValue == true ? $"Prompt Match: {image.PromptMatchScore:0.0}" : null,
+            image?.CompositeScore.HasValue == true ? $"Composite Score: {image.CompositeScore:0.0}" : null
         };
 
         return string.Join(Environment.NewLine + Environment.NewLine, lines.Where(l => !string.IsNullOrWhiteSpace(l)));
@@ -841,6 +962,60 @@ public partial class HistoryViewerViewModel : ObservableObject
 
         PromptVariants = new ObservableCollection<PromptVariant>(variants);
         SelectedPromptVariant = PromptVariants.FirstOrDefault();
+
+        if (SelectedHistoryEntry != null && SelectedHistoryEntries.Count == 0)
+        {
+            SelectedHistoryEntries.Add(SelectedHistoryEntry);
+            CanMergeEntries = SelectedHistoryEntries.Count > 1;
+        }
+    }
+
+    [RelayCommand]
+    private async Task MergeSelectedEntries()
+    {
+        if (SelectedHistoryEntries.Count < 2)
+        {
+            StatusNote = "Select at least two entries to merge.";
+            return;
+        }
+
+        var target = SelectedHistoryEntry ?? SelectedHistoryEntries.FirstOrDefault();
+        if (target == null)
+        {
+            StatusNote = "Select a target history entry.";
+            return;
+        }
+
+        var sourceEntries = SelectedHistoryEntries.Where(e => e.Entry.Id != target.Entry.Id).ToList();
+        if (sourceEntries.Count == 0)
+        {
+            StatusNote = "Select at least two distinct entries to merge.";
+            return;
+        }
+
+        if (ConfirmAsync != null)
+        {
+            var ok = await ConfirmAsync($"Merge {sourceEntries.Count + 1} entries into \"{target.Template}\"?\n\nThis will move all images into the target entry and delete the other entries.");
+            if (!ok) return;
+        }
+
+        var appended = 0;
+        foreach (var entry in sourceEntries)
+        {
+            if (entry.Entry.Images.Count > 0)
+            {
+                _historyManager.AppendImages(target.Entry.Id, entry.Entry.Images);
+                appended += entry.Entry.Images.Count;
+            }
+        }
+
+        foreach (var entry in sourceEntries)
+        {
+            _historyManager.DeleteEntry(entry.Entry.Id);
+        }
+
+        StatusNote = $"Merged {sourceEntries.Count} entries into \"{target.Template}\" ({appended} images).";
+        _ = LoadHistoryEntriesAsync();
     }
 
     private void UpdateMissingVariationState(HistoryEntry entry)
@@ -997,6 +1172,67 @@ public partial class HistoryViewerViewModel : ObservableObject
         {
             StatusNote = "Failed to delete image.";
         }
+    }
+
+    [RelayCommand]
+    private async Task DeleteSelectedImages()
+    {
+        if (_selectedForDelete.Count == 0)
+        {
+            StatusNote = "Select one or more images to delete.";
+            return;
+        }
+
+        if (!await ConfirmAsyncSafe($"Delete {_selectedForDelete.Count} selected image(s)? This cannot be undone."))
+        {
+            StatusNote = "Delete canceled.";
+            return;
+        }
+
+        if (SelectedHistoryEntry == null)
+        {
+            StatusNote = "No history entry selected.";
+            return;
+        }
+
+        var toDelete = _selectedForDelete.ToList();
+        if (SelectedHistoryEntry.Entry.Images.Count <= toDelete.Count)
+        {
+            if (!await ConfirmAsyncSafe("This will remove all images from the entry. The entry will remain (empty). Continue?"))
+            {
+                StatusNote = "Delete canceled.";
+                return;
+            }
+        }
+        var deleted = 0;
+        var failed = 0;
+
+        foreach (var item in toDelete)
+        {
+            var path = item.Image.ImagePath;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                failed++;
+                continue;
+            }
+
+            if (_historyManager.DeleteImage(SelectedHistoryEntry.Entry.Id, path))
+            {
+                deleted++;
+            }
+            else
+            {
+                failed++;
+            }
+        }
+
+        _selectedForDelete.Clear();
+        CanDeleteSelectedImages = false;
+        LoadHistoryEntries();
+
+        StatusNote = failed > 0
+            ? $"Deleted {deleted} images. {failed} failed."
+            : $"Deleted {deleted} images.";
     }
 
     [RelayCommand]
@@ -1443,12 +1679,32 @@ public partial class HistoryEntryItem : ObservableObject
 {
     public HistoryEntry Entry { get; }
 
-    [ObservableProperty] private Bitmap? _cover;
+    private Bitmap? _cover;
+    private bool _coverRequested;
+    private bool _coverLoading;
+    private readonly string? _coverPath;
+    private readonly ImageCacheService _imageCache;
+    private readonly string _historyDir;
 
-    public HistoryEntryItem(HistoryEntry entry, Bitmap? cover)
+    public HistoryEntryItem(HistoryEntry entry, string? coverPath, ImageCacheService imageCache, string historyDir)
     {
         Entry = entry;
-        _cover = cover;
+        _coverPath = coverPath;
+        _imageCache = imageCache;
+        _historyDir = historyDir;
+    }
+
+    public Bitmap? Cover
+    {
+        get
+        {
+            if (!_coverRequested)
+            {
+                _coverRequested = true;
+                _ = LoadCoverAsync();
+            }
+            return _cover;
+        }
     }
 
     public string Prompt => string.IsNullOrWhiteSpace(Entry.ProcessedPrompt) ? Entry.OriginalPrompt : Entry.ProcessedPrompt;
@@ -1461,12 +1717,43 @@ public partial class HistoryEntryItem : ObservableObject
         { Length: > 0 } m => m,
         _ => "(unknown)"
     };
+
+    public Task WarmCoverAsync()
+    {
+        return LoadCoverAsync();
+    }
+
+    private Task LoadCoverAsync()
+    {
+        if (_coverLoading || _cover != null || string.IsNullOrWhiteSpace(_coverPath)) return Task.CompletedTask;
+        _coverLoading = true;
+        return Task.Run(() =>
+        {
+            try
+            {
+                var bmp = _imageCache.GetOrLoadForUi(_coverPath, 128, _historyDir);
+                if (bmp != null)
+                {
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        _cover = bmp;
+                        OnPropertyChanged(nameof(Cover));
+                    });
+                }
+            }
+            finally
+            {
+                _coverLoading = false;
+            }
+        });
+    }
 }
 
 public partial class HistoryImageItem : ObservableObject
 {
     public HistoryImage Image { get; }
     [ObservableProperty] private Bitmap? _bitmap;
+    [ObservableProperty] private bool _isSelected;
 
     public HistoryImageItem(HistoryImage image, Bitmap? bitmap)
     {

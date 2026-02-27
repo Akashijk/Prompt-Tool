@@ -97,9 +97,14 @@
                 <MenuItem Header="Score Selected (Aesthetic)"
                           Command="{Binding ScoreSelectedCommand}"
                           IsEnabled="{Binding CanScoreSelected}"/>
+                <MenuItem Header="Delete Selected Images"
+                          Command="{Binding DeleteSelectedCommand}"
+                          IsEnabled="{Binding CanDeleteSelected}"/>
                 <MenuItem Header="{Binding ScoreByModelMenuLabel}"
                           Command="{Binding ScoreByModelCommand}"
                           IsEnabled="{Binding CanScoreByModel}"/>
+                <MenuItem Header="Score All Unscored Images (Aesthetic)"
+                          Command="{Binding ScoreAllUnscoredCommand}"/>
                 <MenuItem Header="Score All Images (Aesthetic)"
                           Command="{Binding ScoreAllImagesCommand}"/>
             </MenuItem>
@@ -171,11 +176,13 @@
 
             <Border Grid.Row="1" Grid.Column="2" Classes="card" Padding="10">
             <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8">
-                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+                <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="10">
                     <TextBlock Text="{Binding StatusText}" Classes="subtle" VerticalAlignment="Center"/>
                     <Button Grid.Column="1" Content="Compare Selected" Command="{Binding CompareSelectedCommand}"
                             IsVisible="{Binding CanCompare}" IsEnabled="{Binding CanCompare}"/>
-                    <Button Grid.Column="2" Content="Clear Selection" Command="{Binding ClearSelectionCommand}"
+                    <Button Grid.Column="2" Content="Delete Selected" Command="{Binding DeleteSelectedCommand}"
+                            IsVisible="{Binding CanDeleteSelected}" IsEnabled="{Binding CanDeleteSelected}"/>
+                    <Button Grid.Column="3" Content="Clear Selection" Command="{Binding ClearSelectionCommand}"
                             IsVisible="{Binding CanScoreSelected}" IsEnabled="{Binding CanScoreSelected}"/>
                 </Grid>
                 <StackPanel Grid.Row="1" Spacing="6">

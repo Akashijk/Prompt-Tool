@@ -94,6 +94,12 @@ public sealed class ImageCacheService : IDisposable
         return bitmap;
     }
 
+    public Bitmap? GetOrLoadForUi(string? path, int? decodeWidth = null, string? baseDir = null)
+    {
+        var bmp = GetOrLoad(path, decodeWidth, baseDir);
+        return UiBitmapHelper.CloneForUi(bmp);
+    }
+
     public bool TryGetCached(string? path, int? decodeWidth, string? baseDir, out Bitmap? bitmap)
     {
         bitmap = null;

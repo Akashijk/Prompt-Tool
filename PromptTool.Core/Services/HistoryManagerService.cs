@@ -34,23 +34,34 @@ public class HistoryManagerService
         var jsonlPath = Path.Combine(historyDir, "history.jsonl");
         var jsonPath = Path.Combine(historyDir, "history.json");
 
-        if (File.Exists(jsonlPath))
+        var hasJsonl = File.Exists(jsonlPath);
+        var hasJson = File.Exists(jsonPath);
+        if (hasJsonl && hasJson)
+        {
+            var jsonlTime = File.GetLastWriteTimeUtc(jsonlPath);
+            var jsonTime = File.GetLastWriteTimeUtc(jsonPath);
+            var preferJson = jsonTime >= jsonlTime;
+            if (preferJson)
+            {
+                if (TryLoadJson(jsonPath)) return;
+                _historyEntries = LoadFromJsonl(jsonlPath);
+                return;
+            }
+
+            _historyEntries = LoadFromJsonl(jsonlPath);
+            return;
+        }
+
+        if (hasJsonl)
         {
             _historyEntries = LoadFromJsonl(jsonlPath);
             return;
         }
 
-        if (File.Exists(jsonPath))
+        if (hasJson)
         {
-            try
+            if (!TryLoadJson(jsonPath))
             {
-                var json = File.ReadAllText(jsonPath);
-                _historyEntries = JsonSerializer.Deserialize<List<HistoryEntry>>(json, _jsonOptions) ?? new List<HistoryEntry>();
-            }
-            catch (JsonException ex)
-            {
-                if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history: {ex.Message}");
-                // Fallback: treat the .json file as JSONL (legacy) if parsing as array fails
                 try
                 {
                     _historyEntries = LoadFromJsonl(jsonPath);
@@ -61,6 +72,26 @@ public class HistoryManagerService
                     _historyEntries = new List<HistoryEntry>();
                 }
             }
+        }
+    }
+
+    private bool TryLoadJson(string path)
+    {
+        try
+        {
+            var json = File.ReadAllText(path);
+            _historyEntries = JsonSerializer.Deserialize<List<HistoryEntry>>(json, _jsonOptions) ?? new List<HistoryEntry>();
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history: {ex.Message}");
+            return false;
         }
     }
 
@@ -218,7 +249,14 @@ public class HistoryManagerService
             AestheticScore = aestheticScore,
             AestheticScoreModel = img.GetPropertyOrDefault("aesthetic_score_model"),
             AestheticScoreTimestamp = img.GetPropertyOrDefaultDateTime("aesthetic_score_at"),
-            AestheticScoreMs = img.GetPropertyOrDefaultInt("aesthetic_score_ms")
+            AestheticScoreMs = img.GetPropertyOrDefaultInt("aesthetic_score_ms"),
+            GenerationDurationMs = img.GetPropertyOrDefaultInt("generation_duration_ms"),
+            QueueWaitMs = img.GetPropertyOrDefaultInt("queue_wait_ms"),
+            TotalDurationMs = img.GetPropertyOrDefaultInt("total_duration_ms"),
+            GenerationStatus = img.GetPropertyOrDefault("generation_status"),
+            ErrorType = img.GetPropertyOrDefault("error_type"),
+            ErrorMessage = img.GetPropertyOrDefault("error_message"),
+            ErrorTraceback = img.GetPropertyOrDefault("error_traceback")
         };
     }
 
@@ -386,7 +424,14 @@ public class HistoryManagerService
             Aesthetic_Score = image.AestheticScore, // Renamed from AestheticScore
             Aesthetic_Score_Model = image.AestheticScoreModel, // Renamed from AestheticScoreModel
             Aesthetic_Score_At = image.AestheticScoreTimestamp?.ToString("o"), // Renamed from AestheticScoreTimestamp
-            Aesthetic_Score_Ms = image.AestheticScoreMs // Renamed from AestheticScoreMs
+            Aesthetic_Score_Ms = image.AestheticScoreMs, // Renamed from AestheticScoreMs
+            Generation_Duration_Ms = image.GenerationDurationMs,
+            Queue_Wait_Ms = image.QueueWaitMs,
+            Total_Duration_Ms = image.TotalDurationMs,
+            Generation_Status = image.GenerationStatus,
+            Error_Type = image.ErrorType,
+            Error_Message = image.ErrorMessage,
+            Error_Traceback = image.ErrorTraceback
         };
     }
 
@@ -549,7 +594,7 @@ public class HistoryManagerService
             }
             else if (!string.IsNullOrWhiteSpace(img.ImagePath))
             {
-                copy.ImagePath = NormalizeForSave(img.ImagePath, entry.Id);
+                copy.ImagePath = CopyImageToEntry(entry.Id, img.ImagePath);
             }
 
             if (copy.ImagePath != null)
@@ -574,6 +619,34 @@ public class HistoryManagerService
 
         SaveHistory();
         return entry;
+    }
+
+    private string? CopyImageToEntry(string entryId, string sourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath)) return null;
+
+        var fullSource = Path.IsPathRooted(sourcePath)
+            ? sourcePath
+            : Path.Combine(_settings.GetHistoryDir(), sourcePath);
+
+        if (!File.Exists(fullSource))
+        {
+            return NormalizeForSave(sourcePath, entryId);
+        }
+
+        try
+        {
+            var bytes = File.ReadAllBytes(fullSource);
+            return SaveImage(entryId, bytes);
+        }
+        catch (Exception ex)
+        {
+            if (_settings.Settings.Verbose)
+            {
+                Console.Error.WriteLine($"Error copying history image {fullSource}: {ex.Message}");
+            }
+            return NormalizeForSave(sourcePath, entryId);
+        }
     }
 
     private void HydrateImages(HistoryEntry entry)
@@ -746,6 +819,79 @@ public class HistoryManagerService
         return deleted;
     }
 
+    public (int EntriesCreated, int ImagesAdded) RecoverOrphanedImages()
+    {
+        EnsureDirectories();
+        var historyDir = _settings.GetHistoryDir();
+        var imagesDir = _settings.GetHistoryImagesDir();
+        if (!Directory.Exists(imagesDir)) return (0, 0);
+
+        var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in _historyEntries)
+        {
+            foreach (var img in entry.Images)
+            {
+                if (!string.IsNullOrWhiteSpace(img.ImagePath))
+                {
+                    var rel = Path.IsPathRooted(img.ImagePath)
+                        ? Path.GetRelativePath(historyDir, img.ImagePath)
+                        : img.ImagePath;
+                    referenced.Add(rel.Replace('\\', Path.DirectorySeparatorChar));
+                }
+            }
+        }
+
+        var entryMap = _historyEntries.ToDictionary(e => e.Id, StringComparer.OrdinalIgnoreCase);
+        var entriesCreated = 0;
+        var imagesAdded = 0;
+
+        foreach (var dir in Directory.EnumerateDirectories(imagesDir))
+        {
+            var entryId = Path.GetFileName(dir);
+            if (string.IsNullOrWhiteSpace(entryId)) continue;
+
+            if (!entryMap.TryGetValue(entryId, out var entry))
+            {
+                entry = new HistoryEntry
+                {
+                    Id = entryId,
+                    Timestamp = Directory.GetLastWriteTime(dir),
+                    Status = "recovered",
+                    TemplateName = "Recovered",
+                    OriginalPrompt = "Recovered entry",
+                    ProcessedPrompt = "Recovered entry",
+                    Workflow = _settings.Settings.Workflow ?? "sfw"
+                };
+                _historyEntries.Add(entry);
+                entryMap[entryId] = entry;
+                entriesCreated++;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(dir))
+            {
+                var rel = Path.GetRelativePath(historyDir, file).Replace('\\', Path.DirectorySeparatorChar);
+                if (referenced.Contains(rel)) continue;
+
+                entry.Images.Add(new HistoryImage
+                {
+                    ImagePath = rel,
+                    Prompt = entry.ProcessedPrompt ?? entry.OriginalPrompt,
+                    PromptType = "Recovered"
+                });
+                referenced.Add(rel);
+                imagesAdded++;
+            }
+
+            if (string.IsNullOrWhiteSpace(entry.CoverImagePath))
+            {
+                entry.CoverImagePath = entry.Images.FirstOrDefault()?.ImagePath;
+            }
+        }
+
+        SaveHistory();
+        return (entriesCreated, imagesAdded);
+    }
+
     public bool DeleteEntry(string entryId)
     {
         var entry = _historyEntries.FirstOrDefault(e => string.Equals(e.Id, entryId, StringComparison.OrdinalIgnoreCase));
@@ -773,6 +919,12 @@ public class HistoryManagerService
         if (string.Equals(entry.CoverImagePath, image.ImagePath, StringComparison.OrdinalIgnoreCase))
         {
             entry.CoverImagePath = entry.Images.FirstOrDefault()?.ImagePath;
+        }
+
+        if (entry.Images.Count == 0)
+        {
+            entry.Status = "text_only";
+            entry.CoverImagePath = null;
         }
 
         SaveHistory();
@@ -868,6 +1020,13 @@ public class HistoryManagerService
         [JsonPropertyName("aesthetic_score_model")] public string? Aesthetic_Score_Model { get; set; } // Renamed from AestheticScoreModel
         [JsonPropertyName("aesthetic_score_at")] public string? Aesthetic_Score_At { get; set; } // Renamed from AestheticScoreTimestamp
         [JsonPropertyName("aesthetic_score_ms")] public int? Aesthetic_Score_Ms { get; set; } // Renamed from AestheticScoreMs
+        [JsonPropertyName("generation_duration_ms")] public int? Generation_Duration_Ms { get; set; }
+        [JsonPropertyName("queue_wait_ms")] public int? Queue_Wait_Ms { get; set; }
+        [JsonPropertyName("total_duration_ms")] public int? Total_Duration_Ms { get; set; }
+        [JsonPropertyName("generation_status")] public string? Generation_Status { get; set; }
+        [JsonPropertyName("error_type")] public string? Error_Type { get; set; }
+        [JsonPropertyName("error_message")] public string? Error_Message { get; set; }
+        [JsonPropertyName("error_traceback")] public string? Error_Traceback { get; set; }
     }
 
     private static bool ScanHistoryFile(string path, ref int missingCount)

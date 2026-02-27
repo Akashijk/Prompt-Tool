@@ -1,0 +1,253 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d"
+        d:DesignWidth="900"
+        d:DesignHeight="700"
+        x:Class="PromptTool.Views.KpiDashboardWindow"
+        x:DataType="vm:KpiDashboardViewModel"
+        Title="KPIs"
+        WindowStartupLocation="CenterOwner">
+
+    <Design.DataContext>
+        <vm:KpiDashboardViewModel />
+    </Design.DataContext>
+
+    <ScrollViewer>
+        <StackPanel Margin="14" Spacing="14">
+            <StackPanel Spacing="4">
+                <TextBlock Text="KPIs" FontSize="18" FontWeight="Bold"/>
+                <TextBlock Text="{Binding WorkflowLabel}" Classes="subtle"/>
+            </StackPanel>
+
+            <Border Padding="10" Classes="card">
+                <Grid ColumnDefinitions="Auto,Auto,Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="8">
+                    <TextBlock Text="Time Range" VerticalAlignment="Center"/>
+                    <ComboBox Grid.Column="1"
+                              ItemsSource="{Binding TimeRanges}"
+                              SelectedItem="{Binding SelectedTimeRange}"
+                              MinWidth="160"/>
+                    <CheckBox Grid.Column="2"
+                              Content="Scored only"
+                              IsChecked="{Binding ScoredOnly}"/>
+                    <CheckBox Grid.Column="3"
+                              Content="Hide failed"
+                              IsChecked="{Binding HideFailed}"/>
+                </Grid>
+            </Border>
+
+            <ItemsControl ItemsSource="{Binding Metrics}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:KpiMetric">
+                        <Border Padding="10" Margin="4" MinWidth="200" Classes="card">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                <TextBlock Text="{Binding Value}" FontSize="20" FontWeight="Bold"/>
+                                <TextBlock Text="{Binding Detail}" Classes="subtle" IsVisible="{Binding HasDetail}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <ItemsControl ItemsSource="{Binding Charts}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:KpiBarChart">
+                        <Border Padding="10" Margin="4" MinWidth="320" Classes="card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                <ItemsControl ItemsSource="{Binding Items}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:KpiBarItem">
+                                            <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3">
+                                                <StackPanel Width="120">
+                                                    <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock Text="{Binding Detail}" Classes="subtle" IsVisible="{Binding HasDetail}"/>
+                                                </StackPanel>
+                                                <Border Grid.Column="1"
+                                                        Height="10"
+                                                        Background="#2B5AA7"
+                                                        CornerRadius="3"
+                                                        Width="{Binding BarWidth}"
+                                                        VerticalAlignment="Center"
+                                                        Margin="8,0"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding Value}" HorizontalAlignment="Right"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding EmptyMessage}" Classes="subtle" IsVisible="{Binding ShowEmptyMessage}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <ItemsControl ItemsSource="{Binding Histograms}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:KpiBarChart">
+                        <Border Padding="10" Margin="4" MinWidth="320" Classes="card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                <ItemsControl ItemsSource="{Binding Items}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:KpiBarItem">
+                                            <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3">
+                                                <StackPanel Width="120">
+                                                    <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"/>
+                                                </StackPanel>
+                                                <Border Grid.Column="1"
+                                                        Height="10"
+                                                        Background="#2B5AA7"
+                                                        CornerRadius="3"
+                                                        Width="{Binding BarWidth}"
+                                                        VerticalAlignment="Center"
+                                                        Margin="8,0"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding Value}" HorizontalAlignment="Right"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding EmptyMessage}" Classes="subtle" IsVisible="{Binding ShowEmptyMessage}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <ItemsControl ItemsSource="{Binding TrendCharts}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:KpiTrendChart">
+                        <Border Padding="10" Margin="4" MinWidth="320" Classes="card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                <Canvas Width="260" Height="120" Background="#111" ClipToBounds="True">
+                                    <Polyline Points="{Binding LinePoints}"
+                                              Stroke="#5AA0FF"
+                                              StrokeThickness="2"/>
+                                    <ItemsControl ItemsSource="{Binding Points}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <Canvas />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:KpiTrendPoint">
+                                                <Ellipse Width="6" Height="6"
+                                                         Fill="#8CC1FF"
+                                                         Canvas.Left="{Binding Plot.X}"
+                                                         Canvas.Top="{Binding Plot.Y}">
+                                                    <ToolTip.Tip>
+                                                        <TextBlock Text="{Binding Label}"/>
+                                                    </ToolTip.Tip>
+                                                </Ellipse>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Canvas>
+                                <TextBlock Text="{Binding EmptyMessage}" Classes="subtle" IsVisible="{Binding ShowEmptyMessage}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <ItemsControl ItemsSource="{Binding ScatterCharts}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:KpiScatterChart">
+                        <Border Padding="10" Margin="4" MinWidth="320" Classes="card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                <Canvas Width="260" Height="140" Background="#111" ClipToBounds="True">
+                                    <ItemsControl ItemsSource="{Binding Points}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <Canvas />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:KpiScatterPoint">
+                                                <Ellipse Width="5" Height="5"
+                                                         Fill="#7DBDFF"
+                                                         Canvas.Left="{Binding Plot.X}"
+                                                         Canvas.Top="{Binding Plot.Y}">
+                                                    <ToolTip.Tip>
+                                                        <TextBlock Text="{Binding Tooltip}"/>
+                                                    </ToolTip.Tip>
+                                                </Ellipse>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Canvas>
+                                <TextBlock Text="{Binding EmptyMessage}" Classes="subtle" IsVisible="{Binding ShowEmptyMessage}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <ItemsControl ItemsSource="{Binding Leaderboards}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:KpiLeaderboard">
+                        <Border Padding="10" Margin="4" MinWidth="300" Classes="card">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
+                                <ItemsControl ItemsSource="{Binding Items}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:KpiLeaderboardItem">
+                                        <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,2">
+                                            <TextBlock Text="{Binding Rank}" Classes="subtle"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Label}" Margin="8,0,0,0"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding Value}" HorizontalAlignment="Right"/>
+                                            <Button Grid.Column="3" Content="i" Width="18" Height="18" Margin="8,0,0,0">
+                                                <Button.Flyout>
+                                                    <Flyout>
+                                                        <TextBlock Text="{Binding FlyoutText}" TextWrapping="Wrap" MaxWidth="220"/>
+                                                    </Flyout>
+                                                </Button.Flyout>
+                                            </Button>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                                <TextBlock Text="No data yet." Classes="subtle" IsVisible="{Binding ShowEmptyMessage}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+    </ScrollViewer>
+</Window>

@@ -1,0 +1,285 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d"
+        d:DesignWidth="1100"
+        d:DesignHeight="720"
+        x:Class="PromptTool.Views.SchedulerTunerWindow"
+        x:DataType="vm:SchedulerTunerViewModel"
+        x:Name="SchedulerTunerRoot"
+        Title="Scheduler Tuner"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid Margin="12" RowSpacing="10" ClipToBounds="True">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" MinHeight="260"/>
+            <RowDefinition Height="8"/>
+            <RowDefinition Height="*" MinHeight="240"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Classes="card" Padding="10" ClipToBounds="True">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="10">
+                    <StackPanel Grid.Row="0" Grid.Column="0" Spacing="8" Width="{Binding ModelDropdownWidth}" HorizontalAlignment="Left">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="Model Category" FontWeight="Bold"/>
+                        <ComboBox ItemsSource="{Binding ModelCategories}"
+                                  SelectedItem="{Binding SelectedModelCategory}"
+                                  Width="{Binding ModelDropdownWidth}"
+                                  MinWidth="{Binding ModelDropdownWidth}"
+                                  MaxWidth="{Binding ModelDropdownWidth}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="Model Search" FontWeight="Bold"/>
+                        <TextBox Text="{Binding ModelFilterText}"
+                                 Watermark="Filter models..."
+                                 Width="{Binding ModelDropdownWidth}"/>
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="Model" FontWeight="Bold"/>
+                        <ComboBox ItemsSource="{Binding Models}"
+                                  SelectedItem="{Binding SelectedModel}"
+                                  Width="{Binding ModelDropdownWidth}"
+                                  MinWidth="{Binding ModelDropdownWidth}"
+                                  MaxWidth="{Binding ModelDropdownWidth}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </StackPanel>
+                        <Border Background="#1E2737"
+                                BorderBrush="#2E3A52"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="6,2"
+                                ToolTip.Tip="{Binding PreferredSchedulerTooltip}"
+                                IsVisible="{Binding HasPreferredScheduler}">
+                            <TextBlock Text="{Binding PreferredSchedulerLabel}"
+                                       Classes="subtle"
+                                       TextWrapping="NoWrap"/>
+                        </Border>
+                </StackPanel>
+
+                    <StackPanel Grid.Row="0" Grid.Column="1" Spacing="6">
+                    <TextBlock Text="Scheduler Filter" FontWeight="Bold"/>
+                    <TextBox Text="{Binding SchedulerFilterText}" Watermark="Type to filter..."/>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="Steps" VerticalAlignment="Center"/>
+                        <NumericUpDown Value="{Binding Steps}" Minimum="1" Maximum="200" Width="120"/>
+                    </StackPanel>
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="6">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Step sweep" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="Interval" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Min" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Row="0" Grid.Column="3" Text="Max" VerticalAlignment="Center"/>
+
+                        <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <TextBlock Text="±" VerticalAlignment="Center"/>
+                            <NumericUpDown Value="{Binding StepSweepCount}" Minimum="1" Maximum="6" Width="70"/>
+                        </StackPanel>
+                        <ComboBox Grid.Row="1"
+                                  Grid.Column="1"
+                                  ItemsSource="{Binding StepSweepIntervals}"
+                                  SelectedItem="{Binding StepSweepInterval}"
+                                  Width="110"/>
+                        <NumericUpDown Grid.Row="1" Grid.Column="2" Value="{Binding StepSweepMin}" Minimum="1" Maximum="200" Width="110"/>
+                        <NumericUpDown Grid.Row="1" Grid.Column="3" Value="{Binding StepSweepMax}" Minimum="1" Maximum="200" Width="110"/>
+                    </Grid>
+                    <CheckBox Content="Enable aesthetic scoring"
+                              IsChecked="{Binding EnableAestheticScoring}"/>
+                    <CheckBox Content="Rank by score"
+                              IsChecked="{Binding RankByScore}"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                            <Button Content="Generate All"
+                                    Command="{Binding GenerateAllCommand}"
+                                    IsEnabled="{Binding IsGenerating, Converter={StaticResource InverseBoolConverter}}"
+                                    Width="140"/>
+                        <Button Content="Generate Selected"
+                                Command="{Binding GenerateSelectedCommand}"
+                                IsEnabled="{Binding IsGenerating, Converter={StaticResource InverseBoolConverter}}"
+                                Width="140"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Spacing="4">
+                        <TextBlock Text="Prompt" FontWeight="Bold"/>
+                        <TextBox Text="{Binding Prompt}"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 Height="80"/>
+                        <TextBlock Text="Negative Prompt" FontWeight="Bold"/>
+                        <TextBox Text="{Binding NegativePromptText}"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 Height="60"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Spacing="8">
+                        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="6">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding SchedulerCountText}" FontWeight="Bold"/>
+                            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                <Button Content="All" Command="{Binding SelectAllSchedulersCommand}" Padding="6,2"/>
+                                <Button Content="None" Command="{Binding SelectNoneSchedulersCommand}" Padding="6,2"/>
+                                <Button Content="Invert" Command="{Binding InvertSchedulersCommand}" Padding="6,2"/>
+                            </StackPanel>
+                            <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="6">
+                                <ScrollViewer Height="120">
+                                    <WrapPanel>
+                                        <ItemsControl ItemsSource="{Binding Schedulers}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:SchedulerChoice">
+                                                    <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}" Margin="4,2"/>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </WrapPanel>
+                                </ScrollViewer>
+                            </Border>
+                        </Grid>
+
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="Artifact Heuristics (Beta)" FontWeight="Bold"/>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <CheckBox Content="Enable artifact checks"
+                                          IsChecked="{Binding EnableArtifactHeuristics}"/>
+                                <CheckBox Content="Hide banding"
+                                          IsChecked="{Binding HideBandingRisk}"
+                                          IsEnabled="{Binding EnableArtifactHeuristics}"/>
+                                <CheckBox Content="Hide over-smooth"
+                                          IsChecked="{Binding HideOverSmoothRisk}"
+                                          IsEnabled="{Binding EnableArtifactHeuristics}"/>
+                                <CheckBox Content="Hide warp"
+                                          IsChecked="{Binding HideWarpRisk}"
+                                          IsEnabled="{Binding EnableArtifactHeuristics}"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding StatusText}" Classes="subtle"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+            </ScrollViewer>
+        </Border>
+
+        <GridSplitter Grid.Row="1"
+                      Height="8"
+                      Background="#303030"
+                      ResizeDirection="Rows"
+                      ResizeBehavior="PreviousAndNext"
+                      ShowsPreview="True"
+                      HorizontalAlignment="Stretch"
+                      VerticalAlignment="Stretch"/>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" MinHeight="240" ClipToBounds="True">
+            <ListBox x:Name="ResultsList"
+                     ItemsSource="{Binding Results}"
+                     SelectedItem="{Binding SelectedResult}"
+                     SelectionMode="Multiple"
+                     SelectionChanged="Results_SelectionChanged">
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SchedulerResultItem">
+                        <Border Margin="6"
+                                Padding="6"
+                                BorderBrush="Gray"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Width="280"
+                                PointerPressed="Result_PointerPressed"
+                                DoubleTapped="Result_DoubleTapped">
+                            <StackPanel Spacing="6">
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                                    <TextBlock Text="{Binding Scheduler}" FontWeight="Bold"/>
+                                    <Border Grid.Column="1"
+                                            Background="#24485A"
+                                            CornerRadius="10"
+                                            Padding="6,2"
+                                            IsVisible="{Binding IsPreferred}">
+                                        <TextBlock Text="Preferred" FontSize="11" Foreground="#CDEBFF"/>
+                                    </Border>
+                                </Grid>
+                                <Border Height="220" Background="#1a1a1a" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                                    <Grid>
+                                        <Image Source="{Binding Slot.Image}" Stretch="Uniform" />
+                                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding Slot.IsLoading}">
+                                            <ProgressBar IsIndeterminate="True" Width="120"/>
+                                            <TextBlock Text="Generating..." HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                                <TextBlock Text="{Binding DurationLabel}"
+                                           Classes="subtle"
+                                           IsVisible="{Binding DurationLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding AestheticScoreLabel}"
+                                               Classes="subtle"
+                                               IsVisible="{Binding HasAestheticScore}"/>
+                                    <TextBlock Text="{Binding HeuristicScoreLabel}"
+                                               Classes="subtle"
+                                               IsVisible="{Binding HasHeuristicScore}"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding SchedulerStatsLabel}"
+                                           Classes="subtle"
+                                           IsVisible="{Binding HasSchedulerStats}"/>
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="Banding"
+                                               Classes="subtle"
+                                               IsVisible="{Binding BandingRisk}"/>
+                                    <TextBlock Text="Over-smooth"
+                                               Classes="subtle"
+                                               IsVisible="{Binding OverSmoothRisk}"/>
+                                    <TextBlock Text="Warp"
+                                               Classes="subtle"
+                                               IsVisible="{Binding WarpRisk}"/>
+                                </StackPanel>
+                                <Button Content="Set as Default"
+                                        Command="{Binding DataContext.ApplyResultSchedulerCommand, ElementName=SchedulerTunerRoot}"
+                                        IsEnabled="{Binding DataContext.IsGenerating, ElementName=SchedulerTunerRoot, Converter={StaticResource InverseBoolConverter}}"
+                                        CommandParameter="{Binding}"/>
+                                <Button Content="Seed Sweep (10)"
+                                        Command="{Binding DataContext.SeedSweepCommand, ElementName=SchedulerTunerRoot}"
+                                        IsEnabled="{Binding DataContext.IsGenerating, ElementName=SchedulerTunerRoot, Converter={StaticResource InverseBoolConverter}}"
+                                        CommandParameter="{Binding}"/>
+                                <Button Content="Steps Sweep"
+                                        Command="{Binding DataContext.StepsSweepCommand, ElementName=SchedulerTunerRoot}"
+                                        IsEnabled="{Binding DataContext.IsGenerating, ElementName=SchedulerTunerRoot, Converter={StaticResource InverseBoolConverter}}"
+                                        CommandParameter="{Binding}"/>
+                                <TextBlock Text="{Binding Error}" Classes="subtle" IsVisible="{Binding Error}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <Button Content="Compare Selected"
+                    IsEnabled="{Binding CanCompare}"
+                    IsVisible="{Binding IsGenerating, Converter={StaticResource InverseBoolConverter}}"
+                    Click="CompareSelected_Click"/>
+            <Button Content="Cancel"
+                    Command="{Binding CancelGenerationCommand}"
+                    IsVisible="{Binding IsGenerating}"/>
+            <Button Content="Clear Results"
+                    Command="{Binding ClearResultsCommand}"
+                    IsEnabled="{Binding IsGenerating, Converter={StaticResource InverseBoolConverter}}"/>
+        </StackPanel>
+    </Grid>
+</Window>

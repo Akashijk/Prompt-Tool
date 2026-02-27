@@ -48,26 +48,35 @@
                     </MenuItem.Icon>
                 </MenuItem>
             </MenuItem>
-            <MenuItem Header="_Tools">
+            <MenuItem Header="_Images">
                 <MenuItem Header="_History Viewer" Command="{Binding ViewHistoryCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="All _Images" Command="{Binding ShowAllImagesCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="_Analytics Studio" Command="{Binding ShowAnalyticsStudioCommand}" CommandParameter="{Binding $parent[Window]}"/>
-                <MenuItem Header="Favorite _Images Viewer" Command="{Binding ViewFavoriteImagesCommand}" CommandParameter="{Binding $parent[Window]}"/>
-                <Separator/>
+                <MenuItem Header="_KPIs" Command="{Binding ShowKpiDashboardCommand}" CommandParameter="{Binding $parent[Window]}"/>
+            </MenuItem>
+            <MenuItem Header="_Prompts">
                 <MenuItem Header="Wildcard _Manager" Command="{Binding ShowWildcardManagerCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="AI _Brainstorming" Command="{Binding ShowBrainstormingCommand}" CommandParameter="{Binding $parent[Window]}"/>
-                <Separator/>
-                <MenuItem Header="Image _Interrogator" Command="{Binding ShowImageInterrogatorCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="Prompt _Evolver" Command="{Binding ShowPromptEvolverCommand}" CommandParameter="{Binding $parent[Window]}"/>
+            </MenuItem>
+            <MenuItem Header="_Tools">
+                <MenuItem Header="_Scheduler Tuner" Command="{Binding ShowSchedulerTunerCommand}" CommandParameter="{Binding $parent[Window]}"/>
+                <MenuItem Header="_Generation Queue" Command="{Binding ShowGenerationQueueCommand}" CommandParameter="{Binding $parent[Window]}"/>
+                <MenuItem Header="History _Integrity" Command="{Binding ShowHistoryIntegrityCommand}" CommandParameter="{Binding $parent[Window]}"/>
+                <MenuItem Header="Image _Interrogator" Command="{Binding ShowImageInterrogatorCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="PNG _Metadata Viewer" Command="{Binding ShowPngMetadataViewerCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="Clear Invoke Cache" Command="{Binding ClearInvokeCacheCommand}"/>
-                <Separator/>
                 <MenuItem Header="_Settings" Command="{Binding ShowSettingsCommand}" CommandParameter="{Binding $parent[Window]}"/>
             </MenuItem>
         </Menu>
 
-        <Grid RowDefinitions="Auto,*" Margin="12" RowSpacing="10">
-        <Border Grid.Row="0" Padding="12">
+        <Grid RowDefinitions="Auto,Auto,*" Margin="12" RowSpacing="10">
+        <Border Grid.Row="0" Padding="8" BorderBrush="#C4661A" BorderThickness="1" CornerRadius="4"
+                Background="#40260F"
+                IsVisible="{Binding IsInvokeOnline, Converter={StaticResource InverseBoolConverter}}">
+            <TextBlock Text="InvokeAI is offline. Start the server to generate images." Foreground="Orange"/>
+        </Border>
+        <Border Grid.Row="1" Padding="12">
             <Grid ColumnDefinitions="2*,1.5*,Auto" ColumnSpacing="12" RowDefinitions="Auto,Auto,Auto">
                 <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
                     <TextBlock Text="Template" FontWeight="Bold"/>
@@ -116,7 +125,7 @@
             </Grid>
         </Border>
 
-        <Grid Grid.Row="1" ColumnDefinitions="2.4*,8,1.6*" RowDefinitions="*,8,*" RowSpacing="10">
+        <Grid Grid.Row="2" ColumnDefinitions="2.4*,8,1.6*" RowDefinitions="*,8,*" RowSpacing="10">
             <Border Grid.Row="0" Grid.Column="0" Padding="12" MinHeight="160">
                 <StackPanel Spacing="6">
                     <TextBlock Text="Prompt" FontWeight="Bold"/>

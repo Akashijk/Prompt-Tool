@@ -73,6 +73,71 @@ public static class ScoringHelper
         }
     }
 
+    public static double CalculateSharpnessScore(Bitmap bitmap)
+    {
+        try
+        {
+            var width = bitmap.PixelSize.Width;
+            var height = bitmap.PixelSize.Height;
+            if (width == 0 || height == 0) return 0;
+
+            var stride = width * 4;
+            var data = new byte[stride * height];
+            var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
+            try
+            {
+                bitmap.CopyPixels(new PixelRect(0, 0, width, height), handle.AddrOfPinnedObject(), data.Length, stride);
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            var step = Math.Max(1, Math.Min(width, height) / 300);
+            double sum = 0;
+            double sumSq = 0;
+            long count = 0;
+
+            for (int y = step; y < height - step; y += step)
+            {
+                var row = y * stride;
+                var rowUp = (y - step) * stride;
+                var rowDown = (y + step) * stride;
+                for (int x = step; x < width - step; x += step)
+                {
+                    var idx = row + (x * 4);
+                    var idxL = row + ((x - step) * 4);
+                    var idxR = row + ((x + step) * 4);
+                    var idxU = rowUp + (x * 4);
+                    var idxD = rowDown + (x * 4);
+
+                    var c = Luminance(data, idx);
+                    var lap = (-4 * c)
+                              + Luminance(data, idxL)
+                              + Luminance(data, idxR)
+                              + Luminance(data, idxU)
+                              + Luminance(data, idxD);
+
+                    sum += lap;
+                    sumSq += lap * lap;
+                    count++;
+                }
+            }
+
+            if (count == 0) return 0;
+            var mean = sum / count;
+            var variance = (sumSq / count) - (mean * mean);
+            var stdDev = Math.Sqrt(Math.Max(0, variance));
+
+            var normalized = Math.Min(1.0, stdDev / 30.0) * 100.0;
+            return Math.Round(normalized, 1);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     private static double Luminance(byte[] data, int idx)
     {
         var b = data[idx];

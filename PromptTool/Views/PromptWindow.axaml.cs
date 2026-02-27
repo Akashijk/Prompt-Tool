@@ -7,15 +7,24 @@ using Avalonia.Interactivity;
 using Avalonia;
 using PromptTool.ViewModels;
 using ReactiveUI;
+using PromptTool.Core.Config;
 
 namespace PromptTool.Views;
 
 public partial class PromptWindow : Window
 {
     public PromptWindow()
+        : this(null)
     {
+    }
+
+    public PromptWindow(AppSettings? settings)
+    {
+        if (settings != null)
+        {
+            ApplyInitialWindowState(settings);
+        }
         InitializeComponent();
-        Opened += OnOpened;
         Closing += OnClosing;
     }
 
@@ -115,31 +124,6 @@ public partial class PromptWindow : Window
         }
     }
 
-    private void OnOpened(object? sender, EventArgs e)
-    {
-        if (DataContext is not MainWindowViewModel vm)
-        {
-            return;
-        }
-
-        var settings = vm.SettingsService.Settings;
-        if (settings.MainWindowWidth > 0 && settings.MainWindowHeight > 0)
-        {
-            Width = settings.MainWindowWidth;
-            Height = settings.MainWindowHeight;
-        }
-
-        if (settings.MainWindowX != 0 || settings.MainWindowY != 0)
-        {
-            Position = new PixelPoint((int)settings.MainWindowX, (int)settings.MainWindowY);
-        }
-
-        if (Enum.TryParse<WindowState>(settings.MainWindowState, out var state))
-        {
-            WindowState = state;
-        }
-    }
-
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {
         if (DataContext is not MainWindowViewModel vm)
@@ -149,6 +133,9 @@ public partial class PromptWindow : Window
 
         var settings = vm.SettingsService.Settings;
         settings.MainWindowState = WindowState.ToString();
+        settings.LastPromptText = vm.PromptText ?? string.Empty;
+        settings.LastTemplateName = vm.SelectedTemplate?.Name;
+        settings.LastOllamaModel = vm.SelectedModel;
 
         if (WindowState == WindowState.Normal)
         {
@@ -163,6 +150,26 @@ public partial class PromptWindow : Window
         }
 
         _ = vm.SettingsService.SaveSettingsAsync(settings);
+    }
+
+    private void ApplyInitialWindowState(AppSettings settings)
+    {
+        if (Enum.TryParse<WindowState>(settings.MainWindowState, out var state) && state != WindowState.Normal)
+        {
+            WindowState = state;
+            return;
+        }
+
+        if (settings.MainWindowWidth > 0 && settings.MainWindowHeight > 0)
+        {
+            Width = settings.MainWindowWidth;
+            Height = settings.MainWindowHeight;
+        }
+
+        if (settings.MainWindowX != 0 || settings.MainWindowY != 0)
+        {
+            Position = new PixelPoint((int)settings.MainWindowX, (int)settings.MainWindowY);
+        }
     }
 
 }

@@ -3,8 +3,8 @@ using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
-using Avalonia.Media.Imaging;
 using PromptTool.ViewModels;
+using PromptTool.Services;
 
 namespace PromptTool.Views;
 
@@ -48,40 +48,20 @@ public partial class MultiImagePreviewView : Window
 
     private void ShowFullSize(ImageSlotViewModel slot)
     {
-        if (slot.Image == null) return;
-        var copy = CloneBitmap(slot.Image);
-        if (copy == null) return;
-        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
-        var working = screen?.WorkingArea ?? new PixelRect(0, 0, 1280, 720);
-        var maxWidth = Math.Max(320, working.Width * 0.9);
-        var maxHeight = Math.Max(240, working.Height * 0.9);
+        ImageDetailPresenter.ShowForPreview(slot, this);
+    }
 
-        var win = new HoverImagePreviewWindow(copy, maxWidth, maxHeight)
+    private void Slot_DoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (sender is Control control && control.DataContext is ImageSlotViewModel slot)
         {
-            Topmost = false,
-            Title = "Full Size Preview"
-        };
-        win.Show(this);
+            ShowFullSize(slot);
+        }
     }
 
     public void ShowFullSizeFromSlot(ImageSlotViewModel slot)
     {
         ShowFullSize(slot);
-    }
-
-    private static Bitmap? CloneBitmap(Bitmap source)
-    {
-        try
-        {
-            using var ms = new System.IO.MemoryStream();
-            source.Save(ms);
-            ms.Position = 0;
-            return new Bitmap(ms);
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static void DisposeSlotImages(MultiImagePreviewViewModel? vm)

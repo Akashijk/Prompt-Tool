@@ -11,11 +11,13 @@ namespace PromptTool.Views;
 
 public partial class ImageGenerationDialog : Window
 {
+    private bool _stateRestored;
+
     public ImageGenerationDialog()
     {
         InitializeComponent();
-        Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
+        RestoreWindowState();
     }
 
     public ImageGenerationDialog(ImageGenerationOptionsViewModel viewModel)
@@ -24,8 +26,8 @@ public partial class ImageGenerationDialog : Window
         DataContext = viewModel;
         viewModel.RequestClose += (sender, e) => Close();
         Closed += OnClosedUnloadModels;
-        Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
+        RestoreWindowState();
     }
 
     private async void OnClosedUnloadModels(object? sender, EventArgs e)
@@ -44,9 +46,21 @@ public partial class ImageGenerationDialog : Window
 
     private void RestoreWindowState()
     {
+        if (_stateRestored)
+        {
+            return;
+        }
+        _stateRestored = true;
+
         var settings = GetSettingsService()?.Settings;
         if (settings == null)
         {
+            return;
+        }
+
+        if (Enum.TryParse<WindowState>(settings.ImageGenerationDialogState, out var state) && state != WindowState.Normal)
+        {
+            WindowState = state;
             return;
         }
 
@@ -61,10 +75,7 @@ public partial class ImageGenerationDialog : Window
             Position = new PixelPoint((int)settings.ImageGenerationDialogX, (int)settings.ImageGenerationDialogY);
         }
 
-        if (Enum.TryParse<WindowState>(settings.ImageGenerationDialogState, out var state))
-        {
-            WindowState = state;
-        }
+        WindowState = WindowState.Normal;
     }
 
     private void SaveWindowState()

@@ -203,10 +203,10 @@ public class InvokeAIClient
             var response = await _http.GetAsync("/api/v1/schemas/scheduler", ct);
             if (response.IsSuccessStatusCode)
             {
-                var schemaData = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct);
-                if (schemaData?["enum"] is JsonArray schedulersArray)
+                var schemaData = await response.Content.ReadFromJsonAsync<JsonNode>(cancellationToken: ct);
+                var schedulers = ExtractSchedulerOptions(schemaData);
+                if (schedulers.Count > 0)
                 {
-                    var schedulers = schedulersArray.Deserialize<List<string>>() ?? new List<string>();
                     _schedulersCache = schedulers.OrderBy(s => s).ToList();
                     return _schedulersCache;
                 }
@@ -224,6 +224,74 @@ public class InvokeAIClient
         };
         _schedulersCache = fallbackSchedulers.OrderBy(s => s).ToList();
         return _schedulersCache;
+    }
+
+    private static List<string> ExtractSchedulerOptions(JsonNode? node)
+    {
+        var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddValue(JsonNode? value)
+        {
+            if (value is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var str) && !string.IsNullOrWhiteSpace(str))
+            {
+                results.Add(str);
+            }
+        }
+
+        void Walk(JsonNode? current)
+        {
+            if (current == null)
+            {
+                return;
+            }
+
+            if (current is JsonObject obj)
+            {
+                if (obj.TryGetPropertyValue("enum", out var enumNode) && enumNode is JsonArray enumArray)
+                {
+                    foreach (var item in enumArray)
+                    {
+                        AddValue(item);
+                    }
+                }
+
+                if (obj.TryGetPropertyValue("const", out var constNode))
+                {
+                    AddValue(constNode);
+                }
+
+                if (obj.TryGetPropertyValue("anyOf", out var anyOfNode) && anyOfNode is JsonArray anyOfArray)
+                {
+                    foreach (var item in anyOfArray)
+                    {
+                        Walk(item);
+                    }
+                }
+
+                if (obj.TryGetPropertyValue("oneOf", out var oneOfNode) && oneOfNode is JsonArray oneOfArray)
+                {
+                    foreach (var item in oneOfArray)
+                    {
+                        Walk(item);
+                    }
+                }
+
+                if (obj.TryGetPropertyValue("items", out var itemsNode))
+                {
+                    Walk(itemsNode);
+                }
+            }
+            else if (current is JsonArray array)
+            {
+                foreach (var item in array)
+                {
+                    Walk(item);
+                }
+            }
+        }
+
+        Walk(node);
+        return results.OrderBy(s => s).ToList();
     }
 
     /// <summary>
@@ -265,7 +333,7 @@ public class InvokeAIClient
         
                     var queueItem = await EnqueueBatchAsync(graph, ct);        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
 
-        var (imageBytes, imageName) = await WaitForResultAsync(itemId, parameters.SaveToGallery, ct);
+        var (imageBytes, imageName, jobInfo) = await WaitForResultAsync(itemId, parameters.SaveToGallery, ct);
 
         return new InvokeAIGenerationResult
         {
@@ -276,7 +344,8 @@ public class InvokeAIClient
             {
                 Scheduler = parameters.Scheduler,
                 Vae = vaeUsed
-            }
+            },
+            JobInfo = jobInfo
         };
     }
 
@@ -287,13 +356,14 @@ public class InvokeAIClient
         var queueItem = await EnqueueBatchJsonAsync(graph, ct);
         var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
 
-        var (imageBytes, imageName) = await WaitForResultAsync(itemId, saveToGallery, ct);
+        var (imageBytes, imageName, jobInfo) = await WaitForResultAsync(itemId, saveToGallery, ct);
 
         return new InvokeAIGenerationResult
         {
             ItemId = itemId,
             ImageBytes = imageBytes,
-            ImageName = imageName
+            ImageName = imageName,
+            JobInfo = jobInfo
         };
     }
 
@@ -340,7 +410,7 @@ public class InvokeAIClient
 
                     var queueItem = await EnqueueBatchAsync(graph, ct);        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
 
-        var (resultBytes, imageName) = await WaitForResultAsync(itemId, saveToGallery, ct);
+        var (resultBytes, imageName, jobInfo) = await WaitForResultAsync(itemId, saveToGallery, ct);
         if (!saveToGallery)
         {
             await DeleteImageAsync(uploadedName, CancellationToken.None);
@@ -349,7 +419,8 @@ public class InvokeAIClient
         {
             ItemId = itemId,
             ImageBytes = resultBytes,
-            ImageName = imageName
+            ImageName = imageName,
+            JobInfo = jobInfo
         };
     }
 
@@ -432,13 +503,14 @@ public class InvokeAIClient
         return await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct) ?? new JsonObject();
     }
     
-    private async Task<(byte[] imageBytes, string imageName)> WaitForResultAsync(int itemId, bool saveToGallery, CancellationToken ct)
+    private async Task<(byte[] imageBytes, string imageName, GenerationJobInfo jobInfo)> WaitForResultAsync(int itemId, bool saveToGallery, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             var response = await _http.GetAsync($"/api/v1/queue/default/i/{itemId}", ct);
             response.EnsureSuccessStatusCode();
             var statusData = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct);
+            var jobInfo = BuildJobInfo(statusData);
 
             switch (statusData?["status"]?.GetValue<string>())
             {
@@ -481,7 +553,7 @@ public class InvokeAIClient
                         }
                     }
 
-                    return (imageBytes, resolvedName);
+                    return (imageBytes, resolvedName, jobInfo);
 
                 case "failed":
                 case "canceled":
@@ -511,7 +583,7 @@ public class InvokeAIClient
                     {
                         // Fallback to original error message
                     }
-                    throw new Exception($"Image generation failed or was canceled: {errorMsg}");
+                    throw new InvokeAIJobFailedException($"Image generation failed or was canceled: {errorMsg}", jobInfo);
 
                 default:
                     await Task.Delay(1000, ct);
@@ -521,6 +593,72 @@ public class InvokeAIClient
 
         await CancelAndCleanupItemAsync(itemId, saveToGallery, CancellationToken.None);
         throw new TaskCanceledException("Image generation was canceled by the user.");
+    }
+
+    private static GenerationJobInfo BuildJobInfo(JsonObject? statusData)
+    {
+        if (statusData == null)
+        {
+            return new GenerationJobInfo();
+        }
+
+        var status = statusData["status"]?.GetValue<string>() ?? string.Empty;
+        var errorType = statusData["error_type"]?.GetValue<string>();
+        var errorMessage = statusData["error_message"]?.GetValue<string>();
+        var errorTraceback = statusData["error_traceback"]?.GetValue<string>();
+
+        var created = TryParseDateTimeOffset(statusData["created_at"]);
+        var started = TryParseDateTimeOffset(statusData["started_at"]);
+        var completed = TryParseDateTimeOffset(statusData["completed_at"]);
+
+        int? queueWaitMs = null;
+        int? totalMs = null;
+        int? durationMs = null;
+
+        if (created.HasValue && started.HasValue)
+        {
+            queueWaitMs = (int)Math.Round((started.Value - created.Value).TotalMilliseconds);
+        }
+
+        if (created.HasValue && completed.HasValue)
+        {
+            totalMs = (int)Math.Round((completed.Value - created.Value).TotalMilliseconds);
+        }
+
+        if (statusData["duration"] is JsonValue durationVal)
+        {
+            if (durationVal.TryGetValue(out double durationSeconds))
+            {
+                durationMs = (int)Math.Round(durationSeconds * 1000.0);
+            }
+            else if (durationVal.TryGetValue(out float durationFloat))
+            {
+                durationMs = (int)Math.Round(durationFloat * 1000.0);
+            }
+        }
+
+        if (!durationMs.HasValue && started.HasValue && completed.HasValue)
+        {
+            durationMs = (int)Math.Round((completed.Value - started.Value).TotalMilliseconds);
+        }
+
+        return new GenerationJobInfo
+        {
+            Status = status,
+            ErrorType = errorType,
+            ErrorMessage = errorMessage,
+            ErrorTraceback = errorTraceback,
+            GenerationDurationMs = durationMs,
+            QueueWaitMs = queueWaitMs,
+            TotalDurationMs = totalMs
+        };
+    }
+
+    private static DateTimeOffset? TryParseDateTimeOffset(JsonNode? node)
+    {
+        if (node is not JsonValue value) return null;
+        if (!value.TryGetValue(out string? raw) || string.IsNullOrWhiteSpace(raw)) return null;
+        return DateTimeOffset.TryParse(raw, out var dt) ? dt : null;
     }
     
     public async Task CancelAndCleanupItemAsync(int itemId, bool saveToGallery, CancellationToken ct)

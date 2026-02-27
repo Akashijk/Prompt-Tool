@@ -1,0 +1,36 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PromptTool.ViewModels"
+        x:Class="PromptTool.Views.SchedulerTunerImageCompareWindow"
+        x:DataType="vm:SchedulerTunerImageCompareViewModel"
+        Title="Compare Scheduler Outputs"
+        Width="1200"
+        Height="760"
+        WindowStartupLocation="CenterOwner">
+    <Grid RowDefinitions="Auto,*" ColumnDefinitions="*,*" Margin="12" RowSpacing="8" ColumnSpacing="10">
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding LeftTitle}" FontWeight="Bold"/>
+        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding RightTitle}" FontWeight="Bold"/>
+
+        <Border Grid.Row="1" Grid.Column="0" BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="6">
+            <ScrollViewer x:Name="LeftScrollViewer"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto"
+                          PointerPressed="ScrollViewer_PointerPressed"
+                          PointerMoved="ScrollViewer_PointerMoved"
+                          PointerReleased="ScrollViewer_PointerReleased">
+                <Image Source="{Binding LeftImage}" Stretch="Uniform"/>
+            </ScrollViewer>
+        </Border>
+
+        <Border Grid.Row="1" Grid.Column="1" BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="6">
+            <ScrollViewer x:Name="RightScrollViewer"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto"
+                          PointerPressed="ScrollViewer_PointerPressed"
+                          PointerMoved="ScrollViewer_PointerMoved"
+                          PointerReleased="ScrollViewer_PointerReleased">
+                <Image Source="{Binding RightImage}" Stretch="Uniform"/>
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</Window>

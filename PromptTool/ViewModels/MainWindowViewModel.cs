@@ -41,12 +41,15 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly OllamaClient _ollamaClient;
     private readonly InvokeAIClient _invokeAIClient;
     private readonly HistoryManagerService _historyManager;
+    private readonly KpiStatsService? _kpiStats;
     private readonly TemplateService _templateService;
     private readonly ModelUsageTracker _modelUsageTracker;
     private readonly NotificationService? _notifications;
     private readonly ScoringCacheService _scoringCacheService;
     private readonly AestheticScoringService _aestheticScoringService;
+    private readonly PromptMatchScoringService _promptMatchScoringService;
     private readonly ImageCacheService _imageCacheService;
+    private readonly GenerationQueueService _generationQueue;
     private readonly HistoryIndexService _historyIndexService;
     private CancellationTokenSource? _invokeMonitorCts;
     private bool? _invokeOnline;
@@ -74,6 +77,7 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string _workflow;
     [ObservableProperty] private ObservableCollection<VariationOption> _variationOptions = new();
     [ObservableProperty] private string _statusText = "Ready.";
+    [ObservableProperty] private bool _isInvokeOnline = true;
 
     public bool IsSfwWorkflow => string.Equals(Workflow, "sfw", StringComparison.OrdinalIgnoreCase);
     public bool IsNsfwWorkflow => string.Equals(Workflow, "nsfw", StringComparison.OrdinalIgnoreCase);
@@ -100,7 +104,6 @@ public partial class MainWindowViewModel : ObservableObject
     public IAsyncRelayCommand<string?> SetWorkflowCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSettingsCommand { get; }
     public IAsyncRelayCommand<Window?> ViewHistoryCommand { get; }
-    public IAsyncRelayCommand<Window?> ViewFavoriteImagesCommand { get; }
     public IAsyncRelayCommand<Window?> ShowBrainstormingCommand { get; }
     public IAsyncRelayCommand<Window?> ShowImageInterrogatorCommand { get; }
     public IAsyncRelayCommand<Window?> ShowModelStatsCommand { get; }
@@ -114,11 +117,14 @@ public partial class MainWindowViewModel : ObservableObject
     public IAsyncRelayCommand<Window?> ShowInvokeAILoraDefaultsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSystemPromptsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowPngMetadataViewerCommand { get; }
+    public IAsyncRelayCommand<Window?> ShowHistoryIntegrityCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSettingsSystemPromptsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSettingsInvokeAIModelDefaultsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSettingsInvokeAILoraDefaultsCommand { get; }
     public IAsyncRelayCommand ClearInvokeCacheCommand { get; }
     public IAsyncRelayCommand<Window?> ShowAnalyticsStudioCommand { get; }
+    public IAsyncRelayCommand<Window?> ShowKpiDashboardCommand { get; }
+    public IAsyncRelayCommand<Window?> ShowSchedulerTunerCommand { get; }
     public IRelayCommand RerollPromptCommand { get; }
     public ICommand ExitCommand { get; }
 
@@ -132,6 +138,7 @@ public partial class MainWindowViewModel : ObservableObject
         OllamaClient ollamaClient,
         InvokeAIClient invokeAIClient,
         HistoryManagerService historyManager,
+        KpiStatsService? kpiStats,
         TemplateService templateService,
         ModelUsageTracker modelUsageTracker,
         NotificationService? notifications = null)
@@ -143,12 +150,15 @@ public partial class MainWindowViewModel : ObservableObject
         _ollamaClient = ollamaClient;
         _invokeAIClient = invokeAIClient;
         _historyManager = historyManager;
+        _kpiStats = kpiStats;
         _templateService = templateService;
         _modelUsageTracker = modelUsageTracker;
         _notifications = notifications;
         _scoringCacheService = new ScoringCacheService();
         _aestheticScoringService = new AestheticScoringService(_scoringCacheService, _settingsService);
+        _promptMatchScoringService = new PromptMatchScoringService(_scoringCacheService, _settingsService);
         _imageCacheService = new ImageCacheService();
+        _generationQueue = new GenerationQueueService();
         _imageCacheService.DiskCacheDir = Path.Combine(_settingsService.GetHistoryDir(), ".thumbs");
         _historyIndexService = new HistoryIndexService();
         _workflow = _settingsService.Settings.Workflow;
@@ -156,10 +166,10 @@ public partial class MainWindowViewModel : ObservableObject
         GenerateCommand = new AsyncRelayCommand(ProcessPromptAsync);
         EnhancePromptCommand = new AsyncRelayCommand(EnhancePromptAsync);
         GenerateImageCommand = new AsyncRelayCommand<Window?>(GenerateImageAsync);
+        ShowGenerationQueueCommand = new AsyncRelayCommand<Window?>(ShowGenerationQueueAsync);
         SetWorkflowCommand = new AsyncRelayCommand<string?>(SetWorkflowAsync);
         ShowSettingsCommand = new AsyncRelayCommand<Window?>(ShowSettingsAsync);
         ViewHistoryCommand = new AsyncRelayCommand<Window?>(ShowHistoryAsync);
-        ViewFavoriteImagesCommand = new AsyncRelayCommand<Window?>(ShowFavoritesAsync);
         ShowBrainstormingCommand = new AsyncRelayCommand<Window?>(ShowBrainstormingAsync);
         ShowImageInterrogatorCommand = new AsyncRelayCommand<Window?>(ShowImageInterrogatorAsync);
         ShowModelStatsCommand = new AsyncRelayCommand<Window?>(ShowModelStatsAsync);
@@ -170,6 +180,7 @@ public partial class MainWindowViewModel : ObservableObject
         InsertWildcardCommand = new RelayCommand<string?>(InsertWildcard);
         ShowPromptEvolverCommand = new AsyncRelayCommand<Window?>(ShowPromptEvolverAsync);
         ShowPngMetadataViewerCommand = new AsyncRelayCommand<Window?>(ShowPngMetadataViewerAsync);
+        ShowHistoryIntegrityCommand = new AsyncRelayCommand<Window?>(ShowHistoryIntegrityAsync);
         ShowInvokeAIModelDefaultsCommand = new AsyncRelayCommand<Window?>(ShowInvokeAIModelDefaultsAsync);
         ShowInvokeAILoraDefaultsCommand = new AsyncRelayCommand<Window?>(ShowInvokeAILoraDefaultsAsync);
         ShowSystemPromptsCommand = new AsyncRelayCommand<Window?>(ShowSystemPromptsAsync);
@@ -178,9 +189,13 @@ public partial class MainWindowViewModel : ObservableObject
         ShowSettingsInvokeAILoraDefaultsCommand = new AsyncRelayCommand<Window?>(owner => ShowSettingsAsync(owner, "InvokeAILoraDefaults"));
         ClearInvokeCacheCommand = new AsyncRelayCommand(ClearInvokeCacheAsync);
         ShowAnalyticsStudioCommand = new AsyncRelayCommand<Window?>(ShowAnalyticsStudioAsync);
+        ShowKpiDashboardCommand = new AsyncRelayCommand<Window?>(ShowKpiDashboardAsync);
+        ShowSchedulerTunerCommand = new AsyncRelayCommand<Window?>(ShowSchedulerTunerAsync);
         RerollPromptCommand = new RelayCommand(RerollPrompt, () => _lastGeneration != null);
         ExitCommand = new RelayCommand(Exit);
     }
+
+    public AsyncRelayCommand<Window?> ShowGenerationQueueCommand { get; }
 
     public async Task InitializeAsync()
     {
@@ -193,8 +208,36 @@ public partial class MainWindowViewModel : ObservableObject
         await LoadModelsAsync();
         await Task.Run(LoadWildcards);
         await LoadVariationsAsync();
+        ApplySavedUiState();
         _ = StartInvokeMonitorAsync();
         StatusText = "Ready.";
+    }
+
+    private void ApplySavedUiState()
+    {
+        var settings = _settingsService.Settings;
+        if (!string.IsNullOrWhiteSpace(settings.LastPromptText))
+        {
+            PromptText = settings.LastPromptText;
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.LastTemplateName))
+        {
+            var match = Templates.FirstOrDefault(t => string.Equals(t.Name, settings.LastTemplateName, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                SelectedTemplate = match;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.LastOllamaModel))
+        {
+            var modelMatch = Models.FirstOrDefault(m => string.Equals(m, settings.LastOllamaModel, StringComparison.OrdinalIgnoreCase));
+            if (modelMatch != null)
+            {
+                SelectedModel = modelMatch;
+            }
+        }
     }
 
     private void LoadWildcards()
@@ -230,6 +273,7 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             var ok = await _invokeAIClient.IsReachableAsync();
+            IsInvokeOnline = ok;
             if (!ok && showToastOnFailure)
             {
                 _notifications?.ShowError("InvokeAI is offline. Start it, then click Generate again.", "InvokeAI");
@@ -239,6 +283,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
         catch
         {
+            IsInvokeOnline = false;
             if (showToastOnFailure)
             {
                 _notifications?.ShowError("InvokeAI is offline. Start it, then click Generate again.", "InvokeAI");
@@ -276,6 +321,7 @@ public partial class MainWindowViewModel : ObservableObject
     private async Task CheckInvokeStatusAsync(bool showToast, CancellationToken token)
     {
         var reachable = await _invokeAIClient.IsReachableAsync(token);
+        IsInvokeOnline = reachable;
         if (reachable)
         {
             _invokeOfflineFailures = 0;
@@ -609,12 +655,6 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        if (_generationInProgress)
-        {
-            StatusText = "Generation already in progress.";
-            return;
-        }
-
         var prompt = ResolvePromptForMain(OutputText, PromptText);
         if (string.IsNullOrWhiteSpace(prompt))
         {
@@ -636,32 +676,42 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        try
+        await EnqueueGenerationJobAsync("Generate Images", async (job, token) =>
         {
-            _generationInProgress = true;
-            var result = await RunGenerationPreviewAsync(parametersList, prompt, "Generated", Workflow, owner, "Generating images...", allowLongPrompts: false);
-            if (result.Saved == true)
+            try
             {
-                var entry = BuildHistoryEntryForGeneration(
-                    PromptText ?? string.Empty,
+                _generationInProgress = true;
+                await RunGenerationPreviewAsync(
+                    parametersList,
                     prompt,
-                    SelectedTemplate?.Name,
-                    SelectedModel ?? "",
-                    SelectedModel,
+                    "Generated",
                     Workflow,
-                    result.Images);
-                _historyManager.AddEntry(entry);
+                    owner,
+                    "Generating images...",
+                    allowLongPrompts: false,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        var entry = BuildHistoryEntryForGeneration(
+                            PromptText ?? string.Empty,
+                            prompt,
+                            SelectedTemplate?.Name,
+                            SelectedModel ?? "",
+                            SelectedModel,
+                            Workflow,
+                            images);
+                        _historyManager.AddEntry(entry);
+                        StatusText = "Selected images saved to history.";
+                        await Task.CompletedTask;
+                    });
             }
-            ApplyGenerationResultStatus(result, "Selected images saved to history.", StatusImagesDiscarded);
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Image generation failed: {ex.Message}";
-        }
-        finally
-        {
-            _generationInProgress = false;
-        }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
     }
 
     private async Task ShowSettingsAsync(Window? owner)
@@ -709,6 +759,7 @@ public partial class MainWindowViewModel : ObservableObject
         vm.EditRegenerateRequested = (entry, image, prompt, promptType) => RegenerateFromHistoryAsync(entry, image, prompt, promptType, win);
         vm.SeedVariationsRequested = (entry, image) => GenerateSeedVariationsFromHistoryAsync(entry, image, win);
         vm.LoraVariationsRequested = (entry, image) => GenerateLoraVariationsFromHistoryAsync(entry, image, win);
+        vm.ModelVariationsRequested = (entry, image) => GenerateModelPermutationsFromHistoryAsync(entry, image, win);
         vm.EnhanceRequested = entry => EnhanceFromHistoryAsync(entry, win);
         vm.FillMissingVariationsRequested = (entry, missing) => FillMissingVariationsWithDialogAsync(entry, missing, win);
         vm.UpscaleRequested = (entry, image) => UpscaleImageFromHistoryAsync(entry, image, win);
@@ -733,6 +784,10 @@ public partial class MainWindowViewModel : ObservableObject
         var resolved = GetOwnerWindow(owner) ?? new Window();
         var vm = new AllImagesViewerViewModel(_historyManager, _templateService, _imageCacheService, _historyIndexService, Workflow);
         vm.UpscaleRequested = (entry, image) => UpscaleImageFromHistoryAsync(entry, image, resolved);
+        vm.GenerateMoreRequested = (entry, image) => GenerateFromHistoryAsync(entry, image, null, null, resolved, applyModelFromSource: true, configureVm: null);
+        vm.SeedVariationsRequested = (entry, image) => GenerateSeedVariationsFromHistoryAsync(entry, image, resolved);
+        vm.LoraVariationsRequested = (entry, image) => GenerateLoraVariationsFromHistoryAsync(entry, image, resolved);
+        vm.ModelVariationsRequested = (entry, image) => GenerateModelPermutationsFromHistoryAsync(entry, image, resolved);
         var win = new Views.AllImagesWindow(vm);
         win.Show(resolved);
         return Task.CompletedTask;
@@ -741,7 +796,15 @@ public partial class MainWindowViewModel : ObservableObject
     private Task ShowAnalyticsStudioAsync(Window? owner)
     {
         var resolved = GetOwnerWindow(owner) ?? new Window();
-        var vm = new AnalyticsStudioViewModel(_historyManager, _templateService, Workflow, _aestheticScoringService, _settingsService, _imageCacheService, _historyIndexService);
+        var vm = new AnalyticsStudioViewModel(
+            _historyManager,
+            _templateService,
+            Workflow,
+            _aestheticScoringService,
+            _promptMatchScoringService,
+            _settingsService,
+            _imageCacheService,
+            _historyIndexService);
         vm.CompareRequested = async items =>
         {
             if (items.Count != 2) return;
@@ -778,9 +841,36 @@ public partial class MainWindowViewModel : ObservableObject
         return Task.CompletedTask;
     }
 
+    private Task ShowKpiDashboardAsync(Window? owner)
+    {
+        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var vm = new KpiDashboardViewModel(_historyManager, Workflow, _kpiStats);
+        var window = new Views.KpiDashboardWindow { DataContext = vm };
+        window.Show(resolved);
+        return Task.CompletedTask;
+    }
+
+    private Task ShowSchedulerTunerAsync(Window? owner)
+    {
+        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var vm = new SchedulerTunerViewModel(_invokeAIClient, _settingsService, _aestheticScoringService, _notifications);
+        var window = new Views.SchedulerTunerWindow { DataContext = vm };
+        window.Show(resolved);
+        return Task.CompletedTask;
+    }
+
+    private Task ShowGenerationQueueAsync(Window? owner)
+    {
+        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var vm = new GenerationQueueViewModel(_generationQueue);
+        var window = new Views.GenerationQueueWindow { DataContext = vm };
+        window.Show(resolved);
+        return Task.CompletedTask;
+    }
+
     private void ShowHistoryImageDetailsWindow(HistoryEntry entry, HistoryImage image, Bitmap bitmap, Window owner)
     {
-        HistoryImageDetailPresenter.Show(
+        ImageDetailPresenter.Show(
             entry,
             image,
             bitmap,
@@ -788,7 +878,11 @@ public partial class MainWindowViewModel : ObservableObject
             _historyManager,
             _historyIndexService,
             _imageCacheService,
-            (e, img) => UpscaleImageFromHistoryAsync(e, img, owner));
+            (e, img) => UpscaleImageFromHistoryAsync(e, img, owner),
+            (e, img) => GenerateFromHistoryAsync(e, img, null, null, owner, applyModelFromSource: true, configureVm: null),
+            (e, img) => GenerateSeedVariationsFromHistoryAsync(e, img, owner),
+            (e, img) => GenerateLoraVariationsFromHistoryAsync(e, img, owner),
+            (e, img) => GenerateModelPermutationsFromHistoryAsync(e, img, owner));
     }
 
 
@@ -961,14 +1055,6 @@ public partial class MainWindowViewModel : ObservableObject
         return await tcs.Task;
     }
 
-    private async Task ShowFavoritesAsync(Window? owner)
-    {
-        var vm = new FavoritesViewerViewModel(_historyManager, _imageCacheService);
-        var win = new Views.FavoritesViewerWindow { DataContext = vm };
-        win.Show(GetOwnerWindow(owner) ?? new Window());
-        StatusText = "Favorite images viewer closed.";
-    }
-
     private Task ShowBrainstormingAsync(Window? arg)
     {
         const string message = "AI Brainstorming is not implemented yet.";
@@ -1092,6 +1178,14 @@ public partial class MainWindowViewModel : ObservableObject
         await Task.CompletedTask;
     }
 
+    private Task ShowHistoryIntegrityAsync(Window? owner)
+    {
+        var vm = new HistoryIntegrityViewModel(_historyManager, _imageCacheService);
+        var win = new Views.HistoryIntegrityWindow { DataContext = vm };
+        win.Show(GetOwnerWindow(owner) ?? new Window());
+        return Task.CompletedTask;
+    }
+
     public async Task GenerateFromMergedPngAsync(PngMergedGenerationRequest request, Window? owner)
     {
         if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
@@ -1099,67 +1193,66 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        if (_generationInProgress)
+        await EnqueueGenerationJobAsync("Merged PNG Generation", async (job, token) =>
         {
-            StatusText = "Generation already in progress.";
-            return;
-        }
-
-        _generationInProgress = true;
-        try
-        {
-            var prompt = string.IsNullOrWhiteSpace(request.Prompt) ? request.Parameters.Prompt : request.Prompt;
-            await ResolveInvokeModelsAsync(request.Parameters);
-            var parametersList = new List<InvokeAIGenerationParams> { request.Parameters };
-            var workflow = !string.IsNullOrWhiteSpace(request.Workflow) ? request.Workflow : Workflow;
-
-            var result = await RunGenerationPreviewAsync(
-                parametersList,
-                prompt,
-                request.PromptType,
-                workflow,
-                owner,
-                "Generating images...",
-                allowLongPrompts: true);
-
-            if (request.SaveToHistory && result.Saved == true)
+            _generationInProgress = true;
+            try
             {
-                if (request.TargetEntry != null && !request.CreateNewEntryOnSave)
-                {
-                    AppendImagesToEntry(request.TargetEntry.Id, result.Images);
-                    StatusText = "Saved merged images to history entry.";
-                }
-                else
-                {
-                    var entry = BuildHistoryEntryForGeneration(
-                        request.Metadata.OriginalPrompt ?? prompt,
-                        request.Metadata.ProcessedPrompt ?? prompt,
-                        request.Metadata.TemplateName,
-                        request.Metadata.OllamaModel ?? SelectedModel ?? string.Empty,
-                        request.Parameters.Model?.Name,
-                        workflow,
-                        result.Images);
-                    _historyManager.AddEntry(entry);
-                    StatusText = "Saved merged images to new history entry.";
-                }
+                var prompt = string.IsNullOrWhiteSpace(request.Prompt) ? request.Parameters.Prompt : request.Prompt;
+                await ResolveInvokeModelsAsync(request.Parameters);
+                var parametersList = new List<InvokeAIGenerationParams> { request.Parameters };
+                var workflow = !string.IsNullOrWhiteSpace(request.Workflow) ? request.Workflow : Workflow;
+
+                await RunGenerationPreviewAsync(
+                    parametersList,
+                    prompt,
+                    request.PromptType,
+                    workflow,
+                    owner,
+                    "Generating images...",
+                    allowLongPrompts: true,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        if (!request.SaveToHistory)
+                        {
+                            StatusText = "Merged generation complete (not saved).";
+                            return;
+                        }
+
+                        if (request.TargetEntry != null && !request.CreateNewEntryOnSave)
+                        {
+                            AppendImagesToEntry(request.TargetEntry.Id, images);
+                            StatusText = "Saved merged images to history entry.";
+                        }
+                        else
+                        {
+                            var entry = BuildHistoryEntryForGeneration(
+                                request.Metadata.OriginalPrompt ?? prompt,
+                                request.Metadata.ProcessedPrompt ?? prompt,
+                                request.Metadata.TemplateName,
+                                request.Metadata.OllamaModel ?? SelectedModel ?? string.Empty,
+                                request.Parameters.Model?.Name,
+                                workflow,
+                                images);
+                            _historyManager.AddEntry(entry);
+                            StatusText = "Saved merged images to new history entry.";
+                        }
+
+                        await Task.CompletedTask;
+                    });
             }
-            else if (!request.SaveToHistory)
+            catch (Exception ex)
             {
-                StatusText = "Merged generation complete (not saved).";
+                StatusText = $"Merged generation failed: {ex.Message}";
             }
-            else
+            finally
             {
-                StatusText = "Merged generation discarded.";
+                _generationInProgress = false;
             }
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Merged generation failed: {ex.Message}";
-        }
-        finally
-        {
-            _generationInProgress = false;
-        }
+        });
     }
 
     public async Task GenerateFromPngGraphAsync(PngGraphReplayRequest request, Window? owner)
@@ -1169,65 +1262,64 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        if (_generationInProgress)
+        await EnqueueGenerationJobAsync("Replay PNG Graph", async (job, token) =>
         {
-            StatusText = "Generation already in progress.";
-            return;
-        }
+            _generationInProgress = true;
+            try
+            {
+                var workflow = !string.IsNullOrWhiteSpace(request.Workflow) ? request.Workflow : Workflow;
+                var prompt = string.IsNullOrWhiteSpace(request.Prompt) ? request.Parameters?.Prompt ?? string.Empty : request.Prompt;
+                await RunGraphReplayPreviewAsync(
+                    request.Graph,
+                    request.Parameters,
+                    prompt,
+                    request.PromptType,
+                    workflow,
+                    owner,
+                    "Replaying PNG graph...",
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        var shouldPersist = request.SaveToHistory || request.TargetEntry != null || request.CreateNewEntryOnSave;
+                        if (!shouldPersist)
+                        {
+                            StatusText = "Replay complete (not saved).";
+                            return;
+                        }
 
-        _generationInProgress = true;
-        try
-        {
-            var workflow = !string.IsNullOrWhiteSpace(request.Workflow) ? request.Workflow : Workflow;
-            var prompt = string.IsNullOrWhiteSpace(request.Prompt) ? request.Parameters?.Prompt ?? string.Empty : request.Prompt;
-            var result = await RunGraphReplayPreviewAsync(
-                request.Graph,
-                request.Parameters,
-                prompt,
-                request.PromptType,
-                workflow,
-                owner,
-                "Replaying PNG graph...");
+                        if (request.TargetEntry != null && !request.CreateNewEntryOnSave)
+                        {
+                            AppendImagesToEntry(request.TargetEntry.Id, images);
+                            StatusText = "Saved replayed image to history entry.";
+                        }
+                        else
+                        {
+                            var entry = BuildHistoryEntryForGeneration(
+                                request.Metadata.OriginalPrompt ?? prompt,
+                                request.Metadata.ProcessedPrompt ?? prompt,
+                                request.Metadata.TemplateName,
+                                request.Metadata.OllamaModel ?? SelectedModel ?? string.Empty,
+                                request.Parameters?.Model?.Name,
+                                workflow,
+                                images);
+                            _historyManager.AddEntry(entry);
+                            StatusText = "Saved replayed image to new history entry.";
+                        }
 
-            var shouldPersist = result.Saved == true && (request.SaveToHistory || request.TargetEntry != null || request.CreateNewEntryOnSave);
-            if (shouldPersist)
-            {
-                if (request.TargetEntry != null && !request.CreateNewEntryOnSave)
-                {
-                    AppendImagesToEntry(request.TargetEntry.Id, result.Images);
-                    StatusText = "Saved replayed image to history entry.";
-                }
-                else
-                {
-                    var entry = BuildHistoryEntryForGeneration(
-                        request.Metadata.OriginalPrompt ?? prompt,
-                        request.Metadata.ProcessedPrompt ?? prompt,
-                        request.Metadata.TemplateName,
-                        request.Metadata.OllamaModel ?? SelectedModel ?? string.Empty,
-                        request.Parameters?.Model?.Name,
-                        workflow,
-                        result.Images);
-                    _historyManager.AddEntry(entry);
-                    StatusText = "Saved replayed image to new history entry.";
-                }
+                        await Task.CompletedTask;
+                    });
             }
-            else if (!request.SaveToHistory)
+            catch (Exception ex)
             {
-                StatusText = "Replay complete (not saved).";
+                StatusText = $"Replay failed: {ex.Message}";
             }
-            else
+            finally
             {
-                StatusText = "Replay discarded.";
+                _generationInProgress = false;
             }
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Replay failed: {ex.Message}";
-        }
-        finally
-        {
-            _generationInProgress = false;
-        }
+        });
     }
 
     public async Task<string?> BuildGenerationGraphJsonAsync(InvokeAIGenerationParams parameters)
@@ -1287,7 +1379,11 @@ public partial class MainWindowViewModel : ObservableObject
         string promptType,
         string workflow,
         Window? owner,
-        string statusText)
+        string statusText,
+        GenerationJob? job = null,
+        CancellationToken externalToken = default,
+        bool waitForSaveSelection = true,
+        Func<List<HistoryImage>, Task>? onSaveCompleted = null)
     {
         var savedImages = new List<HistoryImage>();
         var previewVm = new MultiImagePreviewViewModel();
@@ -1295,20 +1391,31 @@ public partial class MainWindowViewModel : ObservableObject
         previewVm.StatusText = statusText;
         previewVm.OnSaveSlot = async slot =>
         {
-            savedImages.Add(new HistoryImage
-            {
-                ImageBytes = slot.ImageBytes,
-                GenerationParams = parameters,
-                GenerationParamsJson = parameters != null ? JsonSerializer.Serialize(parameters) : null,
-                GenerationGraphJson = slot.GenerationGraphJson,
-                Prompt = prompt,
-                PromptType = promptType,
-                Workflow = workflow,
-                IsFavorite = slot.IsFavorite
-            });
+            var image = CreateHistoryImageFromSlot(
+                slot,
+                parameters,
+                promptType,
+                prompt,
+                workflow);
+            image.GenerationParamsJson = parameters != null ? JsonSerializer.Serialize(parameters) : null;
+            image.GenerationGraphJson = slot.GenerationGraphJson;
+            savedImages.Add(image);
         };
+        previewVm.OnSaveCompleted = onSaveCompleted == null
+            ? null
+            : async () => await onSaveCompleted(savedImages);
         ConfigurePreviewCommands(previewVm);
         var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
+        if (externalToken.CanBeCanceled)
+        {
+            externalToken.Register(() => cts.Cancel());
+        }
+        if (job != null)
+        {
+            job.StatusMessage = statusText;
+            job.UpdateProgress(0, 1);
+            job.CancelAction = () => cts.Cancel();
+        }
         _activeGenerationCts = cts;
         previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
         StatusText = statusText;
@@ -1331,6 +1438,10 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _invokeGenerationGate.Release();
             }
+            if (parameters != null)
+            {
+                RecordKpiGeneration(parameters, result.JobInfo, workflow);
+            }
             if (_settingsService.Settings.ServerSafetyModeEnabled)
             {
                 await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
@@ -1339,13 +1450,23 @@ public partial class MainWindowViewModel : ObservableObject
             if (!cts.IsCancellationRequested)
             {
                 previewVm.SetImage(0, result.ImageBytes);
+                ApplyJobInfoToSlot(previewVm.Slots[0], result.JobInfo);
                 slot.IsLoading = false;
+                job?.UpdateProgress(1, 1);
             }
         }
         catch (OperationCanceledException)
         {
             previewVm.StatusText = StatusGenerationCancelled;
             cts.Cancel();
+        }
+        catch (InvokeAIJobFailedException ex)
+        {
+            if (parameters != null)
+            {
+                RecordKpiGeneration(parameters, ex.JobInfo, workflow);
+            }
+            previewVm.StatusText = $"Replay failed: {ex.Message}";
         }
         finally
         {
@@ -1363,6 +1484,12 @@ public partial class MainWindowViewModel : ObservableObject
 
         previewVm.StatusText = StatusImagesReady;
         StatusText = StatusImagesReadyMain;
+        if (!waitForSaveSelection)
+        {
+            _ = saveTask;
+            return new GenerationPreviewResult(null, savedImages);
+        }
+
         var saveResult = await saveTask;
         return new GenerationPreviewResult(saveResult, savedImages);
     }
@@ -1830,12 +1957,6 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task RegenerateFromHistoryAsync(HistoryEntry entry, HistoryImage? image, string? promptOverride, string? promptTypeOverride, Window? owner)
     {
-        if (_generationInProgress)
-        {
-            StatusText = "Generation already in progress.";
-            return;
-        }
-
         await GenerateFromHistoryAsync(entry, image, promptOverride, promptTypeOverride, owner, applyModelFromSource: true, configureVm: null);
     }
 
@@ -1846,83 +1967,189 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        if (_generationInProgress)
+        await EnqueueGenerationJobAsync("Generate New Image", async (job, token) =>
         {
-            StatusText = "Generation already in progress.";
-            return;
-        }
-
-        _generationInProgress = true;
-        try
-        {
-            var prompt = ResolvePromptForHistoryGeneration(entry, image, baseParams: null, promptOverride, includeEnhanced: true).prompt;
-            if (string.IsNullOrWhiteSpace(prompt))
+            _generationInProgress = true;
+            try
             {
-                StatusText = "No prompt available to generate.";
-                return;
-            }
-
-            var resolvedPromptType = string.IsNullOrWhiteSpace(promptTypeOverride) ? "Generated" : promptTypeOverride!;
-            var hasExistingType = !string.IsNullOrWhiteSpace(promptTypeOverride) &&
-                                  entry.Images.Any(img => string.Equals(img.PromptType, promptTypeOverride, StringComparison.OrdinalIgnoreCase));
-            var appendToExisting = !string.IsNullOrWhiteSpace(promptTypeOverride) && !hasExistingType;
-
-            var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
-            {
-                Prompt = prompt,
-                NegativePrompt = _settingsService.Settings.DefaultNegativePrompt,
-                ModeBannerText = appendToExisting
-                    ? "Iterative: adding image to this entry for the selected prompt variant."
-                    : "New work: using defaults; model changes may update settings.",
-                ShowModeBanner = true
-            };
-
-            var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
-            if (!ok || parametersList == null || parametersList.Count == 0)
-            {
-                StatusText = "Image generation cancelled.";
-                return;
-            }
-
-            var workflow = entry.Workflow ?? Workflow;
-            var result = await RunGenerationPreviewAsync(parametersList, prompt, resolvedPromptType, workflow, owner, "Generating images...", allowLongPrompts: true);
-            if (result.Saved == true)
-            {
-                if (appendToExisting)
+                var prompt = ResolvePromptForHistoryGeneration(entry, image, baseParams: null, promptOverride, includeEnhanced: true).prompt;
+                if (string.IsNullOrWhiteSpace(prompt))
                 {
-                    AppendImagesToEntry(entry.Id, result.Images);
+                    StatusText = "No prompt available to generate.";
+                    return;
                 }
-                else
+
+                var resolvedPromptType = string.IsNullOrWhiteSpace(promptTypeOverride) ? "Generated" : promptTypeOverride!;
+                var hasExistingType = !string.IsNullOrWhiteSpace(promptTypeOverride) &&
+                                      entry.Images.Any(img => string.Equals(img.PromptType, promptTypeOverride, StringComparison.OrdinalIgnoreCase));
+                var appendToExisting = !string.IsNullOrWhiteSpace(promptTypeOverride) && !hasExistingType;
+
+                var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
                 {
-                    var newEntry = BuildHistoryEntryForGeneration(
-                        entry.OriginalPrompt ?? prompt,
-                        prompt,
-                        entry.TemplateName,
-                        entry.OllamaModel ?? "",
-                        entry.InvokeAIModel,
-                        workflow,
-                        result.Images);
-                    _historyManager.AddEntry(newEntry);
+                    Prompt = prompt,
+                    NegativePrompt = _settingsService.Settings.DefaultNegativePrompt,
+                    ModeBannerText = appendToExisting
+                        ? "Iterative: adding image to this entry for the selected prompt variant."
+                        : "New work: using defaults; model changes may update settings.",
+                    ShowModeBanner = true
+                };
+
+                var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
+                if (!ok || parametersList == null || parametersList.Count == 0)
+                {
+                    StatusText = "Image generation cancelled.";
+                    return;
                 }
+
+                var workflow = entry.Workflow ?? Workflow;
+                await RunGenerationPreviewAsync(
+                    parametersList,
+                    prompt,
+                    resolvedPromptType,
+                    workflow,
+                    owner,
+                    "Generating images...",
+                    allowLongPrompts: true,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        if (appendToExisting)
+                        {
+                            AppendImagesToEntry(entry.Id, images);
+                            StatusText = "Selected images saved to history entry.";
+                        }
+                        else
+                        {
+                            var newEntry = BuildHistoryEntryForGeneration(
+                                entry.OriginalPrompt ?? prompt,
+                                prompt,
+                                entry.TemplateName,
+                                entry.OllamaModel ?? "",
+                                entry.InvokeAIModel,
+                                workflow,
+                                images);
+                            _historyManager.AddEntry(newEntry);
+                            StatusText = "Selected images saved to history.";
+                        }
+                        await Task.CompletedTask;
+                    });
             }
-            ApplyGenerationResultStatus(result, appendToExisting ? "Selected images saved to history entry." : "Selected images saved to history.", StatusImagesDiscarded);
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Image generation failed: {ex.Message}";
-        }
-        finally
-        {
-            _generationInProgress = false;
-        }
+            catch (Exception ex)
+            {
+                StatusText = $"Image generation failed: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
     }
 
     private async Task GenerateSeedVariationsFromHistoryAsync(HistoryEntry entry, HistoryImage? image, Window? owner)
     {
-        await GenerateFromHistoryAsync(entry, image, null, image?.PromptType, owner, applyModelFromSource: true, configureVm: vm =>
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
         {
-            vm.UseRandomSeed = true;
-            vm.NumImages = Math.Max(vm.NumImages, 4);
+            return;
+        }
+
+        var graphJson = image?.GenerationGraphJson;
+        var graphParams = TryBuildParamsFromGraphJson(graphJson);
+        var baseParams = graphParams ?? image?.GenerationParams;
+        baseParams ??= entry.ImageParameters ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+        if (baseParams == null)
+        {
+            StatusText = "No generation parameters available for seed variations.";
+            return;
+        }
+
+        var ownerWindow = GetOwnerWindow(owner) ?? new Window();
+        var baseSeed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
+        var options = await Views.SeedVariationDialog.ShowAsync(ownerWindow, defaultCount: 4, initialSeed: baseSeed);
+        if (options == null)
+        {
+            StatusText = "Seed variations cancelled.";
+            return;
+        }
+
+        await EnqueueGenerationJobAsync("Seed Variations", async (job, token) =>
+        {
+            try
+            {
+                _generationInProgress = true;
+                var (prompt, _) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride: null, includeEnhanced: true);
+                var fallbackModel = baseParams.Model?.Name ?? entry.InvokeAIModel;
+                if (!await EnsureSeedVariationParamsAsync(baseParams, fallbackModel))
+                {
+                    StatusText = "Seed variations failed: missing model information.";
+                    return;
+                }
+                var seeds = BuildSeedVariationSeeds(options);
+                if (seeds.Count == 0)
+                {
+                    StatusText = "No seeds selected for variations.";
+                    return;
+                }
+                var parametersList = BuildSeedVariationParams(
+                    baseParams,
+                    prompt,
+                    seeds,
+                    options.RandomSeeds ? null : options.RootSeed);
+                var workflow = entry.Workflow ?? Workflow;
+
+                var rootBytes = options.MirrorSeeds ? TryLoadHistoryImageBytes(image) : null;
+                if (options.MirrorSeeds && rootBytes != null)
+                {
+                    await RunSeedVariationPreviewAsync(
+                        parametersList,
+                        prompt,
+                        "Seed Variations",
+                        workflow,
+                        owner,
+                        "Generating seed variations...",
+                        allowLongPrompts: true,
+                        rootSeed: options.RootSeed,
+                        rootImageBytes: rootBytes,
+                        job,
+                        token,
+                        waitForSaveSelection: false,
+                        onSaveCompleted: async images =>
+                        {
+                            AppendImagesToEntry(entry.Id, images);
+                            StatusText = "Selected images saved to history entry.";
+                            await Task.CompletedTask;
+                        });
+                }
+                else
+                {
+                    await RunGenerationPreviewAsync(
+                        parametersList,
+                        prompt,
+                        "Seed Variations",
+                        workflow,
+                        owner,
+                        "Generating seed variations...",
+                        allowLongPrompts: true,
+                        job,
+                        token,
+                        waitForSaveSelection: false,
+                        onSaveCompleted: async images =>
+                        {
+                            AppendImagesToEntry(entry.Id, images);
+                            StatusText = "Selected images saved to history entry.";
+                            await Task.CompletedTask;
+                        });
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Seed variations failed: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
         });
     }
 
@@ -1930,12 +2157,6 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
         {
-            return;
-        }
-
-        if (_generationInProgress)
-        {
-            StatusText = "Generation already in progress.";
             return;
         }
 
@@ -1956,55 +2177,136 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        _generationInProgress = true;
-        try
+        await EnqueueGenerationJobAsync("LoRA Permutations", async (job, token) =>
         {
-            var parametersList = new List<InvokeAIGenerationParams>();
-            foreach (var perm in permutations)
+            _generationInProgress = true;
+            try
             {
-                var p = CloneParams(baseParams);
-                p.Prompt = prompt;
-                p.Loras = perm.Select(l => new LoraParameter { Lora = l.Lora, Weight = l.Weight }).ToList();
-                parametersList.Add(p);
-            }
+                var parametersList = new List<InvokeAIGenerationParams>();
+                foreach (var perm in permutations)
+                {
+                    var p = CloneParams(baseParams);
+                    p.Prompt = prompt;
+                    p.Loras = perm.Select(l => new LoraParameter { Lora = l.Lora, Weight = l.Weight }).ToList();
+                    parametersList.Add(p);
+                }
 
-            var savedImages = new List<HistoryImage>();
-            var workflow = entry.Workflow ?? Workflow;
-            var result = await RunGenerationPreviewAsync(parametersList, prompt, "LoRA Permutation", workflow, owner, "Generating LoRA permutations...", allowLongPrompts: true);
-            if (result.Saved == true)
-            {
-                var newEntry = BuildHistoryEntryForGeneration(
-                    entry.OriginalPrompt ?? string.Empty,
+                var workflow = entry.Workflow ?? Workflow;
+                await RunGenerationPreviewAsync(
+                    parametersList,
                     prompt,
-                    entry.TemplateName,
-                    entry.OllamaModel ?? "",
-                    entry.InvokeAIModel,
+                    "LoRA Permutation",
                     workflow,
-                    result.Images);
-                _historyManager.AddEntry(newEntry);
+                    owner,
+                    "Generating LoRA permutations...",
+                    allowLongPrompts: true,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        AppendImagesToEntry(entry.Id, images);
+                        StatusText = "Selected images saved to history entry.";
+                        await Task.CompletedTask;
+                    });
             }
-            ApplyGenerationResultStatus(result, "Selected images saved to history.", StatusImagesDiscarded);
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"LoRA permutations failed: {ex.Message}";
-        }
-        finally
-        {
-            _generationInProgress = false;
-        }
+            catch (Exception ex)
+            {
+                StatusText = $"LoRA permutations failed: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
     }
 
-    private async Task GenerateVariationsFromSlotAsync(ImageSlotViewModel slot, bool seedVariations)
+    private async Task GenerateModelPermutationsFromHistoryAsync(HistoryEntry entry, HistoryImage? image, Window? owner)
     {
         if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
         {
             return;
         }
 
-        if (_generationInProgress)
+        var baseParams = image?.GenerationParams
+                         ?? entry.ImageParameters
+                         ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+        if (baseParams == null)
         {
-            StatusText = "Generation already in progress.";
+            StatusText = "No generation parameters available for model permutations.";
+            return;
+        }
+
+        var (prompt, _) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride: null, includeEnhanced: false);
+
+        var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
+        {
+            Prompt = prompt,
+            NegativePrompt = _settingsService.Settings.DefaultNegativePrompt
+        };
+        dialogVm.ApplyGenerationParams(baseParams);
+        dialogVm.Prompt = prompt;
+        dialogVm.UseRandomSeed = false;
+        dialogVm.Seed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
+        dialogVm.NumImages = 1;
+        dialogVm.SkipDefaultPrefixes = true;
+        dialogVm.AllowLongPromptWarningOnly = true;
+        dialogVm.DisableAutoDefaults = true;
+        dialogVm.ModeBannerText = "Iterative: using original image params; defaults are disabled.";
+        dialogVm.ShowModeBanner = true;
+        dialogVm.DisableModelSelection(baseParams.Model?.Name);
+
+        var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner ?? GetOwnerWindow(null));
+        if (!ok || parametersList == null || parametersList.Count == 0)
+        {
+            StatusText = "Model permutations cancelled.";
+            return;
+        }
+
+        await EnqueueGenerationJobAsync("Model Permutations", async (job, token) =>
+        {
+            _generationInProgress = true;
+            try
+            {
+                foreach (var param in parametersList)
+                {
+                    param.Prompt = prompt;
+                }
+
+                var workflow = entry.Workflow ?? Workflow;
+                await RunGenerationPreviewAsync(
+                    parametersList,
+                    prompt,
+                    "Model Permutation",
+                    workflow,
+                    owner,
+                    "Generating model permutations...",
+                    allowLongPrompts: true,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        AppendImagesToEntry(entry.Id, images);
+                        StatusText = "Selected images saved to history entry.";
+                        await Task.CompletedTask;
+                    });
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Model permutations failed: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
+    }
+
+    private async Task GenerateVariationsFromSlotAsync(ImageSlotViewModel slot, bool seedVariations)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
             return;
         }
 
@@ -2015,10 +2317,45 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        _generationInProgress = true;
-        try
+        var prompt = ResolvePromptForSlot(baseParams, PromptText);
+        Views.SeedVariationDialog.SeedVariationOptions? seedOptions = null;
+        List<InvokeAIGenerationParams>? preparedParams = null;
+        byte[]? rootBytes = null;
+
+        if (seedVariations)
         {
-            var prompt = ResolvePromptForSlot(baseParams, PromptText);
+            var ownerWindow = GetOwnerWindow(null) ?? new Window();
+            var baseSeed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
+            seedOptions = await Views.SeedVariationDialog.ShowAsync(ownerWindow, defaultCount: 4, initialSeed: baseSeed);
+            if (seedOptions == null)
+            {
+                StatusText = "Seed variations cancelled.";
+                return;
+            }
+
+            var fallbackModel = baseParams.Model?.Name ?? slot.ModelUsed;
+            if (!await EnsureSeedVariationParamsAsync(baseParams, fallbackModel))
+            {
+                StatusText = "Seed variations failed: missing model information.";
+                return;
+            }
+
+            var seeds = BuildSeedVariationSeeds(seedOptions);
+            if (seeds.Count == 0)
+            {
+                StatusText = "No seeds selected for variations.";
+                return;
+            }
+
+            preparedParams = BuildSeedVariationParams(
+                baseParams,
+                prompt,
+                seeds,
+                seedOptions.RandomSeeds ? null : seedOptions.RootSeed);
+            rootBytes = seedOptions.MirrorSeeds ? slot.ImageBytes : null;
+        }
+        else
+        {
             var seedForVariations = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
             var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
             {
@@ -2034,14 +2371,7 @@ public partial class MainWindowViewModel : ObservableObject
             dialogVm.DisableAutoDefaults = true;
             dialogVm.ModeBannerText = "Iterative: using original image params; defaults are disabled.";
             dialogVm.ShowModeBanner = true;
-            if (seedVariations)
-            {
-                dialogVm.NumImages = Math.Max(dialogVm.NumImages, 4);
-            }
-            else
-            {
-                dialogVm.NumImages = Math.Max(dialogVm.NumImages, 3);
-            }
+            dialogVm.NumImages = Math.Max(dialogVm.NumImages, 3);
 
             var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, GetOwnerWindow(null));
             if (!ok || parametersList == null || parametersList.Count == 0)
@@ -2049,30 +2379,227 @@ public partial class MainWindowViewModel : ObservableObject
                 StatusText = "Image generation cancelled.";
                 return;
             }
+            preparedParams = parametersList;
+        }
 
-            var result = await RunGenerationPreviewAsync(parametersList, prompt, "Generated", Workflow, null, "Generating images...", allowLongPrompts: true);
-            if (result.Saved == true)
+        await EnqueueGenerationJobAsync(seedVariations ? "Seed Variations" : "Variations", async (job, token) =>
+        {
+            _generationInProgress = true;
+            try
             {
-                var entry = BuildHistoryEntryForGeneration(
-                    PromptText ?? string.Empty,
+                if (seedVariations && seedOptions != null && preparedParams != null)
+                {
+                    if (seedOptions.MirrorSeeds && rootBytes != null)
+                    {
+                        await RunSeedVariationPreviewAsync(
+                            preparedParams,
+                            prompt,
+                            "Seed Variations",
+                            Workflow,
+                            null,
+                            "Generating seed variations...",
+                            allowLongPrompts: true,
+                            rootSeed: seedOptions.RootSeed,
+                            rootImageBytes: rootBytes,
+                            job,
+                            token,
+                            waitForSaveSelection: false,
+                            onSaveCompleted: async images =>
+                            {
+                                var entry = BuildHistoryEntryForGeneration(
+                                    PromptText ?? string.Empty,
+                                    prompt,
+                                    SelectedTemplate?.Name,
+                                    SelectedModel ?? "",
+                                    SelectedModel,
+                                    Workflow,
+                                    images);
+                                _historyManager.AddEntry(entry);
+                                StatusText = "Selected images saved to history.";
+                                await Task.CompletedTask;
+                            });
+                    }
+                    else
+                    {
+                        await RunGenerationPreviewAsync(
+                            preparedParams,
+                            prompt,
+                            "Seed Variations",
+                            Workflow,
+                            null,
+                            "Generating seed variations...",
+                            allowLongPrompts: true,
+                            job,
+                            token,
+                            waitForSaveSelection: false,
+                            onSaveCompleted: async images =>
+                            {
+                                var entry = BuildHistoryEntryForGeneration(
+                                    PromptText ?? string.Empty,
+                                    prompt,
+                                    SelectedTemplate?.Name,
+                                    SelectedModel ?? "",
+                                    SelectedModel,
+                                    Workflow,
+                                    images);
+                                _historyManager.AddEntry(entry);
+                                StatusText = "Selected images saved to history.";
+                                await Task.CompletedTask;
+                            });
+                    }
+                    return;
+                }
+
+                if (preparedParams == null || preparedParams.Count == 0)
+                {
+                    StatusText = "Image generation cancelled.";
+                    return;
+                }
+
+                await RunGenerationPreviewAsync(
+                    preparedParams,
                     prompt,
-                    SelectedTemplate?.Name,
-                    SelectedModel ?? "",
-                    SelectedModel,
+                    "Generated",
                     Workflow,
-                    result.Images);
-                _historyManager.AddEntry(entry);
+                    null,
+                    "Generating images...",
+                    allowLongPrompts: true,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        var entry = BuildHistoryEntryForGeneration(
+                            PromptText ?? string.Empty,
+                            prompt,
+                            SelectedTemplate?.Name,
+                            SelectedModel ?? "",
+                            SelectedModel,
+                            Workflow,
+                            images);
+                        _historyManager.AddEntry(entry);
+                        StatusText = "Selected images saved to history.";
+                        await Task.CompletedTask;
+                    });
             }
-            ApplyGenerationResultStatus(result, "Selected images saved to history.", StatusImagesDiscarded);
-        }
-        catch (Exception ex)
+            catch (Exception ex)
+            {
+                StatusText = $"Image generation failed: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
+    }
+
+    private static List<InvokeAIGenerationParams> BuildSeedVariationParams(InvokeAIGenerationParams baseParams, string prompt, IReadOnlyList<int> seeds, int? rootSeed)
+    {
+        if (seeds.Count == 0)
         {
-            StatusText = $"Image generation failed: {ex.Message}";
+            return new List<InvokeAIGenerationParams>();
         }
-        finally
+
+        var baseSeed = rootSeed.HasValue && rootSeed.Value != 0 ? rootSeed.Value : seeds[0];
+        var parametersList = new List<InvokeAIGenerationParams>(seeds.Count);
+        foreach (var seed in seeds)
         {
-            _generationInProgress = false;
+            var clone = CloneParams(baseParams);
+            clone.Prompt = prompt;
+            clone.Seed = seed;
+            clone.BaseSeed = baseSeed;
+            clone.UsedRandomSeed = false;
+            parametersList.Add(clone);
         }
+        return parametersList;
+    }
+
+    private static List<int> BuildSeedVariationSeeds(Views.SeedVariationDialog.SeedVariationOptions options)
+    {
+        var count = Math.Max(1, options.Count);
+        var seeds = new List<int>(count);
+        if (options.RandomSeeds)
+        {
+            var rng = new Random();
+            for (int i = 0; i < count; i++)
+            {
+                seeds.Add(rng.Next(0, int.MaxValue));
+            }
+            return seeds;
+        }
+
+        if (options.MirrorSeeds)
+        {
+            var root = options.RootSeed;
+            for (int i = count; i >= 1; i--)
+            {
+                var before = root - i;
+                if (before >= 0)
+                {
+                    seeds.Add(before);
+                }
+            }
+            seeds.Add(root);
+            for (int i = 1; i <= count; i++)
+            {
+                var after = root + i;
+                seeds.Add(after);
+            }
+            return seeds;
+        }
+
+        var start = options.StartSeed;
+        var end = options.EndSeed;
+        if (end < start)
+        {
+            end = start;
+        }
+        var rangeCount = (int)Math.Min((long)end - start + 1, int.MaxValue);
+        count = Math.Min(count, rangeCount);
+        for (int i = 0; i < count; i++)
+        {
+            var next = start + i;
+            if (next < 0)
+            {
+                next = 0;
+            }
+            seeds.Add(next);
+        }
+        return seeds;
+    }
+
+    private async Task<bool> EnsureSeedVariationParamsAsync(InvokeAIGenerationParams baseParams, string? fallbackModelName)
+    {
+        if (baseParams.Model == null && !string.IsNullOrWhiteSpace(fallbackModelName))
+        {
+            baseParams.Model = new InvokeAIModel
+            {
+                Name = fallbackModelName,
+                Base = baseParams.BaseModelType ?? string.Empty,
+                Type = "main"
+            };
+        }
+        else if (baseParams.Model != null && string.IsNullOrWhiteSpace(baseParams.Model.Type))
+        {
+            baseParams.Model = baseParams.Model with { Type = "main" };
+        }
+
+        if (string.IsNullOrWhiteSpace(baseParams.BaseModelType) && !string.IsNullOrWhiteSpace(baseParams.Model?.Base))
+        {
+            baseParams.BaseModelType = baseParams.Model?.Base;
+        }
+        if (string.IsNullOrWhiteSpace(baseParams.BaseModelType) && !string.IsNullOrWhiteSpace(_settingsService.Settings.DefaultBaseModelType))
+        {
+            baseParams.BaseModelType = _settingsService.Settings.DefaultBaseModelType;
+        }
+
+        if (baseParams.Model == null)
+        {
+            return false;
+        }
+
+        await ResolveInvokeModelsAsync(baseParams);
+        return baseParams.Model != null && !string.IsNullOrWhiteSpace(baseParams.Model.Name);
     }
 
     private async Task GenerateLoraPermutationsFromSlotAsync(ImageSlotViewModel slot, MultiImagePreviewViewModel previewVm)
@@ -2117,13 +2644,14 @@ public partial class MainWindowViewModel : ObservableObject
 
             jobs.Add((p, newSlot));
         }
+        previewVm.SyncProgressFromSlots();
 
         previewVm.StatusText = "Generating LoRA permutations...";
         if (previewVm.GenerationToken == null)
         {
             previewVm.GenerationToken = new CancellationTokenSource();
         }
-        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true);
+        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true, job: null);
         previewVm.StatusText = StatusImagesReady;
     }
 
@@ -2187,13 +2715,14 @@ public partial class MainWindowViewModel : ObservableObject
 
             jobs.Add((param, newSlot));
         }
+        previewVm.SyncProgressFromSlots();
 
         previewVm.StatusText = "Generating model permutations...";
         if (previewVm.GenerationToken == null)
         {
             previewVm.GenerationToken = new CancellationTokenSource();
         }
-        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true);
+        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true, job: null);
         previewVm.StatusText = StatusImagesReady;
     }
 
@@ -2331,95 +2860,119 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        if (_generationInProgress)
+        await EnqueueGenerationJobAsync("Regenerate Image", async (job, token) =>
         {
-            StatusText = "Generation already in progress.";
-            return;
-        }
-
-        _generationInProgress = true;
-        try
-        {
-        var graphJson = image?.GenerationGraphJson;
-        var graphParams = TryBuildParamsFromGraphJson(graphJson);
-        var baseParams = graphParams ?? image?.GenerationParams;
-        baseParams ??= entry.ImageParameters ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
-            var (prompt, promptSource) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride, includeEnhanced: true);
-            var promptType = !string.IsNullOrWhiteSpace(promptTypeOverride) ? promptTypeOverride : "Regenerated";
-            var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
+            _generationInProgress = true;
+            try
             {
-                Prompt = prompt
-            };
-
-            if (baseParams != null)
-            {
-                dialogVm.ApplyGenerationParams(baseParams);
-            }
-            if (!string.IsNullOrWhiteSpace(prompt))
-            {
-                dialogVm.Prompt = prompt;
-            }
-            var isHistoryRegen = baseParams != null;
-            dialogVm.SkipDefaultPrefixes = isHistoryRegen;
-            dialogVm.AllowLongPromptWarningOnly = isHistoryRegen;
-            dialogVm.DisableAutoDefaults = isHistoryRegen;
-            if (isHistoryRegen)
-            {
-                dialogVm.ModeBannerText = "Iterative: using original image params; defaults are disabled.";
-                dialogVm.ShowModeBanner = true;
-            }
-
-            configureVm?.Invoke(dialogVm);
-
-            var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
-            if (!ok || parametersList == null || parametersList.Count == 0)
-            {
-                StatusText = "Image generation cancelled.";
-                return;
-            }
-
-            var workflow = entry.Workflow ?? Workflow;
-            GenerationPreviewResult result;
-            if (!string.IsNullOrWhiteSpace(graphJson) &&
-                graphParams != null &&
-                parametersList.Count == 1 &&
-                AreParamsEquivalent(parametersList[0], graphParams))
-            {
-                var graphObj = JsonNode.Parse(graphJson) as JsonObject;
-                if (graphObj == null)
+                var graphJson = image?.GenerationGraphJson;
+                var graphParams = TryBuildParamsFromGraphJson(graphJson);
+                var baseParams = graphParams ?? image?.GenerationParams;
+                baseParams ??= entry.ImageParameters ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+                var (prompt, promptSource) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride, includeEnhanced: true);
+                var promptType = !string.IsNullOrWhiteSpace(promptTypeOverride) ? promptTypeOverride : "Regenerated";
+                var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
                 {
-                    result = await RunGenerationPreviewAsync(parametersList, prompt, promptType, workflow, owner, "Generating images...", allowLongPrompts: baseParams != null);
+                    Prompt = prompt
+                };
+
+                if (baseParams != null)
+                {
+                    dialogVm.ApplyGenerationParams(baseParams);
+                }
+                if (!string.IsNullOrWhiteSpace(prompt))
+                {
+                    dialogVm.Prompt = prompt;
+                }
+                var isHistoryRegen = baseParams != null;
+                dialogVm.SkipDefaultPrefixes = isHistoryRegen;
+                dialogVm.AllowLongPromptWarningOnly = isHistoryRegen;
+                dialogVm.DisableAutoDefaults = isHistoryRegen;
+                if (isHistoryRegen)
+                {
+                    dialogVm.ModeBannerText = "Iterative: using original image params; defaults are disabled.";
+                    dialogVm.ShowModeBanner = true;
+                }
+
+                configureVm?.Invoke(dialogVm);
+
+                var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
+                if (!ok || parametersList == null || parametersList.Count == 0)
+                {
+                    StatusText = "Image generation cancelled.";
+                    return;
+                }
+
+                var workflow = entry.Workflow ?? Workflow;
+                Func<List<HistoryImage>, Task> onSaveCompleted = async images =>
+                {
+                    AppendImagesToEntry(entry.Id, images);
+                    StatusText = "Selected images saved to history entry.";
+                    await Task.CompletedTask;
+                };
+
+                if (!string.IsNullOrWhiteSpace(graphJson) &&
+                    graphParams != null &&
+                    parametersList.Count == 1 &&
+                    AreParamsEquivalent(parametersList[0], graphParams))
+                {
+                    var graphObj = JsonNode.Parse(graphJson) as JsonObject;
+                    if (graphObj == null)
+                    {
+                        await RunGenerationPreviewAsync(
+                            parametersList,
+                            prompt,
+                            promptType,
+                            workflow,
+                            owner,
+                            "Generating images...",
+                            allowLongPrompts: baseParams != null,
+                            job,
+                            token,
+                            waitForSaveSelection: false,
+                            onSaveCompleted: onSaveCompleted);
+                    }
+                    else
+                    {
+                        await RunGraphReplayPreviewAsync(
+                            graphObj,
+                            parametersList[0],
+                            prompt,
+                            promptType,
+                            workflow,
+                            owner,
+                            "Replaying exact graph...",
+                            job,
+                            token,
+                            waitForSaveSelection: false,
+                            onSaveCompleted: onSaveCompleted);
+                    }
                 }
                 else
                 {
-                    result = await RunGraphReplayPreviewAsync(
-                        graphObj,
-                        parametersList[0],
+                    await RunGenerationPreviewAsync(
+                        parametersList,
                         prompt,
                         promptType,
                         workflow,
                         owner,
-                        "Replaying exact graph...");
+                        "Generating images...",
+                        allowLongPrompts: baseParams != null,
+                        job,
+                        token,
+                        waitForSaveSelection: false,
+                        onSaveCompleted: onSaveCompleted);
                 }
             }
-            else
-            {
-                result = await RunGenerationPreviewAsync(parametersList, prompt, promptType, workflow, owner, "Generating images...", allowLongPrompts: baseParams != null);
-            }
-            if (result.Saved == true)
-            {
-                AppendImagesToEntry(entry.Id, result.Images);
-            }
-            ApplyGenerationResultStatus(result, "Selected images saved to history entry.", StatusImagesDiscarded);
-        }
             catch (Exception ex)
             {
                 StatusText = $"Image generation failed: {ex.Message}";
             }
-        finally
-        {
-            _generationInProgress = false;
-        }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
     }
 
     private async Task EnhanceFromHistoryAsync(HistoryEntry entry, Window? owner)
@@ -2473,63 +3026,67 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        if (_generationInProgress)
+        await EnqueueGenerationJobAsync("Enhancement Sample", async (job, token) =>
         {
-            StatusText = "Image generation already in progress.";
-            return;
-        }
-
-        _generationInProgress = true;
-        try
-        {
-            var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
+            _generationInProgress = true;
+            try
             {
-                Prompt = prompt,
-                NegativePrompt = _settingsService.Settings.DefaultNegativePrompt
-            };
-
-            var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
-            if (!ok || parametersList == null || parametersList.Count == 0)
-            {
-                StatusText = "Sample generation cancelled.";
-                return;
-            }
-
-            var workflow = entry?.Workflow ?? Workflow;
-            var result = await RunGenerationPreviewAsync(parametersList, prompt, "Enhanced Sample", workflow, owner, "Generating sample images...", allowLongPrompts: true);
-            if (result.Saved == true)
-            {
-                if (entry != null)
+                var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
                 {
-                    AppendImagesToEntry(entry.Id, result.Images);
-                }
-                else
+                    Prompt = prompt,
+                    NegativePrompt = _settingsService.Settings.DefaultNegativePrompt
+                };
+
+                var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
+                if (!ok || parametersList == null || parametersList.Count == 0)
                 {
-                    var newEntry = BuildHistoryEntryForGeneration(
-                        prompt,
-                        prompt,
-                        SelectedTemplate?.Name,
-                        SelectedModel ?? "",
-                        SelectedModel,
-                        workflow,
-                        result.Images);
-                    _historyManager.AddEntry(newEntry);
+                    StatusText = "Sample generation cancelled.";
+                    return;
                 }
-                StatusText = "Sample images saved to history.";
+
+                var workflow = entry?.Workflow ?? Workflow;
+                await RunGenerationPreviewAsync(
+                    parametersList,
+                    prompt,
+                    "Enhanced Sample",
+                    workflow,
+                    owner,
+                    "Generating sample images...",
+                    allowLongPrompts: true,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        if (entry != null)
+                        {
+                            AppendImagesToEntry(entry.Id, images);
+                        }
+                        else
+                        {
+                            var newEntry = BuildHistoryEntryForGeneration(
+                                prompt,
+                                prompt,
+                                SelectedTemplate?.Name,
+                                SelectedModel ?? "",
+                                SelectedModel,
+                                workflow,
+                                images);
+                            _historyManager.AddEntry(newEntry);
+                        }
+                        StatusText = "Sample images saved to history.";
+                        await Task.CompletedTask;
+                    });
             }
-            else
+            catch (Exception ex)
             {
-                StatusText = "Sample generation discarded.";
+                StatusText = $"Sample generation failed: {ex.Message}";
             }
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Sample generation failed: {ex.Message}";
-        }
-        finally
-        {
-            _generationInProgress = false;
-        }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
     }
 
     private async Task<FillMissingResult> FillMissingVariationsWithDialogAsync(HistoryEntry entry, IReadOnlyList<string> missingKeys, Window? owner)
@@ -2681,69 +3238,69 @@ public partial class MainWindowViewModel : ObservableObject
         {
             return;
         }
-        if (_generationInProgress)
+        await EnqueueGenerationJobAsync("Generate Variations", async (job, token) =>
         {
-            StatusText = "Generation already in progress.";
-            return;
-        }
-        _generationInProgress = true;
-        try
-        {
-            var paramList = new List<(InvokeAIGenerationParams param, string key)>();
-            int offset = 0;
-            var baseSeed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
-
-            foreach (var kvp in variations)
+            _generationInProgress = true;
+            try
             {
-                var clone = CloneParams(baseParams);
-                clone.Prompt = kvp.Value;
-                clone.Seed = baseSeed + offset;
-                clone.BaseSeed = baseSeed;
-                paramList.Add((clone, kvp.Key));
-                offset++;
-            }
+                var paramList = new List<(InvokeAIGenerationParams param, string key)>();
+                int offset = 0;
+                var baseSeed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
 
-            var previewVm = new MultiImagePreviewViewModel();
-            previewVm.InitializePlaceholders(paramList.Count);
-            previewVm.StatusText = "Generating variation images...";
-            previewVm.OnSaveSlot = async slot =>
-            {
-                var index = previewVm.Slots.IndexOf(slot);
-                if (index < 0 || index >= paramList.Count) return;
-                var (p, key) = paramList[index];
-                _historyManager.AppendImages(entry.Id, new[]
+                foreach (var kvp in variations)
                 {
-                    new HistoryImage
-                    {
-                        ImageBytes = slot.ImageBytes,
-                        GenerationParams = p,
-                        GenerationParamsJson = p != null ? JsonSerializer.Serialize(p) : null,
-                        Prompt = p?.Prompt ?? string.Empty,
-                        PromptType = $"Variation:{key}",
-                        Workflow = entry.Workflow,
-                        IsFavorite = slot.IsFavorite
-                    }
-                });
-            };
-            ConfigurePreviewCommands(previewVm);
+                    var clone = CloneParams(baseParams);
+                    clone.Prompt = kvp.Value;
+                    clone.Seed = baseSeed + offset;
+                    clone.BaseSeed = baseSeed;
+                    paramList.Add((clone, kvp.Key));
+                    offset++;
+                }
 
-            var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
-            previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
-            await GenerateImagesAsync(paramList.Select(p => p.param).ToList(), previewVm, cts, allowLongPrompts: false);
+                var previewVm = new MultiImagePreviewViewModel();
+                previewVm.InitializePlaceholders(paramList.Count);
+                previewVm.StatusText = "Generating variation images...";
+                previewVm.OnSaveSlot = async slot =>
+                {
+                    var index = previewVm.Slots.IndexOf(slot);
+                    if (index < 0 || index >= paramList.Count) return;
+                    var (p, key) = paramList[index];
+                    var image = CreateHistoryImageFromSlot(
+                        slot,
+                        p,
+                        $"Variation:{key}",
+                        p?.Prompt ?? string.Empty,
+                        entry.Workflow ?? string.Empty);
+                    image.GenerationParamsJson = p != null ? JsonSerializer.Serialize(p) : null;
+                    _historyManager.AppendImages(entry.Id, new[] { image });
+                };
+                ConfigurePreviewCommands(previewVm);
 
-            previewVm.StatusText = cts.IsCancellationRequested ? StatusGenerationCancelled : StatusImagesReadySaveDiscard;
-            var saveResult = await saveTask;
-            StatusText = saveResult == true ? "Variation images saved to history entry." :
-                         cts.IsCancellationRequested ? StatusGenerationCancelled : StatusImagesDiscarded;
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Failed to generate variation images: {ex.Message}";
-        }
-        finally
-        {
-            _generationInProgress = false;
-        }
+                var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
+                if (token.CanBeCanceled)
+                {
+                    token.Register(() => cts.Cancel());
+                }
+                job.StatusMessage = "Generating variation images...";
+                job.UpdateProgress(0, paramList.Count);
+                job.CancelAction = () => cts.Cancel();
+                previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
+                await GenerateImagesAsync(paramList.Select(p => p.param).ToList(), previewVm, cts, allowLongPrompts: false, job);
+
+                previewVm.StatusText = cts.IsCancellationRequested ? StatusGenerationCancelled : StatusImagesReadySaveDiscard;
+                var saveResult = await saveTask;
+                StatusText = saveResult == true ? "Variation images saved to history entry." :
+                             cts.IsCancellationRequested ? StatusGenerationCancelled : StatusImagesDiscarded;
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Failed to generate variation images: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        });
     }
 
     private async Task UpscaleImageFromHistoryAsync(HistoryEntry entry, HistoryImage image, Window? owner)
@@ -2850,6 +3407,7 @@ public partial class MainWindowViewModel : ObservableObject
                 UpscaleFitToMultipleOf8 = optionsVm.FitToMultipleOf8,
                 UpscaleSourceImagePath = image.ImagePath
             };
+            ApplyJobInfoToHistoryImage(newImage, slot);
 
             _historyManager.AppendImages(entry.Id, new[] { newImage });
             await Task.CompletedTask;
@@ -2883,6 +3441,7 @@ public partial class MainWindowViewModel : ObservableObject
 
                         previewVm.SetImage(index, result.ImageBytes);
                         var slot = previewVm.Slots[index];
+                        ApplyJobInfoToSlot(slot, result.JobInfo);
                         slot.ModelUsed = job.model.Name;
                         if (slot.Image != null)
                         {
@@ -2933,6 +3492,16 @@ public partial class MainWindowViewModel : ObservableObject
     private (Views.MultiImagePreviewView preview, Task<bool?> resultTask, CancellationTokenSource cts)
         ShowPreviewWindow(MultiImagePreviewViewModel previewVm, Window? owner)
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            return Dispatcher.UIThread.InvokeAsync(() => ShowPreviewWindowInternal(previewVm, owner)).GetAwaiter().GetResult();
+        }
+        return ShowPreviewWindowInternal(previewVm, owner);
+    }
+
+    private (Views.MultiImagePreviewView preview, Task<bool?> resultTask, CancellationTokenSource cts)
+        ShowPreviewWindowInternal(MultiImagePreviewViewModel previewVm, Window? owner)
+    {
         var preview = new Views.MultiImagePreviewView { DataContext = previewVm };
         var tcs = new TaskCompletionSource<bool?>();
         var cts = new CancellationTokenSource();
@@ -2950,7 +3519,14 @@ public partial class MainWindowViewModel : ObservableObject
         ImageGenerationOptionsViewModel dialogVm,
         Window? owner)
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            return Dispatcher.UIThread.InvokeAsync(() => ShowImageGenerationDialogAsync(dialogVm, owner));
+        }
+
         var dialog = new Views.ImageGenerationDialog(dialogVm);
+        dialog.Topmost = true;
+        dialog.Opened += (_, __) => dialog.Activate();
         var tcs = new TaskCompletionSource<(bool, List<InvokeAIGenerationParams>?)>();
         dialog.Closed += (_, __) => tcs.TrySetResult(dialogVm.Result);
         dialog.Show(GetOwnerWindow(owner) ?? new Window());
@@ -2994,7 +3570,11 @@ public partial class MainWindowViewModel : ObservableObject
         string workflow,
         Window? owner,
         string statusText,
-        bool allowLongPrompts)
+        bool allowLongPrompts,
+        GenerationJob? job = null,
+        CancellationToken externalToken = default,
+        bool waitForSaveSelection = true,
+        Func<List<HistoryImage>, Task>? onSaveCompleted = null)
     {
         var savedImages = new List<HistoryImage>();
         var previewVm = new MultiImagePreviewViewModel();
@@ -3002,26 +3582,37 @@ public partial class MainWindowViewModel : ObservableObject
         previewVm.StatusText = statusText;
         previewVm.OnSaveSlot = async slot =>
         {
-            savedImages.Add(new HistoryImage
-            {
-                ImageBytes = slot.ImageBytes,
-                GenerationParams = slot.GenerationParams,
-                GenerationParamsJson = slot.GenerationParams != null ? JsonSerializer.Serialize(slot.GenerationParams) : null,
-                Prompt = prompt,
-                PromptType = promptType,
-                Workflow = workflow,
-                IsFavorite = slot.IsFavorite
-            });
+            var image = CreateHistoryImageFromSlot(
+                slot,
+                slot.GenerationParams,
+                promptType,
+                prompt,
+                workflow);
+            image.GenerationParamsJson = slot.GenerationParams != null ? JsonSerializer.Serialize(slot.GenerationParams) : null;
+            savedImages.Add(image);
         };
+        previewVm.OnSaveCompleted = onSaveCompleted == null
+            ? null
+            : async () => await onSaveCompleted(savedImages);
         ConfigurePreviewCommands(previewVm);
         var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
+        if (externalToken.CanBeCanceled)
+        {
+            externalToken.Register(() => cts.Cancel());
+        }
+        if (job != null)
+        {
+            job.StatusMessage = statusText;
+            job.UpdateProgress(0, parametersList.Count);
+            job.CancelAction = () => cts.Cancel();
+        }
         _activeGenerationCts = cts;
         previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
         StatusText = statusText;
 
         try
         {
-            await GenerateImagesAsync(parametersList, previewVm, cts, allowLongPrompts);
+            await GenerateImagesAsync(parametersList, previewVm, cts, allowLongPrompts, job);
         }
         finally
         {
@@ -3038,6 +3629,129 @@ public partial class MainWindowViewModel : ObservableObject
 
         previewVm.StatusText = StatusImagesReady;
         StatusText = StatusImagesReadyMain;
+
+        if (!waitForSaveSelection)
+        {
+            _ = saveTask;
+            return new GenerationPreviewResult(null, savedImages);
+        }
+
+        var saveResult = await saveTask;
+        return new GenerationPreviewResult(saveResult, savedImages);
+    }
+
+    private async Task<GenerationPreviewResult> RunSeedVariationPreviewAsync(
+        IReadOnlyList<InvokeAIGenerationParams> parametersList,
+        string prompt,
+        string promptType,
+        string workflow,
+        Window? owner,
+        string statusText,
+        bool allowLongPrompts,
+        int rootSeed,
+        byte[] rootImageBytes,
+        GenerationJob? job = null,
+        CancellationToken externalToken = default,
+        bool waitForSaveSelection = true,
+        Func<List<HistoryImage>, Task>? onSaveCompleted = null)
+    {
+        var savedImages = new List<HistoryImage>();
+        var previewVm = new MultiImagePreviewViewModel();
+        previewVm.InitializePlaceholders(parametersList.Count);
+        previewVm.StatusText = statusText;
+        previewVm.OnSaveSlot = async slot =>
+        {
+            var image = CreateHistoryImageFromSlot(
+                slot,
+                slot.GenerationParams,
+                promptType,
+                prompt,
+                workflow);
+            image.GenerationParamsJson = slot.GenerationParams != null ? JsonSerializer.Serialize(slot.GenerationParams) : null;
+            savedImages.Add(image);
+        };
+        previewVm.OnSaveCompleted = onSaveCompleted == null
+            ? null
+            : async () => await onSaveCompleted(savedImages);
+        ConfigurePreviewCommands(previewVm);
+        var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
+        if (externalToken.CanBeCanceled)
+        {
+            externalToken.Register(() => cts.Cancel());
+        }
+        if (job != null)
+        {
+            job.StatusMessage = statusText;
+            job.UpdateProgress(0, parametersList.Count);
+            job.CancelAction = () => cts.Cancel();
+        }
+        _activeGenerationCts = cts;
+        previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
+        StatusText = statusText;
+
+        try
+        {
+            var jobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
+            for (int i = 0; i < parametersList.Count && i < previewVm.Slots.Count; i++)
+            {
+                var param = parametersList[i];
+                var slot = previewVm.Slots[i];
+                slot.GenerationParams = param;
+                slot.ModelUsed = param.Model?.Name ?? "";
+                slot.Seed = FormatSeedLabel(param);
+                if (param.BaseSeed != 0)
+                {
+                    slot.IsRootSeed = param.Seed == param.BaseSeed;
+                    slot.RootSeedLabel = slot.IsRootSeed ? "" : $"Root seed: {param.BaseSeed}";
+                }
+                else
+                {
+                    slot.RootSeedLabel = "";
+                    slot.IsRootSeed = false;
+                }
+                slot.Size = $"{param.Width}x{param.Height}";
+                slot.LoraLabel = FormatLoraLabel(param);
+
+                if (param.Seed == rootSeed)
+                {
+                    slot.IsSelected = false;
+                    previewVm.SetImage(i, rootImageBytes);
+                }
+                else
+                {
+                    slot.IsLoading = true;
+                    jobs.Add((param, slot));
+                }
+            }
+            previewVm.SyncProgressFromSlots();
+
+            if (jobs.Count > 0)
+            {
+                await GenerateImagesForSlotsAsync(jobs, previewVm, cts, allowLongPrompts, job);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_activeGenerationCts, cts))
+            {
+                _activeGenerationCts = null;
+            }
+        }
+
+        if (cts.IsCancellationRequested)
+        {
+            previewVm.StatusText = StatusGenerationCancelled;
+            return new GenerationPreviewResult(null, savedImages);
+        }
+
+        previewVm.StatusText = StatusImagesReady;
+        StatusText = StatusImagesReadyMain;
+
+        if (!waitForSaveSelection)
+        {
+            _ = saveTask;
+            return new GenerationPreviewResult(null, savedImages);
+        }
 
         var saveResult = await saveTask;
         return new GenerationPreviewResult(saveResult, savedImages);
@@ -3057,6 +3771,15 @@ public partial class MainWindowViewModel : ObservableObject
         {
             StatusText = discardedMessage;
         }
+    }
+
+    private Task EnqueueGenerationJobAsync(string name, Func<GenerationJob, CancellationToken, Task> work)
+    {
+        var job = new GenerationJob(name, work);
+        _generationQueue.Enqueue(job);
+        StatusText = $"Queued: {name}";
+        _notifications?.ShowInfo($"Queued: {name}", "Generation Queue");
+        return Task.CompletedTask;
     }
 
     private void ApplyGenerationParamsToDialog(
@@ -3103,6 +3826,38 @@ public partial class MainWindowViewModel : ObservableObject
     private static string ResolvePromptForMain(string? outputText, string? promptText)
     {
         return string.IsNullOrWhiteSpace(outputText) ? promptText ?? string.Empty : outputText;
+    }
+
+    private byte[]? TryLoadHistoryImageBytes(HistoryImage? image)
+    {
+        if (image?.ImageBytes != null && image.ImageBytes.Length > 0)
+        {
+            return image.ImageBytes;
+        }
+
+        if (string.IsNullOrWhiteSpace(image?.ImagePath))
+        {
+            return null;
+        }
+
+        var historyDir = _historyManager.GetHistoryDir();
+        var fullPath = Path.IsPathRooted(image.ImagePath)
+            ? image.ImagePath
+            : Path.Combine(historyDir, image.ImagePath);
+
+        if (!File.Exists(fullPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return File.ReadAllBytes(fullPath);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string ResolvePromptForSlot(InvokeAIGenerationParams baseParams, string? fallback)
@@ -3154,6 +3909,11 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task<List<List<LoraParameter>>?> ShowLoraPermutationDialogAsync(InvokeAIGenerationParams baseParams, Window? owner)
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            return await Dispatcher.UIThread.InvokeAsync(() => ShowLoraPermutationDialogAsync(baseParams, owner));
+        }
+
         var baseModel = baseParams.Model?.Base ?? baseParams.BaseModelType;
         var loras = await _invokeAIClient.GetModelsAsync(baseModel, "lora");
         var dialogVm = new LoraPermutationDialogViewModel(loras, baseParams.Loras);
@@ -3201,7 +3961,7 @@ public partial class MainWindowViewModel : ObservableObject
         };
     }
 
-    private async Task GenerateImagesAsync(IReadOnlyList<InvokeAIGenerationParams> parametersList, MultiImagePreviewViewModel previewVm, CancellationTokenSource cts, bool allowLongPrompts)
+    private async Task GenerateImagesAsync(IReadOnlyList<InvokeAIGenerationParams> parametersList, MultiImagePreviewViewModel previewVm, CancellationTokenSource cts, bool allowLongPrompts, GenerationJob? job = null)
     {
         if (!ValidateGenerationParams(parametersList, allowLongPrompts, out var invalidMessage, out var isWarning))
         {
@@ -3223,9 +3983,21 @@ public partial class MainWindowViewModel : ObservableObject
             slot.GenerationParams = param;
             slot.ModelUsed = param.Model?.Name ?? "";
             slot.Seed = FormatSeedLabel(param);
+            if (param.BaseSeed != 0)
+            {
+                slot.IsRootSeed = param.Seed == param.BaseSeed;
+                slot.RootSeedLabel = slot.IsRootSeed ? "" : $"Root seed: {param.BaseSeed}";
+            }
+            else
+            {
+                slot.RootSeedLabel = "";
+                slot.IsRootSeed = false;
+            }
             slot.Size = $"{param.Width}x{param.Height}";
             slot.LoraLabel = FormatLoraLabel(param);
         }
+        previewVm.SyncProgressFromSlots();
+        job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
 
         // Group by model to avoid loading multiple models at once; clear cache between groups if enabled.
         var order = new List<string>();
@@ -3273,16 +4045,30 @@ public partial class MainWindowViewModel : ObservableObject
                     {
                         _invokeGenerationGate.Release();
                     }
+                    RecordKpiGeneration(param, result.JobInfo, Workflow);
                     if (result.GenerationParams?.Vae?.Name is { Length: > 0 } vaeName)
                     {
                         param.VaeUsedName = vaeName;
                     }
                     if (cts.IsCancellationRequested) break;
                     previewVm.SetImage(index, result.ImageBytes);
+                    previewVm.IncrementGenerated();
+                    job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
                     var slot = previewVm.Slots[index];
+                    ApplyJobInfoToSlot(slot, result.JobInfo);
                     slot.GenerationParams = param;
                     slot.ModelUsed = param.Model?.Name ?? "";
                     slot.Seed = FormatSeedLabel(param);
+                    if (param.BaseSeed != 0)
+                    {
+                        slot.IsRootSeed = param.Seed == param.BaseSeed;
+                        slot.RootSeedLabel = slot.IsRootSeed ? "" : $"Root seed: {param.BaseSeed}";
+                    }
+                    else
+                    {
+                        slot.RootSeedLabel = "";
+                        slot.IsRootSeed = false;
+                    }
                     slot.Size = $"{param.Width}x{param.Height}";
                     slot.LoraLabel = FormatLoraLabel(param);
                 }
@@ -3291,6 +4077,11 @@ public partial class MainWindowViewModel : ObservableObject
                     StatusText = "Image generation cancelled.";
                     cts.Cancel();
                     break;
+                }
+                catch (InvokeAIJobFailedException ex)
+                {
+                    RecordKpiGeneration(param, ex.JobInfo, Workflow);
+                    StatusText = $"Image generation failed: {ex.Message}";
                 }
             }
 
@@ -3312,7 +4103,8 @@ public partial class MainWindowViewModel : ObservableObject
         IReadOnlyList<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> jobs,
         MultiImagePreviewViewModel previewVm,
         CancellationTokenSource cts,
-        bool allowLongPrompts)
+        bool allowLongPrompts,
+        GenerationJob? job = null)
     {
         if (!ValidateGenerationParams(jobs.Select(j => j.param).ToList(), allowLongPrompts, out var invalidMessage, out var isWarning))
         {
@@ -3335,22 +4127,23 @@ public partial class MainWindowViewModel : ObservableObject
             slot.LoraLabel = FormatLoraLabel(param);
             slot.IsLoading = true;
         }
+        previewVm.SyncProgressFromSlots();
+        job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
 
         var order = new List<string>();
         var grouped = new Dictionary<string, List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var job in jobs)
+        foreach (var jobItem in jobs)
         {
-            var key = job.param.Model?.Name ?? $"__model_{order.Count}";
+            var key = jobItem.param.Model?.Name ?? $"__model_{order.Count}";
             if (!grouped.TryGetValue(key, out var list))
             {
                 list = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
                 grouped[key] = list;
                 order.Add(key);
             }
-            list.Add(job);
+            list.Add(jobItem);
         }
 
-        var done = 0;
         foreach (var key in order)
         {
             if (cts.IsCancellationRequested) break;
@@ -3382,18 +4175,28 @@ public partial class MainWindowViewModel : ObservableObject
                         _invokeGenerationGate.Release();
                     }
 
+                    RecordKpiGeneration(param, result.JobInfo, Workflow);
                     if (result.GenerationParams?.Vae?.Name is { Length: > 0 } vaeName)
                     {
                         param.VaeUsedName = vaeName;
                     }
 
                     previewVm.UpdateSlotImage(slot, result.ImageBytes);
+                    ApplyJobInfoToSlot(slot, result.JobInfo);
+                    previewVm.IncrementGenerated();
+                    job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
                 }
                 catch (OperationCanceledException)
                 {
                     StatusText = "Image generation cancelled.";
                     cts.Cancel();
                     return;
+                }
+                catch (InvokeAIJobFailedException ex)
+                {
+                    RecordKpiGeneration(param, ex.JobInfo, Workflow);
+                    slot.IsLoading = false;
+                    if (_settingsService.Settings.Verbose) Console.WriteLine($"Generation failed: {ex.Message}");
                 }
                 catch (Exception ex)
                 {
@@ -3402,8 +4205,7 @@ public partial class MainWindowViewModel : ObservableObject
                 }
                 finally
                 {
-                    done++;
-                    previewVm.StatusText = $"Generating {done}/{jobs.Count}...";
+                    previewVm.StatusText = "Generating images...";
                 }
             }
 
@@ -3419,6 +4221,54 @@ public partial class MainWindowViewModel : ObservableObject
         {
             await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
         }
+    }
+
+    private static HistoryImage CreateHistoryImageFromSlot(
+        ImageSlotViewModel slot,
+        InvokeAIGenerationParams? parameters,
+        string promptType,
+        string prompt,
+        string workflow)
+    {
+        var image = new HistoryImage
+        {
+            ImageBytes = slot.ImageBytes,
+            GenerationParams = parameters,
+            PromptType = promptType,
+            Prompt = prompt,
+            Workflow = workflow,
+            IsFavorite = slot.IsFavorite
+        };
+        ApplyJobInfoToHistoryImage(image, slot);
+        return image;
+    }
+
+    private static void ApplyJobInfoToSlot(ImageSlotViewModel slot, GenerationJobInfo? jobInfo)
+    {
+        if (jobInfo == null) return;
+        slot.GenerationDurationMs = jobInfo.GenerationDurationMs;
+        slot.QueueWaitMs = jobInfo.QueueWaitMs;
+        slot.TotalDurationMs = jobInfo.TotalDurationMs;
+        slot.GenerationStatus = jobInfo.Status;
+        slot.ErrorType = jobInfo.ErrorType;
+        slot.ErrorMessage = jobInfo.ErrorMessage;
+        slot.ErrorTraceback = jobInfo.ErrorTraceback;
+    }
+
+    private static void ApplyJobInfoToHistoryImage(HistoryImage image, ImageSlotViewModel slot)
+    {
+        image.GenerationDurationMs = slot.GenerationDurationMs;
+        image.QueueWaitMs = slot.QueueWaitMs;
+        image.TotalDurationMs = slot.TotalDurationMs;
+        image.GenerationStatus = slot.GenerationStatus;
+        image.ErrorType = slot.ErrorType;
+        image.ErrorMessage = slot.ErrorMessage;
+        image.ErrorTraceback = slot.ErrorTraceback;
+    }
+
+    private void RecordKpiGeneration(InvokeAIGenerationParams parameters, GenerationJobInfo? jobInfo, string? workflow)
+    {
+        _kpiStats?.RecordGeneration(parameters, jobInfo, workflow ?? Workflow);
     }
 
     private static bool ValidateGenerationParams(
@@ -3445,8 +4295,11 @@ public partial class MainWindowViewModel : ObservableObject
 
     private static string FormatSeedLabel(InvokeAIGenerationParams p)
     {
-        var baseSeed = p.BaseSeed != 0 ? p.BaseSeed : p.Seed;
-        return baseSeed != p.Seed ? $"{p.Seed} (base {baseSeed})" : p.Seed.ToString();
+        if (p.BaseSeed != 0)
+        {
+            return $"{p.Seed} (root {p.BaseSeed})";
+        }
+        return p.Seed.ToString();
     }
 
     private static string FormatLoraLabel(InvokeAIGenerationParams? p)

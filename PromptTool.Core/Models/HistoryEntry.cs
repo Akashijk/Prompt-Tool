@@ -46,6 +46,17 @@ public class HistoryImage
     public string? AestheticScoreModel { get; set; }
     public DateTime? AestheticScoreTimestamp { get; set; }
     public int? AestheticScoreMs { get; set; }
+    public double? HeuristicScore { get; set; }
+    public double? SharpnessScore { get; set; }
+    public double? PromptMatchScore { get; set; }
+    public double? CompositeScore { get; set; }
+    public int? GenerationDurationMs { get; set; }
+    public int? QueueWaitMs { get; set; }
+    public int? TotalDurationMs { get; set; }
+    public string? GenerationStatus { get; set; }
+    public string? ErrorType { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string? ErrorTraceback { get; set; }
     public string? UpscaleModel { get; set; }
     public double? UpscaleScale { get; set; }
     public int? UpscaleTileSize { get; set; }

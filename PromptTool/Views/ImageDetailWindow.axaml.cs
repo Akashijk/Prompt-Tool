@@ -11,7 +11,7 @@ using PromptTool.Services;
 
 namespace PromptTool.Views;
 
-public partial class HistoryImageDetailWindow : Window
+public partial class ImageDetailWindow : Window
 {
     public HistoryManagerService? HistoryManager { get; set; }
     public HistoryIndexService? HistoryIndexService { get; set; }
@@ -27,7 +27,7 @@ public partial class HistoryImageDetailWindow : Window
     private bool _hasInitialFit;
     private bool _initialSizeApplied;
 
-    public HistoryImageDetailWindow()
+    public ImageDetailWindow()
     {
         InitializeComponent();
         InitializeTransforms();
@@ -35,6 +35,18 @@ public partial class HistoryImageDetailWindow : Window
         DetailImage.PropertyChanged += DetailImageOnPropertyChanged;
         ZoomSlider.PropertyChanged += ZoomSliderOnPropertyChanged;
         Opened += OnOpened;
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            Close();
+            e.Handled = true;
+            return;
+        }
+
+        base.OnKeyDown(e);
     }
 
     private void Close_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -45,7 +57,7 @@ public partial class HistoryImageDetailWindow : Window
     private void EditImageData_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (HistoryManager == null) return;
-        if (DataContext is not HistoryImageDetailViewModel vm) return;
+        if (DataContext is not ImageDetailViewModel vm) return;
         var editorVm = new ImageJsonEditorViewModel(HistoryManager, vm.Entry, vm.Image, HistoryIndexService);
         var editor = new ImageJsonEditorWindow(editorVm)
         {
@@ -267,6 +279,7 @@ public partial class HistoryImageDetailWindow : Window
     private void OnOpened(object? sender, EventArgs e)
     {
         ApplyInitialWindowSize();
+        Dispatcher.UIThread.Post(CenterWindow, DispatcherPriority.Background);
     }
 
     private void ApplyInitialWindowSize()
@@ -308,33 +321,27 @@ public partial class HistoryImageDetailWindow : Window
             Width = Math.Max(Width, targetWidth);
             Height = Math.Max(Height, targetHeight);
 
-            var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
-            var working = screen?.WorkingArea ?? new PixelRect(0, 0, 1280, 720);
-            var windowWidth = (int)Math.Ceiling(Width);
-            var windowHeight = (int)Math.Ceiling(Height);
-            var overflow = windowWidth > working.Width || windowHeight > working.Height;
-
-            if (overflow)
-            {
-                Position = new PixelPoint(working.X, working.Y);
-            }
-            else if (Owner is Window ownerWindow)
-            {
-                var ownerPos = ownerWindow.Position;
-                var ownerBounds = ownerWindow.Bounds;
-                var centerX = ownerPos.X + (int)Math.Round((ownerBounds.Width - windowWidth) / 2);
-                var centerY = ownerPos.Y + (int)Math.Round((ownerBounds.Height - windowHeight) / 2);
-                var clampedX = Math.Clamp(centerX, working.X, working.X + working.Width - windowWidth);
-                var clampedY = Math.Clamp(centerY, working.Y, working.Y + working.Height - windowHeight);
-                Position = new PixelPoint(clampedX, clampedY);
-            }
-            else
-            {
-                Position = new PixelPoint(working.X + 40, working.Y + 40);
-            }
-
             _initialSizeApplied = true;
+            CenterWindow();
         }, DispatcherPriority.Background);
+    }
+
+    private void CenterWindow()
+    {
+        var screen = Owner != null
+            ? Owner.Screens.ScreenFromWindow(Owner)
+            : Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        var working = screen?.WorkingArea ?? new PixelRect(0, 0, 1280, 720);
+
+        var windowWidth = (int)Math.Ceiling(Bounds.Width > 0 ? Bounds.Width : Width);
+        var windowHeight = (int)Math.Ceiling(Bounds.Height > 0 ? Bounds.Height : Height);
+        if (windowWidth <= 0 || windowHeight <= 0) return;
+
+        var centerX = working.X + (int)Math.Round((working.Width - windowWidth) / 2d);
+        var centerY = working.Y + (int)Math.Round((working.Height - windowHeight) / 2d);
+        var clampedX = Math.Clamp(centerX, working.X, working.X + Math.Max(0, working.Width - windowWidth));
+        var clampedY = Math.Clamp(centerY, working.Y, working.Y + Math.Max(0, working.Height - windowHeight));
+        Position = new PixelPoint(clampedX, clampedY);
     }
     private void InitializeTransforms()
     {

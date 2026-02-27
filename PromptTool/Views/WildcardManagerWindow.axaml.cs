@@ -18,13 +18,14 @@ public partial class WildcardManagerWindow : Window
     // 2) Double-click count pill: editor opens; add/remove/reorder; OK applies, Cancel discards.
     // 3) In rule picker dialog, scroll both lists with wheel/trackpad.
     private string? _pendingSelectName;
+    private bool _stateRestored;
 
     public WildcardManagerWindow()
     {
         InitializeComponent();
         Opened += OnOpened;
-        Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
+        RestoreWindowState();
     }
 
     public WildcardManagerWindow(WildcardManagerViewModel vm)
@@ -32,8 +33,8 @@ public partial class WildcardManagerWindow : Window
         InitializeComponent();
         DataContext = vm;
         Opened += OnOpened;
-        Opened += (_, __) => RestoreWindowState();
         Closing += (_, __) => SaveWindowState();
+        RestoreWindowState();
     }
 
     public void SelectWildcardOnOpen(string name)
@@ -58,9 +59,21 @@ public partial class WildcardManagerWindow : Window
 
     private void RestoreWindowState()
     {
+        if (_stateRestored)
+        {
+            return;
+        }
+        _stateRestored = true;
+
         var settings = GetSettingsService()?.Settings;
         if (settings == null)
         {
+            return;
+        }
+
+        if (Enum.TryParse<WindowState>(settings.WildcardManagerWindowState, out var state) && state != WindowState.Normal)
+        {
+            WindowState = state;
             return;
         }
 
@@ -75,10 +88,7 @@ public partial class WildcardManagerWindow : Window
             Position = new PixelPoint((int)settings.WildcardManagerWindowX, (int)settings.WildcardManagerWindowY);
         }
 
-        if (Enum.TryParse<WindowState>(settings.WildcardManagerWindowState, out var state))
-        {
-            WindowState = state;
-        }
+        WindowState = WindowState.Normal;
     }
 
     private void SaveWindowState()

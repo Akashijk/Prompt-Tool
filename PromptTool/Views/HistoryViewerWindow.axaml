@@ -25,7 +25,9 @@
                 </ComboBox>
                 <Button Content="Refresh" Command="{Binding RefreshCommand}"/>
                 <Button Content="All Images" Command="{Binding ShowAllImagesCommand}"/>
+                <Button Content="Merge Selected" Command="{Binding MergeSelectedEntriesCommand}" IsEnabled="{Binding CanMergeEntries}"/>
                 <Button Content="Prune Missing" Command="{Binding PruneMissingImagesCommand}"/>
+                <Button Content="Recover Orphans" Command="{Binding RecoverOrphanImagesCommand}"/>
                 <Button Content="GC Orphans" Command="{Binding GarbageCollectOrphansCommand}"/>
                 <TextBlock Text="{Binding StatusNote}" Classes="subtle" VerticalAlignment="Center"/>
             </StackPanel>
@@ -43,6 +45,8 @@
             <DataGrid Grid.Row="1"
                       ItemsSource="{Binding HistoryEntries}"
                       SelectedItem="{Binding SelectedHistoryEntry}"
+                      SelectionMode="Extended"
+                      SelectionChanged="OnHistorySelectionChanged"
                       AutoGenerateColumns="False"
                       CanUserResizeColumns="True"
                       CanUserSortColumns="True"
@@ -145,12 +149,18 @@
                              BorderThickness="0">
                         <ListBox.ItemsPanel>
                             <ItemsPanelTemplate>
-                                <WrapPanel />
+                                <WrapPanel ItemWidth="180" ItemHeight="210" />
                             </ItemsPanelTemplate>
                         </ListBox.ItemsPanel>
                         <ListBox.ItemTemplate>
                             <DataTemplate x:DataType="vm:HistoryImageItem">
-                                <Border Margin="4" Padding="4" BorderBrush="#404040" BorderThickness="1" CornerRadius="4"
+                                <Border Margin="6"
+                                        Padding="6"
+                                        Width="180"
+                                        Height="210"
+                                        BorderBrush="#404040"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
                                         DoubleTapped="Image_DoubleTapped">
                                                                          <Border.ContextMenu>
                                                                             <ContextMenu>
@@ -221,19 +231,35 @@
                                                                             </ContextMenu>
                                                                         </Border.ContextMenu>
                                     <Border ToolTip.Tip="{Binding Bitmap}">
-                                        <StackPanel Spacing="4">
-                                            <Image Source="{Binding Bitmap}" Width="110" Height="78" Stretch="UniformToFill"/>
-                                            <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                                    <StackPanel Spacing="4">
+                                        <Grid ColumnDefinitions="Auto,*">
+                                            <CheckBox VerticalAlignment="Top"
+                                                      IsChecked="{Binding IsSelected}"
+                                                      ToolTip.Tip="Select for bulk delete"/>
+                                            <Image Grid.Column="1"
+                                                   Source="{Binding Bitmap}"
+                                                   Width="168"
+                                                   Height="94"
+                                                   Stretch="UniformToFill"/>
+                                        </Grid>
+                                        <TextBlock Text="{Binding Label}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                             <TextBlock Text="{Binding ModelLabel}"
                                                        Classes="subtle"
+                                                       MaxWidth="168"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip.Tip="{Binding ModelLabel}"
                                                        IsVisible="{Binding ModelLabel, Converter={StaticResource StringToBoolConverter}}"/>
                                             <TextBlock Text="{Binding SeedLabel}"
                                                        Classes="subtle"
+                                                       MaxWidth="168"
                                                        TextTrimming="CharacterEllipsis"
+                                                       ToolTip.Tip="{Binding SeedLabel}"
                                                        IsVisible="{Binding SeedLabel, Converter={StaticResource StringToBoolConverter}}"/>
                                             <TextBlock Text="{Binding LoraLabel}"
                                                        Classes="subtle"
+                                                       MaxWidth="168"
                                                        TextTrimming="CharacterEllipsis"
+                                                       ToolTip.Tip="{Binding LoraLabel}"
                                                        IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
                                             <StackPanel Orientation="Horizontal" Spacing="6">
                                                 <Button Padding="4"
@@ -271,6 +297,9 @@
 
             <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
                 <Button Content="Favorite" Command="{Binding ToggleFavoriteCommand}"/>
+                <Button Content="Delete Selected Images"
+                        Command="{Binding DeleteSelectedImagesCommand}"
+                        IsEnabled="{Binding CanDeleteSelectedImages}"/>
                 <Button Content="Delete Entry" Command="{Binding DeleteEntryCommand}"/>
                 <Button Content="Open Folder" Command="{Binding OpenContainingFolderCommand}" CommandParameter="{Binding SelectedImageItem}"/>
                 <Button Content="Refresh" Command="{Binding RefreshCommand}"/>
