@@ -99,6 +99,18 @@ public class SettingsService
     private static string ResolveConfigDir()
     {
         var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(baseDir))
+        {
+            baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        }
+        if (string.IsNullOrWhiteSpace(baseDir))
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            baseDir = string.IsNullOrWhiteSpace(home)
+                ? Path.Combine(Path.GetTempPath(), "PromptTool")
+                : Path.Combine(home, ".local", "share");
+        }
+
         return Path.Combine(baseDir, "PromptTool");
     }
 
