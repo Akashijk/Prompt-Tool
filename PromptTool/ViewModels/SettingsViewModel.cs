@@ -799,7 +799,11 @@ public partial class SettingsViewModel : ObservableObject
 
         var merged = MergeHistoryById(existingEntries, backupEntries);
         WriteHistoryJson(Path.Combine(targetDir, "history.json"), merged);
-        WriteHistoryJsonl(Path.Combine(targetDir, "history.jsonl"), merged);
+        var jsonlPath = Path.Combine(targetDir, "history.jsonl");
+        if (File.Exists(jsonlPath))
+        {
+            File.Delete(jsonlPath);
+        }
     }
 
     private static List<JsonElement> ReadHistoryEntriesFromFile(string path)

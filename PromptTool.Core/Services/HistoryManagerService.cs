@@ -10,6 +10,16 @@ namespace PromptTool.Core.Services;
 
 public class HistoryManagerService
 {
+    private static readonly string[] LegacyHistoryMarkers =
+    {
+        "original_prompt",
+        "processed_prompt",
+        "workflow_source",
+        "cover_image",
+        "original_images",
+        "image_file_path",
+        "image_path"
+    };
     private readonly SettingsService _settings;
     private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
     private List<HistoryEntry> _historyEntries = new();
@@ -36,45 +46,85 @@ public class HistoryManagerService
         var jsonlPath = Path.Combine(historyDir, "history.jsonl");
         var jsonPath = Path.Combine(historyDir, "history.json");
 
-        var hasJsonl = File.Exists(jsonlPath);
         var hasJson = File.Exists(jsonPath);
-        if (hasJsonl && hasJson)
-        {
-            var jsonlTime = File.GetLastWriteTimeUtc(jsonlPath);
-            var jsonTime = File.GetLastWriteTimeUtc(jsonPath);
-            var preferJson = jsonTime >= jsonlTime;
-            if (preferJson)
-            {
-                if (TryLoadJson(jsonPath)) return;
-                _historyEntries = LoadFromJsonl(jsonlPath);
-                return;
-            }
-
-            _historyEntries = LoadFromJsonl(jsonlPath);
-            return;
-        }
-
-        if (hasJsonl)
-        {
-            _historyEntries = LoadFromJsonl(jsonlPath);
-            return;
-        }
-
         if (hasJson)
         {
-            if (!TryLoadJson(jsonPath))
+            if (TryLoadJson(jsonPath))
             {
-                try
+                return;
+            }
+        }
+
+        if (File.Exists(jsonlPath))
+        {
+            _historyEntries = LoadFromJsonl(jsonlPath);
+            SaveHistory();
+            return;
+        }
+
+        _historyEntries = new List<HistoryEntry>();
+    }
+
+    private bool TryLoadJson(string path)
+    {
+        try
+        {
+            var json = File.ReadAllText(path);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            if (IsLegacyHistoryArray(doc.RootElement))
+            {
+                _historyEntries = doc.RootElement
+                    .EnumerateArray()
+                    .Select(MapLegacyEntry)
+                    .ToList();
+                SaveHistory();
+                return true;
+            }
+
+            _historyEntries = JsonSerializer.Deserialize<List<HistoryEntry>>(json, _jsonOptions) ?? new List<HistoryEntry>();
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool IsLegacyHistoryArray(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var entry in root.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            foreach (var marker in LegacyHistoryMarkers)
+            {
+                if (entry.TryGetPropertyIgnoreCase(marker, out _))
                 {
-                    _historyEntries = LoadFromJsonl(jsonPath);
-                }
-                catch (Exception inner)
-                {
-                    if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history as JSONL: {inner.Message}");
-                    _historyEntries = new List<HistoryEntry>();
+                    return true;
                 }
             }
         }
+
+        return false;
     }
 
     private void MigrateLegacyRootHistoryIfNeeded()
@@ -163,26 +213,6 @@ public class HistoryManagerService
         catch
         {
             // Best effort cleanup only.
-        }
-    }
-
-    private bool TryLoadJson(string path)
-    {
-        try
-        {
-            var json = File.ReadAllText(path);
-            _historyEntries = JsonSerializer.Deserialize<List<HistoryEntry>>(json, _jsonOptions) ?? new List<HistoryEntry>();
-            return true;
-        }
-        catch (JsonException ex)
-        {
-            if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history: {ex.Message}");
-            return false;
-        }
-        catch (Exception ex)
-        {
-            if (_settings.Settings.Verbose) Console.Error.WriteLine($"Error loading history: {ex.Message}");
-            return false;
         }
     }
 
@@ -378,25 +408,18 @@ public class HistoryManagerService
         try
         {
             var historyDir = _settings.GetHistoryDir();
-            var jsonlPath = Path.Combine(historyDir, "history.jsonl");
             Directory.CreateDirectory(historyDir);
 
-            var options = new JsonSerializerOptions { WriteIndented = false };
-            using (var writer = new StreamWriter(jsonlPath, false))
-            {
-                foreach (var entry in _historyEntries)
-                {
-                    HistoryEntryDto dto = ToLegacyDto(entry);
-                    var line = JsonSerializer.Serialize(dto, options);
-                    writer.WriteLine(line);
-                }
-            }
-
-            // Also write a JSON backup for easier manual inspection
             var jsonPath = Path.Combine(historyDir, "history.json");
             var json = JsonSerializer.Serialize(_historyEntries, new JsonSerializerOptions { WriteIndented = true });
             if (_settings.Settings.Verbose) Console.WriteLine($"[History Save] JSON backup: {json}");
             File.WriteAllText(jsonPath, json);
+
+            var jsonlPath = Path.Combine(historyDir, "history.jsonl");
+            if (File.Exists(jsonlPath))
+            {
+                File.Delete(jsonlPath);
+            }
         }
         catch (Exception ex)
         {
