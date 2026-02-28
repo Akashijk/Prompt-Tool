@@ -63,4 +63,22 @@ public class TemplateService
 
         return await File.ReadAllTextAsync(filePath);
     }
+
+    public async Task SaveTemplateAsync(string templateName, string content, string? workflow = null)
+    {
+        if (string.IsNullOrWhiteSpace(templateName))
+        {
+            throw new ArgumentException("Template name is required.", nameof(templateName));
+        }
+
+        if (templateName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            throw new ArgumentException("Template name contains invalid filename characters.", nameof(templateName));
+        }
+
+        var directory = GetTemplateDirectory(workflow);
+        Directory.CreateDirectory(directory);
+        var filePath = Path.Combine(directory, $"{templateName}.txt");
+        await File.WriteAllTextAsync(filePath, content ?? string.Empty);
+    }
 }

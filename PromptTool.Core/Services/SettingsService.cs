@@ -48,6 +48,14 @@ public class SettingsService
         EnsureBaseDirectories();
     }
 
+    public void ReloadFromDisk()
+    {
+        Settings = LoadSettings();
+        InvokeAIModelDefaults = LoadInvokeAIModelDefaults();
+        InvokeAILoraDefaults = LoadInvokeAILoraDefaults();
+        EnsureBaseDirectories();
+    }
+
     private AppSettings LoadSettings()
     {
         if (File.Exists(_settingsFilePath))

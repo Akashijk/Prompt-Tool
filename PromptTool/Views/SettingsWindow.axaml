@@ -65,12 +65,12 @@
                     <TabItem.Header>
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <TextBlock Text="✍"/>
-                            <TextBlock Text="Prompts"/>
+                            <TextBlock Text="Negative Prompts"/>
                         </StackPanel>
                     </TabItem.Header>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Spacing="10">
-                            <TextBlock Text="Prompts" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Negative Prompts" FontSize="18" FontWeight="Bold"/>
                             <TextBlock Text="Negative prompt presets." Classes="subtle" TextWrapping="Wrap" Margin="0,0,0,6"/>
                             <TextBlock Text="Negative Prompt:" FontWeight="Bold"/>
                             <ComboBox ItemsSource="{Binding NegativePresets}"
@@ -82,7 +82,7 @@
                                 <Button Content="Rename" Command="{Binding RenameNegativePresetCommand}"/>
                             </StackPanel>
                             <TextBlock Text="Preset Text:" FontWeight="Bold"/>
-                            <TextBox Text="{Binding EditingPresetText}" AcceptsReturn="True" TextWrapping="Wrap" Height="120"/>
+                            <TextBox Text="{Binding EditingPresetText}" AcceptsReturn="True" TextWrapping="Wrap" Height="220"/>
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <Button Content="Add Preset" Command="{Binding AddNegativePresetCommand}"/>
                                 <Button Content="Save Preset" Command="{Binding SaveNegativePresetCommand}"/>

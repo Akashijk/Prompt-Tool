@@ -60,6 +60,7 @@
                 <MenuItem Header="Prompt _Evolver" Command="{Binding ShowPromptEvolverCommand}" CommandParameter="{Binding $parent[Window]}"/>
             </MenuItem>
             <MenuItem Header="_Tools">
+                <MenuItem Header="AI Template _Builder" Command="{Binding GenerateTemplateFromThemeCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="_Scheduler Tuner" Command="{Binding ShowSchedulerTunerCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="_Generation Queue" Command="{Binding ShowGenerationQueueCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="History _Integrity" Command="{Binding ShowHistoryIntegrityCommand}" CommandParameter="{Binding $parent[Window]}"/>
@@ -80,10 +81,28 @@
             <Grid ColumnDefinitions="2*,1.5*,Auto" ColumnSpacing="12" RowDefinitions="Auto,Auto,Auto">
                 <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
                     <TextBlock Text="Template" FontWeight="Bold"/>
-                    <ComboBox ItemsSource="{Binding Templates}"
-                              SelectedItem="{Binding SelectedTemplate}"
-                              ItemTemplate="{DynamicResource TemplateItemTemplate}"
-                              Width="300"/>
+                    <WrapPanel ItemSpacing="8">
+                        <ComboBox ItemsSource="{Binding Templates}"
+                                  SelectedItem="{Binding SelectedTemplate}"
+                                  ItemTemplate="{DynamicResource TemplateItemTemplate}"
+                                  Width="300"/>
+                        <Button Content="New Template"
+                                Command="{Binding CreateTemplateCommand}"
+                                CommandParameter="{Binding $parent[Window]}"
+                                Width="116"
+                                Background="#274A74"
+                                BorderBrush="#3F77B8"
+                                BorderThickness="1"
+                                FontWeight="SemiBold"/>
+                        <Button Content="Save"
+                                Command="{Binding SaveTemplateCommand}"
+                                CommandParameter="{Binding $parent[Window]}"
+                                Width="72"/>
+                        <Button Content="Save As"
+                                Command="{Binding SaveTemplateAsCommand}"
+                                CommandParameter="{Binding $parent[Window]}"
+                                Width="86"/>
+                    </WrapPanel>
                 </StackPanel>
 
                 <StackPanel Grid.Row="0" Grid.Column="1" Spacing="4">
@@ -93,13 +112,36 @@
                               Width="220"/>
                 </StackPanel>
 
-                    <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Vertical" Spacing="6" HorizontalAlignment="Right">
-                        <Button Content="Generate Prompt" Command="{Binding GenerateCommand}" Width="150"/>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Content="Enhance Prompt" Command="{Binding EnhancePromptCommand}" Width="140"/>
-                            <Button Content="Generate Image" Command="{Binding GenerateImageCommand}" CommandParameter="{Binding $parent[Window]}" Width="140"/>
-                        </StackPanel>
-                        <Button Content="Reroll Last Prompt" Command="{Binding RerollPromptCommand}" Width="150"/>
+                    <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Vertical" Spacing="8" HorizontalAlignment="Right">
+                        <Button Content="Generate Prompt"
+                                Command="{Binding GenerateCommand}"
+                                Width="180"
+                                MinHeight="38"
+                                Background="#203958"
+                                BorderBrush="#355A85"
+                                BorderThickness="1"
+                                FontWeight="SemiBold"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"/>
+                        <Button Content="Enhance Prompt"
+                                Command="{Binding EnhancePromptCommand}"
+                                Width="180"
+                                MinHeight="38"
+                                Background="#263147"
+                                BorderBrush="#43506A"
+                                BorderThickness="1"
+                                FontWeight="SemiBold"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"/>
+                        <Button Content="Generate Image"
+                                Command="{Binding GenerateImageCommand}"
+                                CommandParameter="{Binding $parent[Window]}"
+                                Width="180"
+                                MinHeight="42"
+                                Classes="accent"
+                                FontWeight="Bold"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"/>
                     </StackPanel>
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Text="{Binding StatusText}" Classes="subtle" TextWrapping="Wrap"/>

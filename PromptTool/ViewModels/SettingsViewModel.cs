@@ -441,14 +441,15 @@ public partial class SettingsViewModel : ObservableObject
             await Task.Run(() =>
             {
                 using var archive = ZipFile.OpenRead(zipPath);
-                ExtractZipFolder(archive, "config/", configDir, overwriteExisting, ct);
+                RestoreConfigFilesFromZip(archive, configDir, overwriteExisting, restorePaths);
                 ExtractZipFolder(archive, "templates/", templateDir, overwriteExisting, ct);
                 ExtractZipFolder(archive, "wildcards/", wildcardDir, overwriteExisting, ct);
                 ExtractZipFolder(archive, "system_prompts/", systemPromptsDir, overwriteExisting, ct);
-                RestoreConfigFilesFromZip(archive, configDir, restorePaths);
             }, ct);
 
-            _notifications?.ShowInfo("Config/content restored. Restart the app to reload settings.", "Restore");
+            _settingsService.ReloadFromDisk();
+            ReloadFromService();
+            _notifications?.ShowInfo("Config/content restored and reloaded.", "Restore");
         }
         catch (Exception ex)
         {
@@ -673,38 +674,196 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    private static void RestoreConfigFilesFromZip(ZipArchive archive, string configDir, bool restorePaths)
+    private static void RestoreConfigFilesFromZip(ZipArchive archive, string configDir, bool overwriteExisting, bool restorePaths)
     {
-        var files = new[]
+        foreach (var entry in archive.Entries)
         {
-            "settings.json",
-            "paths.json",
-            "model_defaults.json",
-            "lora_defaults.json",
-            "model_defaults_csharp.json",
-            "lora_defaults_csharp.json"
-        };
+            if (!entry.FullName.StartsWith("config/", StringComparison.OrdinalIgnoreCase) ||
+                entry.FullName.EndsWith("/", StringComparison.Ordinal))
+            {
+                continue;
+            }
 
-        foreach (var name in files)
-        {
-            var entry = archive.Entries.FirstOrDefault(e =>
-                e.FullName.Equals($"config/{name}", StringComparison.OrdinalIgnoreCase));
-            if (entry == null)
+            var name = entry.FullName.Substring("config/".Length);
+            if (string.IsNullOrWhiteSpace(name))
             {
                 continue;
             }
 
             Directory.CreateDirectory(configDir);
             var targetPath = Path.Combine(configDir, name);
-            var tempPath = Path.Combine(configDir, $"{name}.tmp");
+            var targetDir = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrWhiteSpace(targetDir))
+            {
+                Directory.CreateDirectory(targetDir);
+            }
             if (!restorePaths && name.Equals("paths.json", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
+            if (name.Equals("settings.json", StringComparison.OrdinalIgnoreCase))
+            {
+                RestoreSettingsFile(entry, targetPath, overwriteExisting);
+                continue;
+            }
+
+            if (File.Exists(targetPath) && !overwriteExisting)
+            {
+                continue;
+            }
+
+            var tempPath = Path.Combine(configDir, $"{name}.tmp");
+            var tempDir = Path.GetDirectoryName(tempPath);
+            if (!string.IsNullOrWhiteSpace(tempDir))
+            {
+                Directory.CreateDirectory(tempDir);
+            }
             entry.ExtractToFile(tempPath, overwrite: true);
             ReplaceFileWithRetry(tempPath, targetPath);
         }
+    }
+
+    private static void RestoreSettingsFile(ZipArchiveEntry entry, string targetPath, bool overwriteExisting)
+    {
+        var targetDir = Path.GetDirectoryName(targetPath);
+        if (!string.IsNullOrWhiteSpace(targetDir))
+        {
+            Directory.CreateDirectory(targetDir);
+        }
+
+        var tempPath = $"{targetPath}.tmp";
+        entry.ExtractToFile(tempPath, overwrite: true);
+
+        if (!File.Exists(targetPath) || overwriteExisting)
+        {
+            ReplaceFileWithRetry(tempPath, targetPath);
+            return;
+        }
+
+        try
+        {
+            var current = LoadSettingsFromFile(targetPath);
+            var backup = LoadSettingsFromFile(tempPath);
+            var merged = MergeRestoredSettings(current, backup);
+            var json = JsonSerializer.Serialize(merged, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(tempPath, json);
+            ReplaceFileWithRetry(tempPath, targetPath);
+        }
+        catch
+        {
+            File.Delete(tempPath);
+        }
+    }
+
+    private static AppSettings LoadSettingsFromFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return new AppSettings();
+        }
+
+        var json = File.ReadAllText(path);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new AppSettings();
+        }
+
+        return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+    }
+
+    private static AppSettings MergeRestoredSettings(AppSettings current, AppSettings backup)
+    {
+        current.NegativePromptPresets ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        backup.NegativePromptPresets ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var preset in backup.NegativePromptPresets)
+        {
+            if (!current.NegativePromptPresets.ContainsKey(preset.Key))
+            {
+                current.NegativePromptPresets[preset.Key] = preset.Value;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(current.DefaultNegativePrompt) &&
+            !string.IsNullOrWhiteSpace(backup.DefaultNegativePrompt))
+        {
+            current.DefaultNegativePrompt = backup.DefaultNegativePrompt;
+        }
+
+        var currentDefaultKey = current.DefaultNegativePromptKey;
+        if (string.IsNullOrWhiteSpace(currentDefaultKey) ||
+            !current.NegativePromptPresets.ContainsKey(currentDefaultKey))
+        {
+            var backupDefaultKey = backup.DefaultNegativePromptKey;
+            if (!string.IsNullOrWhiteSpace(backupDefaultKey) &&
+                current.NegativePromptPresets.ContainsKey(backupDefaultKey))
+            {
+                current.DefaultNegativePromptKey = backupDefaultKey;
+            }
+            else if (current.NegativePromptPresets.Count > 0)
+            {
+                current.DefaultNegativePromptKey = current.NegativePromptPresets.Keys.First();
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(current.DefaultNegativePrompt) &&
+            !string.IsNullOrWhiteSpace(current.DefaultNegativePromptKey) &&
+            current.NegativePromptPresets.TryGetValue(current.DefaultNegativePromptKey, out var presetValue))
+        {
+            current.DefaultNegativePrompt = presetValue;
+        }
+
+        return current;
+    }
+
+    private void ReloadFromService()
+    {
+        var currentSettings = Clone(_settingsService.Settings);
+        _originalSettings = Clone(currentSettings);
+        _workingDefaults = DeepCloneDefaults(currentSettings.GenerationDefaults);
+        _workingModelDefaults = CloneModelDefaults(_settingsService.InvokeAIModelDefaults);
+        _workingLoraDefaults = CloneModelDefaults(_settingsService.InvokeAILoraDefaults);
+
+        OllamaBaseUrl = currentSettings.OllamaBaseUrl;
+        InvokeAIBaseUrl = currentSettings.InvokeAIBaseUrl;
+        TemplateBaseDir = currentSettings.TemplateBaseDir;
+        WildcardDir = currentSettings.WildcardDir;
+        HistoryDir = currentSettings.HistoryDir;
+        SystemPromptBaseDir = currentSettings.SystemPromptBaseDir;
+        Workflow = currentSettings.Workflow;
+        DefaultOllamaModel = currentSettings.DefaultOllamaModel;
+        DefaultNegativePrompt = currentSettings.DefaultNegativePrompt;
+        DefaultNegativePromptKey = currentSettings.DefaultNegativePromptKey;
+        InvokeAITimeoutSeconds = currentSettings.InvokeAITimeoutSeconds;
+        Theme = currentSettings.Theme;
+        FontSize = currentSettings.FontSize;
+        DefaultBaseModelType = string.IsNullOrWhiteSpace(currentSettings.DefaultBaseModelType) ? "sdxl" : currentSettings.DefaultBaseModelType;
+        _currentBaseModelType = DefaultBaseModelType;
+        AutoClearInvokeCacheBetweenModels = currentSettings.AutoClearInvokeCacheBetweenModels;
+        ServerSafetyModeEnabled = currentSettings.ServerSafetyModeEnabled;
+        AestheticScoringBackend = string.IsNullOrWhiteSpace(currentSettings.AestheticScoringBackend) ? "local" : currentSettings.AestheticScoringBackend;
+        AestheticScoringRemoteUrl = currentSettings.AestheticScoringRemoteUrl ?? string.Empty;
+        AestheticScoringRemoteBatchSize = currentSettings.AestheticScoringRemoteBatchSize <= 0 ? 8 : currentSettings.AestheticScoringRemoteBatchSize;
+        HuggingFaceApiKey = currentSettings.HuggingFaceApiKey ?? string.Empty;
+        Verbose = currentSettings.Verbose;
+        SettingsFilePath = _settingsService.SettingsFileInUse;
+
+        NegativePresets.Clear();
+        foreach (var kvp in currentSettings.NegativePromptPresets)
+        {
+            NegativePresets.Add(new NegativePresetItem(kvp.Key, kvp.Value));
+        }
+
+        SelectedNegativePreset = NegativePresets.FirstOrDefault(p => string.Equals(p.Key, DefaultNegativePromptKey, StringComparison.OrdinalIgnoreCase))
+            ?? NegativePresets.FirstOrDefault();
+        EditingPresetText = SelectedNegativePreset?.Value ?? string.Empty;
+        EditingPresetName = SelectedNegativePreset?.Key ?? string.Empty;
+
+        LoadDefaultsForBase(DefaultBaseModelType);
+        ApplyThemeVariant(currentSettings.Theme);
+        RefreshAutoBackups();
+        UpdatePendingChanges();
     }
 
     private void MergeHistoryIndexes(string stagingDir, string historyDir, bool overwriteExisting)

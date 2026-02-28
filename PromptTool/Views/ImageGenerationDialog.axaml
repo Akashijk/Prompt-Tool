@@ -179,75 +179,81 @@
                         <Border Classes="card" Padding="14">
                             <StackPanel Spacing="12">
                                 <TextBlock Text="Generation Settings" FontWeight="Bold"/>
-                                <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="12">
-                                    <StackPanel Grid.Column="0" Grid.Row="0" Spacing="4">
-                                        <TextBlock Text="Seed"/>
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <NumericUpDown Value="{Binding Seed}" Minimum="0" Maximum="2147483647" Width="140" IsEnabled="{Binding UseRandomSeed, Converter={StaticResource InverseBoolConverter}}"/>
-                                            <CheckBox Content="Random" IsChecked="{Binding UseRandomSeed}" VerticalAlignment="Center"/>
-                                            <Button Content="Randomize" Command="{Binding RandomizeSeedCommand}" Width="100" IsEnabled="{Binding UseRandomSeed, Converter={StaticResource InverseBoolConverter}}"/>
+                                <StackPanel Spacing="12">
+                                    <WrapPanel ItemSpacing="16">
+                                        <StackPanel Width="430" Spacing="4">
+                                            <TextBlock Text="Seed"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <NumericUpDown Value="{Binding Seed}" Minimum="0" Maximum="2147483647" Increment="1" FormatString="F0" Width="212" IsEnabled="{Binding UseRandomSeed, Converter={StaticResource InverseBoolConverter}}"/>
+                                                <CheckBox Content="Random" IsChecked="{Binding UseRandomSeed}" VerticalAlignment="Center"/>
+                                                <Button Content="Randomize" Command="{Binding RandomizeSeedCommand}" Width="100" IsEnabled="{Binding UseRandomSeed, Converter={StaticResource InverseBoolConverter}}"/>
+                                            </StackPanel>
                                         </StackPanel>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Grid.Row="0" Spacing="4">
-                                        <TextBlock Text="Steps"/>
-                                        <NumericUpDown Value="{Binding Steps}" Minimum="1" Maximum="200" Width="180"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2" Grid.Row="0" Spacing="4">
-                                        <TextBlock Text="CFG Scale"/>
-                                        <NumericUpDown Value="{Binding CfgScale}" Minimum="0" Maximum="30" Increment="0.5" Width="180"/>
-                                    </StackPanel>
+                                        <StackPanel Width="220" Spacing="4">
+                                            <TextBlock Text="Steps"/>
+                                            <NumericUpDown Value="{Binding Steps}" Minimum="1" Maximum="200" Increment="1" FormatString="F0" Width="180"/>
+                                        </StackPanel>
+                                        <StackPanel Width="220" Spacing="4">
+                                            <TextBlock Text="CFG Scale"/>
+                                            <NumericUpDown Value="{Binding CfgScale}" Minimum="0" Maximum="30" Increment="0.5" Width="180"/>
+                                        </StackPanel>
+                                    </WrapPanel>
 
-                                    <StackPanel Grid.Column="0" Grid.Row="1" Spacing="4">
-                                        <TextBlock Text="CFG Rescale Multiplier"/>
-                                        <NumericUpDown Value="{Binding CfgRescaleMultiplier}" Minimum="0" Maximum="2" Increment="0.05" Width="180"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Grid.Row="1" Spacing="4">
-                                        <TextBlock Text="Width"/>
-                                        <NumericUpDown Value="{Binding Width}" Minimum="64" Maximum="4096" Increment="64" Width="180"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2" Grid.Row="1" Spacing="4">
-                                        <TextBlock Text="Height"/>
-                                        <NumericUpDown Value="{Binding Height}" Minimum="64" Maximum="4096" Increment="64" Width="180"/>
-                                    </StackPanel>
+                                    <WrapPanel ItemSpacing="16">
+                                        <StackPanel Width="430" Spacing="4">
+                                            <TextBlock Text="CFG Rescale Multiplier"/>
+                                            <NumericUpDown Value="{Binding CfgRescaleMultiplier}" Minimum="0" Maximum="2" Increment="0.05" Width="180"/>
+                                        </StackPanel>
+                                        <StackPanel Width="220" Spacing="4">
+                                            <TextBlock Text="Width"/>
+                                            <NumericUpDown Value="{Binding Width}" Minimum="64" Maximum="4096" Increment="64" FormatString="F0" Width="180"/>
+                                        </StackPanel>
+                                        <StackPanel Width="220" Spacing="4">
+                                            <TextBlock Text="Height"/>
+                                            <NumericUpDown Value="{Binding Height}" Minimum="64" Maximum="4096" Increment="64" FormatString="F0" Width="180"/>
+                                        </StackPanel>
+                                    </WrapPanel>
 
-                                    <StackPanel Grid.Column="0" Grid.Row="2" Spacing="4">
-                                        <TextBlock Text="Scheduler"/>
-                                        <ComboBox ItemsSource="{Binding Schedulers}" SelectedItem="{Binding SelectedSchedulerOption}" Width="180">
-                                            <ComboBox.ItemTemplate>
-                                                <DataTemplate x:DataType="vm:SchedulerOption">
-                                                    <TextBlock Text="{Binding Display}"/>
-                                                </DataTemplate>
-                                            </ComboBox.ItemTemplate>
-                                        </ComboBox>
-                                        <CheckBox Content="Use model scheduler defaults"
-                                                  IsChecked="{Binding UseModelDefaultsForScheduler}"/>
-                                        <Border Background="#1E2737"
-                                                BorderBrush="#2E3A52"
-                                                BorderThickness="1"
-                                                CornerRadius="4"
-                                                Padding="6,2"
-                                                ToolTip.Tip="{Binding ModelSchedulerDefaultToolTip}"
-                                                IsVisible="{Binding HasModelSchedulerDefault}">
-                                            <TextBlock Text="{Binding ModelSchedulerDefaultLabel}"
-                                                       Classes="subtle"
-                                                       TextWrapping="NoWrap"/>
-                                        </Border>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Grid.Row="2" Spacing="4">
-                                        <TextBlock Text="Images per Model"/>
-                                        <NumericUpDown Value="{Binding NumImages}" Minimum="1" Maximum="100" Width="180"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2" Grid.Row="2" Spacing="4">
-                                        <TextBlock Text="Aspect Ratios"/>
-                                        <WrapPanel ItemSpacing="6">
-                                            <Button Content="1:1" Command="{Binding SetAspectRatioCommand}" CommandParameter="1:1"/>
-                                            <Button Content="4:3" Command="{Binding SetAspectRatioCommand}" CommandParameter="4:3"/>
-                                            <Button Content="16:9" Command="{Binding SetAspectRatioCommand}" CommandParameter="16:9"/>
-                                            <Button Content="3:4" Command="{Binding SetAspectRatioCommand}" CommandParameter="3:4"/>
-                                            <Button Content="9:16" Command="{Binding SetAspectRatioCommand}" CommandParameter="9:16"/>
-                                        </WrapPanel>
-                                    </StackPanel>
-                                </Grid>
+                                    <WrapPanel ItemSpacing="16">
+                                        <StackPanel Width="430" Spacing="4">
+                                            <TextBlock Text="Scheduler"/>
+                                            <ComboBox ItemsSource="{Binding Schedulers}" SelectedItem="{Binding SelectedSchedulerOption}" Width="180">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:SchedulerOption">
+                                                        <TextBlock Text="{Binding Display}"/>
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+                                            <CheckBox Content="Use model scheduler defaults"
+                                                      IsChecked="{Binding UseModelDefaultsForScheduler}"/>
+                                            <Border Background="#1E2737"
+                                                    BorderBrush="#2E3A52"
+                                                    BorderThickness="1"
+                                                    CornerRadius="4"
+                                                    Padding="6,2"
+                                                    ToolTip.Tip="{Binding ModelSchedulerDefaultToolTip}"
+                                                    IsVisible="{Binding HasModelSchedulerDefault}">
+                                                <TextBlock Text="{Binding ModelSchedulerDefaultLabel}"
+                                                           Classes="subtle"
+                                                           TextWrapping="NoWrap"/>
+                                            </Border>
+                                        </StackPanel>
+                                        <StackPanel Width="220" Spacing="4">
+                                            <TextBlock Text="Images per Model"/>
+                                            <NumericUpDown Value="{Binding NumImages}" Minimum="1" Maximum="100" Increment="1" FormatString="F0" Width="180"/>
+                                        </StackPanel>
+                                        <StackPanel Width="220" Spacing="4">
+                                            <TextBlock Text="Aspect Ratios"/>
+                                            <WrapPanel ItemSpacing="6">
+                                                <Button Content="1:1" Command="{Binding SetAspectRatioCommand}" CommandParameter="1:1"/>
+                                                <Button Content="4:3" Command="{Binding SetAspectRatioCommand}" CommandParameter="4:3"/>
+                                                <Button Content="16:9" Command="{Binding SetAspectRatioCommand}" CommandParameter="16:9"/>
+                                                <Button Content="3:4" Command="{Binding SetAspectRatioCommand}" CommandParameter="3:4"/>
+                                                <Button Content="9:16" Command="{Binding SetAspectRatioCommand}" CommandParameter="9:16"/>
+                                            </WrapPanel>
+                                        </StackPanel>
+                                    </WrapPanel>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
                     </StackPanel>

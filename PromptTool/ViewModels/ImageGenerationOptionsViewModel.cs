@@ -138,7 +138,10 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             var reachable = await _invokeAiClient.IsReachableAsync();
             if (!reachable)
             {
+                EnsureSchedulerSelection();
                 StatusMessage = "InvokeAI is offline; using cached/default selections.";
+                UpdateTotalImagesLabel();
+                ApplyDefaultsForSelection();
                 return;
             }
 
@@ -159,15 +162,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             var schedulerOptions = schedulers
                 .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
                 .Select(s => new SchedulerOption(s, NormalizeSchedulerDisplay(s))).ToList();
-            Schedulers = new ObservableCollection<SchedulerOption>(schedulerOptions);
-            var defaultScheduler = _pendingSchedulerValue ?? _activeDefaults.Scheduler ?? _settingsService.Settings.DefaultScheduler ?? "dpmpp_2m_k";
-            _suppressSchedulerTracking = true;
-            SelectedSchedulerOption = schedulerOptions.FirstOrDefault(s => string.Equals(s.Value, defaultScheduler, StringComparison.OrdinalIgnoreCase))
-                                     ?? schedulerOptions.FirstOrDefault(s => s.Value == "dpmpp_2m_k")
-                                     ?? schedulerOptions.FirstOrDefault();
-            _suppressSchedulerTracking = false;
-            _schedulerManuallySet = !string.IsNullOrWhiteSpace(_pendingSchedulerValue);
-            _pendingSchedulerValue = null;
+            EnsureSchedulerSelection(schedulerOptions);
             
             var loras = await _invokeAiClient.GetModelsAsync(baseModel: BaseModelType, modelType: "lora");
             _allLoras = loras
@@ -190,6 +185,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             Models = new ObservableCollection<SelectableModelViewModel>();
             _allLoras = new List<SelectableLoraViewModel>();
             Loras = new ObservableCollection<SelectableLoraViewModel>();
+            EnsureSchedulerSelection();
         }
 
         UpdateTotalImagesLabel();
@@ -308,6 +304,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             Height = _activeDefaults.Height;
             SaveToGallery = _activeDefaults.SaveToGallery;
         }
+        EnsureSchedulerSelection();
         ShowStylePrompts = string.Equals(value, "sdxl", StringComparison.OrdinalIgnoreCase);
         _ = LoadDataAsync(); // Reload models and LoRAs when base model type changes
     }
@@ -852,18 +849,6 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         if ((Width == 1024 || Width == 0) && defaults.Width > 0) Width = defaults.Width;
         if ((Height == 1024 || Height == 0) && defaults.Height > 0) Height = defaults.Height;
 
-        if (UseModelDefaultsForScheduler && !_schedulerManuallySet && !string.IsNullOrWhiteSpace(defaults.Sampler) && defaults.Sampler != "(None)")
-        {
-            var match = Schedulers.FirstOrDefault(s => string.Equals(s.Value, defaults.Sampler, StringComparison.OrdinalIgnoreCase));
-            if (match != null)
-            {
-                _suppressSchedulerTracking = true;
-                SelectedSchedulerOption = match;
-                _suppressSchedulerTracking = false;
-                _schedulerManuallySet = false;
-            }
-        }
-
         if (!string.IsNullOrWhiteSpace(defaults.PositivePromptPrefix) && string.IsNullOrWhiteSpace(Prompt))
         {
             Prompt = defaults.PositivePromptPrefix.Trim();
@@ -954,18 +939,6 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         if ((Width == 1024 || Width == 0) && defaults.Width > 0) Width = defaults.Width;
         if ((Height == 1024 || Height == 0) && defaults.Height > 0) Height = defaults.Height;
 
-        if (UseModelDefaultsForScheduler && !_schedulerManuallySet && !string.IsNullOrWhiteSpace(defaults.Sampler) && defaults.Sampler != "(None)")
-        {
-            var match = Schedulers.FirstOrDefault(s => string.Equals(s.Value, defaults.Sampler, StringComparison.OrdinalIgnoreCase));
-            if (match != null)
-            {
-                _suppressSchedulerTracking = true;
-                SelectedSchedulerOption = match;
-                _suppressSchedulerTracking = false;
-                _schedulerManuallySet = false;
-            }
-        }
-
         if (!string.IsNullOrWhiteSpace(defaults.PositivePromptPrefix) && string.IsNullOrWhiteSpace(Prompt))
         {
             Prompt = defaults.PositivePromptPrefix.Trim();
@@ -1048,12 +1021,13 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         var map = _settingsService.Settings.GenerationDefaults ?? new Dictionary<string, GenerationDefaultsSettings>();
         if (map.TryGetValue(key, out var found))
         {
+            found.Scheduler = NormalizeConfiguredScheduler(found.Scheduler);
             return found;
         }
 
         return new GenerationDefaultsSettings
         {
-            Scheduler = _settingsService.Settings.DefaultScheduler ?? "dpmpp_2m_k",
+            Scheduler = NormalizeConfiguredScheduler(_settingsService.Settings.DefaultScheduler),
             Steps = _settingsService.Settings.DefaultSteps,
             CfgScale = _settingsService.Settings.DefaultCfgScale,
             CfgRescaleMultiplier = _settingsService.Settings.DefaultCfgRescaleMultiplier,
@@ -1061,6 +1035,49 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             Height = key == "sd-1.5" ? 512 : _settingsService.Settings.DefaultHeight,
             SaveToGallery = _settingsService.Settings.DefaultSaveToGallery
         };
+    }
+
+    private void EnsureSchedulerSelection(IEnumerable<SchedulerOption>? availableOptions = null)
+    {
+        var options = availableOptions?.ToList();
+        if (options == null || options.Count == 0)
+        {
+            var fallback = ResolveConfiguredScheduler();
+            options = new List<SchedulerOption> { new(fallback, NormalizeSchedulerDisplay(fallback)) };
+        }
+
+        Schedulers = new ObservableCollection<SchedulerOption>(options);
+
+        var configured = ResolveConfiguredScheduler();
+        _suppressSchedulerTracking = true;
+        SelectedSchedulerOption = options.FirstOrDefault(s => string.Equals(s.Value, configured, StringComparison.OrdinalIgnoreCase))
+                                 ?? options.FirstOrDefault(s => string.Equals(NormalizeConfiguredScheduler(s.Value), configured, StringComparison.OrdinalIgnoreCase))
+                                 ?? options.FirstOrDefault(s => string.Equals(s.Value, "dpmpp_2m_k", StringComparison.OrdinalIgnoreCase))
+                                 ?? options.FirstOrDefault();
+        _suppressSchedulerTracking = false;
+        _schedulerManuallySet = !string.IsNullOrWhiteSpace(_pendingSchedulerValue);
+        _pendingSchedulerValue = null;
+    }
+
+    private string ResolveConfiguredScheduler()
+    {
+        if (!string.IsNullOrWhiteSpace(_pendingSchedulerValue))
+        {
+            return NormalizeConfiguredScheduler(_pendingSchedulerValue);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_activeDefaults.Scheduler))
+        {
+            return NormalizeConfiguredScheduler(_activeDefaults.Scheduler);
+        }
+
+        return NormalizeConfiguredScheduler(_settingsService.Settings.DefaultScheduler);
+    }
+
+    private static string NormalizeConfiguredScheduler(string? scheduler)
+    {
+        var resolved = string.IsNullOrWhiteSpace(scheduler) ? "dpmpp_2m_k" : scheduler.Trim();
+        return GraphBuilder.NormalizeScheduler(resolved);
     }
 }
 

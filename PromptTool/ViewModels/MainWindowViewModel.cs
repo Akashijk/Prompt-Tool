@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -82,6 +83,11 @@ public partial class MainWindowViewModel : ObservableObject
     public bool IsSfwWorkflow => string.Equals(Workflow, "sfw", StringComparison.OrdinalIgnoreCase);
     public bool IsNsfwWorkflow => string.Equals(Workflow, "nsfw", StringComparison.OrdinalIgnoreCase);
 
+    partial void OnPromptTextChanged(string value)
+    {
+        UpdateMissingWildcardsPreview(value);
+    }
+
     partial void OnSelectedModelChanged(string? value)
     {
         if (!_initialized || string.IsNullOrWhiteSpace(value))
@@ -110,7 +116,11 @@ public partial class MainWindowViewModel : ObservableObject
     public IAsyncRelayCommand<Window?> ShowWildcardManagerCommand { get; }
     public IAsyncRelayCommand<string?> OpenWildcardInManagerCommand { get; }
     public IAsyncRelayCommand<Window?> ShowAllImagesCommand { get; }
-    public IRelayCommand<string?> CreateMissingWildcardCommand { get; }
+    public IAsyncRelayCommand<Window?> SaveTemplateCommand { get; }
+    public IAsyncRelayCommand<Window?> CreateTemplateCommand { get; }
+    public IAsyncRelayCommand<Window?> SaveTemplateAsCommand { get; }
+    public IAsyncRelayCommand<Window?> GenerateTemplateFromThemeCommand { get; }
+    public IAsyncRelayCommand<string?> CreateMissingWildcardCommand { get; }
     public IRelayCommand<string?> InsertWildcardCommand { get; }
     public IAsyncRelayCommand<Window?> ShowPromptEvolverCommand { get; }
     public IAsyncRelayCommand<Window?> ShowInvokeAIModelDefaultsCommand { get; }
@@ -176,7 +186,11 @@ public partial class MainWindowViewModel : ObservableObject
         ShowWildcardManagerCommand = new AsyncRelayCommand<Window?>(ShowWildcardManagerAsync);
         OpenWildcardInManagerCommand = new AsyncRelayCommand<string?>(OpenWildcardInManagerAsync);
         ShowAllImagesCommand = new AsyncRelayCommand<Window?>(ShowAllImagesAsync);
-        CreateMissingWildcardCommand = new RelayCommand<string?>(CreateMissingWildcard);
+        SaveTemplateCommand = new AsyncRelayCommand<Window?>(SaveTemplateAsync);
+        CreateTemplateCommand = new AsyncRelayCommand<Window?>(CreateTemplateAsync);
+        SaveTemplateAsCommand = new AsyncRelayCommand<Window?>(SaveTemplateAsAsync);
+        GenerateTemplateFromThemeCommand = new AsyncRelayCommand<Window?>(GenerateTemplateFromThemeAsync);
+        CreateMissingWildcardCommand = new AsyncRelayCommand<string?>(CreateMissingWildcardAsync);
         InsertWildcardCommand = new RelayCommand<string?>(InsertWildcard);
         ShowPromptEvolverCommand = new AsyncRelayCommand<Window?>(ShowPromptEvolverAsync);
         ShowPngMetadataViewerCommand = new AsyncRelayCommand<Window?>(ShowPngMetadataViewerAsync);
@@ -379,6 +393,219 @@ public partial class MainWindowViewModel : ObservableObject
         {
             StatusText = $"Failed to load template: {ex.Message}";
         }
+    }
+
+    private async Task SaveTemplateAsync(Window? owner)
+    {
+        if (SelectedTemplate == null)
+        {
+            await SaveTemplateAsAsync(owner);
+            return;
+        }
+
+        try
+        {
+            await _templateService.SaveTemplateAsync(SelectedTemplate.Name, PromptText ?? string.Empty, Workflow);
+            StatusText = $"Saved template: {SelectedTemplate.Name}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Failed to save template: {ex.Message}";
+        }
+    }
+
+    private async Task CreateTemplateAsync(Window? owner)
+    {
+        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var name = await Views.TextInputDialog.ShowAsync("New Template", "Template name:", "new_template", resolved);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            StatusText = "Template creation canceled.";
+            return;
+        }
+
+        var trimmedName = name.Trim();
+        if (trimmedName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            StatusText = "Template name contains invalid filename characters.";
+            return;
+        }
+
+        try
+        {
+            await _templateService.SaveTemplateAsync(trimmedName, string.Empty, Workflow);
+            await LoadTemplatesAsync();
+
+            var match = Templates.FirstOrDefault(t => string.Equals(t.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                SelectedTemplate = match;
+            }
+
+            PromptText = string.Empty;
+            StatusText = $"Created template: {trimmedName}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Failed to create template: {ex.Message}";
+        }
+    }
+
+    private async Task SaveTemplateAsAsync(Window? owner)
+    {
+        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var suggestedName = SelectedTemplate?.Name ?? "new_template";
+        var name = await Views.TextInputDialog.ShowAsync("Save Template As", "Template name:", suggestedName, resolved);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            StatusText = "Template save canceled.";
+            return;
+        }
+
+        var trimmedName = name.Trim();
+        if (trimmedName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            StatusText = "Template name contains invalid filename characters.";
+            return;
+        }
+
+        try
+        {
+            await _templateService.SaveTemplateAsync(trimmedName, PromptText ?? string.Empty, Workflow);
+            await LoadTemplatesAsync();
+            var match = Templates.FirstOrDefault(t => string.Equals(t.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                SelectedTemplate = match;
+            }
+            StatusText = $"Saved template: {trimmedName}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Failed to save template: {ex.Message}";
+        }
+    }
+
+    private async Task GenerateTemplateFromThemeAsync(Window? owner)
+    {
+        var resolved = GetOwnerWindow(owner) ?? new Window();
+
+        if (string.IsNullOrWhiteSpace(SelectedModel))
+        {
+            StatusText = "Select an Ollama model before using AI template generation.";
+            await ShowInfoAsync(resolved, "No Model Selected", "Select an Ollama model first. Template generation needs a model.");
+            return;
+        }
+
+        if (Wildcards.Count == 0)
+        {
+            StatusText = "No wildcards are available for template generation.";
+            await ShowInfoAsync(resolved, "No Wildcards", "Load or create some wildcards first. The template builder relies on your wildcard library.");
+            return;
+        }
+
+        var theme = await Views.TextInputDialog.ShowAsync(
+            "Generate Template",
+            "Describe the theme or concept for the template:",
+            string.Empty,
+            resolved);
+
+        if (string.IsNullOrWhiteSpace(theme))
+        {
+            StatusText = "AI template generation canceled.";
+            return;
+        }
+
+        var options = await ShowTemplateBuilderOptionsDialogAsync(resolved);
+        if (options == null)
+        {
+            StatusText = "AI template generation canceled.";
+            return;
+        }
+
+        var trimmedTheme = theme.Trim();
+
+        try
+        {
+            StatusText = "Planning template wildcard shortlist...";
+            var immediatePlan = BuildImmediateTemplatePlan(trimmedTheme, options);
+            var plannerTask = PlanTemplateWildcardsAsync(trimmedTheme, options);
+
+            var approvedWildcards = await ShowTemplateWildcardReviewDialogAsync(resolved, trimmedTheme, immediatePlan, options, plannerTask);
+            if (approvedWildcards == null || approvedWildcards.Count == 0)
+            {
+                StatusText = "AI template generation canceled.";
+                return;
+            }
+
+            StatusText = "Generating template candidates...";
+            var candidates = await GenerateTemplateCandidatesAsync(trimmedTheme, options, approvedWildcards);
+            var selected = await ShowTemplateCandidatePickerAsync(resolved, trimmedTheme, options, candidates);
+            if (selected == null)
+            {
+                StatusText = "AI template generation canceled.";
+                return;
+            }
+
+            PromptText = selected.Template;
+            StatusText = $"Applied AI template '{selected.Name}'.";
+
+            var saveNow = await ShowConfirmAsync(
+                resolved,
+                $"Applied '{selected.Name}'.\n\nWould you like to save this as a template now?");
+
+            if (!saveNow)
+            {
+                return;
+            }
+
+            var templateName = await Views.TextInputDialog.ShowAsync(
+                "Save AI Template",
+                "Template name:",
+                SuggestTemplateName(trimmedTheme),
+                resolved);
+
+            if (string.IsNullOrWhiteSpace(templateName))
+            {
+                StatusText = "Template applied but not saved.";
+                return;
+            }
+
+            var trimmedName = templateName.Trim();
+            if (trimmedName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                StatusText = "Template name contains invalid filename characters.";
+                return;
+            }
+
+            await _templateService.SaveTemplateAsync(trimmedName, PromptText ?? string.Empty, Workflow);
+            await LoadTemplatesAsync();
+            var match = Templates.FirstOrDefault(t => string.Equals(t.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                SelectedTemplate = match;
+            }
+
+            StatusText = $"Saved AI template: {trimmedName}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"AI template generation failed: {ex.Message}";
+            await ShowInfoAsync(resolved, "Template Generation Failed", ex.Message);
+        }
+    }
+
+    private void UpdateMissingWildcardsPreview(string? rawPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(rawPrompt))
+        {
+            MissingWildcards = new ObservableCollection<string>();
+            return;
+        }
+
+        var result = _promptProcessorService.ProcessPrompt(rawPrompt);
+        MissingWildcards = new ObservableCollection<string>(
+            result.MissingWildcards.OrderBy(s => s, StringComparer.OrdinalIgnoreCase));
     }
 
     private async Task LoadVariationsAsync()
@@ -1053,6 +1280,706 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         dialog.Show(owner);
+        return await tcs.Task;
+    }
+
+    private async Task<TemplateBuilderOptions?> ShowTemplateBuilderOptionsDialogAsync(Window owner)
+    {
+        var tcs = new TaskCompletionSource<TemplateBuilderOptions?>();
+        var complexityItems = new[] { "Balanced", "Minimal", "Rich" };
+        var focusItems = new[] { "Balanced", "Character", "Environment", "Action" };
+
+        var complexityCombo = new ComboBox
+        {
+            ItemsSource = complexityItems,
+            SelectedIndex = 0
+        };
+
+        var focusCombo = new ComboBox
+        {
+            ItemsSource = focusItems,
+            SelectedIndex = 0
+        };
+
+        var dialog = new Window
+        {
+            Width = 520,
+            Height = 300,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = "Template Builder",
+            Content = new StackPanel
+            {
+                Margin = new Thickness(12),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Choose how dense and what kind of composition the AI should favor.",
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                    },
+                    new StackPanel
+                    {
+                        Spacing = 6,
+                        Children =
+                        {
+                            new TextBlock { Text = "Complexity", FontWeight = Avalonia.Media.FontWeight.Bold },
+                            complexityCombo
+                        }
+                    },
+                    new StackPanel
+                    {
+                        Spacing = 6,
+                        Children =
+                        {
+                            new TextBlock { Text = "Focus", FontWeight = Avalonia.Media.FontWeight.Bold },
+                            focusCombo
+                        }
+                    },
+                    new TextBlock
+                    {
+                        Text = "Balanced is the default. Minimal keeps the prompt lean. Rich uses more wildcard coverage.",
+                        Classes = { "subtle" },
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children =
+                        {
+                            new Button { Content = "Cancel" },
+                            new Button { Content = "Continue" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var buttons = ((dialog.Content as StackPanel)?.Children.LastOrDefault() as StackPanel)?.Children;
+        var cancelButton = buttons?[0] as Button;
+        var okButton = buttons?[1] as Button;
+
+        if (cancelButton != null)
+        {
+            cancelButton.Click += (_, __) =>
+            {
+                tcs.TrySetResult(null);
+                dialog.Close();
+            };
+        }
+
+        if (okButton != null)
+        {
+            okButton.Click += (_, __) =>
+            {
+                var complexity = NormalizeTemplateComplexity((complexityCombo.SelectedItem as string) ?? "Balanced");
+                var focus = NormalizeTemplateFocus((focusCombo.SelectedItem as string) ?? "Balanced");
+                tcs.TrySetResult(new TemplateBuilderOptions(complexity, focus));
+                dialog.Close();
+            };
+        }
+
+        dialog.Closed += (_, __) =>
+        {
+            if (!tcs.Task.IsCompleted)
+            {
+                tcs.TrySetResult(null);
+            }
+        };
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    private async Task<IReadOnlyList<string>?> ShowTemplateWildcardReviewDialogAsync(
+        Window owner,
+        string theme,
+        TemplatePlanResult plan,
+        TemplateBuilderOptions options,
+        Task<TemplatePlanResult>? plannerTask = null)
+    {
+        var tcs = new TaskCompletionSource<IReadOnlyList<string>?>();
+        var approvedWildcards = plan.SelectedWildcards
+            .Where(name => !string.IsNullOrWhiteSpace(name) && _wildcardService.WildcardExists(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var chipsPanel = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        var emptyApprovedText = new TextBlock
+        {
+            Text = "No approved wildcards yet. Add from the picker on the right.",
+            Classes = { "subtle" },
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+        };
+        var approvedSummaryText = new TextBlock
+        {
+            Classes = { "subtle" }
+        };
+        var filterBox = new TextBox
+        {
+            Watermark = "Filter wildcards..."
+        };
+        var wildcardList = new ListBox
+        {
+            Height = 260,
+            ItemTemplate = new FuncDataTemplate<string>((name, _) =>
+            {
+                var text = new TextBlock
+                {
+                    Text = name
+                };
+                ToolTip.SetTip(text, BuildHumanReadableWildcardPreview(name));
+                return text;
+            }, true)
+        };
+        var previewBox = new TextBox
+        {
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            MinHeight = 220
+        };
+        var addButton = new Button
+        {
+            Content = "Add Selected",
+            Width = 120,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        var plannerStatus = new TextBlock
+        {
+            Text = plannerTask == null
+                ? "Review or adjust the fast local shortlist."
+                : "AI planner is refining the shortlist...",
+            Classes = { "subtle" },
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+        };
+        var strategyText = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(plan.Strategy)
+                ? "Fast local shortlist based on your current wildcard library."
+                : plan.Strategy,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+        };
+        var missingIdeasText = new TextBlock
+        {
+            Classes = { "subtle" },
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+        };
+
+        var allWildcardNames = _wildcardService.GetWildcardNames()
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var userEditedApprovedList = false;
+
+        void RefreshApprovedSummary()
+        {
+            approvedSummaryText.Text = approvedWildcards.Count == 0
+                ? "Approved count: 0"
+                : $"Approved count: {approvedWildcards.Count}";
+        }
+
+        void RenderApprovedChips()
+        {
+            chipsPanel.Children.Clear();
+
+            if (approvedWildcards.Count == 0)
+            {
+                emptyApprovedText.IsVisible = true;
+                RefreshApprovedSummary();
+                return;
+            }
+
+            emptyApprovedText.IsVisible = false;
+
+            foreach (var wildcardName in approvedWildcards)
+            {
+                var removeButton = new Button
+                {
+                    Content = "x",
+                    Width = 26,
+                    Height = 26,
+                    Padding = new Thickness(0),
+                    Margin = new Thickness(6, 0, 0, 0),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+
+                removeButton.Click += (_, __) =>
+                {
+                    approvedWildcards.RemoveAll(name => string.Equals(name, wildcardName, StringComparison.OrdinalIgnoreCase));
+                    userEditedApprovedList = true;
+                    RenderApprovedChips();
+                };
+
+                chipsPanel.Children.Add(new Border
+                {
+                    BorderBrush = Avalonia.Media.Brush.Parse("#3D6F99"),
+                    BorderThickness = new Thickness(1),
+                    Background = Avalonia.Media.Brush.Parse("#14324C"),
+                    CornerRadius = new CornerRadius(999),
+                    Padding = new Thickness(10, 6),
+                    Margin = new Thickness(0, 0, 8, 8),
+                    Child = new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 0,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = wildcardName,
+                                VerticalAlignment = VerticalAlignment.Center
+                            },
+                            removeButton
+                        }
+                    }
+                });
+            }
+
+            RefreshApprovedSummary();
+        }
+
+        void RefreshWildcardPicker()
+        {
+            var filter = filterBox.Text?.Trim();
+            var filtered = string.IsNullOrWhiteSpace(filter)
+                ? allWildcardNames
+                : allWildcardNames
+                    .Where(n => n.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+            wildcardList.ItemsSource = filtered;
+
+            if (filtered.Count > 0)
+            {
+                var current = wildcardList.SelectedItem as string;
+                if (current == null || !filtered.Contains(current, StringComparer.OrdinalIgnoreCase))
+                {
+                    wildcardList.SelectedItem = filtered[0];
+                }
+            }
+            else
+            {
+                wildcardList.SelectedItem = null;
+            }
+        }
+
+        void RefreshWildcardPreview()
+        {
+            previewBox.Text = wildcardList.SelectedItem is string selectedName
+                ? BuildHumanReadableWildcardPreview(selectedName)
+                : "Select a wildcard to preview its normalized contents.";
+        }
+        void ApplyPlanToUi(TemplatePlanResult updatedPlan, bool fromAi)
+        {
+            strategyText.Text = string.IsNullOrWhiteSpace(updatedPlan.Strategy)
+                ? (fromAi ? "AI planner updated the shortlist." : "Fast local shortlist based on your current wildcard library.")
+                : updatedPlan.Strategy;
+
+            missingIdeasText.Text = updatedPlan.MissingWildcardIdeas.Count == 0
+                ? "Missing wildcard opportunities: None"
+                : $"Missing wildcard opportunities: {string.Join(", ", updatedPlan.MissingWildcardIdeas.Take(8))}";
+
+            if (!userEditedApprovedList)
+            {
+                approvedWildcards.Clear();
+                approvedWildcards.AddRange(updatedPlan.SelectedWildcards
+                    .Where(name => !string.IsNullOrWhiteSpace(name) && _wildcardService.WildcardExists(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+                RenderApprovedChips();
+            }
+        }
+
+        ApplyPlanToUi(plan, fromAi: false);
+
+        var dialog = new Window
+        {
+            Width = 1120,
+            Height = 760,
+            MinWidth = 960,
+            MinHeight = 680,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = "Review Wildcard Plan",
+            Content = new Grid
+            {
+                Margin = new Thickness(12),
+                RowDefinitions = new RowDefinitions("Auto,*,Auto"),
+                RowSpacing = 10,
+                Children =
+                {
+                    new Border
+                    {
+                        BorderBrush = Avalonia.Media.Brush.Parse("#33506A"),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(6),
+                        Padding = new Thickness(12),
+                        Child = new StackPanel
+                        {
+                            Spacing = 8,
+                            Children =
+                            {
+                                new TextBlock
+                                {
+                                    Text = $"Theme: {theme}",
+                                    FontWeight = Avalonia.Media.FontWeight.Bold,
+                                    FontSize = 16,
+                                    TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                                },
+                                new TextBlock
+                                {
+                                    Text = $"Mode: {options.DisplayComplexity} | Focus: {options.DisplayFocus}",
+                                    Classes = { "subtle" }
+                                },
+                                plannerStatus,
+                                strategyText,
+                                missingIdeasText
+                            }
+                        }
+                    },
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("1.2*,1*"),
+                        ColumnSpacing = 14,
+                        Children =
+                        {
+                            new Border
+                            {
+                                BorderBrush = Avalonia.Media.Brush.Parse("#33506A"),
+                                BorderThickness = new Thickness(1),
+                                CornerRadius = new CornerRadius(6),
+                                Padding = new Thickness(12),
+                                Child = new StackPanel
+                                {
+                                    Spacing = 8,
+                                    Children =
+                                    {
+                                        new TextBlock
+                                        {
+                                            Text = "Approved Wildcards",
+                                            FontWeight = Avalonia.Media.FontWeight.Bold,
+                                            FontSize = 15
+                                        },
+                                        new TextBlock
+                                        {
+                                            Text = "Use the picker to add, and remove chips directly here. The generator will only use these approved wildcards.",
+                                            Classes = { "subtle" },
+                                            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                                        },
+                                        approvedSummaryText,
+                                        new ScrollViewer
+                                        {
+                                            MinHeight = 180,
+                                            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                                            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+                                            Content = chipsPanel
+                                        },
+                                        emptyApprovedText
+                                    }
+                                }
+                            },
+                            new Border
+                            {
+                                BorderBrush = Avalonia.Media.Brush.Parse("#33506A"),
+                                BorderThickness = new Thickness(1),
+                                CornerRadius = new CornerRadius(4),
+                                Padding = new Thickness(10),
+                                Child = new StackPanel
+                                {
+                                    Spacing = 8,
+                                    Children =
+                                    {
+                                        new TextBlock
+                                        {
+                                            Text = "Wildcard Picker",
+                                            FontWeight = Avalonia.Media.FontWeight.Bold,
+                                            FontSize = 15
+                                        },
+                                        new TextBlock
+                                        {
+                                            Text = "Filter, inspect, and inject wildcards without typing names manually.",
+                                            Classes = { "subtle" },
+                                            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                                        },
+                                        filterBox,
+                                        wildcardList,
+                                        addButton,
+                                        new TextBlock
+                                        {
+                                            Text = "Preview",
+                                            FontWeight = Avalonia.Media.FontWeight.Bold
+                                        },
+                                        previewBox
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Margin = new Thickness(0, 4, 0, 0),
+                        Children =
+                        {
+                            new Button { Content = "Cancel" },
+                            new Button { Content = "Generate Templates" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var grid = (Grid)dialog.Content!;
+        Grid.SetRow(grid.Children[0], 0);
+        Grid.SetRow(grid.Children[1], 1);
+        Grid.SetRow(grid.Children[2], 2);
+
+        var contentGrid = grid.Children[1] as Grid;
+        if (contentGrid != null)
+        {
+            Grid.SetColumn(contentGrid.Children[0], 0);
+            Grid.SetColumn(contentGrid.Children[1], 1);
+        }
+
+        filterBox.PropertyChanged += (_, args) =>
+        {
+            if (args.Property == TextBox.TextProperty)
+            {
+                RefreshWildcardPicker();
+            }
+        };
+        wildcardList.SelectionChanged += (_, __) => RefreshWildcardPreview();
+
+        addButton.Click += (_, __) =>
+        {
+            if (wildcardList.SelectedItem is not string selectedName)
+            {
+                return;
+            }
+
+            if (!approvedWildcards.Contains(selectedName, StringComparer.OrdinalIgnoreCase))
+            {
+                approvedWildcards.Add(selectedName);
+                userEditedApprovedList = true;
+                RenderApprovedChips();
+            }
+        };
+
+        RenderApprovedChips();
+        RefreshWildcardPicker();
+        RefreshWildcardPreview();
+
+        if (plannerTask != null)
+        {
+            _ = plannerTask.ContinueWith(task =>
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (task.IsCanceled)
+                    {
+                        plannerStatus.Text = "AI planner canceled. Using the fast local shortlist.";
+                        return;
+                    }
+
+                    if (task.IsFaulted)
+                    {
+                        plannerStatus.Text = "AI planner failed. Using the fast local shortlist.";
+                        return;
+                    }
+
+                    plannerStatus.Text = "AI planner suggestions loaded.";
+                    if (task.Result.SelectedWildcards.Count > 0)
+                    {
+                        ApplyPlanToUi(task.Result, fromAi: true);
+                    }
+                });
+            }, TaskScheduler.Default);
+        }
+
+        var buttons = (grid.Children[2] as StackPanel)?.Children;
+        var cancelButton = buttons?[0] as Button;
+        var okButton = buttons?[1] as Button;
+
+        if (cancelButton != null)
+        {
+            cancelButton.Click += (_, __) =>
+            {
+                tcs.TrySetResult(null);
+                dialog.Close();
+            };
+        }
+
+        if (okButton != null)
+        {
+            okButton.Click += (_, __) =>
+            {
+                var approved = approvedWildcards
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                tcs.TrySetResult(approved.Count == 0 ? null : approved);
+                dialog.Close();
+            };
+        }
+
+        dialog.Closed += (_, __) =>
+        {
+            if (!tcs.Task.IsCompleted)
+            {
+                tcs.TrySetResult(null);
+            }
+        };
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    private async Task<TemplateCandidate?> ShowTemplateCandidatePickerAsync(
+        Window owner,
+        string theme,
+        TemplateBuilderOptions options,
+        IReadOnlyList<TemplateCandidate> candidates)
+    {
+        var tcs = new TaskCompletionSource<TemplateCandidate?>();
+        var cards = new StackPanel { Spacing = 10 };
+        var buttonMap = new Dictionary<Button, TemplateCandidate>();
+
+        foreach (var candidate in candidates)
+        {
+            var applyButton = new Button
+            {
+                Content = $"Apply {candidate.Name}",
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Width = 150
+            };
+            buttonMap[applyButton] = candidate;
+
+            cards.Children.Add(new Border
+            {
+                BorderBrush = Avalonia.Media.Brush.Parse("#33506A"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10),
+                Child = new StackPanel
+                {
+                    Spacing = 8,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = candidate.Name,
+                            FontWeight = Avalonia.Media.FontWeight.Bold
+                        },
+                        new TextBlock
+                        {
+                            Text = candidate.Strategy,
+                            Classes = { "subtle" },
+                            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                        },
+                        new TextBox
+                        {
+                            Text = candidate.Template,
+                            IsReadOnly = true,
+                            AcceptsReturn = true,
+                            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                            Height = 88
+                        },
+                        applyButton
+                    }
+                }
+            });
+        }
+
+        var dialog = new Window
+        {
+            Width = 820,
+            Height = 720,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = "Choose Template Candidate",
+            Content = new Grid
+            {
+                Margin = new Thickness(12),
+                RowDefinitions = new RowDefinitions("Auto,*,Auto"),
+                RowSpacing = 10,
+                Children =
+                {
+                    new StackPanel
+                    {
+                        Spacing = 4,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = $"Theme: {theme}",
+                                FontWeight = Avalonia.Media.FontWeight.Bold,
+                                TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                            },
+                            new TextBlock
+                            {
+                                Text = $"Mode: {options.DisplayComplexity} | Focus: {options.DisplayFocus}",
+                                Classes = { "subtle" }
+                            }
+                        }
+                    },
+                    new ScrollViewer
+                    {
+                        Content = cards
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Children =
+                        {
+                            new Button { Content = "Cancel" }
+                        }
+                    }
+                }
+            }
+        };
+
+        var grid = (Grid)dialog.Content!;
+        Grid.SetRow(grid.Children[0], 0);
+        Grid.SetRow(grid.Children[1], 1);
+        Grid.SetRow(grid.Children[2], 2);
+
+        foreach (var pair in buttonMap)
+        {
+            var button = pair.Key;
+            var candidate = pair.Value;
+            button.Click += (_, __) =>
+            {
+                tcs.TrySetResult(candidate);
+                dialog.Close();
+            };
+        }
+
+        var cancel = (grid.Children[2] as StackPanel)?.Children[0] as Button;
+        if (cancel != null)
+        {
+            cancel.Click += (_, __) =>
+            {
+                tcs.TrySetResult(null);
+                dialog.Close();
+            };
+        }
+
+        dialog.Closed += (_, __) =>
+        {
+            if (!tcs.Task.IsCompleted)
+            {
+                tcs.TrySetResult(null);
+            }
+        };
+
+        await dialog.ShowDialog(owner);
         return await tcs.Task;
     }
 
@@ -1948,6 +2875,12 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task ShowWildcardManagerAsync(Window? owner, string? wildcardName)
     {
+        OpenWildcardManagerWindow(owner, wildcardName);
+        await Task.CompletedTask;
+    }
+
+    private Views.WildcardManagerWindow OpenWildcardManagerWindow(Window? owner, string? wildcardName)
+    {
         var vm = new WildcardManagerViewModel(_wildcardService);
         var win = new Views.WildcardManagerWindow(vm);
         if (!string.IsNullOrWhiteSpace(wildcardName))
@@ -1956,7 +2889,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
         var resolved = GetOwnerWindow(owner) ?? new Window();
         win.Show(resolved);
-        await Task.CompletedTask;
+        return win;
     }
 
     private async Task RegenerateFromHistoryAsync(HistoryEntry entry, HistoryImage? image, string? promptOverride, string? promptTypeOverride, Window? owner)
@@ -2307,7 +3240,7 @@ public partial class MainWindowViewModel : ObservableObject
         });
     }
 
-    private async Task GenerateVariationsFromSlotAsync(ImageSlotViewModel slot, bool seedVariations)
+    private async Task GenerateVariationsFromSlotAsync(ImageSlotViewModel slot, bool seedVariations, MultiImagePreviewViewModel? previewVm = null)
     {
         if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
         {
@@ -2393,63 +3326,125 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 if (seedVariations && seedOptions != null && preparedParams != null)
                 {
-                    if (seedOptions.MirrorSeeds && rootBytes != null)
+                    if (previewVm != null)
                     {
-                        await RunSeedVariationPreviewAsync(
-                            preparedParams,
-                            prompt,
-                            "Seed Variations",
-                            Workflow,
-                            null,
-                            "Generating seed variations...",
-                            allowLongPrompts: true,
-                            rootSeed: seedOptions.RootSeed,
-                            rootImageBytes: rootBytes,
-                            job,
-                            token,
-                            waitForSaveSelection: false,
-                            onSaveCompleted: async images =>
+                        var slotIndex = previewVm.Slots.IndexOf(slot);
+                        if (slotIndex < 0)
+                        {
+                            slotIndex = previewVm.Slots.Count - 1;
+                        }
+
+                        var jobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
+                        var beforeInsertIndex = slotIndex;
+                        var afterInsertIndex = slotIndex + 1;
+                        var counter = 1;
+                        foreach (var param in preparedParams)
+                        {
+                            if (seedOptions.MirrorSeeds && rootBytes != null && param.Seed == seedOptions.RootSeed)
                             {
-                                var entry = BuildHistoryEntryForGeneration(
-                                    PromptText ?? string.Empty,
-                                    prompt,
-                                    SelectedTemplate?.Name,
-                                    SelectedModel ?? "",
-                                    SelectedModel,
-                                    Workflow,
-                                    images);
-                                _historyManager.AddEntry(entry);
-                                StatusText = "Selected images saved to history.";
-                                await Task.CompletedTask;
-                            });
+                                continue;
+                            }
+
+                            var label = $"Variation {counter}";
+                            var newSlot = previewVm.CreatePlaceholderSlot(label);
+                            if (param.BaseSeed != 0)
+                            {
+                                newSlot.IsRootSeed = param.Seed == param.BaseSeed;
+                                newSlot.RootSeedLabel = newSlot.IsRootSeed ? string.Empty : $"Root seed: {param.BaseSeed}";
+                            }
+
+                            if (seedOptions.MirrorSeeds && param.Seed < seedOptions.RootSeed)
+                            {
+                                previewVm.Slots.Insert(beforeInsertIndex, newSlot);
+                                beforeInsertIndex++;
+                                afterInsertIndex++;
+                            }
+                            else
+                            {
+                                previewVm.Slots.Insert(afterInsertIndex, newSlot);
+                                afterInsertIndex++;
+                            }
+                            counter++;
+                            jobs.Add((param, newSlot));
+                        }
+
+                        previewVm.SyncProgressFromSlots();
+                        previewVm.StatusText = "Generating seed variations...";
+                        StatusText = "Generating seed variations...";
+
+                        if (previewVm.GenerationToken == null || previewVm.GenerationToken.IsCancellationRequested)
+                        {
+                            previewVm.GenerationToken = new CancellationTokenSource();
+                        }
+
+                        if (jobs.Count > 0)
+                        {
+                            await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true, job);
+                        }
+
+                        previewVm.StatusText = StatusImagesReady;
+                        StatusText = StatusImagesReadyMain;
                     }
                     else
                     {
-                        await RunGenerationPreviewAsync(
-                            preparedParams,
-                            prompt,
-                            "Seed Variations",
-                            Workflow,
-                            null,
-                            "Generating seed variations...",
-                            allowLongPrompts: true,
-                            job,
-                            token,
-                            waitForSaveSelection: false,
-                            onSaveCompleted: async images =>
-                            {
-                                var entry = BuildHistoryEntryForGeneration(
-                                    PromptText ?? string.Empty,
-                                    prompt,
-                                    SelectedTemplate?.Name,
-                                    SelectedModel ?? "",
-                                    SelectedModel,
-                                    Workflow,
-                                    images);
-                                _historyManager.AddEntry(entry);
-                                StatusText = "Selected images saved to history.";
-                                await Task.CompletedTask;
-                            });
+                        if (seedOptions.MirrorSeeds && rootBytes != null)
+                        {
+                            await RunSeedVariationPreviewAsync(
+                                preparedParams,
+                                prompt,
+                                "Seed Variations",
+                                Workflow,
+                                null,
+                                "Generating seed variations...",
+                                allowLongPrompts: true,
+                                rootSeed: seedOptions.RootSeed,
+                                rootImageBytes: rootBytes,
+                                job,
+                                token,
+                                waitForSaveSelection: false,
+                                onSaveCompleted: async images =>
+                                {
+                                    var entry = BuildHistoryEntryForGeneration(
+                                        PromptText ?? string.Empty,
+                                        prompt,
+                                        SelectedTemplate?.Name,
+                                        SelectedModel ?? "",
+                                        SelectedModel,
+                                        Workflow,
+                                        images);
+                                    _historyManager.AddEntry(entry);
+                                    StatusText = "Selected images saved to history.";
+                                    await Task.CompletedTask;
+                                });
+                        }
+                        else
+                        {
+                            await RunGenerationPreviewAsync(
+                                preparedParams,
+                                prompt,
+                                "Seed Variations",
+                                Workflow,
+                                null,
+                                "Generating seed variations...",
+                                allowLongPrompts: true,
+                                job,
+                                token,
+                                waitForSaveSelection: false,
+                                onSaveCompleted: async images =>
+                                {
+                                    var entry = BuildHistoryEntryForGeneration(
+                                        PromptText ?? string.Empty,
+                                        prompt,
+                                        SelectedTemplate?.Name,
+                                        SelectedModel ?? "",
+                                        SelectedModel,
+                                        Workflow,
+                                        images);
+                                    _historyManager.AddEntry(entry);
+                                    StatusText = "Selected images saved to history.";
+                                    await Task.CompletedTask;
+                                });
+                        }
                     }
                     return;
                 }
@@ -3909,7 +4904,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void ConfigurePreviewCommands(MultiImagePreviewViewModel previewVm)
     {
-        previewVm.OnGenerateSeedVariations = async slot => await GenerateVariationsFromSlotAsync(slot, true);
+        previewVm.OnGenerateSeedVariations = async slot => await GenerateVariationsFromSlotAsync(slot, true, previewVm);
         previewVm.OnGenerateModelVariations = async slot => await GenerateModelPermutationsFromSlotAsync(slot, previewVm);
         previewVm.OnGenerateLoraVariations = async slot => await GenerateLoraPermutationsFromSlotAsync(slot, previewVm);
     }
@@ -4302,7 +5297,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private static string FormatSeedLabel(InvokeAIGenerationParams p)
     {
-        if (p.BaseSeed != 0)
+        if (p.BaseSeed != 0 && p.Seed != p.BaseSeed)
         {
             return $"{p.Seed} (root {p.BaseSeed})";
         }
@@ -4485,17 +5480,869 @@ public partial class MainWindowViewModel : ObservableObject
             return null;
         }
     }
-
-
-
-    private void CreateMissingWildcard(string? wildcardName)
+    private TemplatePlanResult BuildImmediateTemplatePlan(string theme, TemplateBuilderOptions options)
     {
-        if (wildcardName == null) return;
-        // In a real scenario, this would pre-fill the WildcardManager window
-        // with the wildcardName and a template for new JSON content.
-        // For now, we'll just open the manager.
-        StatusText = $"Attempted to create missing wildcard: {wildcardName}";
-        ShowWildcardManagerCommand.Execute(GetOwnerWindow(null));
+        var selected = _wildcardService.GetWildcardNames()
+            .OrderBy(n => ScoreWildcardForTheme(n, theme))
+            .ThenBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .Take(options.TargetWildcardCount)
+            .ToList();
+
+        return new TemplatePlanResult(
+            selected,
+            Array.Empty<string>(),
+            "Fast local shortlist based on wildcard names, descriptions, and sample values.");
+    }
+
+    private async Task<TemplatePlanResult> PlanTemplateWildcardsAsync(string theme, TemplateBuilderOptions options)
+    {
+        var wildcardNames = _wildcardService.GetWildcardNames()
+            .OrderBy(n => ScoreWildcardForTheme(n, theme))
+            .ThenBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (wildcardNames.Count == 0)
+        {
+            throw new InvalidOperationException("No wildcards are available.");
+        }
+
+        var candidateCatalog = wildcardNames
+            .Take(Math.Min(72, wildcardNames.Count))
+            .Select(BuildWildcardCatalogEntry)
+            .ToList();
+
+        var targetRange = options.Complexity switch
+        {
+            "minimal" => "4-6",
+            "rich" => "8-12",
+            _ => "6-9"
+        };
+
+        var prompt =
+            "You are an expert Stable Diffusion template planner.\n\n" +
+            $"Theme: {theme}\n" +
+            $"Workflow context: {BuildTemplateWorkflowContext()}\n" +
+            $"Requested complexity: {options.DisplayComplexity}\n" +
+            $"Requested focus: {options.DisplayFocus}\n\n" +
+            "Choose the strongest wildcard set from the provided library. Your job is to pick a clean, non-redundant shortlist that fits the theme and focus.\n\n" +
+            "Return exactly one JSON object with this shape:\n" +
+            "{\n" +
+            "  \"strategy\": \"one short sentence\",\n" +
+            "  \"selectedWildcards\": [\"wildcard_name\"],\n" +
+            "  \"missingWildcardIdeas\": [\"optional wildcard idea\"]\n" +
+            "}\n\n" +
+            "Rules:\n" +
+            $"- Select {targetRange} wildcards.\n" +
+            "- Use only wildcard names from the provided library.\n" +
+            "- Avoid redundant wildcards that do the same job.\n" +
+            "- Prefer wildcards that add variety, not generic filler.\n" +
+            "- In SFW mode, keep the plan safe.\n" +
+            "- In NSFW mode, adult content is allowed only when the user's theme is explicitly sexual. Do not force explicit content into non-sexual themes.\n" +
+            "- 'missingWildcardIdeas' should list missing gaps only when they would materially improve the result.\n" +
+            "- Do not include commentary outside the JSON object.\n\n" +
+            "Available wildcard library:\n" +
+            string.Join("\n", candidateCatalog);
+
+        var raw = await _ollamaClient.GenerateAsync(SelectedModel!, prompt, temperature: 0.2, topP: 0.75);
+        var parsed = ParseTemplatePlanResponse(raw);
+        if (parsed.SelectedWildcards.Count > 0)
+        {
+            return parsed;
+        }
+
+        return new TemplatePlanResult(
+            wildcardNames.Take(options.TargetWildcardCount).ToList(),
+            new List<string>(),
+            "Using the strongest local wildcard matches because the planner did not return a usable shortlist.");
+    }
+
+    private async Task<IReadOnlyList<TemplateCandidate>> GenerateTemplateCandidatesAsync(
+        string theme,
+        TemplateBuilderOptions options,
+        IReadOnlyList<string> approvedWildcards)
+    {
+        var wildcardDetails = approvedWildcards
+            .Select(BuildWildcardDetailEntry)
+            .ToList();
+
+        var prompt =
+            "You are an expert Stable Diffusion template composer.\n\n" +
+            $"Theme: {theme}\n" +
+            $"Workflow context: {BuildTemplateWorkflowContext()}\n" +
+            $"Requested complexity: {options.DisplayComplexity}\n" +
+            $"Requested focus: {options.DisplayFocus}\n\n" +
+            "Generate exactly three template candidates using only the approved wildcard list.\n" +
+            "Return exactly one JSON object with this shape:\n" +
+            "{\n" +
+            "  \"candidates\": [\n" +
+            "    {\"name\": \"Balanced Core\", \"strategy\": \"short rationale\", \"template\": \"comma-separated prompt template\"}\n" +
+            "  ]\n" +
+            "}\n\n" +
+            "Rules:\n" +
+            "- Use ONLY approved wildcards from the provided list.\n" +
+            "- Never invent a wildcard.\n" +
+            "- Keep templates comma-separated, not full sentences.\n" +
+            "- Avoid generic camera-angle, lens, shot-type, or quality-tag fluff unless the theme explicitly asks for it.\n" +
+            "- Each candidate should feel distinct: one clean and reliable, one more atmospheric, one more adventurous.\n" +
+            "- Do not repeat the same wildcard more than once in a single template.\n" +
+            "- In SFW mode, keep content safe.\n" +
+            "- In NSFW mode, adult content is allowed only when the theme is explicitly sexual. Do not force erotic phrasing into non-sexual themes.\n" +
+            "- Do not include commentary outside the JSON object.\n\n" +
+            "Approved wildcards with samples:\n" +
+            string.Join("\n", wildcardDetails);
+
+        var raw = await _ollamaClient.GenerateAsync(SelectedModel!, prompt, temperature: 0.3, topP: 0.8);
+        var candidates = ParseTemplateCandidatesResponse(raw, approvedWildcards, theme);
+
+        if (candidates.Count >= 3)
+        {
+            return candidates;
+        }
+
+        var fallback = BuildFallbackTemplateCandidates(theme, options, approvedWildcards);
+        var merged = candidates.Concat(fallback)
+            .GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .Take(3)
+            .ToList();
+
+        return merged;
+    }
+
+    private TemplatePlanResult ParseTemplatePlanResponse(string rawResponse)
+    {
+        var json = ExtractJsonObject(rawResponse);
+        if (json == null)
+        {
+            return new TemplatePlanResult(new List<string>(), new List<string>(), string.Empty);
+        }
+
+        var selected = new List<string>();
+        var missing = new List<string>();
+        var strategy = string.Empty;
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return new TemplatePlanResult(selected, missing, strategy);
+        }
+
+        if (root.TryGetProperty("strategy", out var strategyProp) && strategyProp.ValueKind == JsonValueKind.String)
+        {
+            strategy = strategyProp.GetString() ?? string.Empty;
+        }
+
+        if (root.TryGetProperty("selectedWildcards", out var selectedProp) && selectedProp.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in selectedProp.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var normalized = NormalizeWildcardReference(item.GetString());
+                if (!string.IsNullOrWhiteSpace(normalized) &&
+                    _wildcardService.WildcardExists(normalized) &&
+                    !selected.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+                {
+                    selected.Add(normalized);
+                }
+            }
+        }
+
+        if (root.TryGetProperty("missingWildcardIdeas", out var missingProp) && missingProp.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in missingProp.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var value = item.GetString()?.Trim();
+                if (!string.IsNullOrWhiteSpace(value) &&
+                    !missing.Contains(value, StringComparer.OrdinalIgnoreCase))
+                {
+                    missing.Add(value);
+                }
+            }
+        }
+
+        return new TemplatePlanResult(selected, missing, strategy);
+    }
+
+    private List<TemplateCandidate> ParseTemplateCandidatesResponse(
+        string rawResponse,
+        IReadOnlyList<string> approvedWildcards,
+        string theme)
+    {
+        var results = new List<TemplateCandidate>();
+        var json = ExtractJsonObject(rawResponse);
+        if (json == null)
+        {
+            return results;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("candidates", out var candidatesProp) ||
+            candidatesProp.ValueKind != JsonValueKind.Array)
+        {
+            return results;
+        }
+
+        foreach (var item in candidatesProp.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var name = item.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String
+                ? (nameProp.GetString() ?? "Candidate")
+                : "Candidate";
+            var strategy = item.TryGetProperty("strategy", out var strategyProp) && strategyProp.ValueKind == JsonValueKind.String
+                ? (strategyProp.GetString() ?? string.Empty)
+                : string.Empty;
+            var template = item.TryGetProperty("template", out var templateProp) && templateProp.ValueKind == JsonValueKind.String
+                ? (templateProp.GetString() ?? string.Empty)
+                : string.Empty;
+
+            var normalizedTemplate = NormalizeGeneratedTemplate(template, approvedWildcards, theme);
+            if (string.IsNullOrWhiteSpace(normalizedTemplate))
+            {
+                continue;
+            }
+
+            results.Add(new TemplateCandidate(name.Trim(), normalizedTemplate, strategy.Trim()));
+        }
+
+        return results;
+    }
+
+    private IReadOnlyList<TemplateCandidate> BuildFallbackTemplateCandidates(
+        string theme,
+        TemplateBuilderOptions options,
+        IReadOnlyList<string> approvedWildcards)
+    {
+        var baseSegments = approvedWildcards
+            .Take(options.TargetWildcardCount)
+            .Select(name => $"__{name}__")
+            .ToList();
+
+        var themeSegment = theme.Trim();
+        var candidates = new List<TemplateCandidate>();
+
+        var lean = string.Join(", ", new[] { themeSegment }
+            .Concat(baseSegments.Take(Math.Min(4, baseSegments.Count))));
+        candidates.Add(new TemplateCandidate(
+            "Reliable Core",
+            lean,
+            "Lean structure centered on the theme with the strongest wildcard anchors."));
+
+        var atmosphericSegments = baseSegments.Skip(1).Take(Math.Min(5, Math.Max(0, baseSegments.Count - 1))).ToList();
+        var atmosphericLead = options.Focus switch
+        {
+            "environment" => "layered environment detail",
+            "character" => "subject-forward detail",
+            "action" => "motion-driven scene detail",
+            _ => "balanced scene detail"
+        };
+        var atmospheric = string.Join(", ", new[] { themeSegment, atmosphericLead }
+            .Concat(atmosphericSegments));
+        candidates.Add(new TemplateCandidate(
+            "Atmospheric Build",
+            atmospheric,
+            "Adds more scene texture while keeping the wildcard set controlled."));
+
+        var adventurous = string.Join(", ", new[] { themeSegment, options.Focus == "action" ? "dynamic action emphasis" : "creative layered composition" }
+            .Concat(baseSegments.Take(Math.Min(8, baseSegments.Count))));
+        candidates.Add(new TemplateCandidate(
+            "Creative Push",
+            adventurous,
+            "Uses a denser wildcard mix for a richer, more varied template."));
+
+        return candidates
+            .Select(c => new TemplateCandidate(c.Name, NormalizeGeneratedTemplate(c.Template, approvedWildcards, theme), c.Strategy))
+            .Where(c => !string.IsNullOrWhiteSpace(c.Template))
+            .ToList();
+    }
+
+    private string NormalizeGeneratedTemplate(string template, IReadOnlyList<string> approvedWildcards, string theme)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return string.Empty;
+        }
+
+        var approved = approvedWildcards.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var cleaned = template
+            .Replace("```", string.Empty, StringComparison.Ordinal)
+            .Replace("TEMPLATE:", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Trim();
+
+        var segments = cleaned.Split(',')
+            .Select(segment => segment.Trim())
+            .Where(segment => !string.IsNullOrWhiteSpace(segment))
+            .ToList();
+
+        var finalSegments = new List<string>();
+        var usedWildcards = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var segment in segments)
+        {
+            var matches = WildcardRegex.Matches(segment);
+            var unknownWildcard = false;
+            var duplicateWildcard = false;
+
+            foreach (Match match in matches)
+            {
+                var wildcardName = match.Groups["name"].Value;
+                if (!approved.Contains(wildcardName))
+                {
+                    unknownWildcard = true;
+                    break;
+                }
+
+                if (!usedWildcards.Add(wildcardName))
+                {
+                    duplicateWildcard = true;
+                    break;
+                }
+            }
+
+            if (unknownWildcard || duplicateWildcard)
+            {
+                continue;
+            }
+
+            if (!finalSegments.Contains(segment, StringComparer.OrdinalIgnoreCase))
+            {
+                finalSegments.Add(segment);
+            }
+        }
+
+        if (!finalSegments.Any(s => WildcardRegex.IsMatch(s)))
+        {
+            finalSegments.Insert(0, theme.Trim());
+            if (approvedWildcards.Count > 0)
+            {
+                finalSegments.Add($"__{approvedWildcards[0]}__");
+            }
+        }
+
+        return string.Join(", ", finalSegments.Where(s => !string.IsNullOrWhiteSpace(s)));
+    }
+
+    private IReadOnlyList<string> ParseApprovedWildcardNames(string? rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return Array.Empty<string>();
+        }
+
+        var approved = new List<string>();
+        foreach (var item in rawText.Split(new[] { ',', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var normalized = NormalizeWildcardReference(item);
+            if (string.IsNullOrWhiteSpace(normalized) || !_wildcardService.WildcardExists(normalized))
+            {
+                continue;
+            }
+
+            if (!approved.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                approved.Add(normalized);
+            }
+        }
+
+        return approved;
+    }
+
+    private string BuildWildcardCatalogEntry(string wildcardName)
+    {
+        var description = _wildcardService.GetStructuredWildcards().TryGetValue(wildcardName, out var structured) &&
+                          !string.IsNullOrWhiteSpace(structured.Description)
+            ? structured.Description!.Trim()
+            : "No description";
+        var samples = _wildcardService.GetAllValues(wildcardName)
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Take(3)
+            .Select(TrimTemplateSample)
+            .ToList();
+        var sampleText = samples.Count == 0 ? "no sample values" : string.Join(" | ", samples);
+        return $"- __{wildcardName}__: {description}. Samples: {sampleText}";
+    }
+
+    private string BuildWildcardDetailEntry(string wildcardName)
+    {
+        var samples = _wildcardService.GetAllValues(wildcardName)
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Take(4)
+            .Select(TrimTemplateSample)
+            .ToList();
+        var sampleText = samples.Count == 0 ? "no sample values" : string.Join(" | ", samples);
+        return $"- __{wildcardName}__: {sampleText}";
+    }
+
+    private string BuildHumanReadableWildcardPreview(string wildcardName)
+    {
+        var lines = new List<string> { $"__{wildcardName}__" };
+
+        if (_wildcardService.GetStructuredWildcards().TryGetValue(wildcardName, out var structured))
+        {
+            if (!string.IsNullOrWhiteSpace(structured.Description))
+            {
+                lines.Add(string.Empty);
+                lines.Add(structured.Description.Trim());
+            }
+
+            if (structured.Choices.Count > 0)
+            {
+                lines.Add(string.Empty);
+                lines.Add("Sample Entries:");
+                foreach (var choice in structured.Choices.Take(8))
+                {
+                    var summary = choice.Value?.Trim();
+                    if (string.IsNullOrWhiteSpace(summary))
+                    {
+                        continue;
+                    }
+
+                    var suffix = new List<string>();
+                    if (Math.Abs(choice.Weight - 1d) > 0.001d)
+                    {
+                        suffix.Add($"weight {choice.Weight:0.##}");
+                    }
+
+                    if (choice.Tags != null && choice.Tags.Count > 0)
+                    {
+                        suffix.Add($"tags: {string.Join(", ", choice.Tags.Take(4))}");
+                    }
+
+                    lines.Add(suffix.Count == 0
+                        ? $"- {TrimTemplateSample(summary)}"
+                        : $"- {TrimTemplateSample(summary)} ({string.Join("; ", suffix)})");
+                }
+            }
+        }
+        else
+        {
+            var values = _wildcardService.GetAllValues(wildcardName)
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Take(8)
+                .Select(TrimTemplateSample)
+                .ToList();
+
+            lines.Add(string.Empty);
+            lines.Add(values.Count == 0
+                ? "No preview available."
+                : $"Sample Entries:\n- {string.Join("\n- ", values)}");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private int ScoreWildcardForTheme(string wildcardName, string theme)
+    {
+        var tokens = ExtractThemeTokens(theme).ToList();
+        if (tokens.Count == 0)
+        {
+            return 0;
+        }
+
+        var nameText = wildcardName.Replace('_', ' ');
+        var descriptionText = _wildcardService.GetStructuredWildcards().TryGetValue(wildcardName, out var structured)
+            ? structured.Description ?? string.Empty
+            : string.Empty;
+        var sampleText = string.Join(" ", _wildcardService.GetAllValues(wildcardName).Take(8));
+
+        var score = 0;
+        foreach (var token in tokens)
+        {
+            if (ContainsToken(nameText, token))
+            {
+                score -= 6;
+            }
+
+            if (ContainsToken(descriptionText, token))
+            {
+                score -= 3;
+            }
+
+            if (ContainsToken(sampleText, token))
+            {
+                score -= 2;
+            }
+        }
+
+        var themeText = string.Join(" ", tokens);
+        if (ContainsPhrase(nameText, themeText))
+        {
+            score -= 4;
+        }
+
+        if (ContainsPhrase(descriptionText, themeText))
+        {
+            score -= 2;
+        }
+
+        var isNsfwWorkflow = string.Equals(Workflow, "nsfw", StringComparison.OrdinalIgnoreCase);
+        var themeIsAdult = tokens.Any(t =>
+            t.Contains("nsfw", StringComparison.OrdinalIgnoreCase) ||
+            t.Contains("adult", StringComparison.OrdinalIgnoreCase) ||
+            t.Contains("sex", StringComparison.OrdinalIgnoreCase) ||
+            t.Contains("nude", StringComparison.OrdinalIgnoreCase) ||
+            t.Contains("erotic", StringComparison.OrdinalIgnoreCase) ||
+            t.Contains("porn", StringComparison.OrdinalIgnoreCase));
+        var wildcardLooksAdult =
+            ContainsToken(nameText, "nsfw") ||
+            ContainsToken(nameText, "adult") ||
+            ContainsToken(nameText, "sex") ||
+            ContainsToken(nameText, "nude") ||
+            ContainsToken(descriptionText, "adult") ||
+            ContainsToken(descriptionText, "erotic");
+
+        if (isNsfwWorkflow && themeIsAdult && wildcardLooksAdult)
+        {
+            score -= 3;
+        }
+
+        if (!themeIsAdult && wildcardLooksAdult && !isNsfwWorkflow)
+        {
+            score += 3;
+        }
+
+        return score;
+    }
+
+    private IEnumerable<string> ExtractThemeTokens(string theme)
+    {
+        return Regex.Matches(theme.ToLowerInvariant(), "[a-z0-9]+")
+            .Select(m => m.Value)
+            .Where(v => v.Length >= 3)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool ContainsToken(string source, string token)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        return source.Contains(token, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ContainsPhrase(string source, string phrase)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(phrase))
+        {
+            return false;
+        }
+
+        return source.Contains(phrase, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string BuildTemplateWorkflowContext()
+    {
+        return string.Equals(Workflow, "nsfw", StringComparison.OrdinalIgnoreCase)
+            ? "NSFW workflow is active. Adult themes are allowed when the user explicitly asks for them. Do not force explicit content into non-sexual concepts."
+            : "SFW workflow is active. Keep concepts safe and non-explicit.";
+    }
+
+    private static string? ExtractJsonObject(string rawResponse)
+    {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            return null;
+        }
+
+        var start = rawResponse.IndexOf('{');
+        var end = rawResponse.LastIndexOf('}');
+        if (start < 0 || end <= start)
+        {
+            return null;
+        }
+
+        return rawResponse[start..(end + 1)];
+    }
+
+    private static string NormalizeTemplateComplexity(string value)
+    {
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "minimal" => "minimal",
+            "rich" => "rich",
+            _ => "balanced"
+        };
+    }
+
+    private static string NormalizeTemplateFocus(string value)
+    {
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "character" => "character",
+            "environment" => "environment",
+            "action" => "action",
+            _ => "balanced"
+        };
+    }
+
+    private static string NormalizeWildcardReference(string? rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = rawValue.Trim();
+        if (trimmed.StartsWith("__", StringComparison.Ordinal) && trimmed.EndsWith("__", StringComparison.Ordinal) && trimmed.Length > 4)
+        {
+            trimmed = trimmed[2..^2];
+        }
+
+        if (trimmed.StartsWith("{", StringComparison.Ordinal) && trimmed.EndsWith("}", StringComparison.Ordinal) && trimmed.Length > 2)
+        {
+            trimmed = trimmed[1..^1];
+        }
+
+        return trimmed.Trim();
+    }
+
+    private static string TrimTemplateSample(string value)
+    {
+        var normalized = Regex.Replace(value.Trim(), "\\s+", " ");
+        return normalized.Length <= 60 ? normalized : $"{normalized[..57]}...";
+    }
+
+    private static string SuggestTemplateName(string theme)
+    {
+        var lower = theme.Trim().ToLowerInvariant();
+        var slug = Regex.Replace(lower, "[^a-z0-9]+", "_");
+        slug = Regex.Replace(slug, "_{2,}", "_").Trim('_');
+        return string.IsNullOrWhiteSpace(slug) ? "ai_template" : slug;
+    }
+
+    private sealed record TemplateBuilderOptions(string Complexity, string Focus)
+    {
+        public string DisplayComplexity => Complexity switch
+        {
+            "minimal" => "Minimal",
+            "rich" => "Rich",
+            _ => "Balanced"
+        };
+
+        public string DisplayFocus => Focus switch
+        {
+            "character" => "Character",
+            "environment" => "Environment",
+            "action" => "Action",
+            _ => "Balanced"
+        };
+
+        public int TargetWildcardCount => Complexity switch
+        {
+            "minimal" => 5,
+            "rich" => 10,
+            _ => 7
+        };
+    }
+
+    private sealed record TemplatePlanResult(
+        IReadOnlyList<string> SelectedWildcards,
+        IReadOnlyList<string> MissingWildcardIdeas,
+        string Strategy);
+
+    private sealed record TemplateCandidate(
+        string Name,
+        string Template,
+        string Strategy);
+
+    private async Task CreateMissingWildcardAsync(string? wildcardName)
+    {
+        if (string.IsNullOrWhiteSpace(wildcardName))
+        {
+            return;
+        }
+
+        var normalizedName = wildcardName.Trim();
+        var owner = GetOwnerWindow(null) ?? new Window();
+
+        try
+        {
+            await _wildcardService.SaveWildcardFileContent(normalizedName, BuildEmptyWildcardContent(normalizedName));
+            _wildcardService.Reload(_settingsService.GetWildcardDirs());
+            UpdateMissingWildcardsPreview(PromptText);
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Failed to create wildcard: {ex.Message}";
+            return;
+        }
+
+        var managerWindow = OpenWildcardManagerWindow(owner, normalizedName);
+        await Task.Yield();
+
+        var useAi = await ShowConfirmAsync(
+            managerWindow,
+            $"The wildcard '{normalizedName}' has been created.\n\n" +
+            "Would you like to prepopulate it with AI suggestions?");
+
+        if (useAi)
+        {
+            if (string.IsNullOrWhiteSpace(SelectedModel))
+            {
+                StatusText = "Wildcard created, but no Ollama model is selected for AI suggestions.";
+                await ShowInfoAsync(managerWindow, "No Model Selected", "Select an Ollama model first. The wildcard was created with the default scaffold.");
+            }
+            else
+            {
+                var description = await Views.TextInputDialog.ShowAsync(
+                    "Describe Wildcard",
+                    $"What should '{normalizedName}' be comprised of?",
+                    $"A curated set of {normalizedName.Replace('_', ' ')} options",
+                    managerWindow);
+
+                if (!string.IsNullOrWhiteSpace(description))
+                {
+                    try
+                    {
+                        var generatedContent = await GenerateWildcardSuggestionsAsync(normalizedName, description.Trim());
+                        await _wildcardService.SaveWildcardFileContent(normalizedName, generatedContent);
+                        _wildcardService.Reload(_settingsService.GetWildcardDirs());
+                        UpdateMissingWildcardsPreview(PromptText);
+                        if (managerWindow.DataContext is WildcardManagerViewModel managerVm)
+                        {
+                            await managerVm.SelectWildcardAfterLoadAsync(normalizedName);
+                        }
+                        StatusText = $"Created wildcard '{normalizedName}' with AI suggestions.";
+                    }
+                    catch (Exception ex)
+                    {
+                        StatusText = $"Wildcard created, but AI suggestions failed: {ex.Message}";
+                        await ShowInfoAsync(managerWindow, "AI Suggestions Failed", $"The wildcard was created, but suggestions failed.\n\n{ex.Message}");
+                    }
+                }
+                else
+                {
+                    StatusText = $"Created wildcard '{normalizedName}' with default scaffold.";
+                }
+            }
+        }
+        else
+        {
+            StatusText = $"Created wildcard '{normalizedName}' with default scaffold.";
+        }
+    }
+
+    private string BuildEmptyWildcardContent(string wildcardName)
+    {
+        var payload = new
+        {
+            description = $"Wildcard file for {wildcardName.Replace('_', ' ')}",
+            choices = new[] { "example entry" }
+        };
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private async Task<string> GenerateWildcardSuggestionsAsync(string wildcardName, string description)
+    {
+        var workflowContext = string.Equals(Workflow, "nsfw", StringComparison.OrdinalIgnoreCase)
+            ? "NSFW workflow is active. Only produce adult content if the requested topic is inherently adult."
+            : "SFW workflow is active. Keep suggestions safe unless the topic explicitly requires otherwise.";
+
+        var availableWildcards = _wildcardService.GetWildcardNames()
+            .Where(n => !string.Equals(n, wildcardName, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .Take(24)
+            .ToList();
+        var availableWildcardsText = availableWildcards.Count == 0
+            ? "None"
+            : string.Join(", ", availableWildcards);
+
+        var prompt =
+            "You are an expert Stable Diffusion wildcard generator with strong prompt-engineering discipline.\n\n" +
+            $"Create a JSON wildcard file for the wildcard name '{wildcardName}'.\n" +
+            $"User description: {description}\n" +
+            $"Workflow context: {workflowContext}\n" +
+            $"Available related wildcards: {availableWildcardsText}\n\n" +
+            "Return exactly one valid JSON object with this structure:\n" +
+            "{\n" +
+            "  \"description\": \"short description\",\n" +
+            "  \"choices\": [\n" +
+            "    \"simple choice\",\n" +
+            "    {\"value\": \"rich choice\", \"weight\": 2, \"tags\": [\"tag\"]}\n" +
+            "  ]\n" +
+            "}\n\n" +
+            "Rules:\n" +
+            "- Generate 20-30 distinct, highly relevant choices.\n" +
+            "- Keep the choices tightly aligned with the topic.\n" +
+            "- Treat the topic as the only subject. Do not broaden into adjacent prompt-engineering categories.\n" +
+            "- Do not generate camera angles, shot types, lens terms, composition phrases, render-quality terms, art styles, lighting setups, or other cinematic modifiers unless the topic explicitly asks for those.\n" +
+            "- For subject or scene wildcards, generate actual subjects, factions, props, terrain details, weather conditions, battlefield elements, creature types, roles, or thematic objects that belong inside the scene.\n" +
+            "- Bad example for a 'fantasy battlefield' wildcard: 'wide shot', 'dramatic angle', 'cinematic lighting'.\n" +
+            "- Good example for a 'fantasy battlefield' wildcard: 'broken siege towers', 'muddy trench lines', 'burning barricades', 'fallen banners', 'orc war drums'.\n" +
+            "- Do not use underscores inside 'value' strings.\n" +
+            "- Do not include commentary outside the JSON.\n" +
+            $"- Do not self-reference '{wildcardName}' in requires/includes.\n" +
+            "- You may use value, weight, tags, requires, and includes when useful.\n" +
+            "- Ensure the JSON is valid and the choices array is not empty.\n";
+
+        var raw = await _ollamaClient.GenerateAsync(SelectedModel!, prompt, temperature: 0.35, topP: 0.8);
+        return NormalizeWildcardJsonResponse(raw, wildcardName, description);
+    }
+
+    private static string NormalizeWildcardJsonResponse(string rawResponse, string wildcardName, string description)
+    {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            throw new InvalidOperationException("The model returned an empty response.");
+        }
+
+        var start = rawResponse.IndexOf('{');
+        var end = rawResponse.LastIndexOf('}');
+        if (start < 0 || end <= start)
+        {
+            throw new InvalidOperationException("The model did not return a JSON object.");
+        }
+
+        var jsonSlice = rawResponse[start..(end + 1)];
+        using var doc = JsonDocument.Parse(jsonSlice);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException("The model response was not a JSON object.");
+        }
+
+        if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("The model response did not include a valid 'choices' array.");
+        }
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartObject();
+
+            if (doc.RootElement.TryGetProperty("description", out var descProp) && descProp.ValueKind == JsonValueKind.String)
+            {
+                writer.WriteString("description", descProp.GetString());
+            }
+            else
+            {
+                writer.WriteString("description", $"Wildcard file for {wildcardName.Replace('_', ' ')}: {description}");
+            }
+
+            writer.WritePropertyName("choices");
+            choices.WriteTo(writer);
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
     public (string newText, int caret) InsertWildcardAtSelection(string? wildcardName, int caretIndex, int selectionStart, int selectionEnd)
