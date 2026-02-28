@@ -50,19 +50,15 @@ public class SettingsService
 
     private AppSettings LoadSettings()
     {
-        // Prefer the unified names; fall back to the old C#-specific filenames to migrate users.
-        var legacySettingsPath = Path.Combine(_configDir, "settings_csharp.json");
-        var pathToUse = File.Exists(_settingsFilePath) ? _settingsFilePath : legacySettingsPath;
-
-        if (File.Exists(pathToUse))
+        if (File.Exists(_settingsFilePath))
         {
-            _settingsFileInUse = pathToUse;
+            _settingsFileInUse = _settingsFilePath;
             try
             {
-                var json = File.ReadAllText(pathToUse);
+                var json = File.ReadAllText(_settingsFilePath);
                 if (string.IsNullOrWhiteSpace(json))
                 {
-                    BackupCorruptSettings(pathToUse);
+                    BackupCorruptSettings(_settingsFilePath);
                     _settingsFileInUse = _settingsFilePath;
                     var emptyDefaults = ApplyDefaultPaths(new AppSettings());
                     emptyDefaults.Theme = LoadThemeValue(emptyDefaults.Theme);
@@ -87,6 +83,7 @@ public class SettingsService
                 {
                     SavePathsSettings(loaded);
                 }
+
                 return loaded;
             }
             catch (JsonException ex)
