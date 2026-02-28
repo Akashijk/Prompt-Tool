@@ -94,12 +94,12 @@ public partial class ImageInterrogatorViewModel : ObservableObject
 
 
     // Removed [RelayCommand] attribute, method is now directly referenced by the manual command
-    private async Task InterrogateImageAsync()
+    private Task InterrogateImageAsync()
     {
         if (string.IsNullOrWhiteSpace(ImagePath) || string.IsNullOrWhiteSpace(SelectedOllamaModel))
         {
             InterrogationResult = "Please select an image and an Ollama model.";
-            return;
+            return Task.CompletedTask;
         }
 
         IsBusy = true;
@@ -115,6 +115,8 @@ public partial class ImageInterrogatorViewModel : ObservableObject
         {
             IsBusy = false;
         }
+
+        return Task.CompletedTask;
     }
 
     private bool CanInterrogate()

@@ -1205,7 +1205,9 @@ public class HistoryManagerService
         foreach (var img in images.EnumerateArray())
         {
             if (img.ValueKind != JsonValueKind.Object) continue;
-            var hasPromptType = img.TryGetPropertyIgnoreCase("prompt_type", out var pt) && pt.ValueKind == JsonValueKind.String;
+            var hasPromptType =
+                (img.TryGetPropertyIgnoreCase("prompt_type", out var pt) && pt.ValueKind == JsonValueKind.String) ||
+                (img.TryGetPropertyIgnoreCase("PromptType", out var ptPascal) && ptPascal.ValueKind == JsonValueKind.String);
             var hasPrompt = img.TryGetPropertyIgnoreCase("prompt", out var p) && p.ValueKind == JsonValueKind.String;
             if (!hasPromptType || !hasPrompt)
             {

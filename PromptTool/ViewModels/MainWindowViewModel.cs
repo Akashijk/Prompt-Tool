@@ -714,12 +714,12 @@ public partial class MainWindowViewModel : ObservableObject
         });
     }
 
-    private async Task ShowSettingsAsync(Window? owner)
+    private Task ShowSettingsAsync(Window? owner)
     {
-        await ShowSettingsAsync(owner, null);
+        return ShowSettingsAsync(owner, null);
     }
 
-    private async Task ShowSettingsAsync(Window? owner, string? sectionKey)
+    private Task ShowSettingsAsync(Window? owner, string? sectionKey)
     {
         var vm = new SettingsViewModel(_settingsService, _ollamaClient, _notifications, _imageCacheService, _invokeAIClient);
         var win = new Views.SettingsWindow(vm);
@@ -746,6 +746,7 @@ public partial class MainWindowViewModel : ObservableObject
             }
         };
         win.Show(GetOwnerWindow(owner) ?? new Window());
+        return Task.CompletedTask;
     }
 
     private async Task ShowHistoryAsync(Window? owner)
@@ -1118,7 +1119,7 @@ public partial class MainWindowViewModel : ObservableObject
         dialog.Show(resolved);
     }
 
-    private async Task ShowSystemPromptsAsync(Window? arg)
+    private Task ShowSystemPromptsAsync(Window? arg)
     {
         var vm = new SystemPromptEditorViewModel(_settingsService);
         var win = new Views.SystemPromptEditorWindow { DataContext = vm };
@@ -1128,6 +1129,7 @@ public partial class MainWindowViewModel : ObservableObject
             StatusText = vm.DialogResult == true ? "System prompts saved." : "System prompt editor closed.";
         };
         win.Show(resolved);
+        return Task.CompletedTask;
     }
 
     private async Task ShowInvokeAIModelDefaultsAsync(Window? arg)
@@ -1389,7 +1391,7 @@ public partial class MainWindowViewModel : ObservableObject
         var previewVm = new MultiImagePreviewViewModel();
         previewVm.InitializePlaceholders(1);
         previewVm.StatusText = statusText;
-        previewVm.OnSaveSlot = async slot =>
+        previewVm.OnSaveSlot = slot =>
         {
             var image = CreateHistoryImageFromSlot(
                 slot,
@@ -1400,6 +1402,7 @@ public partial class MainWindowViewModel : ObservableObject
             image.GenerationParamsJson = parameters != null ? JsonSerializer.Serialize(parameters) : null;
             image.GenerationGraphJson = slot.GenerationGraphJson;
             savedImages.Add(image);
+            return Task.CompletedTask;
         };
         previewVm.OnSaveCompleted = onSaveCompleted == null
             ? null
@@ -1924,12 +1927,13 @@ public partial class MainWindowViewModel : ObservableObject
         win.Show(resolved);
     }
 
-    private async Task ShowModelStatsAsync(Window? owner)
+    private Task ShowModelStatsAsync(Window? owner)
     {
         var vm = new ModelStatsViewModel(_historyManager);
         var win = new Views.ModelStatsWindow { DataContext = vm };
         var resolved = GetOwnerWindow(owner) ?? new Window();
         win.Show(resolved);
+        return Task.CompletedTask;
     }
 
     private async Task ShowWildcardManagerAsync(Window? owner)
@@ -3260,10 +3264,10 @@ public partial class MainWindowViewModel : ObservableObject
                 var previewVm = new MultiImagePreviewViewModel();
                 previewVm.InitializePlaceholders(paramList.Count);
                 previewVm.StatusText = "Generating variation images...";
-                previewVm.OnSaveSlot = async slot =>
+                previewVm.OnSaveSlot = slot =>
                 {
                     var index = previewVm.Slots.IndexOf(slot);
-                    if (index < 0 || index >= paramList.Count) return;
+                    if (index < 0 || index >= paramList.Count) return Task.CompletedTask;
                     var (p, key) = paramList[index];
                     var image = CreateHistoryImageFromSlot(
                         slot,
@@ -3273,6 +3277,7 @@ public partial class MainWindowViewModel : ObservableObject
                         entry.Workflow ?? string.Empty);
                     image.GenerationParamsJson = p != null ? JsonSerializer.Serialize(p) : null;
                     _historyManager.AppendImages(entry.Id, new[] { image });
+                    return Task.CompletedTask;
                 };
                 ConfigurePreviewCommands(previewVm);
 
@@ -3364,11 +3369,11 @@ public partial class MainWindowViewModel : ObservableObject
 
         var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
 
-        previewVm.OnSaveSlot = async slot =>
+        previewVm.OnSaveSlot = slot =>
         {
-            if (slot.ImageBytes == null) return;
+            if (slot.ImageBytes == null) return Task.CompletedTask;
             var slotIndex = previewVm.Slots.IndexOf(slot);
-            if (slotIndex < 0 || slotIndex >= jobs.Count) return;
+            if (slotIndex < 0 || slotIndex >= jobs.Count) return Task.CompletedTask;
             var job = jobs[slotIndex];
             var prompt = HistoryViewerViewModel.ResolveGeneratedPromptForImage(entry, image);
             var width = slot.Image?.PixelSize.Width ?? 0;
@@ -3410,7 +3415,7 @@ public partial class MainWindowViewModel : ObservableObject
             ApplyJobInfoToHistoryImage(newImage, slot);
 
             _historyManager.AppendImages(entry.Id, new[] { newImage });
-            await Task.CompletedTask;
+            return Task.CompletedTask;
         };
         try
         {
@@ -3580,7 +3585,7 @@ public partial class MainWindowViewModel : ObservableObject
         var previewVm = new MultiImagePreviewViewModel();
         previewVm.InitializePlaceholders(parametersList.Count);
         previewVm.StatusText = statusText;
-        previewVm.OnSaveSlot = async slot =>
+        previewVm.OnSaveSlot = slot =>
         {
             var image = CreateHistoryImageFromSlot(
                 slot,
@@ -3590,6 +3595,7 @@ public partial class MainWindowViewModel : ObservableObject
                 workflow);
             image.GenerationParamsJson = slot.GenerationParams != null ? JsonSerializer.Serialize(slot.GenerationParams) : null;
             savedImages.Add(image);
+            return Task.CompletedTask;
         };
         previewVm.OnSaveCompleted = onSaveCompleted == null
             ? null
@@ -3659,7 +3665,7 @@ public partial class MainWindowViewModel : ObservableObject
         var previewVm = new MultiImagePreviewViewModel();
         previewVm.InitializePlaceholders(parametersList.Count);
         previewVm.StatusText = statusText;
-        previewVm.OnSaveSlot = async slot =>
+        previewVm.OnSaveSlot = slot =>
         {
             var image = CreateHistoryImageFromSlot(
                 slot,
@@ -3669,6 +3675,7 @@ public partial class MainWindowViewModel : ObservableObject
                 workflow);
             image.GenerationParamsJson = slot.GenerationParams != null ? JsonSerializer.Serialize(slot.GenerationParams) : null;
             savedImages.Add(image);
+            return Task.CompletedTask;
         };
         previewVm.OnSaveCompleted = onSaveCompleted == null
             ? null

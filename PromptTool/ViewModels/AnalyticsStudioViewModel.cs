@@ -1744,7 +1744,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         IsSortDateAsc = SelectedSortMode == AnalyticsSortMode.DateAsc;
     }
 
-    private async Task LoadFiltersAsync()
+    private Task LoadFiltersAsync()
     {
         var entries = _historyManager.GetAllEntries()
             .Where(e => string.Equals(e.Workflow, _workflowFilter, StringComparison.OrdinalIgnoreCase))
@@ -1793,6 +1793,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         SelectedPromptType = PromptTypes.FirstOrDefault() ?? "(Any)";
 
         UpdateModelCountsGlobal();
+        return Task.CompletedTask;
     }
 
     private bool MatchesTemplate(HistoryEntry entry, string? filter)

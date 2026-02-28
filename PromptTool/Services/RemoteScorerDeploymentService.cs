@@ -484,20 +484,21 @@ docker run -d --restart unless-stopped \
             new PrivateKeyAuthenticationMethod(options.Username, keyFile));
     }
 
-    private static async Task<string> ResolveInstallDirAsync(SshClient ssh, string rawDir, CancellationToken ct)
+    private static Task<string> ResolveInstallDirAsync(SshClient ssh, string rawDir, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (!rawDir.StartsWith("~", StringComparison.Ordinal))
         {
-            return rawDir;
+            return Task.FromResult(rawDir);
         }
 
         var home = RunCommand(ssh, "echo $HOME", new Progress<string>(_ => { })).Trim();
         if (string.IsNullOrWhiteSpace(home))
         {
-            return rawDir;
+            return Task.FromResult(rawDir);
         }
         var suffix = rawDir.TrimStart('~');
-        return $"{home}{suffix}";
+        return Task.FromResult($"{home}{suffix}");
     }
 
     public sealed class DeployOptions

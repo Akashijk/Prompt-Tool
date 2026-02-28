@@ -125,10 +125,11 @@ public partial class InvokeAILoraDefaultsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task LoadLoraDefaultsAsync()
+    private Task LoadLoraDefaultsAsync()
     {
         LoraDefaults = new ObservableCollection<ModelDefaults>(CloneModelDefaults(_defaults));
         RebuildAssetGroups();
+        return Task.CompletedTask;
     }
 
     [RelayCommand]

@@ -29,7 +29,7 @@ public class NotificationService
     {
         if (_anchor == null) return;
 
-        async void ShowOnUi()
+        void ShowOnUi()
         {
             var toast = new ToastWindow(title, message, type);
             toast.Closed += (_, __) => _openToasts.Remove(toast);

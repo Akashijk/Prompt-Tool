@@ -523,12 +523,12 @@ public partial class WildcardManagerViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task ValidateAsync()
+    private Task ValidateAsync()
     {
         ValidationErrors.Clear();
         if (string.IsNullOrWhiteSpace(CurrentWildcardContent))
         {
-            return;
+            return Task.CompletedTask;
         }
 
         try
@@ -573,7 +573,6 @@ public partial class WildcardManagerViewModel : ObservableObject
                             {
                                 try
                                 {
-                                    // Ensure it is valid JSON object
                                     using var _ = JsonDocument.Parse(reqProp.GetRawText());
                                 }
                                 catch
@@ -582,6 +581,7 @@ public partial class WildcardManagerViewModel : ObservableObject
                                 }
                             }
                         }
+
                         if (item.TryGetProperty("includes", out var incProp))
                         {
                             if (incProp.ValueKind == JsonValueKind.String || incProp.ValueKind == JsonValueKind.Array)
@@ -618,6 +618,7 @@ public partial class WildcardManagerViewModel : ObservableObject
 
         UpdateChoiceWarnings();
         SetStatus(ValidationErrors.Count == 0 ? "Validation passed." : $"Validation found {ValidationErrors.Count} issue(s).");
+        return Task.CompletedTask;
     }
 
     [RelayCommand]

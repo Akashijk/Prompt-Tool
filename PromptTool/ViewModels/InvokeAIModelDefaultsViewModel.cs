@@ -125,10 +125,11 @@ public partial class InvokeAIModelDefaultsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task LoadModelDefaultsAsync()
+    private Task LoadModelDefaultsAsync()
     {
         ModelDefaults = new ObservableCollection<ModelDefaults>(CloneModelDefaults(_defaults));
         RebuildAssetGroups();
+        return Task.CompletedTask;
     }
 
     [RelayCommand]
