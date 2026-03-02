@@ -17,6 +17,7 @@ public partial class SchedulerTunerWindow : Window
     {
         InitializeComponent();
         HookDataContext();
+        Closed += OnWindowClosed;
     }
 
     private void HookDataContext()
@@ -37,6 +38,14 @@ public partial class SchedulerTunerWindow : Window
         vm.SeedSweepRequested += OnSeedSweepRequested;
         vm.StepsSweepRequested -= OnStepsSweepRequested;
         vm.StepsSweepRequested += OnStepsSweepRequested;
+    }
+
+    private void OnWindowClosed(object? sender, EventArgs e)
+    {
+        if (DataContext is SchedulerTunerViewModel vm)
+        {
+            vm.CancelGenerationCommand.Execute(null);
+        }
     }
 
     private void Results_SelectionChanged(object? sender, SelectionChangedEventArgs e)

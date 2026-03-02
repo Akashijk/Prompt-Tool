@@ -1,0 +1,240 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d"
+        d:DesignWidth="1280"
+        d:DesignHeight="820"
+        x:Class="PromptTool.Views.WildcardDedupeWindow"
+        x:DataType="vm:WildcardDedupeViewModel"
+        Title="Wildcard Dedupe Assistant"
+        Width="1280"
+        Height="820"
+        MinWidth="980"
+        MinHeight="680"
+        WindowStartupLocation="CenterOwner">
+    <Border Classes="dialog-root">
+        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="10">
+            <StackPanel Grid.Row="0" Spacing="6">
+                <DockPanel LastChildFill="False">
+                    <TextBlock DockPanel.Dock="Left"
+                               Text="Wildcard Dedupe Assistant"
+                               FontSize="20"
+                               FontWeight="Bold"/>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                        <Button Content="Refresh Scan"
+                                Click="RefreshScan_Click"/>
+                    </StackPanel>
+                </DockPanel>
+                <TextBlock Text="{Binding StatusText}" Classes="subtle" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <Grid Grid.Row="1" ColumnDefinitions="1.1*,1.9*" ColumnSpacing="12">
+                <Border Grid.Column="0"
+                        BorderBrush="{DynamicResource BorderBrushStrong}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="8">
+                    <Grid RowDefinitions="Auto,*" RowSpacing="8">
+                        <TextBlock Grid.Row="0"
+                                   Text="{Binding CandidatePairs.Count, StringFormat='Likely Duplicate Pairs: {0}'}"
+                                   FontWeight="SemiBold"/>
+                        <ListBox Grid.Row="1"
+                                 ItemsSource="{Binding CandidatePairs}"
+                                 SelectedItem="{Binding SelectedPair, Mode=TwoWay}"
+                                 BorderThickness="0"
+                                 Background="Transparent">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:WildcardDuplicatePairItem">
+                                    <Border BorderBrush="#2E3A52"
+                                            BorderThickness="1"
+                                            CornerRadius="4"
+                                            Padding="8"
+                                            Margin="0,0,0,6">
+                                        <StackPanel Spacing="4">
+                                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                <TextBlock Text="{Binding LeftName}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                <Border Grid.Column="1" Background="#1B2B43" CornerRadius="3" Padding="6,2">
+                                                    <TextBlock Text="{Binding ScoreText}" Classes="subtle"/>
+                                                </Border>
+                                            </Grid>
+                                            <TextBlock Text="{Binding RightName}" Classes="subtle" TextWrapping="Wrap"/>
+                                            <TextBlock Text="{Binding Summary}" Classes="subtle" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+
+                <ScrollViewer Grid.Column="1"
+                              HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Auto">
+                    <Grid RowDefinitions="Auto,Auto,Auto,*" RowSpacing="10" MinHeight="0">
+                        <Border Grid.Row="0"
+                                BorderBrush="{DynamicResource BorderBrushStrong}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="10">
+                            <Grid ColumnDefinitions="*,*,Auto" ColumnSpacing="10">
+                                <Border Grid.Column="0"
+                                        BorderBrush="#2E3A52"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="8">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Left Wildcard" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding SelectedPair.LeftName}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1"
+                                        BorderBrush="#2E3A52"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="8">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Right Wildcard" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding SelectedPair.RightName}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="2"
+                                        Background="#1B2B43"
+                                        CornerRadius="4"
+                                        Padding="8,4"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding SelectedPair.ScoreText}" Classes="subtle"/>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="1"
+                                BorderBrush="{DynamicResource BorderBrushStrong}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="10">
+                            <WrapPanel ItemSpacing="8" LineSpacing="8" VerticalAlignment="Center">
+                                <TextBlock Text="Merge As" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                                <Button Content="Use Left" Click="UseLeftName_Click"/>
+                                <TextBox Text="{Binding MergeTargetName, Mode=TwoWay}"
+                                         MinWidth="220"
+                                         Width="320"
+                                         Watermark="Enter final wildcard name"/>
+                                <Button Content="Use Right" Click="UseRightName_Click"/>
+                                <Button Content="Merge"
+                                        Classes="accent"
+                                        Click="Merge_Click"/>
+                            </WrapPanel>
+                        </Border>
+
+                        <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="10">
+                            <Border Grid.Column="0"
+                                    BorderBrush="{DynamicResource BorderBrushStrong}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="8">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="{Binding SelectedPair.LeftName, StringFormat='Left Unique ({0})'}"
+                                               FontWeight="SemiBold"
+                                               TextWrapping="Wrap"/>
+                                    <TextBox Text="{Binding LeftDetailText}"
+                                             IsReadOnly="True"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             MinHeight="160"
+                                             MaxHeight="220"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1"
+                                    BorderBrush="{DynamicResource BorderBrushStrong}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="8">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="{Binding SelectedPair.RightName, StringFormat='Right Unique ({0})'}"
+                                               FontWeight="SemiBold"
+                                               TextWrapping="Wrap"/>
+                                    <TextBox Text="{Binding RightDetailText}"
+                                             IsReadOnly="True"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             MinHeight="160"
+                                             MaxHeight="220"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Grid Grid.Row="3" RowDefinitions="Auto,Auto,*" RowSpacing="10" MinHeight="0">
+                            <Border Grid.Row="0"
+                                    BorderBrush="{DynamicResource BorderBrushStrong}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="8">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="Shared Overlap" FontWeight="SemiBold"/>
+                                    <TextBox Text="{Binding SharedDetailText}"
+                                             IsReadOnly="True"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             MinHeight="140"
+                                             MaxHeight="220"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                </StackPanel>
+                            </Border>
+
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
+                                <Button Content="View JSON Diff" Click="ViewJsonDiff_Click"/>
+                            </StackPanel>
+
+                            <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="10" MinHeight="0">
+                                <Border Grid.Column="0"
+                                        BorderBrush="{DynamicResource BorderBrushStrong}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="8">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="Left JSON" FontWeight="SemiBold"/>
+                                        <TextBox Text="{Binding LeftJson}"
+                                                 IsReadOnly="True"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="NoWrap"
+                                                 FontFamily="Consolas, Menlo, Courier New"
+                                                 MinHeight="200"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                                 ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1"
+                                        BorderBrush="{DynamicResource BorderBrushStrong}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="8">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="Right JSON" FontWeight="SemiBold"/>
+                                        <TextBox Text="{Binding RightJson}"
+                                                 IsReadOnly="True"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="NoWrap"
+                                                 FontFamily="Consolas, Menlo, Courier New"
+                                                 MinHeight="200"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                                 ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </Grid>
+                    </Grid>
+                </ScrollViewer>
+            </Grid>
+
+            <DockPanel Grid.Row="2" LastChildFill="False">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                    <Button Content="Close" Click="Close_Click"/>
+                </StackPanel>
+            </DockPanel>
+        </Grid>
+    </Border>
+</Window>

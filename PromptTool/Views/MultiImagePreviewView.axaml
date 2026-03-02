@@ -14,10 +14,17 @@
     </Design.DataContext>
 
     <Grid RowDefinitions="Auto,*,Auto" Margin="10">
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,6">
-            <TextBlock Text="Generated Images" FontWeight="Bold" Grid.Column="0"/>
-            <TextBlock Text="{Binding StatusText}" Classes="subtle" Margin="10,0,0,0" Grid.Column="1" HorizontalAlignment="Right"/>
-            <TextBlock Text="{Binding ProgressText}" Classes="subtle" Margin="10,0,0,0" Grid.Column="2" HorizontalAlignment="Right"/>
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto" Margin="0,0,0,6" ColumnSpacing="10" RowSpacing="4">
+            <TextBlock Text="Generated Images" FontWeight="Bold" Grid.Row="0" Grid.Column="0"/>
+            <TextBlock Text="{Binding StatusText}" Classes="subtle" Grid.Row="0" Grid.Column="1" HorizontalAlignment="Right"/>
+            <TextBlock Text="{Binding ProgressText}" Classes="subtle" Grid.Row="0" Grid.Column="2" HorizontalAlignment="Right"/>
+            <TextBlock Text="{Binding HeaderContextText}"
+                       Grid.Row="1"
+                       Grid.Column="0"
+                       Grid.ColumnSpan="3"
+                       Classes="subtle"
+                       TextWrapping="Wrap"
+                       IsVisible="{Binding HeaderContextText, Converter={StaticResource StringToBoolConverter}}"/>
         </Grid>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
@@ -50,6 +57,13 @@
                                         <MenuItem Header="Edit &amp; Regenerate"
                                                   Command="{Binding EditAndRegenerateCommand}"
                                                   IsVisible="{Binding ShowGenerationActions}"/>
+                                        <Separator IsVisible="{Binding ShowGenerationActions}"/>
+                                        <MenuItem Header="Promote To Base"
+                                                  Command="{Binding PromoteToBaseCommand}"
+                                                  IsVisible="{Binding ShowGenerationActions}"/>
+                                        <MenuItem Header="Enhance From This"
+                                                  Command="{Binding EnhanceFromThisCommand}"
+                                                  IsVisible="{Binding ShowGenerationActions}"/>
                                     </ContextMenu>
                                 </Border.ContextMenu>
                                 <StackPanel Spacing="6">
@@ -57,7 +71,18 @@
                                         <CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" Grid.Column="0"/>
                                         <CheckBox Content="Favorite" IsChecked="{Binding IsFavorite}" Grid.Column="1" HorizontalAlignment="Right"/>
                                     </Grid>
-                                    <Border Height="220" Background="#1a1a1a" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                                    <Border Height="220"
+                                            Background="#1a1a1a"
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Center"
+                                            ToolTip.ShowDelay="650"
+                                            ToolTip.BetweenShowDelay="300"
+                                            >
+                                        <ToolTip.Tip>
+                                            <Border MaxWidth="460" Padding="8">
+                                                <TextBlock Text="{Binding PromptToolTip}" TextWrapping="Wrap"/>
+                                            </Border>
+                                        </ToolTip.Tip>
                                         <Grid>
                                             <Image Source="{Binding Image}" Stretch="Uniform" />
                                             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="{Binding IsLoading}">

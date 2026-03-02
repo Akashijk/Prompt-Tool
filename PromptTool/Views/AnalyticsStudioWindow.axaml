@@ -94,6 +94,9 @@
                           InputGesture="F5"/>
             </MenuItem>
             <MenuItem Header="_Actions">
+                <MenuItem Header="Add Selected to Favorites"
+                          Command="{Binding AddSelectedToFavoritesCommand}"
+                          IsEnabled="{Binding CanFavoriteSelected}"/>
                 <MenuItem Header="Score Selected (Aesthetic)"
                           Command="{Binding ScoreSelectedCommand}"
                           IsEnabled="{Binding CanScoreSelected}"/>
@@ -112,7 +115,7 @@
 
         <Grid RowDefinitions="Auto,*" ColumnDefinitions="300,8,*" Margin="12" RowSpacing="10" ColumnSpacing="10">
             <Border Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Classes="card" Padding="10">
-                <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+                <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
                     <TextBlock Text="Analytics Studio" FontWeight="Bold" FontSize="16" Grid.Column="0"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                         <TextBlock Text="Template" VerticalAlignment="Center"/>
@@ -128,6 +131,10 @@
                         <TextBlock Text="to" VerticalAlignment="Center"/>
                         <DatePicker SelectedDate="{Binding ToDate}" Width="140"/>
                     </StackPanel>
+                    <CheckBox Grid.Column="4"
+                              Content="Favorites Only"
+                              IsChecked="{Binding ShowFavoritesOnly}"
+                              VerticalAlignment="Center"/>
                 </Grid>
             </Border>
 
@@ -176,13 +183,15 @@
 
             <Border Grid.Row="1" Grid.Column="2" Classes="card" Padding="10">
             <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8">
-                <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="10">
+                <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="10">
                     <TextBlock Text="{Binding StatusText}" Classes="subtle" VerticalAlignment="Center"/>
                     <Button Grid.Column="1" Content="Compare Selected" Command="{Binding CompareSelectedCommand}"
                             IsVisible="{Binding CanCompare}" IsEnabled="{Binding CanCompare}"/>
-                    <Button Grid.Column="2" Content="Delete Selected" Command="{Binding DeleteSelectedCommand}"
+                    <Button Grid.Column="2" Content="Favorite Selected" Command="{Binding AddSelectedToFavoritesCommand}"
+                            IsVisible="{Binding CanFavoriteSelected}" IsEnabled="{Binding CanFavoriteSelected}"/>
+                    <Button Grid.Column="3" Content="Delete Selected" Command="{Binding DeleteSelectedCommand}"
                             IsVisible="{Binding CanDeleteSelected}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Grid.Column="3" Content="Clear Selection" Command="{Binding ClearSelectionCommand}"
+                    <Button Grid.Column="4" Content="Clear Selection" Command="{Binding ClearSelectionCommand}"
                             IsVisible="{Binding CanScoreSelected}" IsEnabled="{Binding CanScoreSelected}"/>
                 </Grid>
                 <StackPanel Grid.Row="1" Spacing="6">
@@ -210,6 +219,10 @@
                                         DoubleTapped="OnImageDoubleTapped">
                                     <Border.ContextMenu>
                                         <ContextMenu DataContext="{Binding}">
+                                            <MenuItem Header="Add to Favorites"
+                                                      Command="{Binding DataContext.AddToFavoritesCommand, ElementName=AnalyticsWindowRoot}"
+                                                      CommandParameter="{Binding}"/>
+                                            <Separator/>
                                             <MenuItem Header="Open">
                                                 <MenuItem Header="View Details"
                                                           Command="{Binding DataContext.ViewDetailsCommand, ElementName=AnalyticsWindowRoot}"

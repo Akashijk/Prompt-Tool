@@ -14,67 +14,166 @@
         <KeyBinding Gesture="Ctrl+F" Command="{Binding ToggleFindCommand}"/>
         <KeyBinding Gesture="F3" Command="{Binding FindNextCommand}"/>
     </Window.KeyBindings>
-    <Grid Margin="10" RowDefinitions="Auto,*" ColumnDefinitions="1.25*,2*" RowSpacing="8" ColumnSpacing="10">
-        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="8">
-            <Button Content="New" Command="{Binding NewWildcardCommand}"/>
-            <Button Content="Save" Command="{Binding SaveWildcardCommand}"/>
-            <Button Content="Delete" Click="OnDeleteWildcardClicked"/>
-            <Button Content="Validate" Command="{Binding ValidateCommand}"/>
-            <Button Content="Find Duplicates" Command="{Binding FindDuplicatesCommand}"/>
-            <Button Content="Dedup" Command="{Binding DeduplicateChoicesCommand}"/>
-            <Button Content="Rename" Click="OnRenameWildcardClicked"/>
-            <Button Content="Archive" Command="{Binding ArchiveWildcardCommand}" IsEnabled="{Binding CanArchive}"/>
-            <Button Content="Unarchive" Command="{Binding UnarchiveWildcardCommand}" IsEnabled="{Binding CanUnarchive}"/>
-            <Button Content="Convert Legacy TXT" Command="{Binding ConvertAllLegacyCommand}"/>
-            <Button Content="Refresh Deps" Command="{Binding RefreshDependenciesCommand}"/>
-        </StackPanel>
-        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Status}" HorizontalAlignment="Right" VerticalAlignment="Center" Classes="subtle"/>
-
-        <Grid Grid.Row="1" Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="6">
-            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6">
-                <TextBox Width="200" Watermark="Filter wildcards..." Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"/>
-                <TextBlock Text="{Binding WildcardCount, StringFormat='Total: {0}'}" VerticalAlignment="Center" Classes="subtle"/>
-                <CheckBox Content="Show archived" IsChecked="{Binding ShowArchived}" VerticalAlignment="Center"/>
+    <Grid Margin="10" RowDefinitions="Auto,*" ColumnDefinitions="1.05*,6,1.75*,6,Auto" RowSpacing="10" ColumnSpacing="0">
+        <DockPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="5" LastChildFill="False">
+            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="8">
+                <Button Content="New" Click="OnNewWildcardClicked"/>
+                <Button Content="Save" Command="{Binding SaveWildcardCommand}"/>
+                <Button Content="Rename" Click="OnRenameWildcardClicked"/>
             </StackPanel>
-            <ListBox x:Name="WildcardListBox"
-                     Grid.Row="1"
-                     ItemsSource="{Binding Wildcards}"
-                     SelectedItem="{Binding SelectedWildcard}"
-                     BorderThickness="1"
-                     SelectionChanged="WildcardListBox_SelectionChanged"
-                     VerticalAlignment="Stretch">
-                <ListBox.ItemTemplate>
-                    <DataTemplate x:DataType="core:WildcardFileEntry">
-                        <StackPanel Orientation="Horizontal" Spacing="4">
-                            <TextBlock Text="{Binding Name}"/>
-                            <TextBlock Text="(archived)" IsVisible="{Binding IsArchived}" Classes="subtle"/>
-                        </StackPanel>
-                    </DataTemplate>
-                </ListBox.ItemTemplate>
-            </ListBox>
-        </Grid>
+            <Menu DockPanel.Dock="Left" Margin="12,0,0,0" Background="Transparent">
+                <MenuItem Header="_More">
+                    <MenuItem Header="_Delete" Click="OnDeleteWildcardClicked"/>
+                    <MenuItem Header="_Archive"
+                              Command="{Binding ArchiveWildcardCommand}"
+                              IsEnabled="{Binding CanArchive}"/>
+                    <MenuItem Header="_Unarchive"
+                              Command="{Binding UnarchiveWildcardCommand}"
+                              IsEnabled="{Binding CanUnarchive}"/>
+                </MenuItem>
+                <MenuItem Header="_Library">
+                    <MenuItem Header="_Validate Current" Command="{Binding ValidateCommand}"/>
+                    <MenuItem Header="_Dedupe Wildcards..." Click="OnDedupeWildcardsClicked"/>
+                    <MenuItem Header="Find Duplicate _Files" Command="{Binding FindDuplicatesCommand}"/>
+                    <MenuItem Header="_Convert Legacy TXT" Command="{Binding ConvertAllLegacyCommand}"/>
+                    <MenuItem Header="_Refresh Dependencies" Command="{Binding RefreshDependenciesCommand}"/>
+                </MenuItem>
+            </Menu>
+            <Button DockPanel.Dock="Right"
+                    Content="{Binding InspectorToggleText}"
+                    Command="{Binding ToggleInspectorCommand}"
+                    Margin="12,0,0,0"/>
+            <TextBlock DockPanel.Dock="Right"
+                       Text="{Binding Status}"
+                       Margin="12,0,0,0"
+                       HorizontalAlignment="Right"
+                       VerticalAlignment="Center"
+                       Classes="subtle"/>
+        </DockPanel>
 
-        <ScrollViewer Grid.Row="1" Grid.Column="1" VerticalScrollBarVisibility="Auto">
-            <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="6">
-                <TextBox Grid.Row="0" Watermark="Wildcard name" Text="{Binding CurrentWildcardName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                <Border Grid.Row="1" IsVisible="{Binding IsFindVisible}" Padding="6" BorderThickness="1" CornerRadius="4" BorderBrush="#404040">
+        <Border Grid.Row="1" Grid.Column="0" BorderBrush="{DynamicResource BorderBrushStrong}" BorderThickness="1" CornerRadius="6" Padding="10">
+            <Grid RowDefinitions="Auto,Auto,*" RowSpacing="10">
+                <StackPanel Grid.Row="0" Spacing="8">
+                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                        <TextBox Grid.Column="0"
+                                 Watermark="Search names, content, tags..."
+                                 Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"/>
+                        <Border Grid.Column="1" Background="#1B2B43" CornerRadius="4" Padding="8,4">
+                            <TextBlock Text="{Binding WildcardCount, StringFormat='{}{0} total'}" Classes="subtle"/>
+                        </Border>
+                        <CheckBox Grid.Column="2" Content="Show archived" IsChecked="{Binding ShowArchived}" VerticalAlignment="Center"/>
+                    </Grid>
+                    <TextBlock Text="Browse by name, then narrow by theme." Classes="subtle" TextWrapping="Wrap"/>
+                    <ScrollViewer MaxHeight="96"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding ThemeSuggestions}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <Button Content="{Binding}"
+                                            Margin="2"
+                                            Padding="6,2"
+                                            Command="{Binding DataContext.ApplyThemeFilterCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            CommandParameter="{Binding}"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </StackPanel>
+
+                <Border Grid.Row="1" BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="8">
+                    <TextBlock Text="Wildcard Library" FontWeight="SemiBold"/>
+                </Border>
+
+                <ListBox x:Name="WildcardListBox"
+                         Grid.Row="2"
+                         ItemsSource="{Binding Wildcards}"
+                         SelectedItem="{Binding SelectedWildcard}"
+                         BorderThickness="1"
+                         SelectionChanged="WildcardListBox_SelectionChanged"
+                         VerticalAlignment="Stretch">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="core:WildcardFileEntry">
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,1">
+                                <TextBlock Text="{Binding Name}" TextWrapping="Wrap"/>
+                                <TextBlock Grid.Column="1" Text="archived" IsVisible="{Binding IsArchived}" Classes="subtle"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+
+        <GridSplitter Grid.Row="1" Grid.Column="1" Width="6" Background="#2B3A54" ShowsPreview="True" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"/>
+
+        <Border Grid.Row="1" Grid.Column="2" BorderBrush="{DynamicResource BorderBrushStrong}" BorderThickness="1" CornerRadius="6" Padding="10">
+            <Grid RowDefinitions="Auto,Auto,*" RowSpacing="10" MinHeight="0">
+                <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                    <TextBox Grid.Column="0"
+                             Watermark="Wildcard name"
+                             Text="{Binding CurrentWildcardName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Menu Grid.Column="1" Background="Transparent" VerticalAlignment="Center">
+                        <MenuItem Header="_Organize">
+                            <MenuItem Header="_Dedup Exact" Command="{Binding DeduplicateChoicesCommand}"/>
+                            <MenuItem Header="_Find Similar" Command="{Binding FindSimilarChoicesCommand}"/>
+                            <MenuItem Header="_Normalize Text" Command="{Binding NormalizeChoiceTextCommand}"/>
+                            <MenuItem Header="_Sort" Command="{Binding SortChoicesCommand}"/>
+                        </MenuItem>
+                        <MenuItem Header="_Rules">
+                            <MenuItem Header="Set _Include..." Click="OnSetIncludeClicked"/>
+                            <MenuItem Header="_Clear Include" Click="OnClearIncludeClicked"/>
+                            <MenuItem Header="Set _Requires..." Click="OnSetRequiresClicked"/>
+                            <MenuItem Header="C_lear Requires" Click="OnClearRequiresClicked"/>
+                        </MenuItem>
+                    </Menu>
+                </Grid>
+
+                <Border Grid.Row="1"
+                        IsVisible="{Binding IsFindVisible}"
+                        Padding="8"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        BorderBrush="#404040">
                     <StackPanel Spacing="6">
-                        <StackPanel Orientation="Horizontal" Spacing="6">
+                        <WrapPanel ItemSpacing="6" LineSpacing="6">
                             <TextBox Width="160" Watermark="Find" Text="{Binding FindText, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBox Width="160" Watermark="Replace" Text="{Binding ReplaceText, UpdateSourceTrigger=PropertyChanged}"/>
                             <Button Content="Find Next" Command="{Binding FindNextCommand}"/>
                             <Button Content="Replace" Command="{Binding ReplaceNextCommand}"/>
                             <Button Content="Replace All" Command="{Binding ReplaceAllCommand}"/>
                             <Button Content="Close" Command="{Binding ToggleFindCommand}"/>
-                        </StackPanel>
-                        <TextBlock Text="Ctrl+F: find, F3: next, Enter: add row, Delete: remove row." Classes="subtle"/>
+                        </WrapPanel>
+                        <TextBlock Text="Ctrl+F finds inside the selected wildcard only." Classes="subtle"/>
                     </StackPanel>
                 </Border>
+
                 <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTabIndex}">
                     <TabItem Header="Structured">
-                        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="6" Margin="4">
-                            <TextBlock Grid.Row="0" Text="Choices" FontWeight="Bold"/>
-                            <DataGrid Grid.Row="1"
+                        <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="8" Margin="4" MinHeight="0">
+                            <WrapPanel Grid.Row="0" ItemSpacing="8" LineSpacing="8">
+                                <Button Content="Add" Command="{Binding AddChoiceCommand}"/>
+                                <Button Content="Delete" Command="{Binding DeleteChoiceCommand}"/>
+                                <Button Content="Move Up" Command="{Binding MoveChoiceUpCommand}"/>
+                                <Button Content="Move Down" Command="{Binding MoveChoiceDownCommand}"/>
+                            </WrapPanel>
+                            <WrapPanel Grid.Row="1" ItemSpacing="8" LineSpacing="8">
+                                <TextBox Width="320"
+                                         Watermark="Type a new entry and press Enter"
+                                         Text="{Binding QuickAddChoiceText, UpdateSourceTrigger=PropertyChanged}">
+                                    <TextBox.KeyBindings>
+                                        <KeyBinding Gesture="Enter" Command="{Binding AddQuickChoiceCommand}"/>
+                                    </TextBox.KeyBindings>
+                                </TextBox>
+                                <Button Content="Add Entry" Command="{Binding AddQuickChoiceCommand}"/>
+                                <Button Content="Add List..." Click="OnBulkAddChoicesClicked"/>
+                                <Button Content="AI Suggest..." Click="OnAiSuggestChoicesClicked"/>
+                            </WrapPanel>
+                            <DataGrid Grid.Row="2"
                                       ItemsSource="{Binding Choices}"
                                       SelectedItem="{Binding SelectedChoice}"
                                       AutoGenerateColumns="False"
@@ -84,10 +183,21 @@
                                       HeadersVisibility="Column"
                                       SelectionMode="Single"
                                       RowHeight="36"
+                                      MinHeight="0"
                                       KeyDown="ChoicesGrid_KeyDown">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="#" Binding="{Binding Index}" Width="40" IsReadOnly="True"/>
-                                    <DataGridTemplateColumn Header="Value" Width="2*">
+                                    <DataGridTemplateColumn Width="2*">
+                                        <DataGridTemplateColumn.Header>
+                                            <Button Content="Value"
+                                                    Click="OnSortChoicesByValueClicked"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Padding="0"
+                                                    HorizontalAlignment="Stretch"
+                                                    HorizontalContentAlignment="Left"
+                                                    ToolTip.Tip="Sort choices alphabetically"/>
+                                        </DataGridTemplateColumn.Header>
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
                                                 <TextBlock Text="{Binding Value}" TextWrapping="Wrap"/>
@@ -150,90 +260,191 @@
                                     </DataGridTemplateColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                                <Button Content="Add" Command="{Binding AddChoiceCommand}"/>
-                                <Button Content="Delete" Command="{Binding DeleteChoiceCommand}"/>
-                                <Button Content="Move Up" Command="{Binding MoveChoiceUpCommand}"/>
-                                <Button Content="Move Down" Command="{Binding MoveChoiceDownCommand}"/>
-                                <Button Content="Set Include..." Click="OnSetIncludeClicked"/>
-                                <Button Content="Clear Include" Click="OnClearIncludeClicked"/>
-                                <Button Content="Set Requires..." Click="OnSetRequiresClicked"/>
-                                <Button Content="Clear Requires" Click="OnClearRequiresClicked"/>
+                            <WrapPanel Grid.Row="3" ItemSpacing="8" LineSpacing="8" HorizontalAlignment="Right">
                                 <Button Content="Refresh from Raw" Command="{Binding ReloadStructuredFromRawCommand}"/>
                                 <Button Content="Apply to Raw JSON" Command="{Binding ApplyStructuredToRawCommand}"/>
-                            </StackPanel>
+                            </WrapPanel>
                         </Grid>
                     </TabItem>
                     <TabItem Header="Raw JSON">
-                        <TextBox AcceptsReturn="True" TextWrapping="Wrap"
+                        <TextBox AcceptsReturn="True"
+                                 TextWrapping="Wrap"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
                                  MinHeight="260"
                                  Text="{Binding CurrentWildcardContent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                     </TabItem>
                 </TabControl>
-                <StackPanel Grid.Row="3" Spacing="6">
-                    <DataGrid ItemsSource="{Binding ValidationErrors}"
-                              AutoGenerateColumns="False"
-                              CanUserResizeColumns="True"
-                              HeadersVisibility="Column"
-                              SelectionMode="Single"
-                              SelectedItem="{Binding SelectedValidationIssue}">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Location" Binding="{Binding Location}" Width="120"/>
-                            <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*" />
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <Button Content="Insert Weighted" Command="{Binding InsertWeightedChoiceTemplateCommand}"/>
-                        <Button Content="Insert Include" Command="{Binding InsertIncludeTemplateCommand}"/>
-                        <Button Content="Insert Requires" Command="{Binding InsertRequiresTemplateCommand}"/>
-                    </StackPanel>
-                </StackPanel>
-                <StackPanel Grid.Row="4" Spacing="8">
-                    <Expander Header="Dependencies" IsExpanded="False">
-                        <Border BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="6">
+            </Grid>
+        </Border>
+
+        <GridSplitter Grid.Row="1"
+                      Grid.Column="3"
+                      Width="{Binding InspectorSplitterWidth}"
+                      Background="#2B3A54"
+                      ShowsPreview="True"
+                      ResizeDirection="Columns"
+                      ResizeBehavior="PreviousAndNext">
+            <GridSplitter.Transitions>
+                <Transitions>
+                    <DoubleTransition Property="Width" Duration="0:0:0.18"/>
+                </Transitions>
+            </GridSplitter.Transitions>
+        </GridSplitter>
+
+        <Border Grid.Row="1"
+                Grid.Column="4"
+                Width="{Binding InspectorPaneWidth}"
+                MinWidth="0"
+                Opacity="{Binding InspectorPaneOpacity}"
+                ClipToBounds="True"
+                BorderBrush="{DynamicResource BorderBrushStrong}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="10"
+                IsEnabled="{Binding IsInspectorOpen}">
+            <Border.Transitions>
+                <Transitions>
+                    <DoubleTransition Property="Width" Duration="0:0:0.22"/>
+                    <DoubleTransition Property="Opacity" Duration="0:0:0.16"/>
+                </Transitions>
+            </Border.Transitions>
+            <Grid RowDefinitions="Auto,*" RowSpacing="10" MinHeight="0">
+                <DockPanel Grid.Row="0" LastChildFill="False">
+                    <TextBlock DockPanel.Dock="Left" Text="Inspector" FontWeight="Bold"/>
+                    <Button DockPanel.Dock="Right" Content="Close" Command="{Binding ToggleInspectorCommand}"/>
+                </DockPanel>
+
+                <TabControl Grid.Row="1" SelectedIndex="{Binding InspectorTabIndex}">
+                    <TabItem Header="{Binding ValidationErrors.Count, StringFormat='Validation ({0})'}">
+                        <Grid RowDefinitions="Auto,*,Auto" RowSpacing="8" Margin="4" MinHeight="0">
+                            <Border Grid.Row="0" BorderBrush="#2E3A52" BorderThickness="1" CornerRadius="4" Padding="8">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="{Binding SelectedIssueSummary}" TextWrapping="Wrap" Classes="subtle"/>
+                                        <WrapPanel ItemSpacing="8" LineSpacing="8">
+                                            <Button Content="{Binding ResolvePrimaryIssueText}"
+                                                Command="{Binding MergeSelectedIssueKeepPrimaryCommand}"
+                                                IsEnabled="{Binding CanResolveSelectedIssue}">
+                                                <ToolTip.Tip>
+                                                    <Border MaxWidth="420" Padding="6">
+                                                        <TextBlock Text="{Binding ResolvePrimaryIssueText}" TextWrapping="Wrap"/>
+                                                    </Border>
+                                                </ToolTip.Tip>
+                                            </Button>
+                                            <Button Content="{Binding ResolveSecondaryIssueText}"
+                                                Command="{Binding MergeSelectedIssueKeepSecondaryCommand}"
+                                                IsEnabled="{Binding CanResolveSelectedIssue}">
+                                                <ToolTip.Tip>
+                                                    <Border MaxWidth="420" Padding="6">
+                                                        <TextBlock Text="{Binding ResolveSecondaryIssueText}" TextWrapping="Wrap"/>
+                                                    </Border>
+                                                </ToolTip.Tip>
+                                            </Button>
+                                        </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                            <DataGrid Grid.Row="1"
+                                      ItemsSource="{Binding ValidationErrors}"
+                                      AutoGenerateColumns="False"
+                                      CanUserResizeColumns="True"
+                                      HeadersVisibility="Column"
+                                      SelectionMode="Single"
+                                      MinHeight="180"
+                                      SelectedItem="{Binding SelectedValidationIssue}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Location" Binding="{Binding Location}" Width="120"/>
+                                    <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <WrapPanel Grid.Row="2" ItemSpacing="8" LineSpacing="8">
+                                <Button Content="Validate Current" Command="{Binding ValidateCommand}"/>
+                                <Button Content="Find Duplicate Files" Command="{Binding FindDuplicatesCommand}"/>
+                                <Button Content="Insert Weighted" Command="{Binding InsertWeightedChoiceTemplateCommand}"/>
+                                <Button Content="Insert Include" Command="{Binding InsertIncludeTemplateCommand}"/>
+                                <Button Content="Insert Requires" Command="{Binding InsertRequiresTemplateCommand}"/>
+                            </WrapPanel>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="Similar Wildcards">
+                        <Grid RowDefinitions="Auto,*" RowSpacing="8" Margin="4" MinHeight="0">
+                            <TextBlock Grid.Row="0" Text="{Binding SimilarWildcardStatus}" Classes="subtle" TextWrapping="Wrap"/>
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <ItemsControl ItemsSource="{Binding SimilarWildcards}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:SimilarWildcardCandidate">
+                                            <Border BorderBrush="#2E3A52" BorderThickness="1" CornerRadius="4" Padding="8" Margin="0,0,0,6">
+                                                <StackPanel Spacing="4">
+                                                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                        <Border Grid.Column="1" Background="#1B2B43" CornerRadius="3" Padding="6,2">
+                                                            <TextBlock Text="{Binding ScoreText}" Classes="subtle"/>
+                                                        </Border>
+                                                    </Grid>
+                                                    <TextBlock Text="{Binding Summary}" Classes="subtle" TextWrapping="Wrap"/>
+                                                    <TextBlock Text="{Binding Preview}" Classes="subtle" TextWrapping="Wrap"/>
+                                                    <WrapPanel ItemSpacing="6">
+                                                        <Button Content="Open"
+                                                                Command="{Binding DataContext.SelectWildcardByNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding Name}"/>
+                                                        <Button Content="Merge Into Current"
+                                                                Tag="{Binding Name}"
+                                                                Click="OnMergeSimilarClicked"/>
+                                                    </WrapPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="Dependencies">
+                        <ScrollViewer Margin="4" VerticalScrollBarVisibility="Auto">
                             <ItemsControl ItemsSource="{Binding Dependencies}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="vm:DependencyInfo">
-                                        <StackPanel Spacing="2">
+                                        <StackPanel Spacing="2" Margin="0,0,0,8">
                                             <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
                                             <TextBlock Classes="subtle" Text="{Binding References, StringFormat='Referenced by {0} file(s)'}"/>
                                             <TextBlock Classes="subtle" Text="{Binding Includes, StringFormat='Includes: {0}'}"/>
                                             <TextBlock Classes="subtle" Text="{Binding RequiredBy, StringFormat='Required by: {0}'}"/>
-                                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                                <Button Content="Open" Command="{Binding DataContext.SelectWildcardByNameCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Name}"/>
-                                            </StackPanel>
+                                            <WrapPanel ItemSpacing="6">
+                                                <Button Content="Open"
+                                                        Command="{Binding DataContext.SelectWildcardByNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding Name}"/>
+                                            </WrapPanel>
                                         </StackPanel>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
-                        </Border>
-                    </Expander>
-                    <Expander Header="Unused Wildcards" IsExpanded="False">
-                        <Border BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="6">
-                            <StackPanel Spacing="4">
+                        </ScrollViewer>
+                    </TabItem>
+                    <TabItem Header="{Binding UnusedWildcards.Count, StringFormat='Unused ({0})'}">
+                        <Grid RowDefinitions="*,Auto" RowSpacing="8" Margin="4">
+                            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                                 <ItemsControl ItemsSource="{Binding UnusedWildcards}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate x:DataType="x:String">
-                                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                                <TextBlock Text="{Binding}"/>
-                                                <Button Content="Open" Command="{Binding DataContext.SelectWildcardByNameCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
+                                            <WrapPanel ItemSpacing="6" Margin="0,0,0,6">
+                                                <TextBlock Text="{Binding}" VerticalAlignment="Center"/>
+                                                <Button Content="Open"
+                                                        Command="{Binding DataContext.SelectWildcardByNameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}"/>
                                                 <Button Content="Delete"
                                                         Tag="{Binding}"
                                                         Click="OnDeleteUnusedClicked"/>
-                                            </StackPanel>
+                                            </WrapPanel>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
-                                <Button Content="Delete All Unused"
-                                        HorizontalAlignment="Right"
-                                        Margin="0,4,0,0"
-                                        Click="OnDeleteAllUnusedClicked"/>
-                            </StackPanel>
-                        </Border>
-                    </Expander>
-                </StackPanel>
+                            </ScrollViewer>
+                            <Button Grid.Row="1"
+                                    Content="Delete All Unused"
+                                    HorizontalAlignment="Right"
+                                    Click="OnDeleteAllUnusedClicked"/>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
             </Grid>
-        </ScrollViewer>
+        </Border>
     </Grid>
 </Window>

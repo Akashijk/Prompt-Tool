@@ -79,8 +79,13 @@
                     <DataGridTemplateColumn Header="Thumbnail" Width="120">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
-                                <Border BorderBrush="#404040" BorderThickness="1" Padding="2">
-                                    <Image Source="{Binding Cover}" Height="70" Stretch="UniformToFill"/>
+                                <Border BorderBrush="#404040" BorderThickness="1" Padding="2" Background="#1A1A1A">
+                                    <Image Source="{Binding Cover}"
+                                           Width="112"
+                                           Height="70"
+                                           Stretch="Uniform"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"/>
                                 </Border>
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
@@ -105,6 +110,10 @@
                                 Command="{Binding ViewLargeCommand}" CommandParameter="{Binding SelectedImageItem}" />
                     </Grid>
                 </Border>
+                <TextBlock Text="{Binding CurrentImagePositionText}"
+                           Classes="subtle"
+                           HorizontalAlignment="Center"
+                           IsVisible="{Binding CurrentImagePositionText, Converter={StaticResource StringToBoolConverter}}"/>
 
                 <Expander IsExpanded="True">
                     <Expander.Header>
@@ -236,11 +245,18 @@
                                             <CheckBox VerticalAlignment="Top"
                                                       IsChecked="{Binding IsSelected}"
                                                       ToolTip.Tip="Select for bulk delete"/>
-                                            <Image Grid.Column="1"
-                                                   Source="{Binding Bitmap}"
-                                                   Width="168"
-                                                   Height="94"
-                                                   Stretch="UniformToFill"/>
+                                            <Border Grid.Column="1"
+                                                    Width="168"
+                                                    Height="94"
+                                                    Background="#1A1A1A"
+                                                    CornerRadius="4">
+                                                <Image Source="{Binding Bitmap}"
+                                                       Width="168"
+                                                       Height="94"
+                                                       Stretch="Uniform"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                            </Border>
                                         </Grid>
                                         <TextBlock Text="{Binding Label}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                             <TextBlock Text="{Binding ModelLabel}"

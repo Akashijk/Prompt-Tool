@@ -1,8 +1,10 @@
 using System;
+using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Input;
+using Avalonia.Controls.ApplicationLifetimes;
 using PromptTool.ViewModels;
 using PromptTool.Core.Services;
 
@@ -127,6 +129,74 @@ public partial class WildcardManagerWindow : Window
         }
     }
 
+    private async void OnNewWildcardClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not WildcardManagerViewModel vm)
+        {
+            return;
+        }
+
+        var suggested = string.IsNullOrWhiteSpace(vm.CurrentWildcardName) ? "new_wildcard" : vm.CurrentWildcardName;
+        var name = await TextInputDialog.ShowAsync("New Wildcard", "Wildcard name:", suggested, this);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        var mainVm = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow?.DataContext as MainWindowViewModel;
+        if (mainVm != null)
+        {
+            await mainVm.CreateWildcardWithOptionalAiAsync(name, this, vm);
+            return;
+        }
+
+        vm.NewWildcardCommand.Execute(null);
+    }
+
+    private async void OnDedupeWildcardsClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not WildcardManagerViewModel vm)
+        {
+            return;
+        }
+
+        var dedupeVm = new WildcardDedupeViewModel(vm.WildcardService, vm.TemplateService);
+        var win = new WildcardDedupeWindow(dedupeVm);
+        await win.ShowDialog(this);
+
+        await vm.LoadWildcardsCommand.ExecuteAsync(null);
+        if (!string.IsNullOrWhiteSpace(dedupeVm.LastMergedName))
+        {
+            vm.SelectWildcardByNameCommand.Execute(dedupeVm.LastMergedName);
+        }
+    }
+
+    private async void OnMergeSimilarClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not WildcardManagerViewModel vm || sender is not Button button || button.Tag is not string sourceName)
+        {
+            return;
+        }
+
+        var targetName = vm.CurrentWildcardName?.Trim();
+        if (string.IsNullOrWhiteSpace(targetName))
+        {
+            return;
+        }
+
+        var confirm = await ConfirmDialog.Show(
+            this,
+            "Merge similar wildcard?",
+            $"Merge '{sourceName}' into '{targetName}'?\n\nThis will combine overlapping choices, update template references, and delete '{sourceName}'.");
+
+        if (!confirm)
+        {
+            return;
+        }
+
+        await vm.MergeWildcardIntoCurrentAsync(sourceName);
+    }
+
     private async void OnDeleteUnusedClicked(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not WildcardManagerViewModel vm) return;
@@ -157,6 +227,83 @@ public partial class WildcardManagerWindow : Window
         var newName = await TextInputDialog.ShowAsync("Rename Wildcard", "New name:", vm.SelectedWildcard.Name, this);
         if (string.IsNullOrWhiteSpace(newName)) return;
         await vm.RenameWildcardToAsync(newName);
+    }
+
+    private async void OnBulkAddChoicesClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not WildcardManagerViewModel vm)
+        {
+            return;
+        }
+
+        var raw = await MultiLineTextInputDialog.ShowAsync(
+            "Add Multiple Entries",
+            "Paste or type one entry per line. Blank lines are ignored, and leading bullets like '-', '*', or '•' are stripped.",
+            null,
+            this);
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+
+        vm.AddChoicesFromLines(raw);
+    }
+
+    private async void OnAiSuggestChoicesClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not WildcardManagerViewModel vm || string.IsNullOrWhiteSpace(vm.CurrentWildcardName))
+        {
+            return;
+        }
+
+        var mainVm = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow?.DataContext as MainWindowViewModel;
+        if (mainVm == null)
+        {
+            vm.SetStatusMessage("AI suggestions are unavailable because the main window model could not be found.");
+            return;
+        }
+
+        var description = await TextInputDialog.ShowAsync(
+            "AI Suggest Entries",
+            $"Describe what kinds of choices should be added to '{vm.CurrentWildcardName}'. AI may also suggest tags, includes, and requires when useful.",
+            $"Add more high-quality {vm.CurrentWildcardName.Replace('_', ' ')} entries",
+            this);
+
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            return;
+        }
+
+        try
+        {
+            vm.SetStatusMessage("AI is generating entry suggestions...");
+            var generatedJson = await mainVm.GenerateWildcardSuggestionsForEditorAsync(vm.CurrentWildcardName, description.Trim());
+
+            // Ensure the response is at least valid JSON before handing it to the editor append flow.
+            _ = JsonDocument.Parse(generatedJson);
+
+            var added = vm.AppendChoicesFromWildcardJson(generatedJson);
+            if (added == 0)
+            {
+                vm.SetStatusMessage("AI returned suggestions, but no usable choices were found.");
+            }
+        }
+        catch (Exception ex)
+        {
+            vm.SetStatusMessage($"AI suggestions failed: {ex.Message}");
+        }
+    }
+
+    private void OnSortChoicesByValueClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not WildcardManagerViewModel vm)
+        {
+            return;
+        }
+
+        vm.SortChoicesCommand.Execute(null);
+        e.Handled = true;
     }
 
     private async void OnIncludesDoubleTapped(object? sender, RoutedEventArgs e)

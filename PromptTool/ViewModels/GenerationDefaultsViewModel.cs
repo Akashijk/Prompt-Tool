@@ -13,6 +13,7 @@ public partial class GenerationDefaultsViewModel : ObservableObject
     private readonly Dictionary<string, GenerationDefaultsSettings> _defaultsMap = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, GenerationDefaultsSettings> _originalDefaults = new(StringComparer.OrdinalIgnoreCase);
     private string _currentBase = "sdxl";
+    private bool _suppressSchedulerSelectionSync;
 
     [ObservableProperty] private string _defaultScheduler = "dpmpp_2m_k";
     [ObservableProperty] private int _defaultSteps = 30;
@@ -23,8 +24,9 @@ public partial class GenerationDefaultsViewModel : ObservableObject
     [ObservableProperty] private bool _defaultSaveToGallery;
     [ObservableProperty] private string _defaultBaseModelType = "sdxl";
 
-    [ObservableProperty] private ObservableCollection<string> _schedulers = new();
+    [ObservableProperty] private ObservableCollection<SchedulerOption> _schedulers = new();
     [ObservableProperty] private ObservableCollection<string> _baseModelTypes = new() { "sdxl", "sd-1.5" };
+    [ObservableProperty] private SchedulerOption? _selectedSchedulerOption;
 
     [ObservableProperty] private bool? _dialogResult;
 
@@ -66,8 +68,11 @@ public partial class GenerationDefaultsViewModel : ObservableObject
         {
             list.Add(current);
         }
-        Schedulers = new ObservableCollection<string>(list);
+        Schedulers = new ObservableCollection<SchedulerOption>(
+            list.Select(s => new SchedulerOption(s, ImageGenerationOptionsViewModel.NormalizeSchedulerDisplay(s))));
+        SyncSelectedSchedulerOption();
         DefaultScheduler = list.FirstOrDefault(s => string.Equals(s, current, StringComparison.OrdinalIgnoreCase)) ?? list.First();
+        SyncSelectedSchedulerOption();
     }
 
     [RelayCommand]
@@ -134,6 +139,7 @@ public partial class GenerationDefaultsViewModel : ObservableObject
         DefaultHeight = d.Height;
         DefaultSaveToGallery = d.SaveToGallery;
         DefaultBaseModelType = _currentBase;
+        SyncSelectedSchedulerOption();
     }
 
     private void StoreCurrentDefaults()
@@ -149,6 +155,36 @@ public partial class GenerationDefaultsViewModel : ObservableObject
             Height = DefaultHeight,
             SaveToGallery = DefaultSaveToGallery
         };
+    }
+
+    partial void OnSelectedSchedulerOptionChanged(SchedulerOption? value)
+    {
+        if (_suppressSchedulerSelectionSync || value == null)
+        {
+            return;
+        }
+
+        DefaultScheduler = value.Value;
+    }
+
+    partial void OnDefaultSchedulerChanged(string value)
+    {
+        SyncSelectedSchedulerOption();
+    }
+
+    private void SyncSelectedSchedulerOption()
+    {
+        if (Schedulers.Count == 0)
+        {
+            SelectedSchedulerOption = null;
+            return;
+        }
+
+        _suppressSchedulerSelectionSync = true;
+        SelectedSchedulerOption = Schedulers.FirstOrDefault(s =>
+                                    string.Equals(s.Value, DefaultScheduler, StringComparison.OrdinalIgnoreCase))
+                                ?? Schedulers.FirstOrDefault();
+        _suppressSchedulerSelectionSync = false;
     }
 
     private static GenerationDefaultsSettings Clone(GenerationDefaultsSettings src) =>

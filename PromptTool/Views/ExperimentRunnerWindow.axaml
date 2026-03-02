@@ -1,0 +1,180 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        xmlns:conv="using:PromptTool.Converters"
+        mc:Ignorable="d"
+        x:Class="PromptTool.Views.ExperimentRunnerWindow"
+        x:DataType="vm:ExperimentRunnerViewModel"
+        Width="620"
+        Height="620"
+        MinWidth="560"
+        MinHeight="520"
+        WindowStartupLocation="CenterOwner"
+        Title="Prompt Experiments">
+
+    <Design.DataContext>
+        <vm:ExperimentRunnerViewModel />
+    </Design.DataContext>
+
+    <Window.Resources>
+        <conv:BoolToThicknessConverter x:Key="BoolToThicknessConverter"/>
+        <conv:BoolToBrushConverter x:Key="BoolToBrushConverter"/>
+        <conv:BoolToHandCursorConverter x:Key="BoolToHandCursorConverter"/>
+        <conv:BoolToIncludeBrushConverter x:Key="BoolToIncludeBrushConverter"/>
+        <conv:BoolToMissingBrushConverter x:Key="BoolToMissingBrushConverter"/>
+    </Window.Resources>
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="14" RowSpacing="12">
+        <StackPanel Grid.Row="0" Spacing="4">
+            <TextBlock Text="Prompt Experiments" FontSize="22" FontWeight="SemiBold"/>
+            <TextBlock Text="Run controlled image batches without cluttering the main prompt window."
+                       Classes="subtle"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Classes="card" Padding="14">
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="10">
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Mode" VerticalAlignment="Center"/>
+                <ComboBox Grid.Row="0"
+                          Grid.Column="1"
+                          ItemsSource="{Binding Modes}"
+                          SelectedItem="{Binding SelectedMode}"/>
+
+                <TextBlock Grid.Row="1"
+                           Grid.Column="0"
+                           Text="Run Count"
+                           VerticalAlignment="Center"
+                           IsVisible="{Binding UsesRunCount}"/>
+                <NumericUpDown Grid.Row="1"
+                               Grid.Column="1"
+                               Minimum="1"
+                               Maximum="200"
+                               Increment="1"
+                               Width="140"
+                               Value="{Binding RunCount}"
+                               IsVisible="{Binding UsesRunCount}"/>
+
+                <CheckBox Grid.Row="2"
+                          Grid.Column="0"
+                          Grid.ColumnSpan="2"
+                          Content="Save selected results to history when the preview is saved"
+                          IsChecked="{Binding SaveSelectionsToHistory}"/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" Classes="card" Padding="14">
+            <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="10">
+                <TextBlock Grid.Row="0"
+                           Text="Wildcard Sweep"
+                           FontWeight="SemiBold"
+                           IsVisible="{Binding IsWildcardSweepMode}"/>
+
+                <Grid Grid.Row="1"
+                      ColumnDefinitions="Auto,*"
+                      ColumnSpacing="12"
+                      IsVisible="{Binding IsWildcardSweepMode}">
+                    <TextBlock Grid.Column="0" Text="Wildcard" VerticalAlignment="Center"/>
+                    <ComboBox Grid.Column="1"
+                              ItemsSource="{Binding AvailableWildcards}"
+                              SelectedItem="{Binding SelectedWildcard}"/>
+                </Grid>
+
+                <Grid Grid.Row="2"
+                      ColumnDefinitions="*,12,*"
+                      IsVisible="{Binding IsWildcardSweepMode}"
+                      MinHeight="0">
+                    <Grid Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="8" MinHeight="0">
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="Choices" FontWeight="SemiBold"/>
+                            <Button Content="All" Command="{Binding SelectAllChoicesCommand}" MinWidth="64"/>
+                            <Button Content="None" Command="{Binding ClearChoiceSelectionCommand}" MinWidth="64"/>
+                        </StackPanel>
+
+                        <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrushStrong}" BorderThickness="1" CornerRadius="6" Padding="8" MinHeight="0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl ItemsSource="{Binding ChoiceOptions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:ExperimentChoiceOptionViewModel">
+                                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="0,2">
+                                                <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding Value}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="2"
+                                                           Text="{Binding Tags}"
+                                                           Classes="subtle"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+
+                    <Grid Grid.Column="2" RowDefinitions="Auto,*" RowSpacing="8" MinHeight="0">
+                        <TextBlock Grid.Row="0" Text="Locked Baseline Prompt" FontWeight="SemiBold"/>
+                        <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrushStrong}" BorderThickness="1" CornerRadius="6" Padding="8" MinHeight="0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl ItemsSource="{Binding BaselinePromptSegments}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:PromptSegmentViewModel">
+                                            <Border Padding="6,3"
+                                                    Margin="1"
+                                                    CornerRadius="4"
+                                                    BorderThickness="{Binding IsWildcard, Converter={StaticResource BoolToThicknessConverter}}"
+                                                    BorderBrush="{Binding IsMissing, Converter={StaticResource BoolToMissingBrushConverter}}"
+                                                    Background="{Binding IsFromInclude, Converter={StaticResource BoolToIncludeBrushConverter}}"
+                                                    PointerPressed="BaselineSegmentPointerPressed"
+                                                    Cursor="{Binding IsWildcard, Converter={StaticResource BoolToHandCursorConverter}}">
+                                                <TextBlock Text="{Binding Text}"
+                                                           TextWrapping="Wrap"
+                                                           Foreground="{Binding IsWildcard, Converter={StaticResource BoolToBrushConverter}}"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+                </Grid>
+
+                <Grid Grid.Row="3" RowDefinitions="Auto,*" RowSpacing="8" IsVisible="{Binding IsWildcardSweepMode}">
+                    <TextBlock Grid.Row="0" Text="Baseline Preview" FontWeight="SemiBold"/>
+                    <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrushStrong}" BorderThickness="1" CornerRadius="6" Padding="8" Background="#122036">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="140">
+                            <TextBlock Text="{Binding BaselinePromptPreview}"
+                                       TextWrapping="Wrap"
+                                       Classes="subtle"/>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+
+                <Border Grid.Row="0"
+                        Grid.RowSpan="4"
+                        Background="#122036"
+                        CornerRadius="6"
+                        Padding="12"
+                        IsVisible="{Binding UsesRunCount}">
+                    <StackPanel Spacing="8" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding SelectedMode}" FontWeight="SemiBold"/>
+                        <TextBlock Text="Use the current prompt and fixed image settings. The experiment window sets up the batch, and the preview window is where you review, save, and branch the winners."
+                                   Classes="subtle"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="3" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+            <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" Classes="subtle" TextWrapping="Wrap" VerticalAlignment="Center"/>
+            <Button Grid.Column="1" Content="Cancel" Command="{Binding CancelCommand}" MinWidth="96"/>
+            <Button Grid.Column="2" Content="Run Experiment" Command="{Binding RunCommand}" MinWidth="132" Classes="accent"/>
+        </Grid>
+    </Grid>
+</Window>

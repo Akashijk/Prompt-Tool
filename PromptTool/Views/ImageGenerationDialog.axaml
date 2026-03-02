@@ -55,6 +55,7 @@
                         <ListBox Grid.Row="1"
                                  ItemsSource="{Binding Models}"
                                  Height="320"
+                                 ScrollViewer.IsScrollChainingEnabled="False"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemTemplate>
                                 <DataTemplate x:DataType="vm:SelectableModelViewModel">
@@ -113,6 +114,7 @@
                         <ListBox Grid.Row="1"
                                  ItemsSource="{Binding Loras}"
                                  Height="320"
+                                 ScrollViewer.IsScrollChainingEnabled="False"
                                  ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListBox.ItemTemplate>
                                 <DataTemplate x:DataType="vm:SelectableLoraViewModel">

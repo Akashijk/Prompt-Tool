@@ -331,9 +331,10 @@ public class InvokeAIClient
             (graph, vaeUsed) = GraphBuilder.BuildSd15Graph(parameters, vaes);
         }
         
-                    var queueItem = await EnqueueBatchAsync(graph, ct);        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
+        var queueItem = await EnqueueBatchAsync(graph, ct);
+        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
 
-        var (imageBytes, imageName, jobInfo) = await WaitForResultAsync(itemId, parameters.SaveToGallery, ct);
+        var (imageBytes, imageName, jobInfo) = await WaitForResultWithCancellationCleanupAsync(itemId, parameters.SaveToGallery, ct);
 
         return new InvokeAIGenerationResult
         {
@@ -356,7 +357,7 @@ public class InvokeAIClient
         var queueItem = await EnqueueBatchJsonAsync(graph, ct);
         var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
 
-        var (imageBytes, imageName, jobInfo) = await WaitForResultAsync(itemId, saveToGallery, ct);
+        var (imageBytes, imageName, jobInfo) = await WaitForResultWithCancellationCleanupAsync(itemId, saveToGallery, ct);
 
         return new InvokeAIGenerationResult
         {
@@ -408,9 +409,10 @@ public class InvokeAIClient
             }
         };
 
-                    var queueItem = await EnqueueBatchAsync(graph, ct);        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
+        var queueItem = await EnqueueBatchAsync(graph, ct);
+        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
 
-        var (resultBytes, imageName, jobInfo) = await WaitForResultAsync(itemId, saveToGallery, ct);
+        var (resultBytes, imageName, jobInfo) = await WaitForResultWithCancellationCleanupAsync(itemId, saveToGallery, ct);
         if (!saveToGallery)
         {
             await DeleteImageAsync(uploadedName, CancellationToken.None);
@@ -593,6 +595,22 @@ public class InvokeAIClient
 
         await CancelAndCleanupItemAsync(itemId, saveToGallery, CancellationToken.None);
         throw new TaskCanceledException("Image generation was canceled by the user.");
+    }
+
+    private async Task<(byte[] imageBytes, string imageName, GenerationJobInfo jobInfo)> WaitForResultWithCancellationCleanupAsync(
+        int itemId,
+        bool saveToGallery,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await WaitForResultAsync(itemId, saveToGallery, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await CancelAndCleanupItemAsync(itemId, saveToGallery, CancellationToken.None);
+            throw;
+        }
     }
 
     private static GenerationJobInfo BuildJobInfo(JsonObject? statusData)

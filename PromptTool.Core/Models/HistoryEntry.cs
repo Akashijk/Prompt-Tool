@@ -24,6 +24,13 @@ public class HistoryEntry
     public Dictionary<string, string>? VariationPrompts { get; set; }
     public string? Workflow { get; set; }
     public string? CoverImagePath { get; set; }
+    public bool IsExperimentRun { get; set; }
+    public string? ExperimentType { get; set; }
+    public string? ExperimentVariable { get; set; }
+    public string? ExperimentHeaderPrompt { get; set; }
+    public Dictionary<string, string>? ExperimentLockedChoices { get; set; }
+    public int? ExperimentPlannedCount { get; set; }
+    public string? ExperimentNotes { get; set; }
 
     // Aggregated images (original/enhanced/variations). Kept separate from ImageFilePath
     // to support multiple images per entry and the Qt JSONL history format.
@@ -62,4 +69,8 @@ public class HistoryImage
     public int? UpscaleTileSize { get; set; }
     public bool? UpscaleFitToMultipleOf8 { get; set; }
     public string? UpscaleSourceImagePath { get; set; }
+    public string? DerivedFromImagePath { get; set; }
+    public string? ExperimentVariantLabel { get; set; }
+    public string? ExperimentVariantValue { get; set; }
+    public int? ExperimentVariantIndex { get; set; }
 }

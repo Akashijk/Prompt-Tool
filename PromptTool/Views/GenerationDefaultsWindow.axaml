@@ -25,10 +25,15 @@
                 <StackPanel Spacing="{StaticResource DialogSectionSpacing}" Width="420">
                     <TextBlock Text="Scheduler:" FontWeight="Bold" />
                     <ComboBox ItemsSource="{Binding Schedulers}"
-                              SelectedItem="{Binding DefaultScheduler}"
-                              IsEditable="True"
+                              SelectedItem="{Binding SelectedSchedulerOption}"
                               Width="320"
-                              HorizontalAlignment="Left" />
+                              HorizontalAlignment="Left">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:SchedulerOption">
+                                <TextBlock Text="{Binding Display}"/>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
 
                     <TextBlock Text="Base Model Type:" FontWeight="Bold" />
                     <ComboBox ItemsSource="{Binding BaseModelTypes}"

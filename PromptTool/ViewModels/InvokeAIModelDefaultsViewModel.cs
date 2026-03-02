@@ -27,6 +27,7 @@ public partial class InvokeAIModelDefaultsViewModel : ObservableObject
     private readonly bool _deferPersist;
     private readonly List<ModelDefaults> _defaults;
     private bool _suppressModelSelectionSync;
+    private bool _suppressSchedulerSelectionSync;
     private bool _suppressDirty;
     private List<InvokeAIModel> _allAssets = new();
     private string? _lastSelectedAssetName;
@@ -103,7 +104,10 @@ public partial class InvokeAIModelDefaultsViewModel : ObservableObject
     private string _statusMessage = "";
 
     public ObservableCollection<string> AvailableInvokeAIModels { get; } = new();
-    public ObservableCollection<string> SchedulerOptions { get; } = new();
+    public ObservableCollection<SchedulerOption> SchedulerOptions { get; } = new();
+
+    [ObservableProperty]
+    private SchedulerOption? _selectedSchedulerOption;
 
 
     public InvokeAIModelDefaultsViewModel(
@@ -151,11 +155,13 @@ public partial class InvokeAIModelDefaultsViewModel : ObservableObject
                 .ToList();
             UpdateBaseModelTypes();
             SchedulerOptions.Clear();
-            SchedulerOptions.Add("(None)");
+            SchedulerOptions.Add(new SchedulerOption("(None)", "(None)"));
             var schedulers = await _invokeAIClient.GetSchedulersAsync();
             foreach (var scheduler in schedulers.Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                SchedulerOptions.Add(scheduler);
+                SchedulerOptions.Add(new SchedulerOption(
+                    scheduler,
+                    ImageGenerationOptionsViewModel.NormalizeSchedulerDisplay(scheduler)));
             }
             foreach (var model in _allAssets)
             {
@@ -172,12 +178,13 @@ public partial class InvokeAIModelDefaultsViewModel : ObservableObject
             _notifications?.ShowWarning("InvokeAI not reachable; showing saved model defaults only.", "Offline");
             _allAssets = new List<InvokeAIModel>();
             UpdateBaseModelTypes();
-            if (!SchedulerOptions.Contains("(None)"))
+            if (!SchedulerOptions.Any(s => string.Equals(s.Value, "(None)", StringComparison.OrdinalIgnoreCase)))
             {
                 SchedulerOptions.Clear();
-                SchedulerOptions.Add("(None)");
+                SchedulerOptions.Add(new SchedulerOption("(None)", "(None)"));
             }
         }
+        SyncSelectedSchedulerOption();
         _lastSelectedAssetName ??= _defaults.FirstOrDefault()?.ModelName;
         RebuildAssetGroups();
     }
@@ -225,6 +232,26 @@ public partial class InvokeAIModelDefaultsViewModel : ObservableObject
         _suppressModelSelectionSync = true;
         SelectedModelDefault = match;
         _suppressModelSelectionSync = false;
+    }
+
+    partial void OnSelectedSchedulerOptionChanged(SchedulerOption? value)
+    {
+        if (_suppressSchedulerSelectionSync || value == null)
+        {
+            return;
+        }
+
+        CurrentSampler = value.Value;
+    }
+
+    private void SyncSelectedSchedulerOption()
+    {
+        _suppressSchedulerSelectionSync = true;
+        SelectedSchedulerOption = SchedulerOptions.FirstOrDefault(s =>
+                                    string.Equals(s.Value, CurrentSampler, StringComparison.OrdinalIgnoreCase))
+                                ?? SchedulerOptions.FirstOrDefault(s => string.Equals(s.Value, "(None)", StringComparison.OrdinalIgnoreCase))
+                                ?? SchedulerOptions.FirstOrDefault();
+        _suppressSchedulerSelectionSync = false;
     }
 
     [RelayCommand]
@@ -344,6 +371,10 @@ public partial class InvokeAIModelDefaultsViewModel : ObservableObject
 
     partial void OnCurrentSamplerChanged(string value)
     {
+        if (!_suppressSchedulerSelectionSync)
+        {
+            SyncSelectedSchedulerOption();
+        }
         MarkDirty();
     }
 

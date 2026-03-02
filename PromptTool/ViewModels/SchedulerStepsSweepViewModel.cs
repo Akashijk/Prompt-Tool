@@ -195,7 +195,7 @@ public sealed partial class SchedulerStepsSweepViewModel : ObservableObject
         var mean = scores.Average();
         var variance = scores.Sum(s => Math.Pow(s - mean, 2)) / scores.Count;
         var stdDev = Math.Sqrt(variance);
-        ScoreSummary = $"Mean {mean:F2} | σ {stdDev:F2}";
+        ScoreSummary = $"Mean {mean:F2} | Std Dev {stdDev:F2}";
     }
 
     private void CancelGeneration()

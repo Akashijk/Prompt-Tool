@@ -27,6 +27,9 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     private string _progressText = "";
 
     [ObservableProperty]
+    private string _headerContextText = "";
+
+    [ObservableProperty]
     private int _generatedCount;
 
     [ObservableProperty]
@@ -38,6 +41,8 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     public IReadOnlyList<HistoryEntry> SavedEntries { get; private set; } = Array.Empty<HistoryEntry>();
 
     public CancellationTokenSource? GenerationToken { get; set; }
+    private readonly object _pendingVariationJobsLock = new();
+    private readonly List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> _pendingVariationJobs = new();
 
     private Func<ImageSlotViewModel, Task>? _onSaveSlot;
     private Func<Task>? _onSaveCompleted;
@@ -45,6 +50,8 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     private Func<ImageSlotViewModel, Task>? _onGenerateModelVariations;
     private Func<ImageSlotViewModel, Task>? _onGenerateLoraVariations;
     private Func<ImageSlotViewModel, Task>? _onEditAndRegenerate;
+    private Func<ImageSlotViewModel, Task>? _onPromoteToBase;
+    private Func<ImageSlotViewModel, Task>? _onEnhanceFromThis;
     private Action<ImageSlotViewModel>? _onShowFullSize;
 
     public Func<ImageSlotViewModel, Task>? OnSaveSlot
@@ -99,6 +106,26 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         }
     }
 
+    public Func<ImageSlotViewModel, Task>? OnPromoteToBase
+    {
+        get => _onPromoteToBase;
+        set
+        {
+            _onPromoteToBase = value;
+            SyncSlotActions();
+        }
+    }
+
+    public Func<ImageSlotViewModel, Task>? OnEnhanceFromThis
+    {
+        get => _onEnhanceFromThis;
+        set
+        {
+            _onEnhanceFromThis = value;
+            SyncSlotActions();
+        }
+    }
+
     public Action<ImageSlotViewModel>? OnShowFullSize
     {
         get => _onShowFullSize;
@@ -117,6 +144,8 @@ public partial class MultiImagePreviewViewModel : ObservableObject
             slot.OnGenerateModelVariations = _onGenerateModelVariations;
             slot.OnGenerateLoraVariations = _onGenerateLoraVariations;
             slot.OnEditAndRegenerate = _onEditAndRegenerate;
+            slot.OnPromoteToBase = _onPromoteToBase;
+            slot.OnEnhanceFromThis = _onEnhanceFromThis;
             slot.OnShowFullSize = _onShowFullSize;
             slot.ShowGenerationActions = ShowGenerationActions;
         }
@@ -140,6 +169,8 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         slot.OnGenerateModelVariations = _onGenerateModelVariations;
         slot.OnGenerateLoraVariations = _onGenerateLoraVariations;
         slot.OnEditAndRegenerate = _onEditAndRegenerate;
+        slot.OnPromoteToBase = _onPromoteToBase;
+        slot.OnEnhanceFromThis = _onEnhanceFromThis;
         slot.OnShowFullSize = _onShowFullSize;
         slot.ShowGenerationActions = ShowGenerationActions;
         return slot;
@@ -177,6 +208,8 @@ public partial class MultiImagePreviewViewModel : ObservableObject
             slot.OnGenerateModelVariations = _onGenerateModelVariations;
             slot.OnGenerateLoraVariations = _onGenerateLoraVariations;
             slot.OnEditAndRegenerate = _onEditAndRegenerate;
+            slot.OnPromoteToBase = _onPromoteToBase;
+            slot.OnEnhanceFromThis = _onEnhanceFromThis;
             slot.OnShowFullSize = _onShowFullSize;
             slot.ShowGenerationActions = ShowGenerationActions;
             old?.Dispose();
@@ -188,6 +221,51 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         TotalCount = Slots.Count;
         GeneratedCount = Slots.Count(s => s.ImageBytes != null);
         UpdateProgressText();
+    }
+
+    public void EnqueuePendingVariationJobs(IEnumerable<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> jobs)
+    {
+        lock (_pendingVariationJobsLock)
+        {
+            _pendingVariationJobs.AddRange(jobs);
+        }
+    }
+
+    public List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> TakePendingVariationJobsForModel(string? modelName)
+    {
+        var key = modelName ?? string.Empty;
+        lock (_pendingVariationJobsLock)
+        {
+            var matches = _pendingVariationJobs
+                .Where(job => string.Equals(job.param.Model?.Name ?? string.Empty, key, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matches.Count == 0)
+            {
+                return matches;
+            }
+
+            foreach (var match in matches)
+            {
+                _pendingVariationJobs.Remove(match);
+            }
+
+            return matches;
+        }
+    }
+
+    public List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> TakePendingVariationJobs()
+    {
+        lock (_pendingVariationJobsLock)
+        {
+            if (_pendingVariationJobs.Count == 0)
+            {
+                return new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
+            }
+
+            var pending = _pendingVariationJobs.ToList();
+            _pendingVariationJobs.Clear();
+            return pending;
+        }
     }
 
     public void IncrementGenerated()
@@ -267,6 +345,20 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task PromoteToBase(ImageSlotViewModel? slot)
+    {
+        if (slot == null || OnPromoteToBase == null) return;
+        await OnPromoteToBase(slot);
+    }
+
+    [RelayCommand]
+    private async Task EnhanceFromThis(ImageSlotViewModel? slot)
+    {
+        if (slot == null || OnEnhanceFromThis == null) return;
+        await OnEnhanceFromThis(slot);
+    }
+
+    [RelayCommand]
     private void ShowFullSize(ImageSlotViewModel? slot)
     {
         if (slot == null || OnShowFullSize == null) return;
@@ -288,6 +380,7 @@ public partial class ImageSlotViewModel : ObservableObject
     [ObservableProperty] private bool _isRootSeed;
     [ObservableProperty] private string _size = "";
     [ObservableProperty] private string _loraLabel = "";
+    [ObservableProperty] private string _promptToolTip = "";
     [ObservableProperty] private bool _showGenerationActions = true;
     [ObservableProperty] private int? _generationDurationMs;
     [ObservableProperty] private int? _queueWaitMs;
@@ -303,6 +396,8 @@ public partial class ImageSlotViewModel : ObservableObject
     public Func<ImageSlotViewModel, Task>? OnGenerateModelVariations { get; set; }
     public Func<ImageSlotViewModel, Task>? OnGenerateLoraVariations { get; set; }
     public Func<ImageSlotViewModel, Task>? OnEditAndRegenerate { get; set; }
+    public Func<ImageSlotViewModel, Task>? OnPromoteToBase { get; set; }
+    public Func<ImageSlotViewModel, Task>? OnEnhanceFromThis { get; set; }
     public Action<ImageSlotViewModel>? OnShowFullSize { get; set; }
 
     [RelayCommand]
@@ -327,6 +422,18 @@ public partial class ImageSlotViewModel : ObservableObject
     private Task EditAndRegenerate()
     {
         return OnEditAndRegenerate?.Invoke(this) ?? Task.CompletedTask;
+    }
+
+    [RelayCommand]
+    private Task PromoteToBase()
+    {
+        return OnPromoteToBase?.Invoke(this) ?? Task.CompletedTask;
+    }
+
+    [RelayCommand]
+    private Task EnhanceFromThis()
+    {
+        return OnEnhanceFromThis?.Invoke(this) ?? Task.CompletedTask;
     }
 
     [RelayCommand]

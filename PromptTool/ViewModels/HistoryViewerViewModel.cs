@@ -69,6 +69,7 @@ public partial class HistoryViewerViewModel : ObservableObject
     [ObservableProperty] private string _detailsText = string.Empty;
     [ObservableProperty] private string _fullDetailsText = string.Empty;
     [ObservableProperty] private string _statusNote = string.Empty;
+    [ObservableProperty] private string _currentImagePositionText = string.Empty;
     [ObservableProperty] private bool _showFavoritesOnly;
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _workflowFilter = "All"; // All, SFW, NSFW
@@ -193,7 +194,15 @@ public partial class HistoryViewerViewModel : ObservableObject
                                 e.OriginalPrompt.ToLowerInvariant().Contains(search) ||
                                 e.ProcessedPrompt.ToLowerInvariant().Contains(search) ||
                                 (e.TemplateName ?? string.Empty).ToLowerInvariant().Contains(search) ||
-                                (e.Status ?? string.Empty).ToLowerInvariant().Contains(search))
+                                (e.Status ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.ExperimentType ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.ExperimentVariable ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.ExperimentHeaderPrompt ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.ExperimentNotes ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.ExperimentLockedChoices != null &&
+                                 e.ExperimentLockedChoices.Any(kvp =>
+                                     kvp.Key.ToLowerInvariant().Contains(search) ||
+                                     (kvp.Value ?? string.Empty).ToLowerInvariant().Contains(search))))
                     .OrderByDescending(e => e.Timestamp)
                     .Select(e => new HistoryEntryItem(e, ResolveCoverPath(e), _imageCache, _historyDir))
                     .ToList();
@@ -236,6 +245,7 @@ public partial class HistoryViewerViewModel : ObservableObject
         SelectedImages.Clear();
         _selectedForDelete.Clear();
         CanDeleteSelectedImages = false;
+        CurrentImagePositionText = string.Empty;
         PromptVariants.Clear();
         DetailsText = string.Empty;
         SelectedImageItem = null;
@@ -325,6 +335,7 @@ public partial class HistoryViewerViewModel : ObservableObject
     partial void OnSelectedImageItemChanged(HistoryImageItem? value)
     {
         SelectedImage = value?.Bitmap;
+        UpdateCurrentImagePositionText();
 
         if (SelectedHistoryEntry != null)
         {
@@ -333,6 +344,65 @@ public partial class HistoryViewerViewModel : ObservableObject
             SyncSelectedVariantToImage(value?.Image);
             UpdatePromptBanner();
         }
+    }
+
+    public bool SelectAdjacentImage(int delta)
+    {
+        if (SelectedImages.Count == 0 || delta == 0)
+        {
+            return false;
+        }
+
+        var currentIndex = SelectedImageItem != null
+            ? SelectedImages.IndexOf(SelectedImageItem)
+            : -1;
+        var targetIndex = currentIndex < 0
+            ? (delta > 0 ? 0 : SelectedImages.Count - 1)
+            : currentIndex + delta;
+
+        if (targetIndex < 0 || targetIndex >= SelectedImages.Count)
+        {
+            return false;
+        }
+
+        SelectedImageItem = SelectedImages[targetIndex];
+        return true;
+    }
+
+    public bool SelectFirstImage()
+    {
+        if (SelectedImages.Count == 0)
+        {
+            return false;
+        }
+
+        SelectedImageItem = SelectedImages[0];
+        return true;
+    }
+
+    public bool SelectLastImage()
+    {
+        if (SelectedImages.Count == 0)
+        {
+            return false;
+        }
+
+        SelectedImageItem = SelectedImages[^1];
+        return true;
+    }
+
+    private void UpdateCurrentImagePositionText()
+    {
+        if (SelectedImages.Count == 0 || SelectedImageItem == null)
+        {
+            CurrentImagePositionText = string.Empty;
+            return;
+        }
+
+        var index = SelectedImages.IndexOf(SelectedImageItem);
+        CurrentImagePositionText = index >= 0
+            ? $"Image {index + 1} of {SelectedImages.Count}"
+            : string.Empty;
     }
 
     private void OnSelectedImagePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -403,7 +473,8 @@ public partial class HistoryViewerViewModel : ObservableObject
         var genParams = GetOrParseGenParams(image)
                         ?? entry.ImageParameters
                         ?? entry.Images.FirstOrDefault(i => i.GenerationParams != null)?.GenerationParams;
-        var prompt = FirstNonEmpty(SelectedPromptVariant?.Prompt, genParams?.Prompt, image?.Prompt, entry.ProcessedPrompt, entry.EnhancedPrompt, entry.OriginalPrompt);
+        var promptOverride = entry.IsExperimentRun && image != null ? null : SelectedPromptVariant?.Prompt;
+        var prompt = FirstNonEmpty(promptOverride, genParams?.Prompt, image?.Prompt, entry.ProcessedPrompt, entry.EnhancedPrompt, entry.OriginalPrompt);
         var model = ResolveModelName(entry, image);
         var lines = new[]
         {
@@ -419,8 +490,9 @@ public partial class HistoryViewerViewModel : ObservableObject
             image != null ? $"Image Prompt Type: {WithPlaceholder(image.PromptType, "(unknown)")}" : null,
             FormatGenParams(image, entry)
         }.Where(l => !string.IsNullOrWhiteSpace(l));
-
-        return string.Join(Environment.NewLine + Environment.NewLine, lines);
+        return string.Join(
+            Environment.NewLine + Environment.NewLine,
+            lines.Concat(BuildExperimentMetadataLines(entry, image)).Where(l => !string.IsNullOrWhiteSpace(l)));
     }
 
     public static string BuildDetailsTextForImage(HistoryEntry entry, HistoryImage? image)
@@ -443,8 +515,9 @@ public partial class HistoryViewerViewModel : ObservableObject
             image != null ? $"Image Prompt Type: {WithPlaceholder(image.PromptType, "(unknown)")}" : null,
             FormatGenParams(image, entry)
         }.Where(l => !string.IsNullOrWhiteSpace(l));
-
-        return string.Join(Environment.NewLine + Environment.NewLine, lines);
+        return string.Join(
+            Environment.NewLine + Environment.NewLine,
+            lines.Concat(BuildExperimentMetadataLines(entry, image)).Where(l => !string.IsNullOrWhiteSpace(l)));
     }
 
     internal static string ResolvePromptForImage(HistoryEntry entry, HistoryImage? image)
@@ -523,7 +596,66 @@ public partial class HistoryViewerViewModel : ObservableObject
 
     private string BuildSummaryText(HistoryEntry entry, HistoryImage? image)
     {
-        return BuildDetailsText(entry, image, SelectedPromptVariant?.Prompt);
+        var promptOverride = entry.IsExperimentRun && image != null ? null : SelectedPromptVariant?.Prompt;
+        return BuildDetailsText(entry, image, promptOverride);
+    }
+
+    private static IEnumerable<string> BuildExperimentMetadataLines(HistoryEntry entry, HistoryImage? image)
+    {
+        if (!entry.IsExperimentRun && string.IsNullOrWhiteSpace(entry.ExperimentType))
+        {
+            yield break;
+        }
+
+        yield return $"Experiment: {WithPlaceholder(entry.ExperimentType, "(unspecified)")}";
+
+        if (!string.IsNullOrWhiteSpace(entry.ExperimentVariable))
+        {
+            yield return $"Variable: {entry.ExperimentVariable}";
+        }
+
+        if (entry.ExperimentPlannedCount.HasValue)
+        {
+            yield return $"Planned Runs: {entry.ExperimentPlannedCount.Value}";
+            yield return $"Saved Results: {entry.Images.Count}/{entry.ExperimentPlannedCount.Value}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.ExperimentHeaderPrompt))
+        {
+            yield return $"Baseline Prompt: {entry.ExperimentHeaderPrompt}";
+        }
+
+        if (entry.ExperimentLockedChoices?.Count > 0)
+        {
+            var locked = string.Join(", ", entry.ExperimentLockedChoices
+                .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(kvp => $"__{kvp.Key}__={kvp.Value}"));
+            yield return $"Locked Wildcards: {locked}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.ExperimentNotes))
+        {
+            yield return $"Notes: {entry.ExperimentNotes}";
+        }
+
+        if (image != null)
+        {
+            if (!string.IsNullOrWhiteSpace(image.ExperimentVariantLabel))
+            {
+                yield return $"Variant: {image.ExperimentVariantLabel}";
+            }
+
+            if (!string.IsNullOrWhiteSpace(image.ExperimentVariantValue) &&
+                !string.Equals(image.ExperimentVariantValue, image.ExperimentVariantLabel, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return $"Variant Value: {image.ExperimentVariantValue}";
+            }
+
+            if (image.ExperimentVariantIndex.HasValue)
+            {
+                yield return $"Variant Index: {image.ExperimentVariantIndex.Value + 1}";
+            }
+        }
     }
 
     internal static string BuildDetailsText(HistoryEntry entry, HistoryImage? image, string? promptOverride = null)
@@ -553,6 +685,8 @@ public partial class HistoryViewerViewModel : ObservableObject
             image?.PromptMatchScore.HasValue == true ? $"Prompt Match: {image.PromptMatchScore:0.0}" : null,
             image?.CompositeScore.HasValue == true ? $"Composite Score: {image.CompositeScore:0.0}" : null
         };
+
+        lines.AddRange(BuildExperimentMetadataLines(entry, image));
 
         return string.Join(Environment.NewLine + Environment.NewLine, lines.Where(l => !string.IsNullOrWhiteSpace(l)));
     }
@@ -882,9 +1016,19 @@ public partial class HistoryViewerViewModel : ObservableObject
         static string NormalizeVariationName(string name)
             => string.Join(' ', name.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
-        // Only keep processed/enhanced; hide original from dropdown
-        if (!string.IsNullOrWhiteSpace(entry.ProcessedPrompt)) AddVariant("Processed", entry.ProcessedPrompt, "processed");
-        if (!string.IsNullOrWhiteSpace(entry.EnhancedPrompt)) AddVariant("Enhanced", entry.EnhancedPrompt, "enhanced");
+        if (entry.IsExperimentRun)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.ExperimentHeaderPrompt))
+            {
+                AddVariant("Baseline", entry.ExperimentHeaderPrompt, "experiment:baseline");
+            }
+        }
+        else
+        {
+            // Only keep processed/enhanced; hide original from dropdown
+            if (!string.IsNullOrWhiteSpace(entry.ProcessedPrompt)) AddVariant("Processed", entry.ProcessedPrompt, "processed");
+            if (!string.IsNullOrWhiteSpace(entry.EnhancedPrompt)) AddVariant("Enhanced", entry.EnhancedPrompt, "enhanced");
+        }
 
         var variationNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (entry.VariationPrompts != null)
@@ -943,6 +1087,7 @@ public partial class HistoryViewerViewModel : ObservableObject
             if (pt.StartsWith("Original", StringComparison.OrdinalIgnoreCase) ||
                 pt.StartsWith("Generated", StringComparison.OrdinalIgnoreCase) ||
                 pt.StartsWith("Variation:", StringComparison.OrdinalIgnoreCase) ||
+                pt.StartsWith("Experiment:", StringComparison.OrdinalIgnoreCase) ||
                 pt.StartsWith("Upscale:", StringComparison.OrdinalIgnoreCase) ||
                 pt.Equals("Image", StringComparison.OrdinalIgnoreCase))
             {
@@ -1707,7 +1852,18 @@ public partial class HistoryEntryItem : ObservableObject
         }
     }
 
-    public string Prompt => string.IsNullOrWhiteSpace(Entry.ProcessedPrompt) ? Entry.OriginalPrompt : Entry.ProcessedPrompt;
+    public string Prompt
+    {
+        get
+        {
+            if (Entry.IsExperimentRun && !string.IsNullOrWhiteSpace(Entry.ExperimentHeaderPrompt))
+            {
+                return Entry.ExperimentHeaderPrompt;
+            }
+
+            return string.IsNullOrWhiteSpace(Entry.ProcessedPrompt) ? Entry.OriginalPrompt : Entry.ProcessedPrompt;
+        }
+    }
     public string Status => Entry.Status ?? "generated";
     public string Template => Entry.TemplateName ?? "";
     public DateTime Timestamp => Entry.Timestamp;
@@ -1765,6 +1921,12 @@ public partial class HistoryImageItem : ObservableObject
     {
         get
         {
+            if (!string.IsNullOrWhiteSpace(Image.ExperimentVariantLabel))
+            {
+                var experimentBase = string.IsNullOrWhiteSpace(Image.PromptType) ? "Experiment" : Image.PromptType;
+                return $"{experimentBase} · {Image.ExperimentVariantLabel}";
+            }
+
             var baseLabel = string.IsNullOrWhiteSpace(Image.PromptType) ? "Image" : Image.PromptType;
             return string.IsNullOrWhiteSpace(Image.PromptTypeSuffix)
                 ? baseLabel

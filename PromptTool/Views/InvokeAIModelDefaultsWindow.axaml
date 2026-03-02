@@ -68,7 +68,13 @@
                         <TextBox Text="{Binding CurrentModelName}" IsReadOnly="True"/>
 
                         <TextBlock Text="Scheduler:" FontWeight="Bold"/>
-                        <ComboBox ItemsSource="{Binding SchedulerOptions}" SelectedItem="{Binding CurrentSampler}"/>
+                        <ComboBox ItemsSource="{Binding SchedulerOptions}" SelectedItem="{Binding SelectedSchedulerOption}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:SchedulerOption">
+                                    <TextBlock Text="{Binding Display}"/>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
 
                         <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="10">
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Steps:" VerticalAlignment="Center"/>

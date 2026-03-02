@@ -58,9 +58,10 @@
                 <MenuItem Header="Wildcard _Manager" Command="{Binding ShowWildcardManagerCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="AI _Brainstorming" Command="{Binding ShowBrainstormingCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="Prompt _Evolver" Command="{Binding ShowPromptEvolverCommand}" CommandParameter="{Binding $parent[Window]}"/>
+                <MenuItem Header="Prompt E_xperiments" Command="{Binding ShowExperimentRunnerCommand}"/>
+                <MenuItem Header="AI Template _Builder" Command="{Binding GenerateTemplateFromThemeCommand}" CommandParameter="{Binding $parent[Window]}"/>
             </MenuItem>
             <MenuItem Header="_Tools">
-                <MenuItem Header="AI Template _Builder" Command="{Binding GenerateTemplateFromThemeCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="_Scheduler Tuner" Command="{Binding ShowSchedulerTunerCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="_Generation Queue" Command="{Binding ShowGenerationQueueCommand}" CommandParameter="{Binding $parent[Window]}"/>
                 <MenuItem Header="History _Integrity" Command="{Binding ShowHistoryIntegrityCommand}" CommandParameter="{Binding $parent[Window]}"/>
@@ -77,45 +78,54 @@
                 IsVisible="{Binding IsInvokeOnline, Converter={StaticResource InverseBoolConverter}}">
             <TextBlock Text="InvokeAI is offline. Start the server to generate images." Foreground="Orange"/>
         </Border>
-        <Border Grid.Row="1" Padding="12">
-            <Grid ColumnDefinitions="2*,1.5*,Auto" ColumnSpacing="12" RowDefinitions="Auto,Auto,Auto">
+        <Border Grid.Row="1" Classes="card" Padding="14">
+            <Grid ColumnDefinitions="1.35*,1.1*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="18" RowSpacing="10">
                 <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
-                    <TextBlock Text="Template" FontWeight="Bold"/>
-                    <WrapPanel ItemSpacing="8">
-                        <ComboBox ItemsSource="{Binding Templates}"
-                                  SelectedItem="{Binding SelectedTemplate}"
-                                  ItemTemplate="{DynamicResource TemplateItemTemplate}"
-                                  Width="300"/>
-                        <Button Content="New Template"
-                                Command="{Binding CreateTemplateCommand}"
-                                CommandParameter="{Binding $parent[Window]}"
-                                Width="116"
-                                Background="#274A74"
-                                BorderBrush="#3F77B8"
-                                BorderThickness="1"
-                                FontWeight="SemiBold"/>
-                        <Button Content="Save"
-                                Command="{Binding SaveTemplateCommand}"
-                                CommandParameter="{Binding $parent[Window]}"
-                                Width="72"/>
-                        <Button Content="Save As"
-                                Command="{Binding SaveTemplateAsCommand}"
-                                CommandParameter="{Binding $parent[Window]}"
-                                Width="86"/>
-                    </WrapPanel>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="Template" FontWeight="Bold"/>
+                        <WrapPanel ItemSpacing="8">
+                            <ComboBox ItemsSource="{Binding Templates}"
+                                      SelectedItem="{Binding SelectedTemplate}"
+                                      ItemTemplate="{DynamicResource TemplateItemTemplate}"
+                                      Width="280"/>
+                            <Button Content="New Template"
+                                    Command="{Binding CreateTemplateCommand}"
+                                    CommandParameter="{Binding $parent[Window]}"
+                                    Width="116"
+                                    Background="#274A74"
+                                    BorderBrush="#3F77B8"
+                                    BorderThickness="1"
+                                    FontWeight="SemiBold"/>
+                            <Button Content="Save"
+                                    Command="{Binding SaveTemplateCommand}"
+                                    CommandParameter="{Binding $parent[Window]}"
+                                    Width="72"/>
+                            <Button Content="Save As"
+                                    Command="{Binding SaveTemplateAsCommand}"
+                                    CommandParameter="{Binding $parent[Window]}"
+                                    Width="86"/>
+                        </WrapPanel>
+                    </StackPanel>
                 </StackPanel>
 
-                <StackPanel Grid.Row="0" Grid.Column="1" Spacing="4">
+                <StackPanel Grid.Row="0" Grid.Column="1"
+                            Spacing="4"
+                            HorizontalAlignment="Stretch"
+                            MaxWidth="380">
                     <TextBlock Text="Ollama Model" FontWeight="Bold"/>
                     <ComboBox ItemsSource="{Binding Models}"
                               SelectedItem="{Binding SelectedModel}"
-                              Width="220"/>
+                              HorizontalAlignment="Stretch"
+                              MinWidth="260"
+                              MaxWidth="360"/>
                 </StackPanel>
 
-                    <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Vertical" Spacing="8" HorizontalAlignment="Right">
-                        <Button Content="Generate Prompt"
+                <StackPanel Grid.Row="0" Grid.Column="2" Spacing="8" HorizontalAlignment="Right">
+                    <Grid ColumnDefinitions="Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                        <Button Grid.Row="0" Grid.Column="0"
+                                Content="Generate Prompt"
                                 Command="{Binding GenerateCommand}"
-                                Width="180"
+                                Width="168"
                                 MinHeight="38"
                                 Background="#203958"
                                 BorderBrush="#355A85"
@@ -123,9 +133,10 @@
                                 FontWeight="SemiBold"
                                 HorizontalContentAlignment="Center"
                                 VerticalContentAlignment="Center"/>
-                        <Button Content="Enhance Prompt"
+                        <Button Grid.Row="0" Grid.Column="1"
+                                Content="Enhance Prompt"
                                 Command="{Binding EnhancePromptCommand}"
-                                Width="180"
+                                Width="168"
                                 MinHeight="38"
                                 Background="#263147"
                                 BorderBrush="#43506A"
@@ -133,22 +144,49 @@
                                 FontWeight="SemiBold"
                                 HorizontalContentAlignment="Center"
                                 VerticalContentAlignment="Center"/>
-                        <Button Content="Generate Image"
+                        <Button Grid.Row="1" Grid.Column="0"
+                                Content="Generate Image"
                                 Command="{Binding GenerateImageCommand}"
                                 CommandParameter="{Binding $parent[Window]}"
-                                Width="180"
+                                Width="168"
                                 MinHeight="42"
                                 Classes="accent"
                                 FontWeight="Bold"
                                 HorizontalContentAlignment="Center"
                                 VerticalContentAlignment="Center"/>
-                    </StackPanel>
+                        <Button Grid.Row="1" Grid.Column="1"
+                                Content="Experiment..."
+                                Command="{Binding ShowExperimentRunnerCommand}"
+                                Width="168"
+                                MinHeight="38"
+                                Background="#1F3E3C"
+                                BorderBrush="#2F726C"
+                                BorderThickness="1"
+                                FontWeight="SemiBold"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"/>
+                    </Grid>
+                    <WrapPanel MaxWidth="344" ItemSpacing="6" HorizontalAlignment="Right">
+                        <Button Content="N Rolls"
+                                Command="{Binding ShowExperimentRunnerCommand}"
+                                CommandParameter="N Template Rolls"
+                                MinWidth="84"/>
+                        <Button Content="Wildcard Sweep"
+                                Command="{Binding ShowExperimentRunnerCommand}"
+                                CommandParameter="Wildcard Choice Sweep"
+                                MinWidth="104"/>
+                        <Button Content="Seed Sweep"
+                                Command="{Binding ShowExperimentRunnerCommand}"
+                                CommandParameter="Seed Sweep"
+                                MinWidth="92"/>
+                    </WrapPanel>
+                </StackPanel>
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Text="{Binding StatusText}" Classes="subtle" TextWrapping="Wrap"/>
 
-                <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                    <TextBlock Text="Variations" FontWeight="Bold"/>
-                    <ItemsControl ItemsSource="{Binding VariationOptions}" Margin="6,0,0,0">
+                <WrapPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" ItemSpacing="8" VerticalAlignment="Center">
+                    <TextBlock Text="Variations" FontWeight="Bold" Margin="0,2,8,0"/>
+                    <ItemsControl ItemsSource="{Binding VariationOptions}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <WrapPanel />
@@ -163,25 +201,86 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                </StackPanel>
+                </WrapPanel>
             </Grid>
         </Border>
 
-        <Grid Grid.Row="2" ColumnDefinitions="2.4*,8,1.6*" RowDefinitions="*,8,*" RowSpacing="10">
-            <Border Grid.Row="0" Grid.Column="0" Padding="12" MinHeight="160">
-                <StackPanel Spacing="6">
-                    <TextBlock Text="Prompt" FontWeight="Bold"/>
-                    <TextBox x:Name="PromptInputBox"
-                             Text="{Binding PromptText, Mode=TwoWay}"
-                             Watermark="Type a prompt with __wildcards__ or {wildcards}..."
-                             AcceptsReturn="True"
-                             TextWrapping="Wrap"
-                             MinHeight="140"/>
-                    <Border Margin="0,8,0,0"
+        <Grid Grid.Row="2" ColumnDefinitions="3*,4,2*" ColumnSpacing="12">
+            <Border Grid.Column="0" Classes="card" Padding="14" MinWidth="420">
+                <Grid RowDefinitions="Auto,3*,Auto,10,2*" RowSpacing="0">
+                    <TextBlock Grid.Row="0" Text="Prompt" FontWeight="Bold"/>
+                    <Grid Grid.Row="1" Margin="0,6,0,0" MinHeight="220">
+                        <TextBox x:Name="PromptInputBox"
+                                 Text="{Binding PromptText, Mode=TwoWay}"
+                                 Watermark="Type a prompt with __wildcards__ or {wildcards}..."
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 MinHeight="180"
+                                 VerticalAlignment="Stretch"
+                                 TextChanged="PromptInputBox_TextChanged"
+                                 KeyDown="PromptInputBox_KeyDown"
+                                 LostFocus="PromptInputBox_LostFocus"/>
+                        <Popup IsOpen="{Binding IsWildcardAutocompleteOpen, Mode=TwoWay}"
+                               Placement="Bottom"
+                               PlacementTarget="{Binding ElementName=PromptInputBox}"
+                               HorizontalOffset="8"
+                               VerticalOffset="6">
+                            <Border MinWidth="420"
+                                    MaxWidth="560"
+                                    MaxHeight="280"
+                                    Padding="10"
+                                    Background="#102036"
+                                    BorderBrush="{StaticResource BorderBrushStrong}"
+                                    BorderThickness="1"
+                                    CornerRadius="6">
+                                <Grid RowDefinitions="Auto,*" RowSpacing="8">
+                                    <TextBlock Grid.Row="0"
+                                               Text="Wildcard matches"
+                                               FontWeight="Bold"
+                                               Classes="subtle"/>
+                                    <ListBox Grid.Row="1"
+                                             ItemsSource="{Binding WildcardAutocompleteItems}"
+                                             SelectedItem="{Binding SelectedWildcardAutocompleteItem, Mode=TwoWay}"
+                                             MaxHeight="230"
+                                             BorderThickness="0"
+                                             Background="Transparent">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:WildcardAutocompleteItem">
+                                                <Grid ColumnDefinitions="*,Auto"
+                                                      ColumnSpacing="8"
+                                                      Margin="0,2">
+                                                    <StackPanel Grid.Column="0"
+                                                                Spacing="2">
+                                                        <TextBlock Text="{Binding Name}"
+                                                                   FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding Preview}"
+                                                                   Classes="subtle"
+                                                                   TextWrapping="Wrap"
+                                                                   MaxLines="2"/>
+                                                    </StackPanel>
+                                                    <Border Grid.Column="1"
+                                                            Padding="6,2"
+                                                            CornerRadius="4"
+                                                            Background="#1B2B43"
+                                                            VerticalAlignment="Top">
+                                                        <TextBlock Text="{Binding ChoiceCount, StringFormat='{}{0}'}"
+                                                                   Classes="subtle"/>
+                                                    </Border>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <Border Grid.Row="2"
+                            Margin="0,10,0,0"
                             IsVisible="{Binding MissingWildcards.Count, Converter={StaticResource IntToBoolConverter}}"
                             Padding="8"
                             CornerRadius="4"
-                            BorderBrush="DarkOrange" BorderThickness="1">
+                            BorderBrush="DarkOrange"
+                            BorderThickness="1">
                         <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Left">
                             <TextBlock Text="Missing Wildcards:" VerticalAlignment="Center" FontWeight="Bold" Foreground="DarkOrange"/>
                             <ItemsControl ItemsSource="{Binding MissingWildcards}">
@@ -201,124 +300,271 @@
                             </ItemsControl>
                         </StackPanel>
                     </Border>
-                </StackPanel>
-            </Border>
 
-            <GridSplitter Grid.Row="1"
-                          Grid.Column="0"
-                          HorizontalAlignment="Stretch"
-                          Height="8"
-                          Background="Gray"
-                          ResizeDirection="Rows"
-                          ResizeBehavior="PreviousAndNext"/>
-
-            <Border Grid.Row="2" Grid.Column="0" Padding="12" MinHeight="160">
-                <Grid RowDefinitions="Auto,*,Auto,*" RowSpacing="8">
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                        <TextBlock Text="Processed Prompt" FontWeight="Bold"/>
-                        <Border CornerRadius="3" Padding="6,2">
-                            <TextBlock Text="{Binding ProcessedPromptSegments.Count, StringFormat='{}{0} segment(s)'}" Classes="subtle"/>
-                        </Border>
-                    </StackPanel>
-                    <ScrollViewer Grid.Row="1"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <TextBlock Text="{Binding OutputText}"
-                                   TextWrapping="Wrap"
-                                   Classes="subtle"/>
-                    </ScrollViewer>
-
-                    <TextBlock Grid.Row="2" Text="Generated Prompt" FontWeight="Bold" Margin="0,4,0,0"/>
-                    <ScrollViewer Grid.Row="3"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <ItemsControl x:Name="SegmentsControl" ItemsSource="{Binding ProcessedPromptSegments}">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <WrapPanel/>
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="vm:PromptSegmentViewModel">
-                                    <Border Padding="8,5"
-                                            Margin="2"
-                                            CornerRadius="4"
-                                            BorderThickness="{Binding IsWildcard, Converter={StaticResource BoolToThicknessConverter}}"
-                                            BorderBrush="{Binding IsMissing, Converter={StaticResource BoolToMissingBrushConverter}}"
-                                            Background="{Binding IsFromInclude, Converter={StaticResource BoolToIncludeBrushConverter}}"
-                                            PointerPressed="SegmentPointerPressed"
-                                            Cursor="{Binding IsWildcard, Converter={StaticResource BoolToHandCursorConverter}}">
-                                        <ToolTip.Tip>
-                                            <ScrollViewer MaxHeight="240" MaxWidth="420">
-                                                <TextBlock Text="{Binding Tooltip}" TextWrapping="Wrap"/>
-                                            </ScrollViewer>
-                                        </ToolTip.Tip>
-                                        <TextBlock Text="{Binding Text}"
-                                                   Foreground="{Binding IsWildcard, Converter={StaticResource BoolToBrushConverter}}"/>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
+                    <Border Grid.Row="4"
+                            Padding="12"
+                            Background="#122036"
+                            BorderBrush="{StaticResource BorderBrushStrong}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            MinHeight="150">
+                        <Grid RowDefinitions="Auto,*" RowSpacing="8">
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <TextBlock Text="Generated Prompt" FontWeight="Bold"/>
+                                <Border CornerRadius="3" Padding="6,2" Background="#1B2B43">
+                                    <TextBlock Text="{Binding ProcessedPromptSegments.Count, StringFormat='{}{0} segment(s)'}" Classes="subtle"/>
+                                </Border>
+                            </StackPanel>
+                            <ScrollViewer Grid.Row="1"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled"
+                                          MinHeight="110">
+                                <ItemsControl x:Name="SegmentsControl" ItemsSource="{Binding ProcessedPromptSegments}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:PromptSegmentViewModel">
+                                            <Border Padding="6,3"
+                                                    Margin="1"
+                                                    CornerRadius="4"
+                                                    BorderThickness="{Binding IsWildcard, Converter={StaticResource BoolToThicknessConverter}}"
+                                                    BorderBrush="{Binding IsMissing, Converter={StaticResource BoolToMissingBrushConverter}}"
+                                                    Background="{Binding IsFromInclude, Converter={StaticResource BoolToIncludeBrushConverter}}"
+                                                    PointerPressed="SegmentPointerPressed"
+                                                    Cursor="{Binding IsWildcard, Converter={StaticResource BoolToHandCursorConverter}}">
+                                                <ToolTip.Tip>
+                                                    <ScrollViewer MaxHeight="240" MaxWidth="420">
+                                                        <TextBlock Text="{Binding Tooltip}" TextWrapping="Wrap"/>
+                                                    </ScrollViewer>
+                                                </ToolTip.Tip>
+                                                <TextBlock Text="{Binding Text}"
+                                                           Foreground="{Binding IsWildcard, Converter={StaticResource BoolToBrushConverter}}"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
                 </Grid>
             </Border>
 
-            <GridSplitter Grid.Column="1" Grid.RowSpan="3" Width="8" Background="Gray" HorizontalAlignment="Center"/>
+            <GridSplitter Grid.Column="1"
+                          Width="4"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch"
+                          Background="#2B3A54"
+                          ShowsPreview="True"
+                          ResizeDirection="Columns"
+                          ResizeBehavior="PreviousAndNext"/>
 
-            <Border Grid.Row="0" Grid.RowSpan="3" Grid.Column="2" Padding="12">
-                <Grid RowDefinitions="Auto,Auto,*" RowSpacing="6">
+            <Border Grid.Column="2" Classes="card" Padding="14" MinWidth="320">
+                <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="8">
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                         <TextBlock Text="Wildcards" FontWeight="Bold"/>
-                        <Border CornerRadius="3" Padding="6,2">
-                            <TextBlock Text="{Binding Wildcards.Count, StringFormat='{}{0} items'}" Classes="subtle"/>
+                        <Border CornerRadius="3" Padding="6,2" Background="#1B2B43">
+                            <TextBlock Text="{Binding FilteredWildcards.Count, StringFormat='{}{0} shown'}" Classes="subtle"/>
                         </Border>
                     </StackPanel>
-                    <TextBlock Grid.Row="1" Text="Click a wildcard to insert at the caret (or replace one you're in)." Classes="subtle" TextWrapping="Wrap"/>
-                    <ScrollViewer Grid.Row="2"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <ItemsControl x:Name="WildcardList" ItemsSource="{Binding Wildcards}">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <WrapPanel />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="x:String">
-                                    <Button Tag="{Binding}"
-                                            Click="InsertWildcard_Click"
-                                            Margin="4"
-                                            Padding="8,4"
-                                            MinWidth="100"
-                                            ToolTip.ShowDelay="400"
-                                            ToolTip.BetweenShowDelay="400"
-                                            HorizontalAlignment="Left">
-                                        <TextBlock Text="{Binding}"/>
-                                        <Button.ContextMenu>
-                                            <ContextMenu x:CompileBindings="False"
-                                                         DataContext="{Binding}">
-                                                <MenuItem Header="Open/Edit Wildcard"
-                                                          Command="{Binding ElementName=PromptWindowRoot, Path=DataContext.OpenWildcardInManagerCommand}"
-                                                          CommandParameter="{Binding}"/>
-                                            </ContextMenu>
-                                        </Button.ContextMenu>
-                                        <ToolTip.Tip>
-                                            <ScrollViewer MaxHeight="240" MaxWidth="420">
-                                                <TextBlock TextWrapping="Wrap">
-                                                    <TextBlock.Text>
-                                                        <MultiBinding Converter="{StaticResource WildcardContentConverter}">
-                                                            <Binding/>
-                                                            <Binding ElementName="PromptWindowRoot" Path="DataContext"/>
-                                                        </MultiBinding>
-                                                    </TextBlock.Text>
-                                                </TextBlock>
-                                            </ScrollViewer>
-                                        </ToolTip.Tip>
-                                    </Button>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
+                    <TextBlock Grid.Row="1" Text="{Binding WildcardBrowserStatus}" Classes="subtle" TextWrapping="Wrap"/>
+                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding WildcardSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 Watermark="Search names, values, tags, themes..."/>
+                        <CheckBox Grid.Column="1"
+                                  Content="Detailed"
+                                  IsChecked="{Binding IsWildcardBrowserDetailed}"
+                                  VerticalAlignment="Center"/>
+                        <Button Grid.Column="2" Content="Browse All">
+                            <Button.Flyout>
+                                <Flyout Placement="BottomEdgeAlignedLeft">
+                                    <Border Width="460"
+                                            MaxWidth="460"
+                                            MaxHeight="520"
+                                            Padding="10"
+                                            Background="#122036"
+                                            BorderBrush="{StaticResource BorderBrushStrong}"
+                                            BorderThickness="1"
+                                            CornerRadius="6">
+                                        <Grid RowDefinitions="Auto,*" RowSpacing="8" MinHeight="0">
+                                            <TextBlock Grid.Row="0"
+                                                       Text="{Binding AllWildcardBrowserItems.Count, StringFormat='All Wildcards ({0})'}"
+                                                       FontWeight="Bold"/>
+                                            <Border Grid.Row="1"
+                                                    Padding="4"
+                                                    Background="#0E1A2D"
+                                                    BorderBrush="#2E3A52"
+                                                    BorderThickness="1"
+                                                    CornerRadius="4"
+                                                    MinHeight="0">
+                                                <ListBox ItemsSource="{Binding AllWildcardBrowserItems}"
+                                                         BorderThickness="0"
+                                                         Background="Transparent"
+                                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                         MinHeight="0">
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate x:DataType="vm:WildcardBrowserItem">
+                                                            <Border Padding="6"
+                                                                    Margin="0,0,0,4"
+                                                                    Background="Transparent"
+                                                                    DoubleTapped="WildcardBrowserItem_DoubleTapped"
+                                                                    PointerPressed="WildcardBrowserItem_PointerPressed">
+                                                                <ToolTip.Tip>
+                                                                    <Border MaxWidth="520" Padding="6">
+                                                                        <TextBlock Text="{Binding Tooltip}" TextWrapping="Wrap"/>
+                                                                    </Border>
+                                                                </ToolTip.Tip>
+                                                                <Grid ColumnDefinitions="128,200,Auto" ColumnSpacing="8">
+                                                                    <TextBlock Grid.Column="0"
+                                                                               Text="{Binding Name}"
+                                                                               FontWeight="SemiBold"
+                                                                               MaxWidth="128"
+                                                                               TextTrimming="CharacterEllipsis"/>
+                                                                    <TextBlock Grid.Column="1"
+                                                                               Text="{Binding SampleText}"
+                                                                               Classes="subtle"
+                                                                               MaxWidth="200"
+                                                                               TextTrimming="CharacterEllipsis"/>
+                                                                    <Border Grid.Column="2"
+                                                                            Background="#1B2B43"
+                                                                            CornerRadius="3"
+                                                                            Padding="6,1">
+                                                                        <TextBlock Text="{Binding ChoiceCount, StringFormat='{}{0}'}" Classes="subtle"/>
+                                                                    </Border>
+                                                                </Grid>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </Flyout>
+                            </Button.Flyout>
+                        </Button>
+                    </Grid>
+                    <StackPanel Grid.Row="3" Spacing="4" IsVisible="{Binding PromptSuggestedWildcards.Count, Converter={StaticResource IntToBoolConverter}}">
+                        <TextBlock Text="Relevant to Current Prompt" FontWeight="SemiBold" Classes="subtle"/>
+                        <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto"
+                                      MaxHeight="72">
+                            <ItemsControl ItemsSource="{Binding PromptSuggestedWildcards}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:WildcardBrowserItem">
+                                        <Button Content="{Binding Name}"
+                                                Command="{Binding ElementName=PromptWindowRoot, Path=DataContext.InsertWildcardCommand}"
+                                                CommandParameter="{Binding Name}"
+                                                Margin="2"
+                                                Padding="6,2"
+                                                MinWidth="84">
+                                            <ToolTip.Tip>
+                                                <Border MaxWidth="520" Padding="6">
+                                                    <TextBlock Text="{Binding Tooltip}" TextWrapping="Wrap"/>
+                                                </Border>
+                                            </ToolTip.Tip>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </StackPanel>
+                    <Grid Grid.Row="4"
+                          RowDefinitions="2*,Auto,*"
+                          RowSpacing="8"
+                          MinHeight="0">
+                        <Border Grid.Row="0"
+                                Padding="6"
+                                Background="#122036"
+                                BorderBrush="{StaticResource BorderBrushStrong}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                MinHeight="0">
+                            <ListBox ItemsSource="{Binding FilteredWildcards}"
+                                     SelectedItem="{Binding SelectedWildcardBrowserItem}"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     MinHeight="0"
+                                     BorderThickness="0"
+                                     Background="Transparent">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:WildcardBrowserItem">
+                                        <Border Padding="6"
+                                                Margin="0,0,0,4"
+                                                Background="Transparent"
+                                                BorderBrush="#2E3A52"
+                                                BorderThickness="1"
+                                                CornerRadius="4"
+                                                DoubleTapped="WildcardBrowserItem_DoubleTapped"
+                                                PointerPressed="WildcardBrowserItem_PointerPressed">
+                                            <ToolTip.Tip>
+                                                <Border MaxWidth="520" Padding="6">
+                                                    <TextBlock Text="{Binding Tooltip}" TextWrapping="Wrap"/>
+                                                </Border>
+                                            </ToolTip.Tip>
+                                            <Grid RowDefinitions="Auto,Auto"
+                                                  ColumnDefinitions="170,*,Auto"
+                                                  ColumnSpacing="8"
+                                                  RowSpacing="4">
+                                                <TextBlock Grid.Row="0"
+                                                           Grid.Column="0"
+                                                           Text="{Binding Name}"
+                                                           FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="0"
+                                                           Grid.Column="1"
+                                                           Text="{Binding SampleText}"
+                                                           Classes="subtle"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <Border Grid.Row="0"
+                                                        Grid.Column="2"
+                                                        Background="#1B2B43"
+                                                        CornerRadius="3"
+                                                        Padding="6,1">
+                                                    <TextBlock Text="{Binding ChoiceCount, StringFormat='{}{0}'}" Classes="subtle"/>
+                                                </Border>
+                                                <TextBlock Grid.Row="1"
+                                                           Grid.Column="0"
+                                                           Grid.ColumnSpan="3"
+                                                           Text="{Binding Summary}"
+                                                           Classes="subtle"
+                                                           TextWrapping="Wrap"
+                                                           MaxLines="2"
+                                                           IsVisible="{Binding ElementName=PromptWindowRoot, Path=DataContext.IsWildcardBrowserDetailed}"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Border>
+                        <TextBlock Grid.Row="1"
+                                   Text="Wildcard Preview"
+                                   FontWeight="Bold"
+                                   Margin="0,2,0,0"/>
+                        <Border Grid.Row="2"
+                                Padding="6"
+                                Background="#122036"
+                                BorderBrush="{StaticResource BorderBrushStrong}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                MinHeight="0">
+                            <TextBox Text="{Binding WildcardPreviewText}"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     IsReadOnly="True"
+                                     MinHeight="0"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                        </Border>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>

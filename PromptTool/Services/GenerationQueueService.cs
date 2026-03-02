@@ -1,6 +1,7 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -18,13 +19,15 @@ public enum GenerationJobStatus
 
 public partial class GenerationJob : ObservableObject
 {
-    public GenerationJob(string name, Func<GenerationJob, CancellationToken, Task> work)
+    public GenerationJob(string name, Func<GenerationJob, CancellationToken, Task> work, string? preferredModel = null, int estimatedWorkUnits = 1)
     {
         Id = Guid.NewGuid();
         Name = name;
         Work = work;
         CreatedAt = DateTime.Now;
         Status = GenerationJobStatus.Queued;
+        PreferredModel = string.IsNullOrWhiteSpace(preferredModel) ? null : preferredModel.Trim();
+        EstimatedWorkUnits = Math.Max(1, estimatedWorkUnits);
     }
 
     public Guid Id { get; }
@@ -40,6 +43,8 @@ public partial class GenerationJob : ObservableObject
     [ObservableProperty] private int _progressCurrent;
     [ObservableProperty] private int _progressTotal;
     [ObservableProperty] private int _retryCount;
+    [ObservableProperty] private string? _preferredModel;
+    [ObservableProperty] private int _estimatedWorkUnits;
 
     internal Action? CancelAction { get; set; }
 
@@ -55,13 +60,14 @@ public partial class GenerationJob : ObservableObject
 
 public sealed class GenerationQueueService
 {
-    private readonly ConcurrentQueue<GenerationJob> _queue = new();
+    private readonly List<GenerationJob> _pendingJobs = new();
     private readonly SemaphoreSlim _queueSignal = new(0);
     private readonly CancellationTokenSource _cts = new();
     private readonly object _stateLock = new();
     private Task? _processor;
     private bool _isPaused;
     private TaskCompletionSource<bool>? _resumeTcs;
+    private string? _modelAffinity;
 
     public ObservableCollection<GenerationJob> Jobs { get; } = new();
 
@@ -86,7 +92,10 @@ public sealed class GenerationQueueService
     {
         job.Status = GenerationJobStatus.Queued;
         Jobs.Add(job);
-        _queue.Enqueue(job);
+        lock (_stateLock)
+        {
+            _pendingJobs.Add(job);
+        }
         _queueSignal.Release();
         EnsureProcessor();
     }
@@ -111,7 +120,7 @@ public sealed class GenerationQueueService
         if (!job.CanRetry) return;
         job.ErrorMessage = null;
         job.StatusMessage = null;
-        Enqueue(new GenerationJob($"{job.Name} (retry {job.RetryCount + 1})", job.Work)
+        Enqueue(new GenerationJob($"{job.Name} (retry {job.RetryCount + 1})", job.Work, job.PreferredModel, job.EstimatedWorkUnits)
         {
             RetryCount = job.RetryCount + 1
         });
@@ -134,13 +143,18 @@ public sealed class GenerationQueueService
             await _queueSignal.WaitAsync(token);
             if (token.IsCancellationRequested) break;
 
-            if (!_queue.TryDequeue(out var job)) continue;
-            if (job.Status == GenerationJobStatus.Canceled) continue;
+            var job = TakeNextJob();
+            if (job == null) continue;
 
             if (IsPaused)
             {
                 _resumeTcs = new TaskCompletionSource<bool>();
                 await _resumeTcs.Task;
+            }
+
+            if (!string.IsNullOrWhiteSpace(job.PreferredModel))
+            {
+                _modelAffinity = job.PreferredModel;
             }
 
             job.Status = GenerationJobStatus.Running;
@@ -176,7 +190,10 @@ public sealed class GenerationQueueService
                     job.RetryCount++;
                     job.Status = GenerationJobStatus.Queued;
                     job.StatusMessage = "Retrying...";
-                    _queue.Enqueue(job);
+                    lock (_stateLock)
+                    {
+                        _pendingJobs.Add(job);
+                    }
                     _queueSignal.Release();
                     continue;
                 }
@@ -209,5 +226,68 @@ public sealed class GenerationQueueService
         if (ex is System.Net.Http.HttpRequestException) return true;
         var message = ex.Message?.ToLowerInvariant() ?? "";
         return message.Contains("timeout") || message.Contains("temporarily") || message.Contains("503") || message.Contains("502");
+    }
+
+    private GenerationJob? TakeNextJob()
+    {
+        lock (_stateLock)
+        {
+            if (_pendingJobs.Count == 0)
+            {
+                return null;
+            }
+
+            _pendingJobs.RemoveAll(job => job.Status == GenerationJobStatus.Canceled);
+            if (_pendingJobs.Count == 0)
+            {
+                return null;
+            }
+
+            GenerationJob? selected = null;
+
+            if (!string.IsNullOrWhiteSpace(_modelAffinity))
+            {
+                selected = _pendingJobs
+                    .Where(job => string.Equals(job.PreferredModel, _modelAffinity, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(job => job.CreatedAt)
+                    .FirstOrDefault();
+            }
+
+            if (selected == null)
+            {
+                var groupedByModel = _pendingJobs
+                    .Where(job => !string.IsNullOrWhiteSpace(job.PreferredModel))
+                    .GroupBy(job => job.PreferredModel!, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => new
+                    {
+                        Model = group.Key,
+                        TotalWork = group.Sum(job => Math.Max(1, job.EstimatedWorkUnits)),
+                        FirstCreatedAt = group.Min(job => job.CreatedAt)
+                    })
+                    .OrderByDescending(group => group.TotalWork)
+                    .ThenBy(group => group.FirstCreatedAt)
+                    .FirstOrDefault();
+
+                if (groupedByModel != null)
+                {
+                    _modelAffinity = groupedByModel.Model;
+                    selected = _pendingJobs
+                        .Where(job => string.Equals(job.PreferredModel, groupedByModel.Model, StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(job => job.CreatedAt)
+                        .FirstOrDefault();
+                }
+            }
+
+            selected ??= _pendingJobs
+                .OrderBy(job => job.CreatedAt)
+                .FirstOrDefault();
+
+            if (selected != null)
+            {
+                _pendingJobs.Remove(selected);
+            }
+
+            return selected;
+        }
     }
 }

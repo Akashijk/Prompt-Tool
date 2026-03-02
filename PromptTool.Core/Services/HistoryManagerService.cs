@@ -377,7 +377,8 @@ public class HistoryManagerService
             GenerationStatus = img.GetPropertyOrDefault("generation_status"),
             ErrorType = img.GetPropertyOrDefault("error_type"),
             ErrorMessage = img.GetPropertyOrDefault("error_message"),
-            ErrorTraceback = img.GetPropertyOrDefault("error_traceback")
+            ErrorTraceback = img.GetPropertyOrDefault("error_traceback"),
+            DerivedFromImagePath = img.GetPropertyOrDefault("derived_from_image_path")
         };
     }
 
@@ -545,7 +546,8 @@ public class HistoryManagerService
             Generation_Status = image.GenerationStatus,
             Error_Type = image.ErrorType,
             Error_Message = image.ErrorMessage,
-            Error_Traceback = image.ErrorTraceback
+            Error_Traceback = image.ErrorTraceback,
+            Derived_From_Image_Path = image.DerivedFromImagePath
         };
     }
 
@@ -630,6 +632,13 @@ public class HistoryManagerService
         existing.InvokeAIModel = !string.IsNullOrWhiteSpace(entry.InvokeAIModel) ? entry.InvokeAIModel : existing.InvokeAIModel;
         existing.Workflow = entry.Workflow ?? existing.Workflow;
         existing.ImageParameters ??= entry.ImageParameters;
+        existing.IsExperimentRun = entry.IsExperimentRun || existing.IsExperimentRun;
+        existing.ExperimentType = entry.ExperimentType ?? existing.ExperimentType;
+        existing.ExperimentVariable = entry.ExperimentVariable ?? existing.ExperimentVariable;
+        existing.ExperimentHeaderPrompt = entry.ExperimentHeaderPrompt ?? existing.ExperimentHeaderPrompt;
+        existing.ExperimentLockedChoices = entry.ExperimentLockedChoices ?? existing.ExperimentLockedChoices;
+        existing.ExperimentPlannedCount ??= entry.ExperimentPlannedCount;
+        existing.ExperimentNotes = entry.ExperimentNotes ?? existing.ExperimentNotes;
 
         SaveHistory();
         return existing;
@@ -660,6 +669,9 @@ public class HistoryManagerService
             existing.GenerationParams = image.GenerationParams;
             existing.GenerationParamsJson = image.GenerationParamsJson;
             existing.GenerationGraphJson = image.GenerationGraphJson;
+            existing.ExperimentVariantLabel = image.ExperimentVariantLabel;
+            existing.ExperimentVariantValue = image.ExperimentVariantValue;
+            existing.ExperimentVariantIndex = image.ExperimentVariantIndex;
             
             if (save) SaveHistory();
         }
@@ -699,7 +711,11 @@ public class HistoryManagerService
                 UpscaleScale = img.UpscaleScale,
                 UpscaleTileSize = img.UpscaleTileSize,
                 UpscaleFitToMultipleOf8 = img.UpscaleFitToMultipleOf8,
-                UpscaleSourceImagePath = img.UpscaleSourceImagePath
+                UpscaleSourceImagePath = img.UpscaleSourceImagePath,
+                DerivedFromImagePath = img.DerivedFromImagePath,
+                ExperimentVariantLabel = img.ExperimentVariantLabel,
+                ExperimentVariantValue = img.ExperimentVariantValue,
+                ExperimentVariantIndex = img.ExperimentVariantIndex
             };
 
             if (img.ImageBytes is { Length: > 0 })
@@ -713,7 +729,7 @@ public class HistoryManagerService
 
             if (copy.ImagePath != null)
             {
-                entry.Images.Add(copy);
+                InsertImageByLineage(entry, copy);
             }
         }
         var firstWithParams = entry.Images.FirstOrDefault(i => i.GenerationParams != null);
@@ -1141,6 +1157,44 @@ public class HistoryManagerService
         [JsonPropertyName("error_type")] public string? Error_Type { get; set; }
         [JsonPropertyName("error_message")] public string? Error_Message { get; set; }
         [JsonPropertyName("error_traceback")] public string? Error_Traceback { get; set; }
+        [JsonPropertyName("derived_from_image_path")] public string? Derived_From_Image_Path { get; set; }
+    }
+
+    private static void InsertImageByLineage(HistoryEntry entry, HistoryImage image)
+    {
+        if (string.IsNullOrWhiteSpace(image.DerivedFromImagePath))
+        {
+            entry.Images.Add(image);
+            return;
+        }
+
+        var anchorIndex = entry.Images.FindIndex(existing =>
+            string.Equals(existing.ImagePath, image.DerivedFromImagePath, StringComparison.OrdinalIgnoreCase));
+        if (anchorIndex < 0)
+        {
+            entry.Images.Add(image);
+            return;
+        }
+
+        var insertIndex = anchorIndex + 1;
+        while (insertIndex < entry.Images.Count &&
+               IsDerivedFrom(entry.Images[insertIndex], image.DerivedFromImagePath))
+        {
+            insertIndex++;
+        }
+
+        entry.Images.Insert(insertIndex, image);
+    }
+
+    private static bool IsDerivedFrom(HistoryImage candidate, string? rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return false;
+        }
+
+        return string.Equals(candidate.DerivedFromImagePath, rootPath, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(candidate.UpscaleSourceImagePath, rootPath, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ScanHistoryFile(string path, ref int missingCount)

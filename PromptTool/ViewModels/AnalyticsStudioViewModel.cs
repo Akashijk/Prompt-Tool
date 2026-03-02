@@ -205,6 +205,11 @@ public partial class AnalyticsImageItem : ObservableObject
     {
         HasScore = AestheticScore.HasValue || Score.HasValue || SharpnessScore.HasValue || CompositeScore.HasValue || PromptMatchScore.HasValue;
     }
+
+    public void NotifyFavoriteChanged()
+    {
+        OnPropertyChanged(nameof(IsFavorite));
+    }
 }
 
 public sealed record ScoreByModelConfirmRequest(
@@ -256,6 +261,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     [ObservableProperty] private bool _enableScoring;
     [ObservableProperty] private LoraMatchMode _loraMatchMode = LoraMatchMode.Any;
     [ObservableProperty] private bool _canCompare;
+    [ObservableProperty] private bool _showFavoritesOnly;
     [ObservableProperty] private bool _favoritesFirst;
     [ObservableProperty] private AnalyticsSortMode _selectedSortMode = AnalyticsSortMode.None;
     [ObservableProperty] private bool _isSortNone = true;
@@ -279,11 +285,13 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     [ObservableProperty] private bool _canScoreByModel;
     [ObservableProperty] private string _scoreByModelHint = "Select exactly one model to enable this action.";
     [ObservableProperty] private bool _showScoreByModelHint = true;
+    [ObservableProperty] private bool _canFavoriteSelected;
 
     private readonly List<AnalyticsImageItem> _selected = new();
+    private bool _suppressFilterChangePrompt;
 
     public Func<IReadOnlyList<AnalyticsImageItem>, Task>? CompareRequested { get; set; }
-    public Func<HistoryEntry, HistoryImage, Bitmap, Task>? ViewDetailsRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage, Bitmap, IReadOnlyList<ImageDetailNavigationItem>, Task>? ViewDetailsRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateMoreRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateSeedVariationsRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateLoraVariationsRequested { get; set; }
@@ -376,16 +384,20 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         }
         _ = RecomputeScoresAsync(value);
     }
-    partial void OnSelectedTemplateChanged(string value) => ScheduleRefresh();
-    partial void OnSelectedPromptTypeChanged(string value) => ScheduleRefresh();
-    partial void OnFromDateChanged(DateTime? value) => ScheduleRefresh();
-    partial void OnToDateChanged(DateTime? value) => ScheduleRefresh();
+    partial void OnSelectedTemplateChanged(string? oldValue, string newValue) => _ = HandleFilterChangeAsync(() => SelectedTemplate = oldValue ?? "(Any)");
+    partial void OnSelectedPromptTypeChanged(string? oldValue, string newValue) => _ = HandleFilterChangeAsync(() => SelectedPromptType = oldValue ?? "(Any)");
+    partial void OnFromDateChanged(DateTime? oldValue, DateTime? newValue) => _ = HandleFilterChangeAsync(() => FromDate = oldValue);
+    partial void OnToDateChanged(DateTime? oldValue, DateTime? newValue) => _ = HandleFilterChangeAsync(() => ToDate = oldValue);
+    partial void OnShowFavoritesOnlyChanged(bool oldValue, bool newValue) => _ = HandleFilterChangeAsync(() => ShowFavoritesOnly = oldValue);
 
     [RelayCommand]
     private async Task ViewDetails(AnalyticsImageItem? item)
     {
         if (item?.Bitmap == null || ViewDetailsRequested == null) return;
-        await ViewDetailsRequested(item.Entry, item.Image, item.Bitmap);
+        var navigationItems = Results
+            .Select(result => new ImageDetailNavigationItem(result.Entry, result.Image))
+            .ToList();
+        await ViewDetailsRequested(item.Entry, item.Image, item.Bitmap, navigationItems);
     }
 
     [RelayCommand]
@@ -457,7 +469,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         }
         StatusText = "PNG metadata viewer not configured.";
     }
-    partial void OnLoraMatchModeChanged(LoraMatchMode value) => ScheduleRefresh();
+    partial void OnLoraMatchModeChanged(LoraMatchMode oldValue, LoraMatchMode newValue) => _ = HandleFilterChangeAsync(() => LoraMatchMode = oldValue);
     partial void OnFavoritesFirstChanged(bool value) => ScheduleRefresh();
     partial void OnSelectedSortModeChanged(AnalyticsSortMode value)
     {
@@ -483,6 +495,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         CanCompare = false;
         CanScoreSelected = false;
         CanDeleteSelected = false;
+        CanFavoriteSelected = false;
 
         if (newValue != null)
         {
@@ -497,6 +510,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             CanCompare = _selected.Count == 2;
             CanScoreSelected = _selected.Count > 0;
             CanDeleteSelected = _selected.Count > 0;
+            CanFavoriteSelected = _selected.Count > 0;
         }
 
         UpdateScoreByModelStatus();
@@ -541,7 +555,15 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             {
                 UpdateLoraMatchModeVisibility();
             }
-            ScheduleRefresh();
+            if (_suppressFilterChangePrompt)
+            {
+                return;
+            }
+
+            if (sender is FilterOption changedOption)
+            {
+                _ = HandleFilterOptionSelectionChangedAsync(changedOption);
+            }
         }
     }
 
@@ -576,6 +598,67 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                 // ignore
             }
         }, token);
+    }
+
+    private async Task HandleFilterOptionSelectionChangedAsync(FilterOption option)
+    {
+        var shouldProceed = await ConfirmSelectionClearedAsync();
+        if (!shouldProceed)
+        {
+            _suppressFilterChangePrompt = true;
+            option.IsSelected = !option.IsSelected;
+            _suppressFilterChangePrompt = false;
+
+            if (Models.Contains(option))
+            {
+                UpdateScoreByModelStatus();
+            }
+            if (Loras.Contains(option))
+            {
+                UpdateLoraMatchModeVisibility();
+            }
+            return;
+        }
+
+        ClearSelection();
+        ScheduleRefresh();
+    }
+
+    private async Task HandleFilterChangeAsync(Action revert)
+    {
+        if (_suppressFilterChangePrompt)
+        {
+            return;
+        }
+
+        var shouldProceed = await ConfirmSelectionClearedAsync();
+        if (!shouldProceed)
+        {
+            _suppressFilterChangePrompt = true;
+            revert();
+            _suppressFilterChangePrompt = false;
+            return;
+        }
+
+        ClearSelection();
+        ScheduleRefresh();
+    }
+
+    private async Task<bool> ConfirmSelectionClearedAsync()
+    {
+        if (_selected.Count == 0)
+        {
+            return true;
+        }
+
+        if (ConfirmAsync == null)
+        {
+            return true;
+        }
+
+        var noun = _selected.Count == 1 ? "selected image" : "selected images";
+        return await ConfirmAsync(
+            $"This filter change will clear the current selection of {_selected.Count} {noun}. Continue?");
     }
 
     private void OnItemPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -629,6 +712,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         CanCompare = _selected.Count == 2;
         CanScoreSelected = _selected.Count > 0;
         CanDeleteSelected = _selected.Count > 0;
+        CanFavoriteSelected = _selected.Count > 0;
     }
 
     private AnalyticsImageItem? ResolveSingleTarget(AnalyticsImageItem? item)
@@ -661,6 +745,30 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         {
             item.IsSelected = false;
         }
+    }
+
+    [RelayCommand]
+    private async Task AddToFavorites(AnalyticsImageItem? item)
+    {
+        var target = ResolveSingleTarget(item);
+        if (target == null)
+        {
+            return;
+        }
+
+        await AddItemsToFavoritesAsync(new[] { target });
+    }
+
+    [RelayCommand]
+    private async Task AddSelectedToFavorites()
+    {
+        if (_selected.Count == 0)
+        {
+            StatusText = "Select one or more images to favorite.";
+            return;
+        }
+
+        await AddItemsToFavoritesAsync(_selected.ToList());
     }
 
     [RelayCommand]
@@ -716,6 +824,45 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             : $"Deleted {deleted} images.";
     }
 
+    private async Task AddItemsToFavoritesAsync(IReadOnlyList<AnalyticsImageItem> items)
+    {
+        var changed = 0;
+        foreach (var item in items.Distinct())
+        {
+            if (item.Image.IsFavorite)
+            {
+                item.NotifyFavoriteChanged();
+                continue;
+            }
+
+            item.Image.IsFavorite = true;
+            item.Entry.IsFavorite = true;
+            _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+            item.NotifyFavoriteChanged();
+            changed++;
+        }
+
+        if (changed == 0)
+        {
+            StatusText = items.Count == 1
+                ? "Image is already a favorite."
+                : "Selected images are already favorites.";
+            return;
+        }
+
+        _historyManager.SaveChanges();
+
+        if (FavoritesFirst || SelectedSortMode == AnalyticsSortMode.Favorites)
+        {
+            ApplySortToResults();
+        }
+
+        StatusText = changed == 1
+            ? "Added image to favorites."
+            : $"Added {changed} images to favorites.";
+        await Task.CompletedTask;
+    }
+
     [RelayCommand]
     private void SetSort(AnalyticsSortMode mode)
     {
@@ -729,6 +876,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     [RelayCommand]
     private void ClearFilters()
     {
+        _suppressFilterChangePrompt = true;
         foreach (var model in Models)
         {
             model.IsSelected = false;
@@ -747,6 +895,8 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         LoraMatchMode = LoraMatchMode.Any;
         SelectedSortMode = AnalyticsSortMode.None;
         FavoritesFirst = false;
+        ShowFavoritesOnly = false;
+        _suppressFilterChangePrompt = false;
         ScheduleRefresh();
     }
 
@@ -1165,7 +1315,13 @@ public partial class AnalyticsStudioViewModel : ObservableObject
 
     private async Task TryApplyLocalScoresAsync(AnalyticsImageItem item, string fullPath, CancellationToken token)
     {
-        var hasLocalScores = item.Score.HasValue && item.SharpnessScore.HasValue && item.PromptMatchScore.HasValue;
+        var remoteBackend = string.Equals(
+            _settingsService.Settings.AestheticScoringBackend?.Trim(),
+            "remote",
+            StringComparison.OrdinalIgnoreCase);
+        var hasLocalScores = item.Score.HasValue
+                             && item.SharpnessScore.HasValue
+                             && (remoteBackend || item.PromptMatchScore.HasValue);
         if (hasLocalScores || !File.Exists(fullPath))
         {
             TryUpdateCompositeScore(item);
@@ -1179,7 +1335,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             var sharpness = ScoringHelper.CalculateSharpnessScore(bmp);
             var prompt = item.Prompt;
             double? promptMatch = null;
-            if (!string.IsNullOrWhiteSpace(prompt))
+            if (!remoteBackend && !string.IsNullOrWhiteSpace(prompt))
             {
                 promptMatch = await _promptMatchScoringService.ScorePromptMatchAsync(
                     bmp,
@@ -1337,6 +1493,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         var promptTypeFilter = SelectedPromptType;
         var from = FromDate?.Date;
         var to = ToDate?.Date;
+        var favoritesOnly = ShowFavoritesOnly;
 
         var result = await Task.Run(() =>
         {
@@ -1372,6 +1529,11 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                             if (!templateOk)
                             {
                                 PerfLogger.Count("AnalyticsStudio.SkipTemplate");
+                                continue;
+                            }
+
+                            if (favoritesOnly && !img.IsFavorite && !entry.IsFavorite)
+                            {
                                 continue;
                             }
 
@@ -1564,6 +1726,10 @@ public partial class AnalyticsStudioViewModel : ObservableObject
             var item = existing[i];
             if (!newSet.Contains(item))
             {
+                if (item.IsSelected)
+                {
+                    item.IsSelected = false;
+                }
                 item.PropertyChanged -= OnItemPropertyChanged;
                 existing.RemoveAt(i);
             }
@@ -1599,6 +1765,8 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         }
         CanCompare = _selected.Count == 2;
         CanScoreSelected = _selected.Count > 0;
+        CanDeleteSelected = _selected.Count > 0;
+        CanFavoriteSelected = _selected.Count > 0;
         UpdateScoreByModelStatus();
     }
 

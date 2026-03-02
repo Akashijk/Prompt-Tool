@@ -750,7 +750,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         return new SelectableLoraViewModel { Lora = l, Weight = weight };
     }
 
-    private static string NormalizeSchedulerDisplay(string value)
+    public static string NormalizeSchedulerDisplay(string value)
     {
         var tokens = value.Split('_', StringSplitOptions.RemoveEmptyEntries);
         if (tokens.Length == 0) return value;

@@ -12,30 +12,53 @@
         CanResize="True">
 
     <Grid x:Name="RootGrid" RowDefinitions="Auto,*,Auto" Margin="12" RowSpacing="10">
-        <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock Text="Zoom"/>
-            <Slider x:Name="ZoomSlider" Minimum="1" Maximum="3" Value="1" Width="180"
-                    TickFrequency="1" IsSnapToTickEnabled="True"
-                    SmallChange="1" LargeChange="1"
-                    PointerWheelChanged="ZoomSlider_PointerWheelChanged"/>
-            <Button Content="Edit Image Data" Click="EditImageData_Click" IsVisible="{Binding ShowHistoryActions}"/>
-            <Button Content="Upscale" Command="{Binding UpscaleCommand}" IsVisible="{Binding ShowHistoryActions}"/>
-            <Button Content="Generate More"
-                    Command="{Binding GenerateMoreCommand}"
-                    IsVisible="{Binding CanGenerateMore}"/>
-            <Button Content="Seed Variations"
-                    Command="{Binding GenerateSeedVariationsCommand}"
-                    IsVisible="{Binding CanGenerateSeedVariations}"/>
-            <Button Content="LoRA Variations"
-                    Command="{Binding GenerateLoraVariationsCommand}"
-                    IsVisible="{Binding CanGenerateLoraVariations}"/>
-            <Button Content="Model Variations"
-                    Command="{Binding GenerateModelVariationsCommand}"
-                    IsVisible="{Binding CanGenerateModelVariations}"/>
-            <Button Content="Copy Processed" Command="{Binding CopyTextCommand}" CommandParameter="{Binding ProcessedPrompt}" IsVisible="{Binding HasProcessedPrompt}"/>
-            <Button Content="Copy Original" Command="{Binding CopyTextCommand}" CommandParameter="{Binding OriginalPrompt}"/>
-            <Button Content="Copy Details" Command="{Binding CopyTextCommand}" CommandParameter="{Binding DetailsText}"/>
-        </StackPanel>
+        <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+            <WrapPanel Grid.Row="0" ItemSpacing="8" VerticalAlignment="Center">
+                <TextBlock Text="Zoom" VerticalAlignment="Center"/>
+                <Slider x:Name="ZoomSlider" Minimum="1" Maximum="3" Value="1" Width="180"
+                        TickFrequency="1" IsSnapToTickEnabled="True"
+                        SmallChange="1" LargeChange="1"
+                        PointerWheelChanged="ZoomSlider_PointerWheelChanged"/>
+                <Button Content="&lt;"
+                        Click="PreviousImage_Click"
+                        MinWidth="34"
+                        IsVisible="{Binding CurrentImagePositionText, Converter={StaticResource StringToBoolConverter}}"
+                        IsEnabled="{Binding CanNavigatePrevious}"/>
+                <Button Content="&gt;"
+                        Click="NextImage_Click"
+                        MinWidth="34"
+                        IsVisible="{Binding CurrentImagePositionText, Converter={StaticResource StringToBoolConverter}}"
+                        IsEnabled="{Binding CanNavigateNext}"/>
+                <TextBlock Text="{Binding CurrentImagePositionText}"
+                           Classes="subtle"
+                           VerticalAlignment="Center"
+                           Margin="8,0,0,0"
+                           IsVisible="{Binding CurrentImagePositionText, Converter={StaticResource StringToBoolConverter}}"/>
+            </WrapPanel>
+
+            <WrapPanel Grid.Row="1" ItemSpacing="8">
+                <Button Content="Edit Image Data" Click="EditImageData_Click" IsVisible="{Binding ShowHistoryActions}"/>
+                <Button Content="{Binding FavoriteButtonText}"
+                        Click="ToggleFavorite_Click"
+                        IsVisible="{Binding ShowHistoryActions}"/>
+                <Button Content="Upscale" Command="{Binding UpscaleCommand}" IsVisible="{Binding ShowHistoryActions}"/>
+                <Button Content="Generate More"
+                        Command="{Binding GenerateMoreCommand}"
+                        IsVisible="{Binding CanGenerateMore}"/>
+                <Button Content="Seed Variations"
+                        Command="{Binding GenerateSeedVariationsCommand}"
+                        IsVisible="{Binding CanGenerateSeedVariations}"/>
+                <Button Content="LoRA Variations"
+                        Command="{Binding GenerateLoraVariationsCommand}"
+                        IsVisible="{Binding CanGenerateLoraVariations}"/>
+                <Button Content="Model Variations"
+                        Command="{Binding GenerateModelVariationsCommand}"
+                        IsVisible="{Binding CanGenerateModelVariations}"/>
+                <Button Content="Copy Processed" Command="{Binding CopyTextCommand}" CommandParameter="{Binding ProcessedPrompt}" IsVisible="{Binding HasProcessedPrompt}"/>
+                <Button Content="Copy Original" Command="{Binding CopyTextCommand}" CommandParameter="{Binding OriginalPrompt}"/>
+                <Button Content="Copy Details" Command="{Binding CopyTextCommand}" CommandParameter="{Binding DetailsText}"/>
+            </WrapPanel>
+        </Grid>
 
         <Grid Grid.Row="1" ColumnDefinitions="2*,1*" ColumnSpacing="10">
             <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Background="#111">
@@ -64,17 +87,35 @@
                 </ScrollViewer>
             </Border>
 
-            <Grid x:Name="DetailsPanel" Grid.Column="1" RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
-                <TextBlock Text="Original Prompt" FontWeight="Bold"/>
-                <TextBox Grid.Row="1" Text="{Binding OriginalPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" IsReadOnly="True"/>
-                <StackPanel Grid.Row="2" Spacing="4" IsVisible="{Binding HasProcessedPrompt}">
-                    <TextBlock Text="Processed Prompt" FontWeight="Bold"/>
-                    <TextBox Text="{Binding ProcessedPrompt}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" IsReadOnly="True"/>
-                </StackPanel>
-                <TextBlock Grid.Row="3" Text="Details" FontWeight="Bold" Margin="0,6,0,0"/>
-                <TextBox Grid.Row="4" Text="{Binding DetailsText}" AcceptsReturn="True" TextWrapping="Wrap" IsReadOnly="True"
-                         VerticalAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
-            </Grid>
+            <ScrollViewer Grid.Column="1"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="DetailsPanel" RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6" MinHeight="0">
+                    <TextBlock Text="Original Prompt" FontWeight="Bold"/>
+                    <TextBox Grid.Row="1"
+                             Text="{Binding OriginalPrompt}"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             MinHeight="80"
+                             IsReadOnly="True"/>
+                    <StackPanel Grid.Row="2" Spacing="4" IsVisible="{Binding HasProcessedPrompt}">
+                        <TextBlock Text="Processed Prompt" FontWeight="Bold"/>
+                        <TextBox Text="{Binding ProcessedPrompt}"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 MinHeight="80"
+                                 IsReadOnly="True"/>
+                    </StackPanel>
+                    <TextBlock Grid.Row="3" Text="Details" FontWeight="Bold" Margin="0,6,0,0"/>
+                    <TextBox Grid.Row="4"
+                             Text="{Binding DetailsText}"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             IsReadOnly="True"
+                             MinHeight="220"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                </Grid>
+            </ScrollViewer>
         </Grid>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">

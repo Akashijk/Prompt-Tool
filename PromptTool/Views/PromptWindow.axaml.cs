@@ -103,6 +103,16 @@ public partial class PromptWindow : Window
             return;
         }
 
+        InsertWildcardAtCaret(wildcardName);
+    }
+
+    private void InsertWildcardAtCaret(string wildcardName)
+    {
+        if (string.IsNullOrWhiteSpace(wildcardName))
+        {
+            return;
+        }
+
         if (DataContext is not MainWindowViewModel vm)
         {
             return;
@@ -121,6 +131,120 @@ public partial class PromptWindow : Window
             input.SelectionStart = newCaret;
             input.SelectionEnd = newCaret;
             input.Focus();
+        }
+    }
+
+    private void WildcardBrowserItem_DoubleTapped(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control control || control.DataContext is not WildcardBrowserItem item)
+        {
+            return;
+        }
+
+        InsertWildcardAtCaret(item.Name);
+    }
+
+    private void WildcardBrowserItem_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control control || control.DataContext is not WildcardBrowserItem item)
+        {
+            return;
+        }
+
+        var point = e.GetCurrentPoint(control);
+        if (!point.Properties.IsRightButtonPressed)
+        {
+            return;
+        }
+
+        if (DataContext is not MainWindowViewModel vm)
+        {
+            return;
+        }
+
+        var menuItems = new List<MenuItem>();
+
+        var titleItem = new MenuItem
+        {
+            Header = item.Name,
+            IsEnabled = false
+        };
+        menuItems.Add(titleItem);
+
+        var insertItem = new MenuItem { Header = "Insert" };
+        insertItem.Click += (_, __) => InsertWildcardAtCaret(item.Name);
+        menuItems.Add(insertItem);
+
+        var openItem = new MenuItem { Header = "Open in Wildcard Manager" };
+        openItem.Click += async (_, __) =>
+        {
+            await vm.OpenWildcardInManagerCommand.ExecuteAsync(item.Name);
+        };
+        menuItems.Add(openItem);
+
+        var menu = new ContextMenu { ItemsSource = menuItems };
+        menu.Open(control);
+        e.Handled = true;
+    }
+
+    private void PromptInputBox_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (sender is not TextBox input || DataContext is not MainWindowViewModel vm)
+        {
+            return;
+        }
+
+        vm.UpdateWildcardAutocomplete(input.Text, input.CaretIndex);
+    }
+
+    private void PromptInputBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox input || DataContext is not MainWindowViewModel vm)
+        {
+            return;
+        }
+
+        if (!vm.IsWildcardAutocompleteOpen)
+        {
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.Down:
+                vm.MoveWildcardAutocompleteSelection(1);
+                e.Handled = true;
+                break;
+            case Key.Up:
+                vm.MoveWildcardAutocompleteSelection(-1);
+                e.Handled = true;
+                break;
+            case Key.Enter:
+            case Key.Tab:
+                var result = vm.CommitWildcardAutocomplete(input.CaretIndex);
+                if (result != null)
+                {
+                    input.Text = result.Value.newText;
+                    input.CaretIndex = result.Value.caret;
+                    input.SelectionStart = result.Value.caret;
+                    input.SelectionEnd = result.Value.caret;
+                    input.Focus();
+                }
+
+                e.Handled = true;
+                break;
+            case Key.Escape:
+                vm.CloseWildcardAutocomplete();
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void PromptInputBox_LostFocus(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+        {
+            vm.CloseWildcardAutocomplete();
         }
     }
 

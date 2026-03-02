@@ -16,6 +16,7 @@ namespace PromptTool.ViewModels;
 public partial class WildcardManagerViewModel : ObservableObject
 {
     private readonly WildcardService _wildcardService;
+    private readonly TemplateService _templateService;
     private bool _structuredDirty;
     private int _findIndex = -1;
 
@@ -61,6 +62,15 @@ public partial class WildcardManagerViewModel : ObservableObject
     private int _wildcardCount;
 
     [ObservableProperty]
+    private ObservableCollection<string> _themeSuggestions = new();
+
+    [ObservableProperty]
+    private ObservableCollection<SimilarWildcardCandidate> _similarWildcards = new();
+
+    [ObservableProperty]
+    private string _similarWildcardStatus = "Select a wildcard to see merge candidates.";
+
+    [ObservableProperty]
     private bool _showArchived;
 
     [ObservableProperty]
@@ -78,17 +88,55 @@ public partial class WildcardManagerViewModel : ObservableObject
     [ObservableProperty]
     private string _replaceText = "";
 
+    [ObservableProperty]
+    private string _quickAddChoiceText = "";
+
+    [ObservableProperty]
+    private bool _canResolveSelectedIssue;
+
+    [ObservableProperty]
+    private string _selectedIssueSummary = "Select a validation issue to review it here.";
+
+    [ObservableProperty]
+    private string _resolvePrimaryIssueText = "Keep first";
+
+    [ObservableProperty]
+    private string _resolveSecondaryIssueText = "Keep second";
+
+    [ObservableProperty]
+    private bool _isInspectorOpen;
+
+    [ObservableProperty]
+    private string _inspectorToggleText = "Show Inspector";
+
+    [ObservableProperty]
+    private int _inspectorTabIndex;
+
+    [ObservableProperty]
+    private double _inspectorPaneWidth;
+
+    [ObservableProperty]
+    private double _inspectorPaneOpacity;
+
+    [ObservableProperty]
+    private double _inspectorSplitterWidth;
+
     partial void OnFindTextChanged(string value)
     {
         _findIndex = -1;
     }
 
-    public WildcardManagerViewModel(WildcardService wildcardService)
+    public WildcardManagerViewModel(WildcardService wildcardService, TemplateService templateService)
     {
         _wildcardService = wildcardService;
+        _templateService = templateService;
         SelectedTabIndex = 0;
         LoadWildcardsCommand.Execute(null);
     }
+
+    public WildcardService WildcardService => _wildcardService;
+
+    public TemplateService TemplateService => _templateService;
 
     public async Task SelectWildcardAfterLoadAsync(string? name)
     {
@@ -101,10 +149,20 @@ public partial class WildcardManagerViewModel : ObservableObject
     [RelayCommand]
     private async Task LoadWildcardsAsync()
     {
+        var selectedName = SelectedWildcard?.Name;
         var entries = await _wildcardService.GetWildcardFileEntries(ShowArchived);
         var sorted = entries.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        Wildcards = new ObservableCollection<WildcardFileEntry>(ApplyFilter(sorted, FilterText));
+        var filtered = ApplyFilter(sorted, FilterText).ToList();
+        ThemeSuggestions = new ObservableCollection<string>(BuildThemeSuggestions());
+        Wildcards = new ObservableCollection<WildcardFileEntry>(filtered);
         WildcardCount = sorted.Count;
+        SelectedWildcard = !string.IsNullOrWhiteSpace(selectedName)
+            ? Wildcards.FirstOrDefault(w => string.Equals(w.Name, selectedName, StringComparison.OrdinalIgnoreCase))
+            : null;
+        if (SelectedWildcard == null)
+        {
+            SelectedWildcard = Wildcards.FirstOrDefault();
+        }
         LoadDependencies();
     }
 
@@ -121,11 +179,106 @@ public partial class WildcardManagerViewModel : ObservableObject
     private IEnumerable<WildcardFileEntry> ApplyFilter(IEnumerable<WildcardFileEntry> entries, string filter)
     {
         if (string.IsNullOrWhiteSpace(filter)) return entries;
-        var term = filter.Trim();
+        var terms = filter
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (terms.Length == 0) return entries;
+
         var filtered = entries.Where(e =>
-            e.Name.Contains(term, StringComparison.OrdinalIgnoreCase) ||
-            (e.Content?.IndexOf(term, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0);
+        {
+            var haystack = BuildSearchBlob(e);
+            return terms.All(term => haystack.Contains(term, StringComparison.OrdinalIgnoreCase));
+        });
         return filtered;
+    }
+
+    [RelayCommand]
+    private void ApplyThemeFilter(string? term)
+    {
+        if (string.IsNullOrWhiteSpace(term))
+        {
+            return;
+        }
+
+        var cleaned = term.Trim();
+        if (string.IsNullOrWhiteSpace(FilterText))
+        {
+            FilterText = cleaned;
+            return;
+        }
+
+        var tokens = FilterText
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Any(t => string.Equals(t, cleaned, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        FilterText = $"{FilterText.Trim()} {cleaned}";
+    }
+
+    private string BuildSearchBlob(WildcardFileEntry entry)
+    {
+        var parts = new List<string> { entry.Name };
+        if (!string.IsNullOrWhiteSpace(entry.Content))
+        {
+            parts.Add(entry.Content);
+        }
+
+        if (_wildcardService.GetStructuredWildcards().TryGetValue(entry.Name, out var structured))
+        {
+            if (!string.IsNullOrWhiteSpace(structured.Description))
+            {
+                parts.Add(structured.Description);
+            }
+
+            foreach (var choice in structured.Choices)
+            {
+                if (!string.IsNullOrWhiteSpace(choice.Value))
+                {
+                    parts.Add(choice.Value);
+                }
+
+                if (choice.Tags.Count > 0)
+                {
+                    parts.AddRange(choice.Tags.Where(t => !string.IsNullOrWhiteSpace(t)));
+                }
+
+                switch (choice.Includes)
+                {
+                    case string includeText when !string.IsNullOrWhiteSpace(includeText):
+                        parts.Add(includeText);
+                        break;
+                    case IEnumerable<string> includes:
+                        parts.AddRange(includes.Where(i => !string.IsNullOrWhiteSpace(i)));
+                        break;
+                }
+
+                if (!string.IsNullOrWhiteSpace(choice.RequiresJson))
+                {
+                    parts.Add(choice.RequiresJson);
+                }
+            }
+        }
+
+        return string.Join('\n', parts);
+    }
+
+    private IEnumerable<string> BuildThemeSuggestions()
+    {
+        return _wildcardService.GetStructuredWildcards()
+            .Values
+            .SelectMany(w => w.Choices)
+            .SelectMany(c => c.Tags)
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
+            .Where(t => t.Length >= 3)
+            .GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .Select(g => g.Key);
     }
 
     partial void OnSelectedWildcardChanged(WildcardFileEntry? value)
@@ -135,19 +288,50 @@ public partial class WildcardManagerViewModel : ObservableObject
 
     partial void OnSelectedValidationIssueChanged(ValidationIssue? value)
     {
+        CanResolveSelectedIssue = TryParseNearDuplicateIssue(value, out _, out _);
+        SelectedIssueSummary = value == null
+            ? "Select a validation issue to review it here."
+            : value.Message;
+        ResolvePrimaryIssueText = "Keep first";
+        ResolveSecondaryIssueText = "Keep second";
+
         if (value == null) return;
 
         var location = value.Location?.ToLowerInvariant() ?? string.Empty;
-        if (location.Contains("require") || location.Contains("include") || location.Contains("choice"))
-        {
-            SelectedTabIndex = 0;
-        }
-        else
+        if (string.Equals(location, "json", StringComparison.OrdinalIgnoreCase))
         {
             SelectedTabIndex = 1;
         }
+        else
+        {
+            SelectedTabIndex = 0;
+        }
+
+        if (TryParseNearDuplicateIssue(value, out var left, out var right))
+        {
+            ResolvePrimaryIssueText = $"Keep: {left}";
+            ResolveSecondaryIssueText = $"Keep: {right}";
+            InspectorTabIndex = 0;
+            IsInspectorOpen = true;
+
+            var match = Choices.FirstOrDefault(choice =>
+                string.Equals(choice.Value, left, StringComparison.Ordinal) ||
+                string.Equals(choice.Value, right, StringComparison.Ordinal));
+            if (match != null)
+            {
+                SelectedChoice = match;
+            }
+        }
 
         SetStatus($"Selected issue: {value.Message}");
+    }
+
+    partial void OnIsInspectorOpenChanged(bool value)
+    {
+        InspectorToggleText = value ? "Hide Inspector" : "Show Inspector";
+        InspectorPaneWidth = value ? 420 : 0;
+        InspectorPaneOpacity = value ? 1 : 0;
+        InspectorSplitterWidth = value ? 6 : 0;
     }
 
     private async Task HandleSelectedWildcardAsync(WildcardFileEntry? value)
@@ -161,6 +345,8 @@ public partial class WildcardManagerViewModel : ObservableObject
             SelectedChoice = null;
             CanArchive = false;
             CanUnarchive = false;
+            SimilarWildcards = new ObservableCollection<SimilarWildcardCandidate>();
+            SimilarWildcardStatus = "Select a wildcard to see merge candidates.";
             return;
         }
 
@@ -193,6 +379,7 @@ public partial class WildcardManagerViewModel : ObservableObject
         CurrentWildcardName = value.Name;
         CurrentWildcardContent = value.Content ?? string.Empty;
         LoadStructured(value.Name);
+        await RefreshSimilarWildcardsAsync(value.Name);
         SelectedTabIndex = 0;
     }
 
@@ -245,13 +432,23 @@ public partial class WildcardManagerViewModel : ObservableObject
     private void AddChoice()
     {
         var insertIndex = SelectedChoice != null ? Choices.IndexOf(SelectedChoice) + 1 : Choices.Count;
-        var model = new WildcardChoice { Value = "new choice" };
-        var vm = new WildcardChoiceViewModel(model, insertIndex + 1, MarkStructuredDirty);
-        Choices.Insert(Math.Clamp(insertIndex, 0, Choices.Count), vm);
-        SelectedChoice = vm;
-        UpdateChoiceIndices();
-        UpdateChoiceWarnings();
-        MarkStructuredDirty();
+        AddChoiceInternal("new choice", insertIndex);
+    }
+
+    [RelayCommand]
+    private void AddQuickChoice()
+    {
+        var value = QuickAddChoiceText?.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            AddChoice();
+            return;
+        }
+
+        var insertIndex = SelectedChoice != null ? Choices.IndexOf(SelectedChoice) + 1 : Choices.Count;
+        AddChoiceInternal(value, insertIndex);
+        QuickAddChoiceText = string.Empty;
+        SetStatus($"Added '{value}'.");
     }
 
     [RelayCommand]
@@ -357,7 +554,7 @@ public partial class WildcardManagerViewModel : ObservableObject
         var toRemove = new List<WildcardChoiceViewModel>();
         foreach (var choice in Choices)
         {
-            var key = NormalizeWhitespace(choice.Value);
+            var key = BuildCanonicalChoiceKey(choice.Value);
             if (seen.Contains(key))
             {
                 toRemove.Add(choice);
@@ -377,6 +574,115 @@ public partial class WildcardManagerViewModel : ObservableObject
         UpdateChoiceWarnings();
         MarkStructuredDirty();
         SetStatus(toRemove.Count == 0 ? "No duplicates found." : $"Removed {toRemove.Count} duplicate choice(s).");
+    }
+
+    [RelayCommand]
+    private void SortChoices()
+    {
+        if (Choices.Count <= 1)
+        {
+            return;
+        }
+
+        var selectedValue = SelectedChoice?.Value;
+        var ordered = Choices
+            .OrderBy(choice => BuildCanonicalChoiceKey(choice.Value), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(choice => choice.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Choices = new ObservableCollection<WildcardChoiceViewModel>(ordered);
+        UpdateChoiceIndices();
+        UpdateChoiceWarnings();
+        if (!string.IsNullOrWhiteSpace(selectedValue))
+        {
+            SelectedChoice = Choices.FirstOrDefault(choice => string.Equals(choice.Value, selectedValue, StringComparison.Ordinal));
+        }
+        MarkStructuredDirty();
+        SetStatus("Sorted choices by normalized text.");
+    }
+
+    [RelayCommand]
+    private void NormalizeChoiceText()
+    {
+        if (Choices.Count == 0)
+        {
+            return;
+        }
+
+        var changed = 0;
+        foreach (var choice in Choices)
+        {
+            var normalized = NormalizeChoiceDisplayText(choice.Value);
+            if (!string.Equals(choice.Value, normalized, StringComparison.Ordinal))
+            {
+                choice.Value = normalized;
+                changed++;
+            }
+        }
+
+        UpdateChoiceWarnings();
+        MarkStructuredDirty();
+        SetStatus(changed == 0
+            ? "Choice text was already normalized."
+            : $"Normalized {changed} choice value(s).");
+    }
+
+    [RelayCommand]
+    private void FindSimilarChoices()
+    {
+        ValidationErrors.Clear();
+        if (Choices.Count <= 1)
+        {
+            SetStatus("Need at least two choices to compare.");
+            return;
+        }
+
+        var matches = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < Choices.Count; i++)
+        {
+            for (var j = i + 1; j < Choices.Count; j++)
+            {
+                if (!AreNearDuplicateChoices(Choices[i].Value, Choices[j].Value))
+                {
+                    continue;
+                }
+
+                var message = $"Possible near-duplicate: '{Choices[i].Value}' / '{Choices[j].Value}'";
+                if (matches.Add(message))
+                {
+                    ValidationErrors.Add(new ValidationIssue(message, "near-duplicate"));
+                }
+            }
+        }
+
+        if (ValidationErrors.Count > 0)
+        {
+            InspectorTabIndex = 0;
+            IsInspectorOpen = true;
+            SelectedValidationIssue = ValidationErrors[0];
+        }
+
+        SetStatus(ValidationErrors.Count == 0
+            ? "No near-duplicate choices found."
+            : $"Found {ValidationErrors.Count} possible near-duplicate choice pair(s).");
+    }
+
+    [RelayCommand]
+    private void MergeSelectedIssueKeepPrimary()
+    {
+        ResolveSelectedNearDuplicateIssue(keepPrimary: true);
+    }
+
+    [RelayCommand]
+    private void MergeSelectedIssueKeepSecondary()
+    {
+        ResolveSelectedNearDuplicateIssue(keepPrimary: false);
+    }
+
+    [RelayCommand]
+    private void ToggleInspector()
+    {
+        IsInspectorOpen = !IsInspectorOpen;
     }
 
     public async Task RenameWildcardToAsync(string newName)
@@ -737,6 +1043,79 @@ public partial class WildcardManagerViewModel : ObservableObject
         SetStatus($"Loaded {Wildcards.Count} wildcards. {UnusedWildcards.Count} unused.");
     }
 
+    private async Task RefreshSimilarWildcardsAsync(string wildcardName)
+    {
+        if (string.IsNullOrWhiteSpace(wildcardName) ||
+            !_wildcardService.GetStructuredWildcards().TryGetValue(wildcardName, out var current))
+        {
+            SimilarWildcards = new ObservableCollection<SimilarWildcardCandidate>();
+            SimilarWildcardStatus = "Select a wildcard to see merge candidates.";
+            return;
+        }
+
+        var templateUsage = await BuildTemplateUsageMapAsync();
+        var currentTemplates = templateUsage.TryGetValue(wildcardName, out var usedBy)
+            ? usedBy
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var candidates = _wildcardService.GetStructuredWildcards()
+            .Where(kvp => !string.Equals(kvp.Key, wildcardName, StringComparison.OrdinalIgnoreCase))
+            .Select(kvp => BuildSimilarWildcardCandidate(wildcardName, current, currentTemplates, kvp.Key, kvp.Value, templateUsage))
+            .Where(candidate => candidate != null)
+            .Select(candidate => candidate!)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(8)
+            .ToList();
+
+        SimilarWildcards = new ObservableCollection<SimilarWildcardCandidate>(candidates);
+        SimilarWildcardStatus = candidates.Count == 0
+            ? "No strong overlap detected. This wildcard looks distinct."
+            : $"Showing {candidates.Count} likely overlap candidate(s).";
+    }
+
+    public async Task MergeWildcardIntoCurrentAsync(string sourceName)
+    {
+        var targetName = CurrentWildcardName?.Trim();
+        if (string.IsNullOrWhiteSpace(targetName) || string.IsNullOrWhiteSpace(sourceName))
+        {
+            SetStatus("Pick a target and source wildcard first.");
+            return;
+        }
+
+        if (string.Equals(targetName, sourceName, StringComparison.OrdinalIgnoreCase))
+        {
+            SetStatus("Source and target wildcard are the same.");
+            return;
+        }
+
+        var structured = _wildcardService.GetStructuredWildcards();
+        if (!structured.TryGetValue(targetName, out var target) || !structured.TryGetValue(sourceName, out var source))
+        {
+            SetStatus("Could not load wildcard data for merge.");
+            return;
+        }
+
+        var sourceEntry = (await _wildcardService.GetWildcardFileEntries(includeArchived: true))
+            .FirstOrDefault(w => string.Equals(w.Name, sourceName, StringComparison.OrdinalIgnoreCase));
+        if (sourceEntry == null)
+        {
+            SetStatus($"Could not find source wildcard file for '{sourceName}'.");
+            return;
+        }
+
+        var merged = MergeStructuredWildcards(targetName, target, source);
+        var mergedContent = SerializeStructuredWildcard(merged.Structured);
+
+        await _wildcardService.SaveWildcardFileContent(targetName, mergedContent);
+        var updatedTemplates = await ReplaceWildcardReferencesInTemplatesAsync(sourceName, targetName);
+        await _wildcardService.DeleteWildcardFileByPath(sourceEntry.FilePath);
+
+        await LoadWildcardsAsync();
+        SelectWildcardByName(targetName);
+        SetStatus($"Merged '{sourceName}' into '{targetName}'. Added {merged.AddedChoices} new choice(s), merged {merged.MergedChoices} duplicate(s), updated {updatedTemplates} template(s).");
+    }
+
     private void UpdateChoiceIndices()
     {
         for (var i = 0; i < Choices.Count; i++)
@@ -815,6 +1194,71 @@ public partial class WildcardManagerViewModel : ObservableObject
         _structuredDirty = false;
     }
 
+    public int AddChoicesFromLines(string? rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return 0;
+        }
+
+        var added = 0;
+        var insertIndex = SelectedChoice != null ? Choices.IndexOf(SelectedChoice) + 1 : Choices.Count;
+        foreach (var line in rawText
+                     .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var cleaned = Regex.Replace(line.Trim(), @"^[-*•]+\s*", string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(cleaned))
+            {
+                continue;
+            }
+
+            AddChoiceInternal(cleaned, insertIndex + added);
+            added++;
+        }
+
+        if (added > 0)
+        {
+            SetStatus($"Added {added} choice(s).");
+        }
+
+        return added;
+    }
+
+    public int AppendChoicesFromWildcardJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return 0;
+        }
+
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("choices", out var choicesElement) || choicesElement.ValueKind != JsonValueKind.Array)
+        {
+            return 0;
+        }
+
+        var added = 0;
+        var insertIndex = SelectedChoice != null ? Choices.IndexOf(SelectedChoice) + 1 : Choices.Count;
+        foreach (var item in choicesElement.EnumerateArray())
+        {
+            var parsed = ParseChoiceFromJson(item);
+            if (parsed == null || string.IsNullOrWhiteSpace(parsed.Value))
+            {
+                continue;
+            }
+
+            AddChoiceInternal(parsed, insertIndex + added);
+            added++;
+        }
+
+        if (added > 0)
+        {
+            SetStatus($"Added {added} AI-suggested choice(s).");
+        }
+
+        return added;
+    }
+
     private static object? ParseRequires(string? requires)
     {
         if (string.IsNullOrWhiteSpace(requires)) return null;
@@ -828,11 +1272,115 @@ public partial class WildcardManagerViewModel : ObservableObject
         }
     }
 
-    private void SetStatus(string message) => Status = message;
+    public void SetStatusMessage(string message) => Status = message;
+
+    private void SetStatus(string message) => SetStatusMessage(message);
 
     private static bool IsLegacyText(string? path)
     {
         return !string.IsNullOrWhiteSpace(path) && path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void AddChoiceInternal(WildcardChoice model, int insertIndex)
+    {
+        var vm = new WildcardChoiceViewModel(model, insertIndex + 1, MarkStructuredDirty)
+        {
+            Includes = model.Includes switch
+            {
+                string sInc => sInc,
+                IEnumerable<string> arr => string.Join(", ", arr),
+                _ => ""
+            },
+            Requires = model.RequiresJson ?? ""
+        };
+
+        Choices.Insert(Math.Clamp(insertIndex, 0, Choices.Count), vm);
+        SelectedChoice = vm;
+        UpdateChoiceIndices();
+        UpdateChoiceWarnings();
+        MarkStructuredDirty();
+    }
+
+    private void AddChoiceInternal(string value, int insertIndex)
+    {
+        AddChoiceInternal(new WildcardChoice { Value = value }, insertIndex);
+    }
+
+    private static WildcardChoice? ParseChoiceFromJson(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.String:
+                return new WildcardChoice
+                {
+                    Value = element.GetString()?.Trim() ?? string.Empty
+                };
+
+            case JsonValueKind.Object:
+                var value = string.Empty;
+                if (element.TryGetProperty("value", out var valueProp) && valueProp.ValueKind == JsonValueKind.String)
+                {
+                    value = valueProp.GetString()?.Trim() ?? string.Empty;
+                }
+                else if (element.TryGetProperty("choice", out var choiceProp) && choiceProp.ValueKind == JsonValueKind.String)
+                {
+                    value = choiceProp.GetString()?.Trim() ?? string.Empty;
+                }
+
+                var choice = new WildcardChoice
+                {
+                    Value = value,
+                    Weight = element.TryGetProperty("weight", out var weightProp) &&
+                             weightProp.ValueKind == JsonValueKind.Number &&
+                             weightProp.TryGetDouble(out var weight)
+                        ? weight
+                        : 1
+                };
+
+                if (element.TryGetProperty("tags", out var tagsProp))
+                {
+                    if (tagsProp.ValueKind == JsonValueKind.Array)
+                    {
+                        choice.Tags = tagsProp.EnumerateArray()
+                            .Where(tag => tag.ValueKind == JsonValueKind.String)
+                            .Select(tag => tag.GetString()?.Trim())
+                            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+                            .ToList()!;
+                    }
+                    else if (tagsProp.ValueKind == JsonValueKind.String)
+                    {
+                        var tag = tagsProp.GetString()?.Trim();
+                        if (!string.IsNullOrWhiteSpace(tag))
+                        {
+                            choice.Tags = new List<string> { tag };
+                        }
+                    }
+                }
+
+                if (element.TryGetProperty("includes", out var includesProp))
+                {
+                    choice.Includes = includesProp.ValueKind switch
+                    {
+                        JsonValueKind.String => includesProp.GetString()?.Trim(),
+                        JsonValueKind.Array => includesProp.EnumerateArray()
+                            .Where(item => item.ValueKind == JsonValueKind.String)
+                            .Select(item => item.GetString()?.Trim())
+                            .Where(item => !string.IsNullOrWhiteSpace(item))
+                            .ToList(),
+                        _ => null
+                    };
+                }
+
+                if (element.TryGetProperty("requires", out var requiresProp))
+                {
+                    choice.RequiresJson = requiresProp.GetRawText();
+                }
+
+                return choice;
+
+            default:
+                return null;
+        }
     }
 
     private static string NormalizeWhitespace(string input)
@@ -840,6 +1388,140 @@ public partial class WildcardManagerViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
         var collapsed = Regex.Replace(input.Trim(), @"\s+", " ");
         return collapsed;
+    }
+
+    private static string NormalizeChoiceDisplayText(string input)
+    {
+        var normalized = NormalizeWhitespace(input);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"^(a|an|the)\s+", string.Empty, RegexOptions.IgnoreCase);
+        normalized = NormalizeWhitespace(normalized);
+        return normalized;
+    }
+
+    private static string BuildCanonicalChoiceKey(string input)
+    {
+        var normalized = NormalizeChoiceDisplayText(input).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"[^a-z0-9\s]", " ");
+        normalized = NormalizeWhitespace(normalized);
+        return normalized;
+    }
+
+    private static bool AreNearDuplicateChoices(string left, string right)
+    {
+        var leftKey = BuildCanonicalChoiceKey(left);
+        var rightKey = BuildCanonicalChoiceKey(right);
+        if (string.IsNullOrWhiteSpace(leftKey) || string.IsNullOrWhiteSpace(rightKey) ||
+            string.Equals(leftKey, rightKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var leftTokens = leftKey.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var rightTokens = rightKey.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (leftTokens.Length < 2 || rightTokens.Length < 2)
+        {
+            return false;
+        }
+
+        var shorter = leftTokens.Length <= rightTokens.Length ? leftTokens : rightTokens;
+        var longer = leftTokens.Length <= rightTokens.Length ? rightTokens : leftTokens;
+        var shorterSet = shorter.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var longerSet = longer.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (!shorterSet.IsSubsetOf(longerSet))
+        {
+            return false;
+        }
+
+        return longerSet.Count - shorterSet.Count <= 3;
+    }
+
+    private void ResolveSelectedNearDuplicateIssue(bool keepPrimary)
+    {
+        if (!TryParseNearDuplicateIssue(SelectedValidationIssue, out var left, out var right))
+        {
+            SetStatus("Select a near-duplicate validation issue first.");
+            return;
+        }
+
+        var leftChoice = Choices.FirstOrDefault(choice => string.Equals(choice.Value, left, StringComparison.Ordinal));
+        var rightChoice = Choices.FirstOrDefault(choice => string.Equals(choice.Value, right, StringComparison.Ordinal));
+        if (leftChoice == null || rightChoice == null)
+        {
+            SetStatus("Could not find both choices for the selected issue.");
+            return;
+        }
+
+        var keep = keepPrimary ? leftChoice : rightChoice;
+        var remove = ReferenceEquals(keep, leftChoice) ? rightChoice : leftChoice;
+
+        MergeChoiceInto(keep, remove);
+        Choices.Remove(remove);
+        SelectedChoice = keep;
+        ValidationErrors.Remove(SelectedValidationIssue!);
+        SelectedValidationIssue = null;
+        UpdateChoiceIndices();
+        UpdateChoiceWarnings();
+        MarkStructuredDirty();
+
+        SetStatus($"Resolved near-duplicate issue. Kept '{keep.Value}'.");
+    }
+
+    private static void MergeChoiceInto(WildcardChoiceViewModel target, WildcardChoiceViewModel source)
+    {
+        target.Weight = Math.Max(target.Weight, source.Weight);
+
+        var mergedTags = (target.Tags ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Concat((source.Tags ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        target.Tags = string.Join(", ", mergedTags);
+
+        var mergedIncludes = ExtractIncludes(target.Includes)
+            .Concat(ExtractIncludes(source.Includes))
+            .Where(include => !string.IsNullOrWhiteSpace(include))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        target.Includes = mergedIncludes.Count == 0 ? string.Empty : string.Join(", ", mergedIncludes);
+
+        if (string.IsNullOrWhiteSpace(target.Requires) && !string.IsNullOrWhiteSpace(source.Requires))
+        {
+            target.Requires = source.Requires;
+        }
+    }
+
+    private static bool TryParseNearDuplicateIssue(ValidationIssue? issue, out string left, out string right)
+    {
+        left = string.Empty;
+        right = string.Empty;
+
+        if (issue == null || !string.Equals(issue.Location, "near-duplicate", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(issue.Message, @"'(?<left>[^']+)'\s*/\s*'(?<right>[^']+)'");
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        left = match.Groups["left"].Value;
+        right = match.Groups["right"].Value;
+        return !string.IsNullOrWhiteSpace(left) && !string.IsNullOrWhiteSpace(right);
     }
 
     private static IEnumerable<string> ExtractIncludes(string? includesText)
@@ -1137,6 +1819,364 @@ public partial class WildcardManagerViewModel : ObservableObject
         if (string.IsNullOrEmpty(input) || string.IsNullOrEmpty(search)) return input;
         return Regex.Replace(input, Regex.Escape(search), replacement ?? string.Empty, RegexOptions.IgnoreCase);
     }
+
+    private async Task<Dictionary<string, HashSet<string>>> BuildTemplateUsageMapAsync()
+    {
+        var result = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var names = await _templateService.GetTemplateNamesAsync();
+
+        foreach (var templateName in names)
+        {
+            var content = await _templateService.LoadTemplateAsync(templateName);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                continue;
+            }
+
+            foreach (Match match in Regex.Matches(content, @"__([^_]+(?:_[^_]+)*)__"))
+            {
+                if (!match.Success || match.Groups.Count < 2)
+                {
+                    continue;
+                }
+
+                var wildcardName = match.Groups[1].Value;
+                if (string.IsNullOrWhiteSpace(wildcardName))
+                {
+                    continue;
+                }
+
+                if (!result.TryGetValue(wildcardName, out var templates))
+                {
+                    templates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    result[wildcardName] = templates;
+                }
+
+                templates.Add(templateName);
+            }
+        }
+
+        return result;
+    }
+
+    private SimilarWildcardCandidate? BuildSimilarWildcardCandidate(
+        string currentName,
+        StructuredWildcard current,
+        HashSet<string> currentTemplates,
+        string candidateName,
+        StructuredWildcard candidate,
+        IReadOnlyDictionary<string, HashSet<string>> templateUsage)
+    {
+        var currentValues = current.Choices
+            .Select(c => NormalizeWhitespace(c.Value).ToLowerInvariant())
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var candidateValues = candidate.Choices
+            .Select(c => NormalizeWhitespace(c.Value).ToLowerInvariant())
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var sharedValues = currentValues.Intersect(candidateValues, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var currentTags = current.Choices
+            .SelectMany(c => c.Tags ?? new List<string>())
+            .Select(t => NormalizeWhitespace(t).ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var candidateTags = candidate.Choices
+            .SelectMany(c => c.Tags ?? new List<string>())
+            .Select(t => NormalizeWhitespace(t).ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var sharedTags = currentTags.Intersect(candidateTags, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var currentNameTokens = TokenizeForSimilarity(currentName);
+        var candidateNameTokens = TokenizeForSimilarity(candidateName);
+        var sharedNameTokens = currentNameTokens.Intersect(candidateNameTokens, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var currentDescriptionTerms = TokenizeForSimilarity(current.Description);
+        var candidateDescriptionTerms = TokenizeForSimilarity(candidate.Description);
+        var sharedDescriptionTerms = currentDescriptionTerms.Intersect(candidateDescriptionTerms, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var candidateTemplates = templateUsage.TryGetValue(candidateName, out var usedBy)
+            ? usedBy
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sharedTemplates = currentTemplates.Intersect(candidateTemplates, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var valueRatio = ComputeOverlapRatio(currentValues.Count, candidateValues.Count, sharedValues.Count);
+        var tagRatio = ComputeOverlapRatio(currentTags.Count, candidateTags.Count, sharedTags.Count);
+        var nameRatio = ComputeOverlapRatio(currentNameTokens.Count, candidateNameTokens.Count, sharedNameTokens.Count);
+        var descriptionRatio = ComputeOverlapRatio(currentDescriptionTerms.Count, candidateDescriptionTerms.Count, sharedDescriptionTerms.Count);
+        var templateRatio = ComputeOverlapRatio(currentTemplates.Count, candidateTemplates.Count, sharedTemplates.Count);
+
+        var score = (int)Math.Round(
+            (valueRatio * 55.0) +
+            (tagRatio * 18.0) +
+            (nameRatio * 17.0) +
+            (descriptionRatio * 5.0) +
+            (templateRatio * 5.0));
+
+        if (score < 16 && sharedValues.Count == 0 && sharedTags.Count == 0 && sharedTemplates.Count == 0)
+        {
+            return null;
+        }
+
+        var summaryParts = new List<string>();
+        if (sharedValues.Count > 0)
+        {
+            summaryParts.Add($"{sharedValues.Count} shared choice(s)");
+        }
+        if (sharedTags.Count > 0)
+        {
+            summaryParts.Add($"{sharedTags.Count} shared tag(s)");
+        }
+        if (sharedTemplates.Count > 0)
+        {
+            summaryParts.Add($"{sharedTemplates.Count} shared template(s)");
+        }
+        if (summaryParts.Count == 0 && sharedNameTokens.Count > 0)
+        {
+            summaryParts.Add($"similar naming: {string.Join(", ", sharedNameTokens.Take(3))}");
+        }
+
+        return new SimilarWildcardCandidate
+        {
+            Name = candidateName,
+            Score = score,
+            ScoreText = $"{Math.Clamp(score, 0, 99)}% overlap",
+            Summary = string.Join(" | ", summaryParts),
+            Preview = BuildSimilarityPreview(sharedValues, sharedTags, sharedTemplates)
+        };
+    }
+
+    private static double ComputeOverlapRatio(int leftCount, int rightCount, int intersectionCount)
+    {
+        var union = leftCount + rightCount - intersectionCount;
+        if (union <= 0)
+        {
+            return 0;
+        }
+
+        return intersectionCount / (double)union;
+    }
+
+    private static HashSet<string> TokenizeForSimilarity(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return text
+            .Split(new[] { ' ', '_', '-', ',', '.', ';', ':', '\n', '\r', '\t', '/', '\\', '(', ')', '[', ']' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(token => token.Length >= 3)
+            .Select(token => token.ToLowerInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string BuildSimilarityPreview(
+        IReadOnlyList<string> sharedValues,
+        IReadOnlyList<string> sharedTags,
+        IReadOnlyList<string> sharedTemplates)
+    {
+        var lines = new List<string>();
+        if (sharedValues.Count > 0)
+        {
+            lines.Add($"Shared values: {string.Join(", ", sharedValues.Take(5))}");
+        }
+        if (sharedTags.Count > 0)
+        {
+            lines.Add($"Shared tags: {string.Join(", ", sharedTags.Take(5))}");
+        }
+        if (sharedTemplates.Count > 0)
+        {
+            lines.Add($"Shared templates: {string.Join(", ", sharedTemplates.Take(4))}");
+        }
+
+        return lines.Count == 0 ? "Name and description overlap only." : string.Join(Environment.NewLine, lines);
+    }
+
+    private async Task<int> ReplaceWildcardReferencesInTemplatesAsync(string sourceName, string targetName)
+    {
+        var sourceToken = $"__{sourceName}__";
+        var targetToken = $"__{targetName}__";
+        var updated = 0;
+
+        foreach (var templateName in await _templateService.GetTemplateNamesAsync())
+        {
+            var content = await _templateService.LoadTemplateAsync(templateName);
+            if (string.IsNullOrWhiteSpace(content) || !content.Contains(sourceToken, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var replaced = ReplaceIgnoreCase(content, sourceToken, targetToken);
+            if (string.Equals(replaced, content, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            await _templateService.SaveTemplateAsync(templateName, replaced);
+            updated++;
+        }
+
+        return updated;
+    }
+
+    private static SimilarWildcardMergeResult MergeStructuredWildcards(string targetName, StructuredWildcard target, StructuredWildcard source)
+    {
+        var merged = new StructuredWildcard
+        {
+            Name = targetName,
+            Description = !string.IsNullOrWhiteSpace(target.Description)
+                ? target.Description
+                : source.Description,
+            Includes = target.Includes ?? source.Includes
+        };
+
+        var mergedChoices = new List<WildcardChoice>();
+        var choiceMap = new Dictionary<string, WildcardChoice>(StringComparer.OrdinalIgnoreCase);
+        var addedChoices = 0;
+        var mergedChoiceCount = 0;
+
+        foreach (var choice in target.Choices)
+        {
+            var clone = CloneChoice(choice);
+            mergedChoices.Add(clone);
+            var key = NormalizeWhitespace(clone.Value);
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                choiceMap[key] = clone;
+            }
+        }
+
+        foreach (var choice in source.Choices)
+        {
+            var key = NormalizeWhitespace(choice.Value);
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            if (choiceMap.TryGetValue(key, out var existing))
+            {
+                MergeChoiceMetadata(existing, choice);
+                mergedChoiceCount++;
+                continue;
+            }
+
+            var clone = CloneChoice(choice);
+            mergedChoices.Add(clone);
+            choiceMap[key] = clone;
+            addedChoices++;
+        }
+
+        merged.Choices = mergedChoices;
+        return new SimilarWildcardMergeResult(merged, addedChoices, mergedChoiceCount);
+    }
+
+    private static WildcardChoice CloneChoice(WildcardChoice choice)
+    {
+        return new WildcardChoice
+        {
+            Value = choice.Value,
+            Weight = choice.Weight,
+            Tags = choice.Tags?.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? new List<string>(),
+            Includes = CloneIncludes(choice.Includes),
+            RequiresJson = choice.RequiresJson
+        };
+    }
+
+    private static object? CloneIncludes(object? includes)
+    {
+        return includes switch
+        {
+            null => null,
+            string text => text,
+            IEnumerable<string> values => values.Where(v => !string.IsNullOrWhiteSpace(v)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+            _ => includes
+        };
+    }
+
+    private static void MergeChoiceMetadata(WildcardChoice target, WildcardChoice source)
+    {
+        target.Weight = Math.Max(target.Weight, source.Weight);
+
+        target.Tags = target.Tags
+            .Concat(source.Tags ?? new List<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        target.Includes = MergeIncludes(target.Includes, source.Includes);
+        if (string.IsNullOrWhiteSpace(target.RequiresJson) && !string.IsNullOrWhiteSpace(source.RequiresJson))
+        {
+            target.RequiresJson = source.RequiresJson;
+        }
+    }
+
+    private static object? MergeIncludes(object? left, object? right)
+    {
+        var combined = new List<string>();
+
+        void AddIncludes(object? includes)
+        {
+            switch (includes)
+            {
+                case null:
+                    return;
+                case string text when !string.IsNullOrWhiteSpace(text):
+                    combined.Add(text.Trim());
+                    break;
+                case IEnumerable<string> values:
+                    combined.AddRange(values.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()));
+                    break;
+            }
+        }
+
+        AddIncludes(left);
+        AddIncludes(right);
+
+        var distinct = combined
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return distinct.Count switch
+        {
+            0 => null,
+            1 => distinct[0],
+            _ => distinct
+        };
+    }
+
+    private static string SerializeStructuredWildcard(StructuredWildcard structured)
+    {
+        var payload = new
+        {
+            description = string.IsNullOrWhiteSpace(structured.Description) ? null : structured.Description,
+            includes = structured.Includes,
+            choices = structured.Choices.Select(choice => new
+            {
+                value = choice.Value,
+                weight = choice.Weight,
+                tags = choice.Tags?.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                includes = choice.Includes,
+                requires = ParseRequires(choice.RequiresJson)
+            }).ToList()
+        };
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+    }
 }
 
 public record ValidationIssue(string Message, string Location);
+public sealed class SimilarWildcardCandidate
+{
+    public string Name { get; init; } = string.Empty;
+    public int Score { get; init; }
+    public string ScoreText { get; init; } = string.Empty;
+    public string Summary { get; init; } = string.Empty;
+    public string Preview { get; init; } = string.Empty;
+}
+
+public sealed record SimilarWildcardMergeResult(StructuredWildcard Structured, int AddedChoices, int MergedChoices);

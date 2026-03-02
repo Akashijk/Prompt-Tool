@@ -16,8 +16,8 @@
                 <TextBlock x:Name="MessageText" TextWrapping="Wrap"/>
             </ScrollViewer>
             <StackPanel Grid.Row="2" Classes="dialog-footer">
-                <Button Content="Cancel" Width="90" Click="OnNo" IsCancel="True"/>
-                <Button Content="Delete" Width="90" Click="OnYes" IsDefault="True"/>
+                <Button x:Name="NoButton" Content="Cancel" Width="90" Click="OnNo" IsCancel="True"/>
+                <Button x:Name="YesButton" Content="Delete" Width="90" Click="OnYes" IsDefault="True"/>
             </StackPanel>
         </Grid>
     </Border>

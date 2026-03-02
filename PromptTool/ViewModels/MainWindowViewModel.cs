@@ -79,6 +79,20 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private ObservableCollection<VariationOption> _variationOptions = new();
     [ObservableProperty] private string _statusText = "Ready.";
     [ObservableProperty] private bool _isInvokeOnline = true;
+    [ObservableProperty] private string _wildcardSearchText = string.Empty;
+    [ObservableProperty] private ObservableCollection<WildcardBrowserItem> _filteredWildcards = new();
+    [ObservableProperty] private ObservableCollection<WildcardBrowserItem> _allWildcardBrowserItems = new();
+    [ObservableProperty] private WildcardBrowserItem? _selectedWildcardBrowserItem;
+    [ObservableProperty] private ObservableCollection<WildcardBrowserItem> _promptSuggestedWildcards = new();
+    [ObservableProperty] private string _wildcardPreviewText = "Select a wildcard to preview its values, tags, and usage hints.";
+    [ObservableProperty] private string _wildcardBrowserStatus = "Browse your wildcard library.";
+    [ObservableProperty] private bool _isWildcardBrowserDetailed;
+    [ObservableProperty] private ObservableCollection<WildcardAutocompleteItem> _wildcardAutocompleteItems = new();
+    [ObservableProperty] private bool _isWildcardAutocompleteOpen;
+    [ObservableProperty] private WildcardAutocompleteItem? _selectedWildcardAutocompleteItem;
+
+    private int _wildcardAutocompleteReplaceStart = -1;
+    private int _wildcardAutocompleteReplaceLength;
 
     public bool IsSfwWorkflow => string.Equals(Workflow, "sfw", StringComparison.OrdinalIgnoreCase);
     public bool IsNsfwWorkflow => string.Equals(Workflow, "nsfw", StringComparison.OrdinalIgnoreCase);
@@ -86,6 +100,20 @@ public partial class MainWindowViewModel : ObservableObject
     partial void OnPromptTextChanged(string value)
     {
         UpdateMissingWildcardsPreview(value);
+        RefreshWildcardBrowser();
+    }
+
+    partial void OnWildcardSearchTextChanged(string value)
+    {
+        RefreshWildcardBrowser();
+    }
+
+    partial void OnSelectedWildcardAutocompleteItemChanged(WildcardAutocompleteItem? value)
+    {
+        if (value == null && WildcardAutocompleteItems.Count > 0)
+        {
+            SelectedWildcardAutocompleteItem = WildcardAutocompleteItems[0];
+        }
     }
 
     partial void OnSelectedModelChanged(string? value)
@@ -122,6 +150,7 @@ public partial class MainWindowViewModel : ObservableObject
     public IAsyncRelayCommand<Window?> GenerateTemplateFromThemeCommand { get; }
     public IAsyncRelayCommand<string?> CreateMissingWildcardCommand { get; }
     public IRelayCommand<string?> InsertWildcardCommand { get; }
+    public IAsyncRelayCommand<string?> ShowExperimentRunnerCommand { get; }
     public IAsyncRelayCommand<Window?> ShowPromptEvolverCommand { get; }
     public IAsyncRelayCommand<Window?> ShowInvokeAIModelDefaultsCommand { get; }
     public IAsyncRelayCommand<Window?> ShowInvokeAILoraDefaultsCommand { get; }
@@ -192,6 +221,7 @@ public partial class MainWindowViewModel : ObservableObject
         GenerateTemplateFromThemeCommand = new AsyncRelayCommand<Window?>(GenerateTemplateFromThemeAsync);
         CreateMissingWildcardCommand = new AsyncRelayCommand<string?>(CreateMissingWildcardAsync);
         InsertWildcardCommand = new RelayCommand<string?>(InsertWildcard);
+        ShowExperimentRunnerCommand = new AsyncRelayCommand<string?>(ShowExperimentRunnerAsync);
         ShowPromptEvolverCommand = new AsyncRelayCommand<Window?>(ShowPromptEvolverAsync);
         ShowPngMetadataViewerCommand = new AsyncRelayCommand<Window?>(ShowPngMetadataViewerAsync);
         ShowHistoryIntegrityCommand = new AsyncRelayCommand<Window?>(ShowHistoryIntegrityAsync);
@@ -259,6 +289,462 @@ public partial class MainWindowViewModel : ObservableObject
         var names = _wildcardService.GetWildcardNames()
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase);
         Wildcards = new ObservableCollection<string>(names);
+        RefreshWildcardBrowser();
+    }
+
+    private void RefreshWildcardBrowser()
+    {
+        var structured = _wildcardService.GetStructuredWildcards();
+        var selectedName = SelectedWildcardBrowserItem?.Name;
+        if (structured.Count == 0)
+        {
+            FilteredWildcards = new ObservableCollection<WildcardBrowserItem>();
+            AllWildcardBrowserItems = new ObservableCollection<WildcardBrowserItem>();
+            PromptSuggestedWildcards = new ObservableCollection<WildcardBrowserItem>();
+            SelectedWildcardBrowserItem = null;
+            WildcardBrowserStatus = "No wildcards loaded.";
+            WildcardPreviewText = "Create or load some wildcards to browse them here.";
+            return;
+        }
+
+        var promptTerms = ExtractSearchTerms(PromptText);
+        var existingPromptWildcards = ExtractReferencedWildcardNames(PromptText);
+        var searchTerms = ExtractSearchTerms(WildcardSearchText);
+
+        var suggested = structured.Keys
+            .Where(name => !existingPromptWildcards.Contains(name))
+            .Select(name => BuildWildcardBrowserItem(name, structured[name], Array.Empty<string>(), promptTerms))
+            .Where(item => item != null && item.Score > 0)
+            .Select(item => item!)
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(8)
+            .ToList();
+        PromptSuggestedWildcards = new ObservableCollection<WildcardBrowserItem>(suggested);
+
+        var allItems = structured.Keys
+            .Select(name => BuildWildcardBrowserItem(name, structured[name], Array.Empty<string>(), Array.Empty<string>()))
+            .Where(item => item != null)
+            .Select(item => item!)
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        AllWildcardBrowserItems = new ObservableCollection<WildcardBrowserItem>(allItems);
+
+        var items = structured.Keys
+            .Select(name => BuildWildcardBrowserItem(name, structured[name], searchTerms, promptTerms))
+            .Where(item => item != null)
+            .Select(item => item!)
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(80)
+            .ToList();
+
+        FilteredWildcards = new ObservableCollection<WildcardBrowserItem>(items);
+        if (items.Count == 0)
+        {
+            SelectedWildcardBrowserItem = null;
+            WildcardBrowserStatus = "No wildcards matched this search.";
+            WildcardPreviewText = "Try a broader search term, or pick one of the prompt-relevant suggestions.";
+            return;
+        }
+
+        WildcardBrowserStatus = searchTerms.Count == 0
+            ? $"Showing {items.Count} wildcards. Top matches are ranked by relevance to the current prompt."
+            : $"Showing {items.Count} wildcard matches for '{WildcardSearchText.Trim()}'.";
+
+        SelectedWildcardBrowserItem = items.FirstOrDefault(i => string.Equals(i.Name, selectedName, StringComparison.OrdinalIgnoreCase))
+                                     ?? items.FirstOrDefault();
+    }
+
+    private WildcardBrowserItem? BuildWildcardBrowserItem(
+        string wildcardName,
+        StructuredWildcard structured,
+        IReadOnlyList<string> searchTerms,
+        IReadOnlyList<string> promptTerms)
+    {
+        var choices = structured.Choices?.Select(c => c.Value).Where(v => !string.IsNullOrWhiteSpace(v)).ToList() ?? new List<string>();
+        var tags = structured.Choices?
+            .SelectMany(c => c.Tags ?? Enumerable.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
+
+        var searchBlob = BuildWildcardSearchBlob(wildcardName, structured, choices, tags);
+        var score = 0;
+        if (searchTerms.Count > 0)
+        {
+            foreach (var term in searchTerms)
+            {
+                if (!searchBlob.Contains(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                score += wildcardName.Contains(term, StringComparison.OrdinalIgnoreCase) ? 10 : 3;
+                score += choices.Any(c => c.Contains(term, StringComparison.OrdinalIgnoreCase)) ? 4 : 0;
+                score += tags.Any(t => t.Contains(term, StringComparison.OrdinalIgnoreCase)) ? 5 : 0;
+            }
+        }
+        else
+        {
+            score = ScoreWildcardForPrompt(wildcardName, promptTerms, structured);
+        }
+
+        var previewParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(structured.Description))
+        {
+            previewParts.Add(structured.Description!.Trim());
+        }
+
+        if (choices.Count > 0)
+        {
+            previewParts.Add($"Examples: {string.Join(", ", choices.Take(3))}");
+        }
+
+        if (tags.Count > 0)
+        {
+            previewParts.Add($"Tags: {string.Join(", ", tags.Take(4))}");
+        }
+
+        var sampleText = choices.Count == 0
+            ? "No sample values"
+            : string.Join(", ", choices.Take(2));
+
+        var tooltipParts = new List<string> { $"__{wildcardName}__" };
+        if (!string.IsNullOrWhiteSpace(structured.Description))
+        {
+            tooltipParts.Add(structured.Description!.Trim());
+        }
+        if (choices.Count > 0)
+        {
+            tooltipParts.Add($"Examples: {string.Join(", ", choices.Take(10))}");
+        }
+        if (tags.Count > 0)
+        {
+            tooltipParts.Add($"Tags: {string.Join(", ", tags.Take(8))}");
+        }
+
+        return new WildcardBrowserItem
+        {
+            Name = wildcardName,
+            SampleText = sampleText,
+            Summary = string.Join(" | ", previewParts.Where(p => !string.IsNullOrWhiteSpace(p))),
+            Tooltip = string.Join(Environment.NewLine + Environment.NewLine, tooltipParts.Where(p => !string.IsNullOrWhiteSpace(p))),
+            ChoiceCount = choices.Count,
+            Score = score
+        };
+    }
+
+    private string BuildWildcardSearchBlob(string wildcardName, StructuredWildcard structured, IReadOnlyList<string> choices, IReadOnlyList<string> tags)
+    {
+        var parts = new List<string> { wildcardName };
+        if (!string.IsNullOrWhiteSpace(structured.Description))
+        {
+            parts.Add(structured.Description!);
+        }
+
+        if (choices.Count > 0)
+        {
+            parts.AddRange(choices.Take(40));
+        }
+
+        if (tags.Count > 0)
+        {
+            parts.AddRange(tags);
+        }
+
+        if (structured.Includes != null)
+        {
+            parts.Add(structured.Includes.ToString() ?? string.Empty);
+        }
+
+        return string.Join(" ", parts);
+    }
+
+    private int ScoreWildcardForPrompt(string wildcardName, IReadOnlyList<string> promptTerms, StructuredWildcard structured)
+    {
+        if (promptTerms.Count == 0)
+        {
+            return 1;
+        }
+
+        var score = 0;
+        var description = structured.Description ?? string.Empty;
+        var values = structured.Choices?.Select(c => c.Value).Where(v => !string.IsNullOrWhiteSpace(v)).ToList() ?? new List<string>();
+        var tags = structured.Choices?.SelectMany(c => c.Tags ?? Enumerable.Empty<string>()).ToList() ?? new List<string>();
+
+        foreach (var term in promptTerms)
+        {
+            if (wildcardName.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 8;
+            }
+            if (description.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 4;
+            }
+            if (values.Any(v => v.Contains(term, StringComparison.OrdinalIgnoreCase)))
+            {
+                score += 2;
+            }
+            if (tags.Any(t => t.Contains(term, StringComparison.OrdinalIgnoreCase)))
+            {
+                score += 5;
+            }
+        }
+
+        return score;
+    }
+
+    private string BuildWildcardBrowserPreview(string wildcardName)
+    {
+        if (!_wildcardService.GetStructuredWildcards().TryGetValue(wildcardName, out var structured))
+        {
+            return _wildcardService.GetWildcardFileContent(wildcardName);
+        }
+
+        var lines = new List<string>
+        {
+            $"__{wildcardName}__",
+            $"Choices: {structured.Choices.Count}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(structured.Description))
+        {
+            lines.Add(string.Empty);
+            lines.Add(structured.Description!.Trim());
+        }
+
+        var tags = structured.Choices
+            .SelectMany(c => c.Tags ?? Enumerable.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (tags.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add($"Tags: {string.Join(", ", tags.Take(12))}");
+        }
+
+        var includesText = structured.Includes?.ToString();
+        if (!string.IsNullOrWhiteSpace(includesText))
+        {
+            lines.Add(string.Empty);
+            lines.Add($"Includes: {includesText}");
+        }
+
+        var examples = structured.Choices
+            .Select(c => c.Value)
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Take(12)
+            .ToList();
+        if (examples.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Examples:");
+            lines.AddRange(examples.Select(v => $"- {v}"));
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    public void UpdateWildcardAutocomplete(string? text, int caretIndex)
+    {
+        var currentText = text ?? string.Empty;
+        var context = FindWildcardAutocompleteContext(currentText, caretIndex);
+        if (context == null)
+        {
+            CloseWildcardAutocomplete();
+            return;
+        }
+
+        var structured = _wildcardService.GetStructuredWildcards();
+        if (structured.Count == 0)
+        {
+            CloseWildcardAutocomplete();
+            return;
+        }
+
+        var selectedName = SelectedWildcardAutocompleteItem?.Name;
+        var query = context.Value.query.Trim();
+        var queryTerms = ExtractSearchTerms(query);
+        var promptTerms = ExtractSearchTerms(PromptText);
+
+        var items = structured.Keys
+            .Select(name => BuildWildcardAutocompleteItem(name, structured[name], query, queryTerms, promptTerms))
+            .Where(item => item != null)
+            .Select(item => item!)
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToList();
+
+        if (items.Count == 0)
+        {
+            CloseWildcardAutocomplete();
+            return;
+        }
+
+        _wildcardAutocompleteReplaceStart = context.Value.replaceStart;
+        _wildcardAutocompleteReplaceLength = context.Value.replaceLength;
+        WildcardAutocompleteItems = new ObservableCollection<WildcardAutocompleteItem>(items);
+        IsWildcardAutocompleteOpen = true;
+        SelectedWildcardAutocompleteItem = items.FirstOrDefault(i => string.Equals(i.Name, selectedName, StringComparison.OrdinalIgnoreCase))
+                                          ?? items[0];
+    }
+
+    public void MoveWildcardAutocompleteSelection(int delta)
+    {
+        if (WildcardAutocompleteItems.Count == 0)
+        {
+            return;
+        }
+
+        var currentIndex = SelectedWildcardAutocompleteItem == null
+            ? -1
+            : WildcardAutocompleteItems.IndexOf(SelectedWildcardAutocompleteItem);
+
+        var nextIndex = currentIndex < 0
+            ? 0
+            : Math.Clamp(currentIndex + delta, 0, WildcardAutocompleteItems.Count - 1);
+
+        SelectedWildcardAutocompleteItem = WildcardAutocompleteItems[nextIndex];
+    }
+
+    public (string newText, int caret)? CommitWildcardAutocomplete(int caretIndex)
+    {
+        if (!IsWildcardAutocompleteOpen || SelectedWildcardAutocompleteItem == null || _wildcardAutocompleteReplaceStart < 0)
+        {
+            return null;
+        }
+
+        var current = PromptText ?? string.Empty;
+        var token = $"__{SelectedWildcardAutocompleteItem.Name}__";
+        var updated = ReplaceRange(current, _wildcardAutocompleteReplaceStart, _wildcardAutocompleteReplaceLength, token);
+        var newCaret = _wildcardAutocompleteReplaceStart + token.Length;
+
+        PromptText = updated;
+        StatusText = $"Inserted wildcard {SelectedWildcardAutocompleteItem.Name}.";
+        CloseWildcardAutocomplete();
+        return (updated, newCaret);
+    }
+
+    public void CloseWildcardAutocomplete()
+    {
+        _wildcardAutocompleteReplaceStart = -1;
+        _wildcardAutocompleteReplaceLength = 0;
+        IsWildcardAutocompleteOpen = false;
+        WildcardAutocompleteItems = new ObservableCollection<WildcardAutocompleteItem>();
+        SelectedWildcardAutocompleteItem = null;
+    }
+
+    private WildcardAutocompleteItem? BuildWildcardAutocompleteItem(
+        string wildcardName,
+        StructuredWildcard structured,
+        string rawQuery,
+        IReadOnlyList<string> queryTerms,
+        IReadOnlyList<string> promptTerms)
+    {
+        var values = structured.Choices?
+            .Select(c => c.Value)
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .ToList() ?? new List<string>();
+        var tags = structured.Choices?
+            .SelectMany(c => c.Tags ?? Enumerable.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
+
+        var searchBlob = BuildWildcardSearchBlob(wildcardName, structured, values, tags);
+        var score = 0;
+
+        if (!string.IsNullOrWhiteSpace(rawQuery))
+        {
+            if (wildcardName.StartsWith(rawQuery, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 140;
+            }
+            else if (wildcardName.Contains(rawQuery, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 90;
+            }
+
+            if (tags.Any(t => t.Contains(rawQuery, StringComparison.OrdinalIgnoreCase)))
+            {
+                score += 55;
+            }
+
+            if (values.Any(v => v.Contains(rawQuery, StringComparison.OrdinalIgnoreCase)))
+            {
+                score += 40;
+            }
+
+            if (score == 0 && queryTerms.Count == 0)
+            {
+                return null;
+            }
+
+            foreach (var term in queryTerms)
+            {
+                if (!searchBlob.Contains(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                score += wildcardName.Contains(term, StringComparison.OrdinalIgnoreCase) ? 20 : 4;
+                score += tags.Any(t => t.Contains(term, StringComparison.OrdinalIgnoreCase)) ? 10 : 0;
+                score += values.Any(v => v.Contains(term, StringComparison.OrdinalIgnoreCase)) ? 6 : 0;
+            }
+        }
+        else
+        {
+            score = ScoreWildcardForPrompt(wildcardName, promptTerms, structured);
+        }
+
+        var previewParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(structured.Description))
+        {
+            previewParts.Add(structured.Description!.Trim());
+        }
+
+        previewParts.AddRange(values.Take(2));
+
+        return new WildcardAutocompleteItem
+        {
+            Name = wildcardName,
+            Preview = string.Join(" | ", previewParts.Where(p => !string.IsNullOrWhiteSpace(p))),
+            ChoiceCount = values.Count,
+            Score = Math.Max(score, 1)
+        };
+    }
+
+    private static IReadOnlyList<string> ExtractSearchTerms(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return Array.Empty<string>();
+        }
+
+        return text
+            .Split(new[] { ' ', ',', '\n', '\r', '\t', '.', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim())
+            .Where(t => t.Length >= 3)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static HashSet<string> ExtractReferencedWildcardNames(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return WildcardRegex.Matches(text)
+            .Select(match => match.Groups["name"].Value.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task LoadTemplatesAsync()
@@ -742,6 +1228,13 @@ public partial class MainWindowViewModel : ObservableObject
         return Task.FromResult<IReadOnlyList<string>>(values);
     }
 
+    partial void OnSelectedWildcardBrowserItemChanged(WildcardBrowserItem? value)
+    {
+        WildcardPreviewText = value == null
+            ? "Select a wildcard to preview its values, tags, and usage hints."
+            : BuildWildcardBrowserPreview(value.Name);
+    }
+
     public Task ApplyWildcardChoiceAsync(PromptSegmentViewModel segment, string newValue)
     {
         if (segment == null || !segment.IsWildcard)
@@ -833,6 +1326,46 @@ public partial class MainWindowViewModel : ObservableObject
         return null;
     }
 
+    private static (int replaceStart, int replaceLength, string query)? FindWildcardAutocompleteContext(string text, int caretIndex)
+    {
+        caretIndex = Math.Clamp(caretIndex, 0, text.Length);
+        var delimiterPositions = new List<int>();
+        var searchIndex = 0;
+
+        while (searchIndex < caretIndex)
+        {
+            var found = text.IndexOf("__", searchIndex, StringComparison.Ordinal);
+            if (found < 0 || found >= caretIndex)
+            {
+                break;
+            }
+
+            delimiterPositions.Add(found);
+            searchIndex = found + 2;
+        }
+
+        if (delimiterPositions.Count == 0 || delimiterPositions.Count % 2 == 0)
+        {
+            return null;
+        }
+
+        var start = delimiterPositions[^1];
+        var replaceStart = start;
+        var queryStart = start + 2;
+        if (queryStart > caretIndex)
+        {
+            return null;
+        }
+
+        var query = text[queryStart..caretIndex];
+        if (query.Contains('\n') || query.Contains('\r'))
+        {
+            return null;
+        }
+
+        return (replaceStart, caretIndex - replaceStart, query);
+    }
+
     private async Task EnhancePromptAsync()
     {
         var textToEnhance = string.IsNullOrWhiteSpace(OutputText) ? PromptText : OutputText;
@@ -842,6 +1375,11 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
+        await EnhancePromptTextAsync(textToEnhance, PromptText ?? string.Empty);
+    }
+
+    private async Task EnhancePromptTextAsync(string textToEnhance, string originalPrompt)
+    {
         if (string.IsNullOrWhiteSpace(SelectedModel))
         {
             StatusText = "Select an Ollama model.";
@@ -863,7 +1401,7 @@ public partial class MainWindowViewModel : ObservableObject
             StatusText = "Enhanced prompt ready.";
             _historyManager.AddEntry(new HistoryEntry
             {
-                OriginalPrompt = PromptText,
+                OriginalPrompt = originalPrompt,
                 ProcessedPrompt = OutputText,
                 EnhancedPrompt = result.EnhancedPrompt,
                 VariationPrompts = result.Variations,
@@ -903,7 +1441,9 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        await EnqueueGenerationJobAsync("Generate Images", async (job, token) =>
+        await EnqueueGenerationJobAsync(
+            "Generate Images",
+            async (job, token) =>
         {
             try
             {
@@ -938,7 +1478,113 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            GetDominantModelName(parametersList),
+            GetEstimatedWorkUnits(parametersList));
+    }
+
+    private async Task ShowExperimentRunnerAsync(string? initialMode)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(PromptText))
+        {
+            StatusText = "Enter a prompt before running an experiment.";
+            return;
+        }
+
+        var promptWildcards = ExtractWildcardNames(PromptText);
+        var baselineGeneration = _lastGeneration;
+        var experimentVm = new ExperimentRunnerViewModel(
+            promptWildcards,
+            _wildcardService.GetStructuredWildcards(),
+            baselineGeneration?.Context,
+            (wildcardName, lockedChoices) => BuildWildcardSweepBaselineResult(PromptText ?? string.Empty, wildcardName, lockedChoices),
+            initialMode);
+        var owner = GetOwnerWindow(null) ?? new Window();
+        var experimentDialog = new Views.ExperimentRunnerWindow(experimentVm);
+        var approved = await experimentDialog.ShowDialog<bool?>(owner);
+        if (approved != true || experimentVm.Result == null)
+        {
+            StatusText = "Experiment cancelled.";
+            return;
+        }
+
+        var imagePrompt = ResolvePromptForMain(OutputText, PromptText);
+        if (string.IsNullOrWhiteSpace(imagePrompt))
+        {
+            StatusText = "Generate or enter a prompt first.";
+            return;
+        }
+
+        var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
+        {
+            Prompt = imagePrompt,
+            NegativePrompt = _settingsService.Settings.DefaultNegativePrompt,
+            ModeBannerText = "Experiments use one fixed image setup. Keep this to one model and one image.",
+            ShowModeBanner = true
+        };
+
+        var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
+        if (!ok || parametersList == null || parametersList.Count == 0)
+        {
+            StatusText = "Experiment cancelled.";
+            return;
+        }
+
+        if (parametersList.Count != 1)
+        {
+            StatusText = "Experiments currently support one model and one image at a time.";
+            return;
+        }
+
+        var request = experimentVm.Result;
+        var promptSnapshot = PromptText ?? string.Empty;
+        var outputSnapshot = OutputText;
+        var generationSnapshot = baselineGeneration;
+        var templateNameSnapshot = SelectedTemplate?.Name;
+        var ollamaModelSnapshot = SelectedModel;
+        await EnqueueGenerationJobAsync(
+            $"Experiment: {request.Mode}",
+            async (job, token) =>
+        {
+            _generationInProgress = true;
+            try
+            {
+                var experiment = BuildExperimentJobs(request, parametersList[0], promptSnapshot, outputSnapshot, generationSnapshot);
+                if (experiment.Jobs.Count == 0)
+                {
+                    StatusText = "Nothing to generate for this experiment.";
+                    return;
+                }
+
+                await RunExperimentPreviewAsync(
+                    experiment,
+                    request,
+                    owner,
+                    $"Running {request.Mode.ToLowerInvariant()}...",
+                    allowLongPrompts: false,
+                    job,
+                    token,
+                    promptSnapshot,
+                    ResolvePromptForMain(outputSnapshot, promptSnapshot),
+                    templateNameSnapshot,
+                    ollamaModelSnapshot);
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Experiment failed: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
+        },
+            parametersList[0].Model?.Name,
+            GetEstimatedWorkUnits(parametersList));
     }
 
     private Task ShowSettingsAsync(Window? owner)
@@ -1046,9 +1692,9 @@ public partial class MainWindowViewModel : ObservableObject
             await Task.CompletedTask;
         };
         var window = new Views.AnalyticsStudioWindow { DataContext = vm };
-        vm.ViewDetailsRequested = async (entry, image, bitmap) =>
+        vm.ViewDetailsRequested = async (entry, image, bitmap, navigationItems) =>
         {
-            ShowHistoryImageDetailsWindow(entry, image, bitmap, window);
+            ShowHistoryImageDetailsWindow(entry, image, bitmap, window, navigationItems);
             await Task.CompletedTask;
         };
         vm.GenerateMoreRequested = (entry, image) => GenerateFromHistoryAsync(entry, image, null, null, window, applyModelFromSource: true, configureVm: null);
@@ -1096,7 +1742,12 @@ public partial class MainWindowViewModel : ObservableObject
         return Task.CompletedTask;
     }
 
-    private void ShowHistoryImageDetailsWindow(HistoryEntry entry, HistoryImage image, Bitmap bitmap, Window owner)
+    private void ShowHistoryImageDetailsWindow(
+        HistoryEntry entry,
+        HistoryImage image,
+        Bitmap bitmap,
+        Window owner,
+        IReadOnlyList<ImageDetailNavigationItem>? navigationItems = null)
     {
         ImageDetailPresenter.Show(
             entry,
@@ -1110,7 +1761,8 @@ public partial class MainWindowViewModel : ObservableObject
             (e, img) => GenerateFromHistoryAsync(e, img, null, null, owner, applyModelFromSource: true, configureVm: null),
             (e, img) => GenerateSeedVariationsFromHistoryAsync(e, img, owner),
             (e, img) => GenerateLoraVariationsFromHistoryAsync(e, img, owner),
-            (e, img) => GenerateModelPermutationsFromHistoryAsync(e, img, owner));
+            (e, img) => GenerateModelPermutationsFromHistoryAsync(e, img, owner),
+            navigationItems: navigationItems);
     }
 
 
@@ -2122,7 +2774,9 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        await EnqueueGenerationJobAsync("Merged PNG Generation", async (job, token) =>
+        await EnqueueGenerationJobAsync(
+            "Merged PNG Generation",
+            async (job, token) =>
         {
             _generationInProgress = true;
             try
@@ -2181,7 +2835,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            request.Parameters.Model?.Name,
+            1);
     }
 
     public async Task GenerateFromPngGraphAsync(PngGraphReplayRequest request, Window? owner)
@@ -2191,7 +2847,9 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        await EnqueueGenerationJobAsync("Replay PNG Graph", async (job, token) =>
+        await EnqueueGenerationJobAsync(
+            "Replay PNG Graph",
+            async (job, token) =>
         {
             _generationInProgress = true;
             try
@@ -2248,7 +2906,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            request.Parameters?.Model?.Name,
+            1);
     }
 
     public async Task<string?> BuildGenerationGraphJsonAsync(InvokeAIGenerationParams parameters)
@@ -2353,7 +3013,10 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             var slot = previewVm.Slots.First();
-            slot.GenerationParams = parameters;
+            if (parameters != null)
+            {
+                ApplySlotGenerationMetadata(slot, parameters);
+            }
             slot.GenerationGraphJson = graph.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
             ApplyReplaySlotMetadata(slot, parameters, graph);
             slot.IsLoading = true;
@@ -2428,10 +3091,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (parameters != null)
         {
-            slot.ModelUsed = parameters.Model?.Name ?? "";
-            slot.Seed = FormatSeedLabel(parameters);
-            slot.Size = $"{parameters.Width}x{parameters.Height}";
-            slot.LoraLabel = FormatLoraLabel(parameters);
+            ApplySlotGenerationMetadata(slot, parameters);
             return;
         }
 
@@ -2461,6 +3121,26 @@ public partial class MainWindowViewModel : ObservableObject
                 slot.Size = $"{width}x{height}";
             }
         }
+    }
+
+    private void ApplySlotGenerationMetadata(ImageSlotViewModel slot, InvokeAIGenerationParams param)
+    {
+        slot.GenerationParams = param;
+        slot.ModelUsed = param.Model?.Name ?? "";
+        slot.Seed = FormatSeedLabel(param);
+        if (param.BaseSeed != 0)
+        {
+            slot.IsRootSeed = param.Seed == param.BaseSeed;
+            slot.RootSeedLabel = slot.IsRootSeed ? "" : $"Root seed: {param.BaseSeed}";
+        }
+        else
+        {
+            slot.RootSeedLabel = "";
+            slot.IsRootSeed = false;
+        }
+        slot.Size = $"{param.Width}x{param.Height}";
+        slot.LoraLabel = FormatLoraLabel(param);
+        slot.PromptToolTip = param.Prompt ?? string.Empty;
     }
 
     private static InvokeAIGenerationParams? TryBuildParamsFromGraphJson(string? json)
@@ -2881,7 +3561,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private Views.WildcardManagerWindow OpenWildcardManagerWindow(Window? owner, string? wildcardName)
     {
-        var vm = new WildcardManagerViewModel(_wildcardService);
+        var vm = new WildcardManagerViewModel(_wildcardService, _templateService);
         var win = new Views.WildcardManagerWindow(vm);
         if (!string.IsNullOrWhiteSpace(wildcardName))
         {
@@ -2954,7 +3634,7 @@ public partial class MainWindowViewModel : ObservableObject
                     {
                         if (appendToExisting)
                         {
-                            AppendImagesToEntry(entry.Id, images);
+                            AppendImagesToEntry(entry.Id, images, image);
                             StatusText = "Selected images saved to history entry.";
                         }
                         else
@@ -3010,31 +3690,34 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        await EnqueueGenerationJobAsync("Seed Variations", async (job, token) =>
+        var prompt = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride: null, includeEnhanced: true).prompt;
+        var fallbackModel = baseParams.Model?.Name ?? entry.InvokeAIModel;
+        if (!await EnsureSeedVariationParamsAsync(baseParams, fallbackModel))
+        {
+            StatusText = "Seed variations failed: missing model information.";
+            return;
+        }
+
+        var seeds = BuildSeedVariationSeeds(options);
+        if (seeds.Count == 0)
+        {
+            StatusText = "No seeds selected for variations.";
+            return;
+        }
+
+        var parametersList = BuildSeedVariationParams(
+            baseParams,
+            prompt,
+            seeds,
+            options.RandomSeeds ? null : options.RootSeed);
+        var workflow = entry.Workflow ?? Workflow;
+        await EnqueueGenerationJobAsync(
+            "Seed Variations",
+            async (job, token) =>
         {
             try
             {
                 _generationInProgress = true;
-                var (prompt, _) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride: null, includeEnhanced: true);
-                var fallbackModel = baseParams.Model?.Name ?? entry.InvokeAIModel;
-                if (!await EnsureSeedVariationParamsAsync(baseParams, fallbackModel))
-                {
-                    StatusText = "Seed variations failed: missing model information.";
-                    return;
-                }
-                var seeds = BuildSeedVariationSeeds(options);
-                if (seeds.Count == 0)
-                {
-                    StatusText = "No seeds selected for variations.";
-                    return;
-                }
-                var parametersList = BuildSeedVariationParams(
-                    baseParams,
-                    prompt,
-                    seeds,
-                    options.RandomSeeds ? null : options.RootSeed);
-                var workflow = entry.Workflow ?? Workflow;
-
                 var rootBytes = options.MirrorSeeds ? TryLoadHistoryImageBytes(image) : null;
                 if (options.MirrorSeeds && rootBytes != null)
                 {
@@ -3053,7 +3736,7 @@ public partial class MainWindowViewModel : ObservableObject
                         waitForSaveSelection: false,
                         onSaveCompleted: async images =>
                         {
-                            AppendImagesToEntry(entry.Id, images);
+                            AppendImagesToEntry(entry.Id, images, image);
                             StatusText = "Selected images saved to history entry.";
                             await Task.CompletedTask;
                         });
@@ -3073,7 +3756,7 @@ public partial class MainWindowViewModel : ObservableObject
                         waitForSaveSelection: false,
                         onSaveCompleted: async images =>
                         {
-                            AppendImagesToEntry(entry.Id, images);
+                            AppendImagesToEntry(entry.Id, images, image);
                             StatusText = "Selected images saved to history entry.";
                             await Task.CompletedTask;
                         });
@@ -3087,7 +3770,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            GetDominantModelName(parametersList),
+            GetEstimatedWorkUnits(parametersList));
     }
 
     private async Task GenerateLoraVariationsFromHistoryAsync(HistoryEntry entry, HistoryImage? image, Window? owner)
@@ -3114,7 +3799,9 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        await EnqueueGenerationJobAsync("LoRA Permutations", async (job, token) =>
+        await EnqueueGenerationJobAsync(
+            "LoRA Permutations",
+            async (job, token) =>
         {
             _generationInProgress = true;
             try
@@ -3142,7 +3829,7 @@ public partial class MainWindowViewModel : ObservableObject
                     waitForSaveSelection: false,
                     onSaveCompleted: async images =>
                     {
-                        AppendImagesToEntry(entry.Id, images);
+                        AppendImagesToEntry(entry.Id, images, image);
                         StatusText = "Selected images saved to history entry.";
                         await Task.CompletedTask;
                     });
@@ -3155,7 +3842,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            baseParams.Model?.Name ?? entry.InvokeAIModel,
+            permutations.Count);
     }
 
     private async Task GenerateModelPermutationsFromHistoryAsync(HistoryEntry entry, HistoryImage? image, Window? owner)
@@ -3200,7 +3889,9 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        await EnqueueGenerationJobAsync("Model Permutations", async (job, token) =>
+        await EnqueueGenerationJobAsync(
+            "Model Permutations",
+            async (job, token) =>
         {
             _generationInProgress = true;
             try
@@ -3224,7 +3915,7 @@ public partial class MainWindowViewModel : ObservableObject
                     waitForSaveSelection: false,
                     onSaveCompleted: async images =>
                     {
-                        AppendImagesToEntry(entry.Id, images);
+                        AppendImagesToEntry(entry.Id, images, image);
                         StatusText = "Selected images saved to history entry.";
                         await Task.CompletedTask;
                     });
@@ -3237,7 +3928,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            GetDominantModelName(parametersList),
+            GetEstimatedWorkUnits(parametersList));
     }
 
     private async Task GenerateVariationsFromSlotAsync(ImageSlotViewModel slot, bool seedVariations, MultiImagePreviewViewModel? previewVm = null)
@@ -3257,6 +3950,8 @@ public partial class MainWindowViewModel : ObservableObject
         var prompt = ResolvePromptForSlot(baseParams, PromptText);
         Views.SeedVariationDialog.SeedVariationOptions? seedOptions = null;
         List<InvokeAIGenerationParams>? preparedParams = null;
+        List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>? queuedSeedVariationJobs = null;
+        var previewHadActiveGeneration = false;
         byte[]? rootBytes = null;
 
         if (seedVariations)
@@ -3290,6 +3985,67 @@ public partial class MainWindowViewModel : ObservableObject
                 seeds,
                 seedOptions.RandomSeeds ? null : seedOptions.RootSeed);
             rootBytes = seedOptions.MirrorSeeds ? slot.ImageBytes : null;
+
+            if (previewVm != null)
+            {
+                previewHadActiveGeneration = previewVm.GenerationToken != null &&
+                                             !previewVm.GenerationToken.IsCancellationRequested &&
+                                             previewVm.Slots.Any(existing => existing.IsLoading);
+                var slotIndex = previewVm.Slots.IndexOf(slot);
+                if (slotIndex < 0)
+                {
+                    slotIndex = previewVm.Slots.Count - 1;
+                }
+
+                queuedSeedVariationJobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
+                var beforeInsertIndex = slotIndex;
+                var afterInsertIndex = slotIndex + 1;
+                var counter = 1;
+                foreach (var param in preparedParams)
+                {
+                    if (seedOptions.MirrorSeeds && rootBytes != null && param.Seed == seedOptions.RootSeed)
+                    {
+                        continue;
+                    }
+
+                    var label = $"Variation {counter}";
+                    var newSlot = previewVm.CreatePlaceholderSlot(label);
+                    if (param.BaseSeed != 0)
+                    {
+                        newSlot.IsRootSeed = param.Seed == param.BaseSeed;
+                        newSlot.RootSeedLabel = newSlot.IsRootSeed ? string.Empty : $"Root seed: {param.BaseSeed}";
+                    }
+                    ApplySlotGenerationMetadata(newSlot, param);
+
+                    if (seedOptions.MirrorSeeds && param.Seed < seedOptions.RootSeed)
+                    {
+                        previewVm.Slots.Insert(beforeInsertIndex, newSlot);
+                        beforeInsertIndex++;
+                        afterInsertIndex++;
+                    }
+                    else
+                    {
+                        previewVm.Slots.Insert(afterInsertIndex, newSlot);
+                        afterInsertIndex++;
+                    }
+
+                    counter++;
+                    queuedSeedVariationJobs.Add((param, newSlot));
+                }
+
+                if (queuedSeedVariationJobs.Count == 0)
+                {
+                    StatusText = "No seed variations selected.";
+                    return;
+                }
+
+                previewVm.SyncProgressFromSlots();
+                previewVm.StatusText = "Queued seed variations...";
+                if (previewVm.GenerationToken == null || previewVm.GenerationToken.IsCancellationRequested)
+                {
+                    previewVm.GenerationToken = new CancellationTokenSource();
+                }
+            }
         }
         else
         {
@@ -3319,7 +4075,53 @@ public partial class MainWindowViewModel : ObservableObject
             preparedParams = parametersList;
         }
 
-        await EnqueueGenerationJobAsync(seedVariations ? "Seed Variations" : "Variations", async (job, token) =>
+        if (seedVariations && seedOptions != null && preparedParams != null && previewVm != null)
+        {
+            try
+            {
+                _generationInProgress = true;
+                var jobs = queuedSeedVariationJobs ?? new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
+                if (previewHadActiveGeneration)
+                {
+                    previewVm.EnqueuePendingVariationJobs(jobs);
+                    previewVm.StatusText = "Queued seed variations for current model...";
+                    StatusText = "Queued seed variations for current model.";
+                    return;
+                }
+
+                previewVm.StatusText = "Generating seed variations...";
+                StatusText = "Generating seed variations...";
+
+                var generationToken = previewVm.GenerationToken;
+                if (generationToken == null || generationToken.IsCancellationRequested)
+                {
+                    generationToken = new CancellationTokenSource();
+                    previewVm.GenerationToken = generationToken;
+                }
+
+                if (jobs.Count > 0)
+                {
+                    await GenerateImagesForSlotsAsync(jobs, previewVm, generationToken, allowLongPrompts: true, job: null);
+                }
+
+                previewVm.StatusText = StatusImagesReady;
+                StatusText = StatusImagesReadyMain;
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Seed variations failed: {ex.Message}";
+            }
+            finally
+            {
+                _generationInProgress = false;
+            }
+
+            return;
+        }
+
+        await EnqueueGenerationJobAsync(
+            seedVariations ? "Seed Variations" : "Variations",
+            async (job, token) =>
         {
             _generationInProgress = true;
             try
@@ -3328,62 +4130,7 @@ public partial class MainWindowViewModel : ObservableObject
                 {
                     if (previewVm != null)
                     {
-                        var slotIndex = previewVm.Slots.IndexOf(slot);
-                        if (slotIndex < 0)
-                        {
-                            slotIndex = previewVm.Slots.Count - 1;
-                        }
-
-                        var jobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
-                        var beforeInsertIndex = slotIndex;
-                        var afterInsertIndex = slotIndex + 1;
-                        var counter = 1;
-                        foreach (var param in preparedParams)
-                        {
-                            if (seedOptions.MirrorSeeds && rootBytes != null && param.Seed == seedOptions.RootSeed)
-                            {
-                                continue;
-                            }
-
-                            var label = $"Variation {counter}";
-                            var newSlot = previewVm.CreatePlaceholderSlot(label);
-                            if (param.BaseSeed != 0)
-                            {
-                                newSlot.IsRootSeed = param.Seed == param.BaseSeed;
-                                newSlot.RootSeedLabel = newSlot.IsRootSeed ? string.Empty : $"Root seed: {param.BaseSeed}";
-                            }
-
-                            if (seedOptions.MirrorSeeds && param.Seed < seedOptions.RootSeed)
-                            {
-                                previewVm.Slots.Insert(beforeInsertIndex, newSlot);
-                                beforeInsertIndex++;
-                                afterInsertIndex++;
-                            }
-                            else
-                            {
-                                previewVm.Slots.Insert(afterInsertIndex, newSlot);
-                                afterInsertIndex++;
-                            }
-                            counter++;
-                            jobs.Add((param, newSlot));
-                        }
-
-                        previewVm.SyncProgressFromSlots();
-                        previewVm.StatusText = "Generating seed variations...";
-                        StatusText = "Generating seed variations...";
-
-                        if (previewVm.GenerationToken == null || previewVm.GenerationToken.IsCancellationRequested)
-                        {
-                            previewVm.GenerationToken = new CancellationTokenSource();
-                        }
-
-                        if (jobs.Count > 0)
-                        {
-                            await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true, job);
-                        }
-
-                        previewVm.StatusText = StatusImagesReady;
-                        StatusText = StatusImagesReadyMain;
+                        return;
                     }
                     else
                     {
@@ -3489,7 +4236,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            GetDominantModelName(preparedParams),
+            GetEstimatedWorkUnits(preparedParams));
     }
 
     private static List<InvokeAIGenerationParams> BuildSeedVariationParams(InvokeAIGenerationParams baseParams, string prompt, IReadOnlyList<int> seeds, int? rootSeed)
@@ -3547,7 +4296,10 @@ public partial class MainWindowViewModel : ObservableObject
             return seeds;
         }
 
-        var start = options.StartSeed;
+        var minimumSequentialSeed = options.RootSeed == int.MaxValue
+            ? int.MaxValue
+            : Math.Max(0, options.RootSeed + 1);
+        var start = Math.Max(options.StartSeed, minimumSequentialSeed);
         var end = options.EndSeed;
         if (end < start)
         {
@@ -3623,6 +4375,9 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var prompt = ResolvePromptForSlot(baseParams, PromptText);
+        var previewHadActiveGeneration = previewVm.GenerationToken != null &&
+                                         !previewVm.GenerationToken.IsCancellationRequested &&
+                                         previewVm.Slots.Any(existing => existing.IsLoading);
         var slotIndex = previewVm.Slots.IndexOf(slot);
         if (slotIndex < 0) slotIndex = previewVm.Slots.Count - 1;
 
@@ -3637,6 +4392,7 @@ public partial class MainWindowViewModel : ObservableObject
 
             var label = $"Permutation {counter}";
             var newSlot = previewVm.CreatePlaceholderSlot(label);
+            ApplySlotGenerationMetadata(newSlot, p);
             previewVm.Slots.Insert(insertIndex, newSlot);
             insertIndex++;
             counter++;
@@ -3644,6 +4400,14 @@ public partial class MainWindowViewModel : ObservableObject
             jobs.Add((p, newSlot));
         }
         previewVm.SyncProgressFromSlots();
+
+        if (previewHadActiveGeneration)
+        {
+            previewVm.EnqueuePendingVariationJobs(jobs);
+            previewVm.StatusText = "Queued LoRA permutations for current model...";
+            StatusText = "Queued LoRA permutations for current model.";
+            return;
+        }
 
         previewVm.StatusText = "Generating LoRA permutations...";
         if (previewVm.GenerationToken == null)
@@ -3695,6 +4459,9 @@ public partial class MainWindowViewModel : ObservableObject
 
         var slotIndex = previewVm.Slots.IndexOf(slot);
         if (slotIndex < 0) slotIndex = previewVm.Slots.Count - 1;
+        var previewHadActiveGeneration = previewVm.GenerationToken != null &&
+                                         !previewVm.GenerationToken.IsCancellationRequested &&
+                                         previewVm.Slots.Any(existing => existing.IsLoading);
 
         var jobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
         var insertIndex = slotIndex + 1;
@@ -3708,6 +4475,7 @@ public partial class MainWindowViewModel : ObservableObject
             }
 
             var newSlot = previewVm.CreatePlaceholderSlot(label);
+            ApplySlotGenerationMetadata(newSlot, param);
             previewVm.Slots.Insert(insertIndex, newSlot);
             insertIndex++;
             counter++;
@@ -3715,6 +4483,14 @@ public partial class MainWindowViewModel : ObservableObject
             jobs.Add((param, newSlot));
         }
         previewVm.SyncProgressFromSlots();
+
+        if (previewHadActiveGeneration)
+        {
+            previewVm.EnqueuePendingVariationJobs(jobs);
+            previewVm.StatusText = "Queued model permutations for current preview...";
+            StatusText = "Queued model permutations for current preview.";
+            return;
+        }
 
         previewVm.StatusText = "Generating model permutations...";
         if (previewVm.GenerationToken == null)
@@ -3905,7 +4681,7 @@ public partial class MainWindowViewModel : ObservableObject
                 var workflow = entry.Workflow ?? Workflow;
                 Func<List<HistoryImage>, Task> onSaveCompleted = async images =>
                 {
-                    AppendImagesToEntry(entry.Id, images);
+                    AppendImagesToEntry(entry.Id, images, image);
                     StatusText = "Selected images saved to history entry.";
                     await Task.CompletedTask;
                 };
@@ -4237,7 +5013,9 @@ public partial class MainWindowViewModel : ObservableObject
         {
             return;
         }
-        await EnqueueGenerationJobAsync("Generate Variations", async (job, token) =>
+        await EnqueueGenerationJobAsync(
+            "Generate Variations",
+            async (job, token) =>
         {
             _generationInProgress = true;
             try
@@ -4300,7 +5078,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = false;
             }
-        });
+        },
+            baseParams.Model?.Name,
+            Math.Max(1, variations.Count));
     }
 
     private async Task UpscaleImageFromHistoryAsync(HistoryEntry entry, HistoryImage image, Window? owner)
@@ -4405,7 +5185,8 @@ public partial class MainWindowViewModel : ObservableObject
                 UpscaleScale = job.scale,
                 UpscaleTileSize = optionsVm.SelectedTileSize,
                 UpscaleFitToMultipleOf8 = optionsVm.FitToMultipleOf8,
-                UpscaleSourceImagePath = image.ImagePath
+                UpscaleSourceImagePath = image.ImagePath,
+                DerivedFromImagePath = image.ImagePath
             };
             ApplyJobInfoToHistoryImage(newImage, slot);
 
@@ -4559,9 +5340,364 @@ public partial class MainWindowViewModel : ObservableObject
     private void AppendImagesToEntry(string entryId, List<HistoryImage> images)
     {
         _historyManager.AppendImages(entryId, images);
+        RefreshOpenHistoryViews();
+    }
+
+    private void AppendImagesToEntry(string entryId, List<HistoryImage> images, HistoryImage? sourceImage)
+    {
+        if (sourceImage != null && !string.IsNullOrWhiteSpace(sourceImage.ImagePath))
+        {
+            foreach (var image in images)
+            {
+                image.DerivedFromImagePath ??= sourceImage.ImagePath;
+            }
+        }
+
+        _historyManager.AppendImages(entryId, images);
+        RefreshOpenHistoryViews();
+    }
+
+    private void RefreshOpenHistoryViews()
+    {
+        void RefreshCore()
+        {
+            if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
+            {
+                return;
+            }
+
+            foreach (var window in desktop.Windows)
+            {
+                switch (window)
+                {
+                    case Views.HistoryViewerWindow { DataContext: HistoryViewerViewModel historyVm }:
+                        historyVm.RefreshCommand.Execute(null);
+                        break;
+                    case Views.AllImagesWindow { DataContext: AllImagesViewerViewModel allImagesVm }:
+                        _ = allImagesVm.RefreshAsync();
+                        break;
+                    case Views.AnalyticsStudioWindow { DataContext: AnalyticsStudioViewModel analyticsVm }:
+                        analyticsVm.RefreshCommand.Execute(null);
+                        break;
+                }
+            }
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            RefreshCore();
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(RefreshCore);
+        }
     }
 
     private sealed record GenerationPreviewResult(bool? Saved, List<HistoryImage> Images);
+    private sealed record ExperimentPreviewJob(InvokeAIGenerationParams Parameters, string Label);
+    private sealed record ExperimentBatchDefinition(IReadOnlyList<ExperimentPreviewJob> Jobs, string? HeaderContextText);
+
+    private static string BuildExperimentVariableLabel(ExperimentRunRequest request)
+    {
+        return request.Mode switch
+        {
+            ExperimentRunnerViewModel.WildcardChoiceSweepMode when !string.IsNullOrWhiteSpace(request.WildcardName) => $"__{request.WildcardName}__",
+            ExperimentRunnerViewModel.SeedSweepMode => "Seed",
+            _ => "Template Roll"
+        };
+    }
+
+    private static string BuildExperimentNotes(ExperimentRunRequest request)
+    {
+        return request.Mode switch
+        {
+            ExperimentRunnerViewModel.WildcardChoiceSweepMode => "Locked wildcard values were fixed before the sweep; only the selected wildcard changed per image.",
+            ExperimentRunnerViewModel.SeedSweepMode => "One resolved prompt was reused; only the seed changed per image.",
+            _ => "The current template was re-resolved for each roll using one fixed image setup."
+        };
+    }
+
+    private static string BuildExperimentVariantValue(ExperimentRunRequest request, ImageSlotViewModel slot, InvokeAIGenerationParams? parameters)
+    {
+        return request.Mode switch
+        {
+            ExperimentRunnerViewModel.SeedSweepMode when parameters != null => parameters.Seed.ToString(CultureInfo.InvariantCulture),
+            ExperimentRunnerViewModel.WildcardChoiceSweepMode => slot.Label,
+            _ => slot.Label
+        };
+    }
+
+    private HistoryEntry BuildExperimentHistoryEntry(
+        ExperimentRunRequest request,
+        string originalPrompt,
+        string processedPrompt,
+        string? templateName,
+        string ollamaModel,
+        string? invokeModelFallback,
+        List<HistoryImage> images,
+        string? headerPrompt)
+    {
+        var entry = BuildHistoryEntryForGeneration(
+            originalPrompt,
+            processedPrompt,
+            templateName,
+            ollamaModel,
+            invokeModelFallback,
+            Workflow,
+            images);
+
+        entry.IsExperimentRun = true;
+        entry.ExperimentType = request.Mode;
+        entry.ExperimentVariable = BuildExperimentVariableLabel(request);
+        entry.ExperimentHeaderPrompt = headerPrompt;
+        entry.ExperimentLockedChoices = request.LockedChoices.Count == 0
+            ? null
+            : new Dictionary<string, string>(request.LockedChoices, StringComparer.OrdinalIgnoreCase);
+        entry.ExperimentPlannedCount = request.RunCount;
+        entry.ExperimentNotes = BuildExperimentNotes(request);
+        entry.Status = "experiment";
+        entry.ProcessedPrompt = request.Mode switch
+        {
+            ExperimentRunnerViewModel.NTemplateRollsMode => string.Empty,
+            _ when !string.IsNullOrWhiteSpace(headerPrompt) => headerPrompt!,
+            _ => processedPrompt
+        };
+        return entry;
+    }
+
+    private ExperimentBatchDefinition BuildExperimentJobs(
+        ExperimentRunRequest request,
+        InvokeAIGenerationParams baseParams,
+        string promptText,
+        string? outputText,
+        TemplateGenerationResult? generationSnapshot)
+    {
+        return request.Mode switch
+        {
+            ExperimentRunnerViewModel.WildcardChoiceSweepMode => BuildWildcardSweepExperimentJobs(baseParams, promptText, request.WildcardName, request.SelectedChoices, request.LockedChoices, generationSnapshot),
+            ExperimentRunnerViewModel.SeedSweepMode => BuildSeedSweepExperimentJobs(baseParams, promptText, outputText, request.RunCount, generationSnapshot),
+            _ => BuildTemplateRollExperimentJobs(baseParams, promptText, outputText, request.RunCount)
+        };
+    }
+
+    private ExperimentBatchDefinition BuildTemplateRollExperimentJobs(
+        InvokeAIGenerationParams baseParams,
+        string promptText,
+        string? outputText,
+        int runCount)
+    {
+        var jobs = new List<ExperimentPreviewJob>();
+        for (var i = 0; i < runCount; i++)
+        {
+            var result = _promptProcessorService.ProcessPrompt(promptText);
+            var prompt = BuildResolvedPromptText(result);
+            if (string.IsNullOrWhiteSpace(prompt))
+            {
+                prompt = ResolvePromptForMain(outputText, promptText);
+            }
+
+            var clone = CloneParams(baseParams);
+            clone.Prompt = prompt;
+            jobs.Add(new ExperimentPreviewJob(clone, $"Roll {i + 1}"));
+        }
+
+        return new ExperimentBatchDefinition(jobs, null);
+    }
+
+    private ExperimentBatchDefinition BuildWildcardSweepExperimentJobs(
+        InvokeAIGenerationParams baseParams,
+        string promptText,
+        string? wildcardName,
+        IReadOnlyList<string> selectedChoices,
+        IReadOnlyDictionary<string, string> lockedChoices,
+        TemplateGenerationResult? generationSnapshot)
+    {
+        var jobs = new List<ExperimentPreviewJob>();
+        if (string.IsNullOrWhiteSpace(wildcardName) || selectedChoices.Count == 0)
+        {
+            return new ExperimentBatchDefinition(jobs, null);
+        }
+
+        var lockedContext = BuildExperimentContext(lockedChoices);
+        var headerText = BuildResolvedPromptText(BuildWildcardSweepBaselineResult(promptText, wildcardName, lockedChoices));
+
+        foreach (var choice in selectedChoices)
+        {
+            var context = new Dictionary<string, ContextValue>(lockedContext, StringComparer.OrdinalIgnoreCase)
+            {
+                [wildcardName] = BuildContextValue(wildcardName, choice)
+            };
+
+            var result = _promptProcessorService.ProcessPrompt(promptText, existingContext: context);
+            var clone = CloneParams(baseParams);
+            clone.Prompt = BuildResolvedPromptText(result);
+            jobs.Add(new ExperimentPreviewJob(clone, choice));
+        }
+
+        return new ExperimentBatchDefinition(jobs, headerText);
+    }
+
+    private TemplateGenerationResult BuildWildcardSweepBaselineResult(
+        string promptText,
+        string? wildcardName,
+        IReadOnlyDictionary<string, string> lockedChoices)
+    {
+        if (string.IsNullOrWhiteSpace(promptText) || string.IsNullOrWhiteSpace(wildcardName))
+        {
+            return new TemplateGenerationResult(new List<PromptSegment>(), new HashSet<string>(), 0, new Dictionary<string, ContextValue>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        var headerContext = BuildExperimentContext(lockedChoices);
+        headerContext[wildcardName] = new ContextValue($"__{wildcardName}__", new List<string>());
+        return _promptProcessorService.ProcessPrompt(promptText, existingContext: headerContext);
+    }
+
+    private ExperimentBatchDefinition BuildSeedSweepExperimentJobs(
+        InvokeAIGenerationParams baseParams,
+        string promptText,
+        string? outputText,
+        int runCount,
+        TemplateGenerationResult? generationSnapshot)
+    {
+        var jobs = new List<ExperimentPreviewJob>();
+        var resolvedPrompt = !string.IsNullOrWhiteSpace(outputText)
+            ? outputText
+            : BuildResolvedPromptText(generationSnapshot ?? _promptProcessorService.ProcessPrompt(promptText));
+        var rootSeed = baseParams.Seed;
+
+        for (var i = 0; i < runCount; i++)
+        {
+            var clone = CloneParams(baseParams);
+            clone.Prompt = resolvedPrompt;
+            clone.Seed = rootSeed + i;
+            clone.BaseSeed = rootSeed;
+            jobs.Add(new ExperimentPreviewJob(clone, $"Seed {clone.Seed}"));
+        }
+
+        return new ExperimentBatchDefinition(jobs, resolvedPrompt);
+    }
+
+    private async Task RunExperimentPreviewAsync(
+        ExperimentBatchDefinition experiment,
+        ExperimentRunRequest request,
+        Window? owner,
+        string statusText,
+        bool allowLongPrompts,
+        GenerationJob? job = null,
+        CancellationToken externalToken = default,
+        string? originalPrompt = null,
+        string? processedPrompt = null,
+        string? templateName = null,
+        string? ollamaModel = null)
+    {
+        var savedImages = new List<HistoryImage>();
+        var previewVm = new MultiImagePreviewViewModel();
+        previewVm.InitializePlaceholders(experiment.Jobs.Count);
+        previewVm.StatusText = statusText;
+        previewVm.HeaderContextText = experiment.HeaderContextText ?? string.Empty;
+
+        for (var i = 0; i < experiment.Jobs.Count && i < previewVm.Slots.Count; i++)
+        {
+            previewVm.Slots[i].Label = experiment.Jobs[i].Label;
+        }
+
+        if (request.SaveSelectionsToHistory)
+        {
+            previewVm.OnSaveSlot = slot =>
+            {
+                var slotIndex = previewVm.Slots.IndexOf(slot);
+                var parameters = slot.GenerationParams;
+                var imagePrompt = parameters?.Prompt ?? string.Empty;
+                var image = CreateHistoryImageFromSlot(
+                    slot,
+                    parameters,
+                    $"Experiment:{request.Mode}",
+                    imagePrompt,
+                    Workflow);
+                image.GenerationParamsJson = parameters != null ? JsonSerializer.Serialize(parameters) : null;
+                image.ExperimentVariantIndex = slotIndex >= 0 ? slotIndex : null;
+                image.ExperimentVariantLabel = slot.Label;
+                image.ExperimentVariantValue = BuildExperimentVariantValue(request, slot, parameters);
+                image.PromptTypeSuffix = slot.Label;
+                savedImages.Add(image);
+                return Task.CompletedTask;
+            };
+            previewVm.OnSaveCompleted = () =>
+            {
+                if (savedImages.Count > 0)
+                {
+                    var entry = BuildExperimentHistoryEntry(
+                        request,
+                        originalPrompt ?? string.Empty,
+                        processedPrompt ?? string.Empty,
+                        templateName,
+                        ollamaModel ?? string.Empty,
+                        savedImages[0].GenerationParams?.Model?.Name,
+                        savedImages,
+                        experiment.HeaderContextText);
+                    _historyManager.AddEntry(entry);
+                    StatusText = "Experiment images saved to history.";
+                }
+                return Task.CompletedTask;
+            };
+        }
+        else
+        {
+            previewVm.OnSaveSlot = _ => Task.CompletedTask;
+            previewVm.OnSaveCompleted = () =>
+            {
+                StatusText = "Experiment preview closed without saving to history.";
+                return Task.CompletedTask;
+            };
+        }
+
+        ConfigurePreviewCommands(previewVm);
+        var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
+        _ = saveTask;
+        if (externalToken.CanBeCanceled)
+        {
+            externalToken.Register(() => cts.Cancel());
+        }
+        if (job != null)
+        {
+            job.StatusMessage = statusText;
+            job.UpdateProgress(0, experiment.Jobs.Count);
+            job.CancelAction = () => cts.Cancel();
+        }
+
+        _activeGenerationCts = cts;
+        previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
+        StatusText = statusText;
+
+        try
+        {
+            var jobs = experiment.Jobs
+                .Zip(previewVm.Slots, (experimentJob, slot) => (experimentJob.Parameters, slot))
+                .ToList();
+            await GenerateImagesForSlotsAsync(jobs, previewVm, cts, allowLongPrompts, job);
+        }
+        finally
+        {
+            if (ReferenceEquals(_activeGenerationCts, cts))
+            {
+                _activeGenerationCts = null;
+            }
+        }
+
+        if (cts.IsCancellationRequested)
+        {
+            previewVm.StatusText = StatusGenerationCancelled;
+            StatusText = StatusGenerationCancelled;
+            return;
+        }
+
+        previewVm.StatusText = request.SaveSelectionsToHistory
+            ? StatusImagesReady
+            : "Experiment ready. Save closes the preview without writing history.";
+        StatusText = request.SaveSelectionsToHistory
+            ? StatusImagesReadyMain
+            : "Experiment ready. Review the results and close when done.";
+    }
 
     private async Task<GenerationPreviewResult> RunGenerationPreviewAsync(
         IReadOnlyList<InvokeAIGenerationParams> parametersList,
@@ -4698,21 +5834,7 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 var param = parametersList[i];
                 var slot = previewVm.Slots[i];
-                slot.GenerationParams = param;
-                slot.ModelUsed = param.Model?.Name ?? "";
-                slot.Seed = FormatSeedLabel(param);
-                if (param.BaseSeed != 0)
-                {
-                    slot.IsRootSeed = param.Seed == param.BaseSeed;
-                    slot.RootSeedLabel = slot.IsRootSeed ? "" : $"Root seed: {param.BaseSeed}";
-                }
-                else
-                {
-                    slot.RootSeedLabel = "";
-                    slot.IsRootSeed = false;
-                }
-                slot.Size = $"{param.Width}x{param.Height}";
-                slot.LoraLabel = FormatLoraLabel(param);
+                ApplySlotGenerationMetadata(slot, param);
 
                 if (param.Seed == rootSeed)
                 {
@@ -4775,9 +5897,25 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    private Task EnqueueGenerationJobAsync(string name, Func<GenerationJob, CancellationToken, Task> work)
+    private static string? GetDominantModelName(IEnumerable<InvokeAIGenerationParams>? parameters)
     {
-        var job = new GenerationJob(name, work);
+        return parameters?
+            .Where(param => !string.IsNullOrWhiteSpace(param.Model?.Name))
+            .GroupBy(param => param.Model!.Name, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(group => group.Count())
+            .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Key)
+            .FirstOrDefault();
+    }
+
+    private static int GetEstimatedWorkUnits(IEnumerable<InvokeAIGenerationParams>? parameters)
+    {
+        return Math.Max(1, parameters?.Count() ?? 0);
+    }
+
+    private Task EnqueueGenerationJobAsync(string name, Func<GenerationJob, CancellationToken, Task> work, string? preferredModel = null, int estimatedWorkUnits = 1)
+    {
+        var job = new GenerationJob(name, work, preferredModel, estimatedWorkUnits);
         _generationQueue.Enqueue(job);
         StatusText = $"Queued: {name}";
         _notifications?.ShowInfo($"Queued: {name}", "Generation Queue");
@@ -4828,6 +5966,29 @@ public partial class MainWindowViewModel : ObservableObject
     private static string ResolvePromptForMain(string? outputText, string? promptText)
     {
         return string.IsNullOrWhiteSpace(outputText) ? promptText ?? string.Empty : outputText;
+    }
+
+    private string BuildResolvedPromptText(TemplateGenerationResult result)
+    {
+        var text = string.Join(" ", result.Segments
+            .Select(segment => segment.Text?.Trim() ?? string.Empty)
+            .Where(segment => !string.IsNullOrWhiteSpace(segment)));
+        return _promptProcessorService.CleanupPrompt(text);
+    }
+
+    private static List<string> ExtractWildcardNames(string? promptText)
+    {
+        if (string.IsNullOrWhiteSpace(promptText))
+        {
+            return new List<string>();
+        }
+
+        return WildcardRegex.Matches(promptText)
+            .Select(match => match.Groups["name"].Value.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private byte[]? TryLoadHistoryImageBytes(HistoryImage? image)
@@ -4907,6 +6068,45 @@ public partial class MainWindowViewModel : ObservableObject
         previewVm.OnGenerateSeedVariations = async slot => await GenerateVariationsFromSlotAsync(slot, true, previewVm);
         previewVm.OnGenerateModelVariations = async slot => await GenerateModelPermutationsFromSlotAsync(slot, previewVm);
         previewVm.OnGenerateLoraVariations = async slot => await GenerateLoraPermutationsFromSlotAsync(slot, previewVm);
+        previewVm.OnPromoteToBase = async slot => await PromotePreviewSlotToBaseAsync(slot);
+        previewVm.OnEnhanceFromThis = async slot => await EnhancePromptFromPreviewSlotAsync(slot);
+    }
+
+    private Task PromotePreviewSlotToBaseAsync(ImageSlotViewModel slot)
+    {
+        var prompt = slot.GenerationParams?.Prompt;
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            StatusText = "This image does not have a prompt to promote.";
+            return Task.CompletedTask;
+        }
+
+        PromptText = prompt;
+        OutputText = prompt;
+        _lastGeneration = null;
+        ProcessedPromptSegments.Clear();
+        MissingWildcards.Clear();
+        var segmentVm = new PromptSegmentViewModel(new PromptSegment(prompt), 0)
+        {
+            Tooltip = "Promoted from image preview."
+        };
+        segmentVm.PropertyChanged += (_, _) => RefreshProcessedOutput();
+        ProcessedPromptSegments.Add(segmentVm);
+        RefreshProcessedOutput();
+        StatusText = "Promoted image prompt to the base prompt.";
+        return Task.CompletedTask;
+    }
+
+    private async Task EnhancePromptFromPreviewSlotAsync(ImageSlotViewModel slot)
+    {
+        var prompt = slot.GenerationParams?.Prompt;
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            StatusText = "This image does not have a prompt to enhance.";
+            return;
+        }
+
+        await EnhancePromptTextAsync(prompt, prompt);
     }
 
     private async Task<List<List<LoraParameter>>?> ShowLoraPermutationDialogAsync(InvokeAIGenerationParams baseParams, Window? owner)
@@ -4965,140 +6165,13 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task GenerateImagesAsync(IReadOnlyList<InvokeAIGenerationParams> parametersList, MultiImagePreviewViewModel previewVm, CancellationTokenSource cts, bool allowLongPrompts, GenerationJob? job = null)
     {
-        if (!ValidateGenerationParams(parametersList, allowLongPrompts, out var invalidMessage, out var isWarning))
-        {
-            StatusText = invalidMessage;
-            previewVm.StatusText = invalidMessage;
-            cts.Cancel();
-            return;
-        }
-        if (isWarning)
-        {
-            StatusText = invalidMessage;
-            previewVm.StatusText = invalidMessage;
-        }
-        // Pre-populate slot metadata so users can see model/seed/size while images are generating.
+        var slotAssignments = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
         for (int i = 0; i < parametersList.Count && i < previewVm.Slots.Count; i++)
         {
-            var param = parametersList[i];
-            var slot = previewVm.Slots[i];
-            slot.GenerationParams = param;
-            slot.ModelUsed = param.Model?.Name ?? "";
-            slot.Seed = FormatSeedLabel(param);
-            if (param.BaseSeed != 0)
-            {
-                slot.IsRootSeed = param.Seed == param.BaseSeed;
-                slot.RootSeedLabel = slot.IsRootSeed ? "" : $"Root seed: {param.BaseSeed}";
-            }
-            else
-            {
-                slot.RootSeedLabel = "";
-                slot.IsRootSeed = false;
-            }
-            slot.Size = $"{param.Width}x{param.Height}";
-            slot.LoraLabel = FormatLoraLabel(param);
-        }
-        previewVm.SyncProgressFromSlots();
-        job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
-
-        // Group by model to avoid loading multiple models at once; clear cache between groups if enabled.
-        var order = new List<string>();
-        var grouped = new Dictionary<string, List<(InvokeAIGenerationParams param, int index)>>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < parametersList.Count; i++)
-        {
-            var param = parametersList[i];
-            var key = param.Model?.Name ?? $"__model_{i}";
-            if (!grouped.TryGetValue(key, out var list))
-            {
-                list = new List<(InvokeAIGenerationParams, int)>();
-                grouped[key] = list;
-                order.Add(key);
-            }
-            list.Add((param, i));
+            slotAssignments.Add((parametersList[i], previewVm.Slots[i]));
         }
 
-        foreach (var key in order)
-        {
-            if (cts.IsCancellationRequested) break;
-            foreach (var (param, index) in grouped[key])
-            {
-                if (cts.IsCancellationRequested) break;
-                try
-                {
-                    if (!ValidateGenerationParams(param, allowLongPrompts, out var invalidParamMessage, out var paramWarning))
-                    {
-                        StatusText = invalidParamMessage;
-                        previewVm.StatusText = invalidParamMessage;
-                        cts.Cancel();
-                        break;
-                    }
-                    if (paramWarning)
-                    {
-                        StatusText = invalidParamMessage;
-                        previewVm.StatusText = invalidParamMessage;
-                    }
-                    await _invokeGenerationGate.WaitAsync(cts.Token);
-                    InvokeAIGenerationResult result;
-                    try
-                    {
-                        result = await _invokeAIClient.GenerateImageAsync(param, ct: cts.Token);
-                    }
-                    finally
-                    {
-                        _invokeGenerationGate.Release();
-                    }
-                    RecordKpiGeneration(param, result.JobInfo, Workflow);
-                    if (result.GenerationParams?.Vae?.Name is { Length: > 0 } vaeName)
-                    {
-                        param.VaeUsedName = vaeName;
-                    }
-                    if (cts.IsCancellationRequested) break;
-                    previewVm.SetImage(index, result.ImageBytes);
-                    previewVm.IncrementGenerated();
-                    job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
-                    var slot = previewVm.Slots[index];
-                    ApplyJobInfoToSlot(slot, result.JobInfo);
-                    slot.GenerationParams = param;
-                    slot.ModelUsed = param.Model?.Name ?? "";
-                    slot.Seed = FormatSeedLabel(param);
-                    if (param.BaseSeed != 0)
-                    {
-                        slot.IsRootSeed = param.Seed == param.BaseSeed;
-                        slot.RootSeedLabel = slot.IsRootSeed ? "" : $"Root seed: {param.BaseSeed}";
-                    }
-                    else
-                    {
-                        slot.RootSeedLabel = "";
-                        slot.IsRootSeed = false;
-                    }
-                    slot.Size = $"{param.Width}x{param.Height}";
-                    slot.LoraLabel = FormatLoraLabel(param);
-                }
-                catch (OperationCanceledException)
-                {
-                    StatusText = "Image generation cancelled.";
-                    cts.Cancel();
-                    break;
-                }
-                catch (InvokeAIJobFailedException ex)
-                {
-                    RecordKpiGeneration(param, ex.JobInfo, Workflow);
-                    StatusText = $"Image generation failed: {ex.Message}";
-                }
-            }
-
-            if (cts.IsCancellationRequested) break;
-
-            if (_settingsService.Settings.AutoClearInvokeCacheBetweenModels)
-            {
-                await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
-            }
-        }
-
-        if (_settingsService.Settings.ServerSafetyModeEnabled && !cts.IsCancellationRequested)
-        {
-            await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
-        }
+        await GenerateImagesForSlotsAsync(slotAssignments, previewVm, cts, allowLongPrompts, job);
     }
 
     private async Task GenerateImagesForSlotsAsync(
@@ -5108,6 +6181,8 @@ public partial class MainWindowViewModel : ObservableObject
         bool allowLongPrompts,
         GenerationJob? job = null)
     {
+        var completedAny = false;
+        previewVm.StatusText = "Generating images...";
         if (!ValidateGenerationParams(jobs.Select(j => j.param).ToList(), allowLongPrompts, out var invalidMessage, out var isWarning))
         {
             StatusText = invalidMessage;
@@ -5122,34 +6197,103 @@ public partial class MainWindowViewModel : ObservableObject
         }
         foreach (var (param, slot) in jobs)
         {
-            slot.GenerationParams = param;
-            slot.ModelUsed = param.Model?.Name ?? "";
-            slot.Seed = FormatSeedLabel(param);
-            slot.Size = $"{param.Width}x{param.Height}";
-            slot.LoraLabel = FormatLoraLabel(param);
+            ApplySlotGenerationMetadata(slot, param);
             slot.IsLoading = true;
         }
         previewVm.SyncProgressFromSlots();
         job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
 
-        var order = new List<string>();
-        var grouped = new Dictionary<string, List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var jobItem in jobs)
+        var pendingJobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>(jobs);
+        string? currentModelKey = null;
+
+        void AttachPendingPreviewJobs()
         {
-            var key = jobItem.param.Model?.Name ?? $"__model_{order.Count}";
-            if (!grouped.TryGetValue(key, out var list))
+            var attached = previewVm.TakePendingVariationJobs();
+            if (attached.Count == 0)
             {
-                list = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
-                grouped[key] = list;
-                order.Add(key);
+                return;
             }
-            list.Add(jobItem);
+
+            foreach (var (param, slot) in attached)
+            {
+                ApplySlotGenerationMetadata(slot, param);
+                slot.IsLoading = true;
+            }
+
+            pendingJobs.AddRange(attached);
+            previewVm.SyncProgressFromSlots();
+            job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
         }
 
-        foreach (var key in order)
+        static string GetModelKey(InvokeAIGenerationParams param)
+            => param.Model?.Name ?? string.Empty;
+
+        static List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> TakeJobsForModel(
+            List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> source,
+            string modelKey)
         {
-            if (cts.IsCancellationRequested) break;
-            foreach (var (param, slot) in grouped[key])
+            var matches = source
+                .Where(item => string.Equals(GetModelKey(item.param), modelKey, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matches.Count == 0)
+            {
+                return matches;
+            }
+
+            foreach (var match in matches)
+            {
+                source.Remove(match);
+            }
+
+            return matches;
+        }
+
+        static List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> TakeLargestModelBatch(
+            List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> source,
+            out string modelKey)
+        {
+            var selected = source
+                .Select((item, index) => new { item, index })
+                .GroupBy(x => GetModelKey(x.item.param), StringComparer.OrdinalIgnoreCase)
+                .Select(group => new
+                {
+                    ModelKey = group.Key,
+                    Count = group.Count(),
+                    FirstIndex = group.Min(x => x.index)
+                })
+                .OrderByDescending(group => group.Count)
+                .ThenBy(group => group.FirstIndex)
+                .First();
+
+            modelKey = selected.ModelKey;
+            return TakeJobsForModel(source, modelKey);
+        }
+
+        while (!cts.IsCancellationRequested)
+        {
+            AttachPendingPreviewJobs();
+            if (pendingJobs.Count == 0)
+            {
+                break;
+            }
+
+            List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> activeBatch;
+            if (!string.IsNullOrWhiteSpace(currentModelKey))
+            {
+                activeBatch = TakeJobsForModel(pendingJobs, currentModelKey);
+            }
+            else
+            {
+                activeBatch = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
+            }
+
+            if (activeBatch.Count == 0)
+            {
+                activeBatch = TakeLargestModelBatch(pendingJobs, out var selectedModelKey);
+                currentModelKey = selectedModelKey;
+            }
+
+            foreach (var (param, slot) in activeBatch)
             {
                 if (cts.IsCancellationRequested) break;
                 try
@@ -5186,6 +6330,7 @@ public partial class MainWindowViewModel : ObservableObject
                     previewVm.UpdateSlotImage(slot, result.ImageBytes);
                     ApplyJobInfoToSlot(slot, result.JobInfo);
                     previewVm.IncrementGenerated();
+                    completedAny = true;
                     job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
                 }
                 catch (OperationCanceledException)
@@ -5205,23 +6350,33 @@ public partial class MainWindowViewModel : ObservableObject
                     slot.IsLoading = false;
                     if (_settingsService.Settings.Verbose) Console.WriteLine($"Generation failed: {ex.Message}");
                 }
-                finally
-                {
-                    previewVm.StatusText = "Generating images...";
-                }
             }
 
             if (cts.IsCancellationRequested) break;
 
+            AttachPendingPreviewJobs();
+            if (pendingJobs.Any(item => string.Equals(GetModelKey(item.param), currentModelKey ?? string.Empty, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
             if (_settingsService.Settings.AutoClearInvokeCacheBetweenModels)
             {
-                await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
+                await TryEmptyModelCacheAsync(cts.Token);
             }
+
+            currentModelKey = null;
         }
 
         if (_settingsService.Settings.ServerSafetyModeEnabled && !cts.IsCancellationRequested)
         {
-            await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
+            await TryEmptyModelCacheAsync(cts.Token);
+        }
+
+        if (completedAny && !cts.IsCancellationRequested && ShouldNotifyGenerationCompletion(job))
+        {
+            previewVm.StatusText = StatusImagesReadySaveDiscard;
+            TryPlayGenerationCompleteSound();
         }
     }
 
@@ -6162,7 +7317,7 @@ public partial class MainWindowViewModel : ObservableObject
         string Template,
         string Strategy);
 
-    private async Task CreateMissingWildcardAsync(string? wildcardName)
+    public async Task CreateWildcardWithOptionalAiAsync(string? wildcardName, Window? owner = null, WildcardManagerViewModel? managerVm = null)
     {
         if (string.IsNullOrWhiteSpace(wildcardName))
         {
@@ -6170,12 +7325,13 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var normalizedName = wildcardName.Trim();
-        var owner = GetOwnerWindow(null) ?? new Window();
+        var resolvedOwner = GetOwnerWindow(owner) ?? new Window();
 
         try
         {
             await _wildcardService.SaveWildcardFileContent(normalizedName, BuildEmptyWildcardContent(normalizedName));
             _wildcardService.Reload(_settingsService.GetWildcardDirs());
+            LoadWildcards();
             UpdateMissingWildcardsPreview(PromptText);
         }
         catch (Exception ex)
@@ -6184,11 +7340,20 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var managerWindow = OpenWildcardManagerWindow(owner, normalizedName);
-        await Task.Yield();
+        Window dialogOwner;
+        if (managerVm != null && owner != null)
+        {
+            await managerVm.SelectWildcardAfterLoadAsync(normalizedName);
+            dialogOwner = owner;
+        }
+        else
+        {
+            dialogOwner = OpenWildcardManagerWindow(resolvedOwner, normalizedName);
+            await Task.Yield();
+        }
 
         var useAi = await ShowConfirmAsync(
-            managerWindow,
+            dialogOwner,
             $"The wildcard '{normalizedName}' has been created.\n\n" +
             "Would you like to prepopulate it with AI suggestions?");
 
@@ -6197,7 +7362,7 @@ public partial class MainWindowViewModel : ObservableObject
             if (string.IsNullOrWhiteSpace(SelectedModel))
             {
                 StatusText = "Wildcard created, but no Ollama model is selected for AI suggestions.";
-                await ShowInfoAsync(managerWindow, "No Model Selected", "Select an Ollama model first. The wildcard was created with the default scaffold.");
+                await ShowInfoAsync(dialogOwner, "No Model Selected", "Select an Ollama model first. The wildcard was created with the default scaffold.");
             }
             else
             {
@@ -6205,26 +7370,52 @@ public partial class MainWindowViewModel : ObservableObject
                     "Describe Wildcard",
                     $"What should '{normalizedName}' be comprised of?",
                     $"A curated set of {normalizedName.Replace('_', ' ')} options",
-                    managerWindow);
+                    dialogOwner);
 
                 if (!string.IsNullOrWhiteSpace(description))
                 {
                     try
                     {
+                        StatusText = $"Generating AI suggestions for '{normalizedName}'...";
+                        managerVm?.SetStatusMessage("AI is generating suggestions...");
+                        if (dialogOwner.DataContext is WildcardManagerViewModel activeManagerVm)
+                        {
+                            activeManagerVm.SetStatusMessage("AI is generating suggestions...");
+                        }
+                        await Task.Yield();
+
                         var generatedContent = await GenerateWildcardSuggestionsAsync(normalizedName, description.Trim());
                         await _wildcardService.SaveWildcardFileContent(normalizedName, generatedContent);
                         _wildcardService.Reload(_settingsService.GetWildcardDirs());
+                        LoadWildcards();
                         UpdateMissingWildcardsPreview(PromptText);
-                        if (managerWindow.DataContext is WildcardManagerViewModel managerVm)
+                        if (managerVm != null)
                         {
                             await managerVm.SelectWildcardAfterLoadAsync(normalizedName);
+                            managerVm.CurrentWildcardName = normalizedName;
+                            managerVm.CurrentWildcardContent = generatedContent;
+                            managerVm.ReloadStructuredFromRawCommand.Execute(null);
+                            managerVm.SetStatusMessage($"Created wildcard '{normalizedName}' with AI suggestions.");
+                        }
+                        else if (dialogOwner.DataContext is WildcardManagerViewModel openedManagerVm)
+                        {
+                            await openedManagerVm.SelectWildcardAfterLoadAsync(normalizedName);
+                            openedManagerVm.CurrentWildcardName = normalizedName;
+                            openedManagerVm.CurrentWildcardContent = generatedContent;
+                            openedManagerVm.ReloadStructuredFromRawCommand.Execute(null);
+                            openedManagerVm.SetStatusMessage($"Created wildcard '{normalizedName}' with AI suggestions.");
                         }
                         StatusText = $"Created wildcard '{normalizedName}' with AI suggestions.";
                     }
                     catch (Exception ex)
                     {
+                        managerVm?.SetStatusMessage($"AI suggestions failed: {ex.Message}");
+                        if (dialogOwner.DataContext is WildcardManagerViewModel failedManagerVm)
+                        {
+                            failedManagerVm.SetStatusMessage($"AI suggestions failed: {ex.Message}");
+                        }
                         StatusText = $"Wildcard created, but AI suggestions failed: {ex.Message}";
-                        await ShowInfoAsync(managerWindow, "AI Suggestions Failed", $"The wildcard was created, but suggestions failed.\n\n{ex.Message}");
+                        await ShowInfoAsync(dialogOwner, "AI Suggestions Failed", $"The wildcard was created, but suggestions failed.\n\n{ex.Message}");
                     }
                 }
                 else
@@ -6237,6 +7428,11 @@ public partial class MainWindowViewModel : ObservableObject
         {
             StatusText = $"Created wildcard '{normalizedName}' with default scaffold.";
         }
+    }
+
+    private async Task CreateMissingWildcardAsync(string? wildcardName)
+    {
+        await CreateWildcardWithOptionalAiAsync(wildcardName, null, null);
     }
 
     private string BuildEmptyWildcardContent(string wildcardName)
@@ -6297,6 +7493,16 @@ public partial class MainWindowViewModel : ObservableObject
         return NormalizeWildcardJsonResponse(raw, wildcardName, description);
     }
 
+    public async Task<string> GenerateWildcardSuggestionsForEditorAsync(string wildcardName, string description)
+    {
+        if (string.IsNullOrWhiteSpace(SelectedModel))
+        {
+            throw new InvalidOperationException("Select an Ollama model first.");
+        }
+
+        return await GenerateWildcardSuggestionsAsync(wildcardName, description);
+    }
+
     private static string NormalizeWildcardJsonResponse(string rawResponse, string wildcardName, string description)
     {
         if (string.IsNullOrWhiteSpace(rawResponse))
@@ -6338,11 +7544,121 @@ public partial class MainWindowViewModel : ObservableObject
             }
 
             writer.WritePropertyName("choices");
-            choices.WriteTo(writer);
+            writer.WriteStartArray();
+            foreach (var choice in choices.EnumerateArray())
+            {
+                WriteNormalizedWildcardChoice(writer, choice);
+            }
+            writer.WriteEndArray();
             writer.WriteEndObject();
         }
 
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static void WriteNormalizedWildcardChoice(Utf8JsonWriter writer, JsonElement choice)
+    {
+        switch (choice.ValueKind)
+        {
+            case JsonValueKind.String:
+                writer.WriteStringValue(NormalizeWildcardChoiceText(choice.GetString()));
+                return;
+
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var prop in choice.EnumerateObject())
+                {
+                    var isChoiceValue = (prop.NameEquals("value") || prop.NameEquals("choice")) &&
+                                        prop.Value.ValueKind == JsonValueKind.String;
+                    if (isChoiceValue)
+                    {
+                        writer.WriteString(prop.Name, NormalizeWildcardChoiceText(prop.Value.GetString()));
+                    }
+                    else
+                    {
+                        prop.WriteTo(writer);
+                    }
+                }
+                writer.WriteEndObject();
+                return;
+
+            default:
+                choice.WriteTo(writer);
+                return;
+        }
+    }
+
+    private static string NormalizeWildcardChoiceText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var normalized = text.Replace('_', ' ').Trim();
+        while (normalized.Contains("  ", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
+        }
+
+        return normalized;
+    }
+
+    private void TryPlayGenerationCompleteSound()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                Console.Beep(880, 180);
+            }
+            else
+            {
+                Console.Write("\a");
+                _notifications?.ShowInfo("Image generation complete.", "Generation Complete");
+            }
+        }
+        catch
+        {
+            try
+            {
+                Console.Write("\a");
+                if (!OperatingSystem.IsWindows())
+                {
+                    _notifications?.ShowInfo("Image generation complete.", "Generation Complete");
+                }
+            }
+            catch
+            {
+                // Ignore best-effort notification failures.
+            }
+        }
+    }
+
+    private bool ShouldNotifyGenerationCompletion(GenerationJob? currentJob)
+    {
+        return !_generationQueue.Jobs.Any(job =>
+            !ReferenceEquals(job, currentJob) &&
+            job.Status is GenerationJobStatus.Queued or GenerationJobStatus.Running);
+    }
+
+    private async Task TryEmptyModelCacheAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _invokeAIClient.EmptyModelCacheAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Respect cancellation without surfacing a secondary failure.
+        }
+        catch (Exception ex)
+        {
+            if (_settingsService.Settings.Verbose)
+            {
+                Console.WriteLine($"InvokeAI: failed to clear model cache: {ex.Message}");
+            }
+        }
     }
 
     public (string newText, int caret) InsertWildcardAtSelection(string? wildcardName, int caretIndex, int selectionStart, int selectionEnd)
@@ -6424,7 +7740,7 @@ public partial class MainWindowViewModel : ObservableObject
             var vm = new PromptSegmentViewModel(segment, index++);
             if (segment.IsWildcard && !string.IsNullOrWhiteSpace(segment.OriginalWildcardName))
             {
-                vm.Tooltip = _wildcardService.GetWildcardFileContent(segment.OriginalWildcardName);
+                vm.Tooltip = BuildWildcardBrowserPreview(segment.OriginalWildcardName);
             }
             vm.PropertyChanged += (_, _) => RefreshProcessedOutput();
             ProcessedPromptSegments.Add(vm);
@@ -6447,6 +7763,22 @@ public partial class MainWindowViewModel : ObservableObject
             }
         }
         return new ContextValue(value, new List<string>());
+    }
+
+    private Dictionary<string, ContextValue> BuildExperimentContext(IReadOnlyDictionary<string, string> lockedChoices)
+    {
+        var context = new Dictionary<string, ContextValue>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in lockedChoices)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Key) || string.IsNullOrWhiteSpace(entry.Value))
+            {
+                continue;
+            }
+
+            context[entry.Key] = BuildContextValue(entry.Key, entry.Value);
+        }
+
+        return context;
     }
 
     public async Task UnloadModelsAsync()
@@ -6546,3 +7878,21 @@ public partial class MainWindowViewModel : ObservableObject
 }
 
 public record TemplateOption(string Name, string Path);
+
+public sealed class WildcardBrowserItem
+{
+    public string Name { get; init; } = string.Empty;
+    public string SampleText { get; init; } = string.Empty;
+    public string Summary { get; init; } = string.Empty;
+    public string Tooltip { get; init; } = string.Empty;
+    public int ChoiceCount { get; init; }
+    public int Score { get; init; }
+}
+
+public sealed class WildcardAutocompleteItem
+{
+    public string Name { get; init; } = string.Empty;
+    public string Preview { get; init; } = string.Empty;
+    public int ChoiceCount { get; init; }
+    public int Score { get; init; }
+}

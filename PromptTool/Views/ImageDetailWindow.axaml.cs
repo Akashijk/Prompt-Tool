@@ -1,9 +1,13 @@
 using System;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using PromptTool.Core.Models;
 using Avalonia.Threading;
 using PromptTool.ViewModels;
 using PromptTool.Core.Services;
@@ -15,6 +19,7 @@ public partial class ImageDetailWindow : Window
 {
     public HistoryManagerService? HistoryManager { get; set; }
     public HistoryIndexService? HistoryIndexService { get; set; }
+    public ImageCacheService? ImageCacheService { get; set; }
 
     private bool _isPanning;
     private Point _panStart;
@@ -30,6 +35,7 @@ public partial class ImageDetailWindow : Window
     public ImageDetailWindow()
     {
         InitializeComponent();
+        AddHandler(InputElement.KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel, handledEventsToo: true);
         InitializeTransforms();
         RenderOptions.SetBitmapInterpolationMode(DetailImage, BitmapInterpolationMode.None);
         DetailImage.PropertyChanged += DetailImageOnPropertyChanged;
@@ -49,9 +55,49 @@ public partial class ImageDetailWindow : Window
         base.OnKeyDown(e);
     }
 
+    private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Handled || e.Key is not (Key.Left or Key.Right or Key.Home or Key.End))
+        {
+            return;
+        }
+
+        if (ShouldIgnoreImageNavigation(e.Source))
+        {
+            return;
+        }
+
+        if (TryNavigateImages(e.Key, e.Source, consumeWhenUnavailable: true))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (ShouldConsumeNavigationKeyWithoutMovement())
+        {
+            e.Handled = true;
+        }
+    }
+
     private void Close_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         Close();
+    }
+
+    private void PreviousImage_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (TryNavigateImages(Key.Left, null, consumeWhenUnavailable: false))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void NextImage_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (TryNavigateImages(Key.Right, null, consumeWhenUnavailable: false))
+        {
+            e.Handled = true;
+        }
     }
 
     private void EditImageData_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -64,6 +110,28 @@ public partial class ImageDetailWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
         editor.ShowDialog(this);
+    }
+
+    private void ToggleFavorite_Click(object? sender, RoutedEventArgs e)
+    {
+        if (HistoryManager == null) return;
+        if (DataContext is not ImageDetailViewModel vm) return;
+
+        var newValue = !vm.Image.IsFavorite;
+        vm.Image.IsFavorite = newValue;
+        if (newValue)
+        {
+            vm.Entry.IsFavorite = true;
+        }
+        else
+        {
+            vm.Entry.IsFavorite = vm.Entry.Images.Any(img => img.IsFavorite);
+        }
+
+        HistoryManager.UpdateImage(vm.Entry.Id, vm.Image, save: false);
+        HistoryManager.SaveChanges();
+        vm.UpdateFavoriteState();
+        e.Handled = true;
     }
 
     private void Image_PointerPressed(object? sender, PointerPressedEventArgs e)
@@ -371,5 +439,148 @@ public partial class ImageDetailWindow : Window
         var scaledHeight = _imageHeight * scale;
         return scaledWidth > ImageScrollViewer.Viewport.Width + 1e-3
                || scaledHeight > ImageScrollViewer.Viewport.Height + 1e-3;
+    }
+
+    private bool TryNavigateImages(Key key, object? source, bool consumeWhenUnavailable)
+    {
+        if (ShouldIgnoreImageNavigation(source) ||
+            DataContext is not ImageDetailViewModel vm ||
+            vm.DisplayMode != ImageDetailMode.History)
+        {
+            return false;
+        }
+
+        if (vm.NavigationItems is { Count: > 1 })
+        {
+            var currentIndex = vm.FindNavigationIndex();
+            if (currentIndex < 0)
+            {
+                return false;
+            }
+
+            var targetIndex = key switch
+            {
+                Key.Left => currentIndex - 1,
+                Key.Right => currentIndex + 1,
+                Key.Home => 0,
+                Key.End => vm.NavigationItems.Count - 1,
+                _ => currentIndex
+            };
+
+            if (targetIndex < 0 || targetIndex >= vm.NavigationItems.Count || targetIndex == currentIndex)
+            {
+                return consumeWhenUnavailable;
+            }
+
+            var target = vm.NavigationItems[targetIndex];
+            var bitmap = ResolveBitmapForImage(target.Image, vm.Bitmap);
+            if (bitmap == null)
+            {
+                return false;
+            }
+
+            var detailsText = HistoryViewerViewModel.BuildDetailsText(target.Entry, target.Image);
+            var processed = HistoryViewerViewModel.ResolveGeneratedPromptForImage(target.Entry, target.Image);
+            if (string.IsNullOrWhiteSpace(processed))
+            {
+                processed = target.Entry.ProcessedPrompt;
+            }
+
+            vm.SetDisplayedImage(target.Entry, target.Image, bitmap, detailsText, processed, target.Entry.OriginalPrompt);
+            ResetImageViewport();
+            return true;
+        }
+
+        if (vm.Entry.Images.Count <= 1)
+        {
+            return false;
+        }
+
+        var entryCurrentIndex = vm.Entry.Images.IndexOf(vm.Image);
+        if (entryCurrentIndex < 0)
+        {
+            return false;
+        }
+
+        var entryTargetIndex = key switch
+        {
+            Key.Left => entryCurrentIndex - 1,
+            Key.Right => entryCurrentIndex + 1,
+            Key.Home => 0,
+            Key.End => vm.Entry.Images.Count - 1,
+            _ => entryCurrentIndex
+        };
+
+        if (entryTargetIndex < 0 || entryTargetIndex >= vm.Entry.Images.Count || entryTargetIndex == entryCurrentIndex)
+        {
+            return consumeWhenUnavailable;
+        }
+
+        var targetImage = vm.Entry.Images[entryTargetIndex];
+        var targetBitmap = ResolveBitmapForImage(targetImage, vm.Bitmap);
+        if (targetBitmap == null)
+        {
+            return false;
+        }
+
+        var targetDetailsText = HistoryViewerViewModel.BuildDetailsText(vm.Entry, targetImage);
+        var targetProcessed = HistoryViewerViewModel.ResolveGeneratedPromptForImage(vm.Entry, targetImage);
+        if (string.IsNullOrWhiteSpace(targetProcessed))
+        {
+            targetProcessed = vm.Entry.ProcessedPrompt;
+        }
+
+        vm.SetDisplayedImage(vm.Entry, targetImage, targetBitmap, targetDetailsText, targetProcessed, vm.Entry.OriginalPrompt);
+        ResetImageViewport();
+        return true;
+    }
+
+    private bool ShouldConsumeNavigationKeyWithoutMovement()
+    {
+        return DataContext is ImageDetailViewModel vm &&
+               vm.DisplayMode == ImageDetailMode.History &&
+               ((vm.NavigationItems?.Count ?? 0) > 1 || vm.Entry.Images.Count > 1);
+    }
+
+    private Bitmap? ResolveBitmapForImage(HistoryImage image, Bitmap? fallback)
+    {
+        if (HistoryManager != null && ImageCacheService != null && !string.IsNullOrWhiteSpace(image.ImagePath))
+        {
+            var loaded = ImageCacheService.GetOrLoad(image.ImagePath, null, HistoryManager.GetHistoryDir());
+            if (loaded != null)
+            {
+                return loaded;
+            }
+        }
+
+        if (image.ImageBytes is { Length: > 0 })
+        {
+            try
+            {
+                using var ms = new System.IO.MemoryStream(image.ImageBytes);
+                return new Bitmap(ms);
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
+        return fallback;
+    }
+
+    private void ResetImageViewport()
+    {
+        _hasInitialFit = false;
+        UpdateFitScale();
+        CenterImage();
+    }
+
+    private static bool ShouldIgnoreImageNavigation(object? source)
+    {
+        return source is TextBox
+            || source is ComboBox
+            || source is NumericUpDown
+            || source is RangeBase;
     }
 }

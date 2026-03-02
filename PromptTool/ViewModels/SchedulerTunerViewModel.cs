@@ -374,13 +374,14 @@ public partial class SchedulerTunerViewModel : ObservableObject
         }
 
         var steps = modelDefaults?.Steps > 0 ? modelDefaults.Steps : (int?)null;
+        var displayScheduler = ImageGenerationOptionsViewModel.NormalizeSchedulerDisplay(scheduler);
         HasPreferredScheduler = true;
         PreferredSchedulerLabel = steps.HasValue
-            ? $"Preferred scheduler: {scheduler} ({steps} steps)"
-            : $"Preferred scheduler: {scheduler}";
+            ? $"Preferred scheduler: {displayScheduler} ({steps} steps)"
+            : $"Preferred scheduler: {displayScheduler}";
         PreferredSchedulerTooltip = steps.HasValue
-            ? $"Model default scheduler: {scheduler}, steps {steps}"
-            : $"Model default scheduler: {scheduler}";
+            ? $"Model default scheduler: {displayScheduler}, steps {steps}"
+            : $"Model default scheduler: {displayScheduler}";
 
         UpdatePreferredSchedulerFlags();
     }
@@ -556,9 +557,10 @@ public partial class SchedulerTunerViewModel : ObservableObject
         }
         if (_settingsService.SaveInvokeAIModelDefaults())
         {
-            StatusText = $"Saved scheduler '{scheduler}' and steps {Steps} for {SelectedModel.Name}.";
+            var displayScheduler = ImageGenerationOptionsViewModel.NormalizeSchedulerDisplay(scheduler);
+            StatusText = $"Saved scheduler '{displayScheduler}' and steps {Steps} for {SelectedModel.Name}.";
             _notifications?.ShowInfo(
-                $"{SelectedModel.Name} default scheduler set to {scheduler} with {Steps} steps.",
+                $"{SelectedModel.Name} default scheduler set to {displayScheduler} with {Steps} steps.",
                 "Scheduler Default Saved");
             UpdatePreferredSchedulerInfo(SelectedModel);
         }
@@ -749,7 +751,7 @@ public partial class SchedulerTunerViewModel : ObservableObject
             .Select(s => s!.Value)
             .ToList();
 
-        if (scores.Count == 0)
+        if (scores.Count <= 1)
         {
             foreach (var item in _allResults.Where(r => string.Equals(r.Scheduler, scheduler, StringComparison.OrdinalIgnoreCase)))
             {
@@ -903,6 +905,7 @@ public partial class SchedulerTunerViewModel : ObservableObject
 public partial class SchedulerChoice : ObservableObject
 {
     public string Name { get; }
+    public string DisplayName => ImageGenerationOptionsViewModel.NormalizeSchedulerDisplay(Name);
 
     [ObservableProperty] private bool _isSelected;
 
@@ -915,6 +918,7 @@ public partial class SchedulerChoice : ObservableObject
 public partial class SchedulerResultItem : ObservableObject
 {
     public string Scheduler { get; }
+    public string DisplayScheduler => ImageGenerationOptionsViewModel.NormalizeSchedulerDisplay(Scheduler);
     public InvokeAIGenerationParams? Parameters { get; }
     public ImageSlotViewModel Slot { get; }
 
@@ -936,7 +940,7 @@ public partial class SchedulerResultItem : ObservableObject
 
     public string AestheticScoreLabel => AestheticScore.HasValue ? $"Aesthetic {AestheticScore:0.00}" : string.Empty;
     public string HeuristicScoreLabel => HeuristicScore.HasValue ? $"Heuristic {HeuristicScore:0.0}" : string.Empty;
-    public string SchedulerStatsLabel => HasSchedulerStats ? $"Avg {SchedulerScoreMean:0.00} | σ {SchedulerScoreStdDev:0.00}" : string.Empty;
+    public string SchedulerStatsLabel => HasSchedulerStats ? $"Avg {SchedulerScoreMean:0.00} | Std Dev {SchedulerScoreStdDev:0.00}" : string.Empty;
 
     public SchedulerResultItem(string scheduler, InvokeAIGenerationParams? parameters, ImageSlotViewModel slot)
     {

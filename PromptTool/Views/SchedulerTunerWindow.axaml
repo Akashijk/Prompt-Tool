@@ -79,15 +79,19 @@
                         <NumericUpDown Value="{Binding Steps}" Minimum="1" Maximum="200" Width="120"/>
                     </StackPanel>
                     <Grid ColumnDefinitions="Auto,Auto,Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="6">
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Step sweep" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Step sweep (±)" VerticalAlignment="Center"/>
                         <TextBlock Grid.Row="0" Grid.Column="1" Text="Interval" VerticalAlignment="Center"/>
                         <TextBlock Grid.Row="0" Grid.Column="2" Text="Min" VerticalAlignment="Center"/>
                         <TextBlock Grid.Row="0" Grid.Column="3" Text="Max" VerticalAlignment="Center"/>
 
-                        <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <TextBlock Text="±" VerticalAlignment="Center"/>
-                            <NumericUpDown Value="{Binding StepSweepCount}" Minimum="1" Maximum="6" Width="70"/>
-                        </StackPanel>
+                        <NumericUpDown Grid.Row="1"
+                                       Grid.Column="0"
+                                       Value="{Binding StepSweepCount}"
+                                       Minimum="1"
+                                       Maximum="6"
+                                       Increment="1"
+                                       FormatString="F0"
+                                       Width="96"/>
                         <ComboBox Grid.Row="1"
                                   Grid.Column="1"
                                   ItemsSource="{Binding StepSweepIntervals}"
@@ -143,7 +147,7 @@
                                         <ItemsControl ItemsSource="{Binding Schedulers}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate x:DataType="vm:SchedulerChoice">
-                                                    <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}" Margin="4,2"/>
+                                                    <CheckBox Content="{Binding DisplayName}" IsChecked="{Binding IsSelected}" Margin="4,2"/>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
@@ -206,7 +210,7 @@
                                 DoubleTapped="Result_DoubleTapped">
                             <StackPanel Spacing="6">
                                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                                    <TextBlock Text="{Binding Scheduler}" FontWeight="Bold"/>
+                                    <TextBlock Text="{Binding DisplayScheduler}" FontWeight="Bold"/>
                                     <Border Grid.Column="1"
                                             Background="#24485A"
                                             CornerRadius="10"

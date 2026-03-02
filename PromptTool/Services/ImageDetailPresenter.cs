@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Avalonia.Controls;
@@ -10,6 +11,18 @@ using PromptTool.Services;
 using PromptTool.Views;
 
 namespace PromptTool.Services;
+
+public sealed class ImageDetailNavigationItem
+{
+    public HistoryEntry Entry { get; }
+    public HistoryImage Image { get; }
+
+    public ImageDetailNavigationItem(HistoryEntry entry, HistoryImage image)
+    {
+        Entry = entry;
+        Image = image;
+    }
+}
 
 public static class ImageDetailPresenter
 {
@@ -26,7 +39,8 @@ public static class ImageDetailPresenter
         Func<HistoryEntry, HistoryImage, Task>? generateSeedVariationsRequested,
         Func<HistoryEntry, HistoryImage, Task>? generateLoraVariationsRequested,
         Func<HistoryEntry, HistoryImage, Task>? generateModelVariationsRequested,
-        ImageDetailMode displayMode = ImageDetailMode.History)
+        ImageDetailMode displayMode = ImageDetailMode.History,
+        IReadOnlyList<ImageDetailNavigationItem>? navigationItems = null)
     {
         var detailBitmap = ResolveDetailBitmap(image, fallbackBitmap, historyManager, imageCacheService);
         var safeBitmap = UiBitmapHelper.CloneForUi(detailBitmap)
@@ -55,13 +69,15 @@ public static class ImageDetailPresenter
             GenerateModelVariationsRequested = generateModelVariationsRequested,
             DisplayMode = displayMode
         };
+        detailVm.SetNavigationItems(navigationItems);
         detailVm.UpdateGenerationActions();
 
         var lightbox = new ImageDetailWindow
         {
             DataContext = detailVm,
             HistoryManager = historyManager,
-            HistoryIndexService = historyIndexService
+            HistoryIndexService = historyIndexService,
+            ImageCacheService = imageCacheService
         };
         lightbox.Show(owner);
         lightbox.Activate();

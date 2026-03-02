@@ -21,7 +21,11 @@ public partial class NegativePromptSaveDialog : Window
 
     public static Task<NegativePromptSaveChoice> ShowAsync(Window owner, string selectedPresetName)
     {
-        var dlg = new NegativePromptSaveDialog(selectedPresetName);
+        var dlg = new NegativePromptSaveDialog(selectedPresetName)
+        {
+            Topmost = true
+        };
+        dlg.Opened += (_, __) => dlg.Activate();
         return dlg.ShowDialog<NegativePromptSaveChoice>(owner);
     }
 
