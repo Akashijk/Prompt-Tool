@@ -466,14 +466,14 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
                     schedulerForModel,
                     invokeModel,
                     selectedLoras,
-                    allowSchedulerOverride: UseModelDefaultsForScheduler && !_schedulerManuallySet);
+                    allowSchedulerOverride: UseModelDefaultsForScheduler);
             }
             else
             {
                 schedulerForModel = ApplyModelSchedulerDefault(
                     schedulerForModel,
                     invokeModel,
-                    allowSchedulerOverride: UseModelDefaultsForScheduler && !_schedulerManuallySet);
+                    allowSchedulerOverride: UseModelDefaultsForScheduler);
             }
 
             var finalNegativeForModel = string.IsNullOrWhiteSpace(styleNegative)
@@ -603,7 +603,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
                 !string.IsNullOrWhiteSpace(modelDefaults.Sampler) &&
                 modelDefaults.Sampler != "(None)")
             {
-                schedulerOut = modelDefaults.Sampler;
+                schedulerOut = NormalizeConfiguredScheduler(modelDefaults.Sampler);
             }
         }
 
@@ -652,7 +652,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
 
         if (!string.IsNullOrWhiteSpace(modelDefaults.Sampler) && modelDefaults.Sampler != "(None)")
         {
-            return modelDefaults.Sampler;
+            return NormalizeConfiguredScheduler(modelDefaults.Sampler);
         }
 
         return scheduler;
@@ -835,7 +835,8 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             return;
         }
 
-        var defaults = _settingsService.InvokeAIModelDefaults.FirstOrDefault(d => d.ModelName == selected.Name);
+        var defaults = _settingsService.InvokeAIModelDefaults.FirstOrDefault(d =>
+            string.Equals(d.ModelName, selected.Name, StringComparison.OrdinalIgnoreCase));
         if (defaults == null)
         {
             UpdateModelSchedulerDefaultInfo();
