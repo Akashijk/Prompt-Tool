@@ -41,6 +41,7 @@ public partial class ImageDetailWindow : Window
         DetailImage.PropertyChanged += DetailImageOnPropertyChanged;
         ZoomSlider.PropertyChanged += ZoomSliderOnPropertyChanged;
         Opened += OnOpened;
+        Closed += OnClosed;
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -257,6 +258,14 @@ public partial class ImageDetailWindow : Window
             UpdateFitScale();
             CenterImage();
             ApplyInitialWindowSize();
+        }
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (DataContext is IDisposable disposable)
+        {
+            disposable.Dispose();
         }
     }
 

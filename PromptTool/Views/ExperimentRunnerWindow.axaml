@@ -52,6 +52,7 @@
                                Minimum="1"
                                Maximum="200"
                                Increment="1"
+                               FormatString="F0"
                                Width="140"
                                Value="{Binding RunCount}"
                                IsVisible="{Binding UsesRunCount}"/>

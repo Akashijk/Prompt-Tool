@@ -24,14 +24,16 @@ public class NotificationService
     public void ShowInfo(string message, string? title = null) => Show(title ?? "Info", message, ToastType.Info);
     public void ShowWarning(string message, string? title = null) => Show(title ?? "Warning", message, ToastType.Warning);
     public void ShowError(string message, string? title = null) => Show(title ?? "Error", message, ToastType.Error);
+    public void ShowInfoAction(string message, string title, string actionLabel, Action action) =>
+        Show(title, message, ToastType.Info, actionLabel, action);
 
-    private void Show(string title, string message, ToastType type)
+    private void Show(string title, string message, ToastType type, string? actionLabel = null, Action? action = null)
     {
         if (_anchor == null) return;
 
         void ShowOnUi()
         {
-            var toast = new ToastWindow(title, message, type);
+            var toast = new ToastWindow(title, message, type, actionLabel, action);
             toast.Closed += (_, __) => _openToasts.Remove(toast);
             _openToasts.Add(toast);
 
@@ -56,8 +58,8 @@ public class NotificationService
         // Stack from top-right, offset by existing toasts.
         const double margin = 12;
         const double spacing = 8;
-        double width = 320;
-        double height = 96;
+        double width = toast.ActionLabel == null ? 320 : 380;
+        double height = toast.ActionLabel == null ? 96 : 110;
 
         toast.Width = width;
         toast.Height = height;
@@ -82,9 +84,12 @@ public class NotificationService
     private sealed class ToastWindow : Window
     {
         private readonly DispatcherTimer _timer;
+        public string? ActionLabel { get; }
 
-        public ToastWindow(string title, string message, ToastType type)
+        public ToastWindow(string title, string message, ToastType type, string? actionLabel, Action? action)
         {
+            ActionLabel = string.IsNullOrWhiteSpace(actionLabel) ? null : actionLabel.Trim();
+            _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
             SystemDecorations = SystemDecorations.None;
             CanResize = false;
             ShowInTaskbar = false;
@@ -102,23 +107,51 @@ public class NotificationService
                 _ => (Color.Parse("#1F6FEB"), Colors.White)
             };
 
+            var stack = new StackPanel
+            {
+                Spacing = 4,
+                Children =
+                {
+                    new TextBlock { Text = title, FontWeight = FontWeight.Bold, Foreground = new SolidColorBrush(fg) },
+                    new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(fg) }
+                }
+            };
+            if (!string.IsNullOrWhiteSpace(ActionLabel) && action != null)
+            {
+                var actionButton = new Button
+                {
+                    Content = ActionLabel,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+                    Padding = new Thickness(10, 4),
+                    Margin = new Thickness(0, 4, 0, 0)
+                };
+                actionButton.Click += (_, _) =>
+                {
+                    try
+                    {
+                        action();
+                    }
+                    catch
+                    {
+                        // Ignore action callback errors in toast UI.
+                    }
+                    finally
+                    {
+                        _timer.Stop();
+                        Close();
+                    }
+                };
+                stack.Children.Add(actionButton);
+            }
+
             Content = new Border
             {
                 Background = new SolidColorBrush(bg),
                 CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(12),
-                Child = new StackPanel
-                {
-                    Spacing = 4,
-                    Children =
-                    {
-                        new TextBlock { Text = title, FontWeight = FontWeight.Bold, Foreground = new SolidColorBrush(fg) },
-                        new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(fg) }
-                    }
-                }
+                Child = stack
             };
 
-            _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
             _timer.Tick += (_, __) =>
             {
                 _timer.Stop();

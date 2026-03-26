@@ -20,7 +20,7 @@ using PromptTool.Core.Clients.InvokeAI;
 
 namespace PromptTool.ViewModels;
 
-public partial class HistoryViewerViewModel : ObservableObject
+public partial class HistoryViewerViewModel : ObservableObject, IDisposable
 {
     private readonly HistoryManagerService _historyManager;
     private readonly TemplateService _templateService;
@@ -35,6 +35,9 @@ public partial class HistoryViewerViewModel : ObservableObject
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _refreshCts;
     private readonly SettingsService _settingsService;
+    private readonly SimilarityFingerprintCacheService _similarityFingerprintCacheService = new();
+    private readonly HashSet<string> _collapsedLineageParentIds = new(StringComparer.OrdinalIgnoreCase);
+    private CancellationTokenSource? _similarityBadgeCts;
 
     public IClipboard? Clipboard { get; set; }
     public Func<string, Task<bool>>? ConfirmAsync { get; set; }
@@ -45,11 +48,15 @@ public partial class HistoryViewerViewModel : ObservableObject
     public Func<HistoryEntry, HistoryImage?, Task>? SeedVariationsRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? LoraVariationsRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? ModelVariationsRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage?, Task>? PromptVariationsRequested { get; set; }
     public Func<HistoryEntry, Task>? EnhanceRequested { get; set; }
     public Func<HistoryEntry, IReadOnlyList<string>, Task<FillMissingResult>>? FillMissingVariationsRequested { get; set; }
     public Func<Task>? ShowAllImagesRequested { get; set; }
     public Func<HistoryEntry, HistoryImage, Task>? UpscaleRequested { get; set; }
     public Func<string, Task>? ShowPngMetadataRequested { get; set; }
+    public Func<HistoryEntry, Task>? ShowModelSimilarityRequested { get; set; }
+    public Func<HistoryEntry, HistoryImage, HistoryEntry, HistoryImage, Task>? CompareImagesRequested { get; set; }
+    public Func<HistoryImage, Task>? ShowSimilarityMatchesRequested { get; set; }
 
     public HistoryManagerService HistoryManager => _historyManager;
     public TemplateService TemplateService => _templateService;
@@ -71,6 +78,7 @@ public partial class HistoryViewerViewModel : ObservableObject
     [ObservableProperty] private string _statusNote = string.Empty;
     [ObservableProperty] private string _currentImagePositionText = string.Empty;
     [ObservableProperty] private bool _showFavoritesOnly;
+    [ObservableProperty] private bool _groupLineages = true;
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _workflowFilter = "All"; // All, SFW, NSFW
     [ObservableProperty] private bool _canEnhanceSelected;
@@ -78,6 +86,13 @@ public partial class HistoryViewerViewModel : ObservableObject
     [ObservableProperty] private bool _canFillMissingVariations;
     [ObservableProperty] private bool _canDeleteSelectedImages;
     [ObservableProperty] private bool _canMergeEntries;
+    [ObservableProperty] private bool _canOpenParentEntry;
+    [ObservableProperty] private bool _canOpenChildVariationRuns;
+    [ObservableProperty] private bool _hasLineageInspector;
+    [ObservableProperty] private bool _hasLineageParent;
+    [ObservableProperty] private string _lineageInspectorSummary = string.Empty;
+    [ObservableProperty] private LineageParentCardViewModel? _lineageParent;
+    [ObservableProperty] private ObservableCollection<LineageChildRunCardViewModel> _lineageChildRuns = new();
     // Result set when dialog closes.
     [ObservableProperty] private HistoryEntry? _dialogResult;
     [ObservableProperty] private string? _loadPromptOverride;
@@ -128,6 +143,7 @@ public partial class HistoryViewerViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => ScheduleRefresh();
     partial void OnShowFavoritesOnlyChanged(bool value) => ScheduleRefresh();
+    partial void OnGroupLineagesChanged(bool value) => ScheduleRefresh();
     partial void OnWorkflowFilterChanged(string value) => ScheduleRefresh();
 
     [RelayCommand]
@@ -185,7 +201,7 @@ public partial class HistoryViewerViewModel : ObservableObject
             var entries = await Task.Run(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                return _historyManager.GetAllEntries()
+                var filtered = _historyManager.GetAllEntries()
                     .Where(e => !ShowFavoritesOnly || e.IsFavorite || e.Images.Any(i => i.IsFavorite))
                     .Where(e => WorkflowFilter == "All" ||
                                 string.IsNullOrWhiteSpace(e.Workflow) ||
@@ -199,17 +215,39 @@ public partial class HistoryViewerViewModel : ObservableObject
                                 (e.ExperimentVariable ?? string.Empty).ToLowerInvariant().Contains(search) ||
                                 (e.ExperimentHeaderPrompt ?? string.Empty).ToLowerInvariant().Contains(search) ||
                                 (e.ExperimentNotes ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.ParentEntryId ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.ParentImagePath ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.LineageRunId ?? string.Empty).ToLowerInvariant().Contains(search) ||
+                                (e.LineageType ?? string.Empty).ToLowerInvariant().Contains(search) ||
                                 (e.ExperimentLockedChoices != null &&
                                  e.ExperimentLockedChoices.Any(kvp =>
                                      kvp.Key.ToLowerInvariant().Contains(search) ||
                                      (kvp.Value ?? string.Empty).ToLowerInvariant().Contains(search))))
-                    .OrderByDescending(e => e.Timestamp)
-                    .Select(e => new HistoryEntryItem(e, ResolveCoverPath(e), _imageCache, _historyDir))
+                    .ToList();
+
+                if (!GroupLineages)
+                {
+                    return filtered
+                        .OrderByDescending(e => e.Timestamp)
+                        .Select(e => new HistoryEntryItem(e, ResolveCoverPath(e), _imageCache, _historyDir))
+                        .ToList();
+                }
+
+                return BuildLineageOrderedEntries(filtered)
+                    .Select(item => new HistoryEntryItem(
+                        item.Entry,
+                        ResolveCoverPath(item.Entry),
+                        _imageCache,
+                        _historyDir,
+                        item.Depth,
+                        item.HasChildren,
+                        item.IsCollapsed))
                     .ToList();
             }, cancellationToken);
 
             if (cancellationToken.IsCancellationRequested) return;
 
+            DisposeHistoryEntries(HistoryEntries);
             HistoryEntries = new ObservableCollection<HistoryEntryItem>(entries);
             SelectedHistoryEntry = HistoryEntries.FirstOrDefault(h => h.Entry.Id == currentEntryId) ?? HistoryEntries.FirstOrDefault();
             PerfLogger.Log($"HistoryViewer.LoadEntries entries={entries.Count}");
@@ -228,6 +266,111 @@ public partial class HistoryViewerViewModel : ObservableObject
         }
     }
 
+    private List<(HistoryEntry Entry, int Depth, bool HasChildren, bool IsCollapsed)> BuildLineageOrderedEntries(IReadOnlyList<HistoryEntry> entries)
+    {
+        var byId = entries
+            .Where(e => !string.IsNullOrWhiteSpace(e.Id))
+            .GroupBy(e => e.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        var childLookup = entries
+            .Where(e => !string.IsNullOrWhiteSpace(e.ParentEntryId))
+            .GroupBy(e => e.ParentEntryId!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(e => e.Timestamp).ToList(),
+                StringComparer.OrdinalIgnoreCase);
+
+        var ordered = new List<(HistoryEntry Entry, int Depth, bool HasChildren, bool IsCollapsed)>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AppendWithChildren(HistoryEntry entry, int depth)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Id) || !visited.Add(entry.Id))
+            {
+                return;
+            }
+
+            var hasChildren = childLookup.TryGetValue(entry.Id, out var children) && children.Count > 0;
+            var isCollapsed = hasChildren && _collapsedLineageParentIds.Contains(entry.Id);
+            ordered.Add((entry, depth, hasChildren, isCollapsed));
+            if (!hasChildren || children == null || isCollapsed)
+            {
+                return;
+            }
+
+            foreach (var child in children)
+            {
+                AppendWithChildren(child, depth + 1);
+            }
+        }
+
+        var roots = entries
+            .Where(e => string.IsNullOrWhiteSpace(e.ParentEntryId) || !byId.ContainsKey(e.ParentEntryId))
+            .OrderByDescending(e => e.Timestamp)
+            .ToList();
+
+        foreach (var root in roots)
+        {
+            AppendWithChildren(root, 0);
+        }
+
+        foreach (var entry in entries.OrderByDescending(e => e.Timestamp))
+        {
+            AppendWithChildren(entry, 0);
+        }
+
+        return ordered;
+    }
+
+    [RelayCommand]
+    private void ToggleLineageExpansion(HistoryEntryItem? item)
+    {
+        if (item?.Entry == null || string.IsNullOrWhiteSpace(item.Entry.Id) || !item.HasChildVariationRuns)
+        {
+            return;
+        }
+
+        if (_collapsedLineageParentIds.Contains(item.Entry.Id))
+        {
+            _collapsedLineageParentIds.Remove(item.Entry.Id);
+        }
+        else
+        {
+            _collapsedLineageParentIds.Add(item.Entry.Id);
+        }
+
+        _ = LoadHistoryEntriesAsync();
+    }
+
+    [RelayCommand]
+    private void CollapseAllLineages()
+    {
+        var parentIds = _historyManager.GetAllEntries()
+            .Where(e => !string.IsNullOrWhiteSpace(e.Id))
+            .Where(e => _historyManager.GetAllEntries().Any(child =>
+                !string.IsNullOrWhiteSpace(child.ParentEntryId) &&
+                string.Equals(child.ParentEntryId, e.Id, StringComparison.OrdinalIgnoreCase)))
+            .Select(e => e.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToList();
+
+        _collapsedLineageParentIds.Clear();
+        foreach (var id in parentIds)
+        {
+            _collapsedLineageParentIds.Add(id!);
+        }
+
+        _ = LoadHistoryEntriesAsync();
+    }
+
+    [RelayCommand]
+    private void ExpandAllLineages()
+    {
+        _collapsedLineageParentIds.Clear();
+        _ = LoadHistoryEntriesAsync();
+    }
+
     partial void OnSelectedHistoryEntryChanged(HistoryEntryItem? value)
     {
         using var perf = PerfLogger.Time("HistoryViewer.LoadEntryImages");
@@ -236,19 +379,15 @@ public partial class HistoryViewerViewModel : ObservableObject
         _imageLoadCts = new CancellationTokenSource();
         var loadToken = _imageLoadCts.Token;
 
-        if (SelectedImages.Count > 0)
-        {
-            ClearSelectionTracking(SelectedImages.ToList());
-        }
-
+        ClearSelectedImages();
         SelectedImage = null;
-        SelectedImages.Clear();
         _selectedForDelete.Clear();
         CanDeleteSelectedImages = false;
         CurrentImagePositionText = string.Empty;
         PromptVariants.Clear();
         DetailsText = string.Empty;
         SelectedImageItem = null;
+        UpdateLineageActions(null);
         if (value == null) return;
 
         foreach (var img in value.Entry.Images)
@@ -296,10 +435,13 @@ public partial class HistoryViewerViewModel : ObservableObject
                              (value.Entry.VariationPrompts == null || value.Entry.VariationPrompts.Count == 0) &&
                              string.IsNullOrWhiteSpace(value.Entry.EnhancedPrompt);
         UpdateMissingVariationState(value.Entry!);
+        UpdateLineageActions(value.Entry);
+        RefreshLineageInspector(value.Entry);
         PerfLogger.Log($"HistoryViewer.LoadEntryImages images={SelectedImages.Count}");
         PerfLogger.LogSummary("HistoryViewer.LoadEntryImages", "HistoryViewer.Decode");
 
         _ = LoadSelectedImagesAsync(SelectedImages.ToList(), loadToken);
+        UpdateNearDuplicateBadges(SelectedImages.ToList());
     }
 
     private Task LoadSelectedImagesAsync(IReadOnlyList<HistoryImageItem> items, CancellationToken token)
@@ -319,15 +461,85 @@ public partial class HistoryViewerViewModel : ObservableObject
                 if (bmp == null) continue;
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
-                    if (!token.IsCancellationRequested)
+                    if (token.IsCancellationRequested)
                     {
-                        item.Bitmap = bmp;
-                        if (ReferenceEquals(SelectedImageItem, item))
+                        bmp.Dispose();
+                        return;
+                    }
+
+                    item.Bitmap = bmp;
+                    if (ReferenceEquals(SelectedImageItem, item))
+                    {
+                        SelectedImage = bmp;
+                    }
+                }, DispatcherPriority.Background);
+            }
+        }, token);
+    }
+
+    private void UpdateNearDuplicateBadges(IReadOnlyList<HistoryImageItem> items)
+    {
+        _similarityBadgeCts?.Cancel();
+        _similarityBadgeCts?.Dispose();
+        _similarityBadgeCts = new CancellationTokenSource();
+        var token = _similarityBadgeCts.Token;
+
+        foreach (var item in items)
+        {
+            item.HasNearDuplicate = false;
+            item.NearDuplicateDistance = null;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var keyed = items
+                    .Select(i => (Item: i, Key: SimilarityFingerprintCacheService.TryBuildImageKey(i.Image, _historyDir)))
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Key))
+                    .ToList();
+                var targetImages = keyed
+                    .Select(x => x.Item.Image)
+                    .ToList();
+                if (targetImages.Count == 0)
+                {
+                    return;
+                }
+
+                var nearest = await _similarityFingerprintCacheService.GetNearestDuplicateDistancesAsync(
+                    targetImages,
+                    _historyDir,
+                    threshold: 6,
+                    excludeProvidedTargets: false,
+                    ct: token);
+
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    foreach (var (item, key) in keyed)
+                    {
+                        if (token.IsCancellationRequested)
                         {
-                            SelectedImage = bmp;
+                            break;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(key) && nearest.TryGetValue(key, out var distance))
+                        {
+                            item.HasNearDuplicate = true;
+                            item.NearDuplicateDistance = distance;
+                        }
+                        else
+                        {
+                            item.HasNearDuplicate = false;
+                            item.NearDuplicateDistance = null;
                         }
                     }
                 }, DispatcherPriority.Background);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch
+            {
             }
         }, token);
     }
@@ -343,6 +555,7 @@ public partial class HistoryViewerViewModel : ObservableObject
             FullDetailsText = BuildDetailsText(SelectedHistoryEntry.Entry, value?.Image);
             SyncSelectedVariantToImage(value?.Image);
             UpdatePromptBanner();
+            RefreshLineageInspector(SelectedHistoryEntry.Entry);
         }
     }
 
@@ -405,6 +618,122 @@ public partial class HistoryViewerViewModel : ObservableObject
             : string.Empty;
     }
 
+    private void UpdateLineageActions(HistoryEntry? entry)
+    {
+        if (entry == null)
+        {
+            CanOpenParentEntry = false;
+            CanOpenChildVariationRuns = false;
+            return;
+        }
+
+        CanOpenParentEntry = !string.IsNullOrWhiteSpace(entry.ParentEntryId);
+        CanOpenChildVariationRuns = _historyManager.GetAllEntries()
+            .Any(e => string.Equals(e.ParentEntryId, entry.Id, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void RefreshLineageInspector(HistoryEntry? entry)
+    {
+        LineageParent = null;
+        HasLineageParent = false;
+        LineageChildRuns = new ObservableCollection<LineageChildRunCardViewModel>();
+        LineageInspectorSummary = string.Empty;
+        HasLineageInspector = false;
+        if (entry == null)
+        {
+            return;
+        }
+
+        var allEntries = _historyManager.GetAllEntries();
+        var parentEntry = !string.IsNullOrWhiteSpace(entry.ParentEntryId)
+            ? allEntries.FirstOrDefault(e => string.Equals(e.Id, entry.ParentEntryId, StringComparison.OrdinalIgnoreCase))
+            : null;
+        var rootEntry = parentEntry ?? entry;
+        var childEntries = allEntries
+            .Where(e => string.Equals(e.ParentEntryId, rootEntry.Id, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(e => e.Timestamp)
+            .ToList();
+
+        if (parentEntry != null)
+        {
+            LineageParent = new LineageParentCardViewModel(parentEntry);
+            HasLineageParent = true;
+        }
+
+        var childCards = new List<LineageChildRunCardViewModel>();
+        foreach (var child in childEntries)
+        {
+            childCards.Add(BuildLineageChildCard(child));
+        }
+        LineageChildRuns = new ObservableCollection<LineageChildRunCardViewModel>(childCards);
+
+        var totalImages = childCards.Sum(c => c.ImageCount);
+        var allScores = childCards
+            .Where(c => c.BestScore.HasValue)
+            .Select(c => c.BestScore!.Value)
+            .ToList();
+        var bestScore = allScores.Count > 0 ? allScores.Max() : (double?)null;
+        var averageScore = allScores.Count > 0 ? allScores.Average() : (double?)null;
+        var duplicateRate = childCards.Count > 0 ? childCards.Average(c => c.PromptDuplicateRate) : 0;
+
+        LineageInspectorSummary = childCards.Count == 0 && parentEntry == null
+            ? "No lineage links for this entry yet."
+            : $"Runs: {childCards.Count} • Images: {totalImages} • Avg best score: {(averageScore.HasValue ? averageScore.Value.ToString("0.00") : "n/a")} • Top score: {(bestScore.HasValue ? bestScore.Value.ToString("0.00") : "n/a")} • Prompt duplicate rate: {duplicateRate:0.#}%";
+        HasLineageInspector = parentEntry != null || childCards.Count > 0;
+    }
+
+    private LineageChildRunCardViewModel BuildLineageChildCard(HistoryEntry child)
+    {
+        var images = child.Images ?? new List<HistoryImage>();
+        var bestImage = images
+            .OrderByDescending(GetBestScore)
+            .ThenBy(i => i.ImagePath ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        var bestScore = bestImage != null ? GetBestScore(bestImage) : (double?)null;
+        var model = ResolveModelName(child, bestImage);
+        var promptDupRate = CalculatePromptDuplicateRate(images);
+        return new LineageChildRunCardViewModel(
+            child.Id,
+            child.Timestamp,
+            child.ExperimentType ?? child.LineageType ?? "Prompt Variations",
+            model,
+            images.Count,
+            bestScore,
+            bestImage,
+            promptDupRate);
+    }
+
+    private static double? GetBestScore(HistoryImage image)
+    {
+        return image.CompositeScore
+               ?? image.AestheticScore
+               ?? image.HeuristicScore
+               ?? image.SharpnessScore;
+    }
+
+    private static double CalculatePromptDuplicateRate(IReadOnlyList<HistoryImage> images)
+    {
+        if (images.Count <= 1)
+        {
+            return 0;
+        }
+
+        var promptGroups = images
+            .Select(i => FirstNonEmpty(i.GenerationParams?.Prompt, i.Prompt)?.Trim() ?? string.Empty)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .GroupBy(p => p, StringComparer.Ordinal)
+            .ToList();
+        if (promptGroups.Count == 0)
+        {
+            return 0;
+        }
+
+        var duplicateCount = promptGroups
+            .Where(g => g.Count() > 1)
+            .Sum(g => g.Count() - 1);
+        return duplicateCount * 100d / images.Count;
+    }
+
     private void OnSelectedImagePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName != nameof(HistoryImageItem.IsSelected))
@@ -440,6 +769,38 @@ public partial class HistoryViewerViewModel : ObservableObject
         }
     }
 
+    private void ClearSelectedImages()
+    {
+        if (SelectedImages.Count == 0)
+        {
+            return;
+        }
+
+        var items = SelectedImages.ToList();
+        ClearSelectionTracking(items);
+        foreach (var item in items)
+        {
+            if (ReferenceEquals(SelectedImage, item.Bitmap))
+            {
+                SelectedImage = null;
+            }
+
+            item.Dispose();
+        }
+
+        SelectedImages.Clear();
+    }
+
+    private static void DisposeHistoryEntries(IEnumerable<HistoryEntryItem>? items)
+    {
+        if (items == null) return;
+
+        foreach (var item in items)
+        {
+            item.Dispose();
+        }
+    }
+
     private static string? ResolveCoverPath(HistoryEntry entry)
     {
         return entry.CoverImagePath
@@ -470,6 +831,8 @@ public partial class HistoryViewerViewModel : ObservableObject
 
     private string BuildDetailsText(HistoryEntry entry, HistoryImage? image)
     {
+        var childVariationRuns = _historyManager.GetAllEntries()
+            .Count(e => string.Equals(e.ParentEntryId, entry.Id, StringComparison.OrdinalIgnoreCase));
         var genParams = GetOrParseGenParams(image)
                         ?? entry.ImageParameters
                         ?? entry.Images.FirstOrDefault(i => i.GenerationParams != null)?.GenerationParams;
@@ -488,11 +851,15 @@ public partial class HistoryViewerViewModel : ObservableObject
             $"Ollama: {WithPlaceholder(entry.OllamaModel, "(none)")}",
             //$"InvokeAI: {WithPlaceholder(entry.InvokeAIModel, "(none)")}",
             image != null ? $"Image Prompt Type: {WithPlaceholder(image.PromptType, "(unknown)")}" : null,
+            childVariationRuns > 0 ? $"Child Variation Runs: {childVariationRuns}" : null,
             FormatGenParams(image, entry)
         }.Where(l => !string.IsNullOrWhiteSpace(l));
         return string.Join(
             Environment.NewLine + Environment.NewLine,
-            lines.Concat(BuildExperimentMetadataLines(entry, image)).Where(l => !string.IsNullOrWhiteSpace(l)));
+            lines
+                .Concat(BuildLineageMetadataLines(entry))
+                .Concat(BuildExperimentMetadataLines(entry, image))
+                .Where(l => !string.IsNullOrWhiteSpace(l)));
     }
 
     public static string BuildDetailsTextForImage(HistoryEntry entry, HistoryImage? image)
@@ -517,7 +884,10 @@ public partial class HistoryViewerViewModel : ObservableObject
         }.Where(l => !string.IsNullOrWhiteSpace(l));
         return string.Join(
             Environment.NewLine + Environment.NewLine,
-            lines.Concat(BuildExperimentMetadataLines(entry, image)).Where(l => !string.IsNullOrWhiteSpace(l)));
+            lines
+                .Concat(BuildLineageMetadataLines(entry))
+                .Concat(BuildExperimentMetadataLines(entry, image))
+                .Where(l => !string.IsNullOrWhiteSpace(l)));
     }
 
     internal static string ResolvePromptForImage(HistoryEntry entry, HistoryImage? image)
@@ -686,9 +1056,33 @@ public partial class HistoryViewerViewModel : ObservableObject
             image?.CompositeScore.HasValue == true ? $"Composite Score: {image.CompositeScore:0.0}" : null
         };
 
+        lines.AddRange(BuildLineageMetadataLines(entry));
         lines.AddRange(BuildExperimentMetadataLines(entry, image));
 
         return string.Join(Environment.NewLine + Environment.NewLine, lines.Where(l => !string.IsNullOrWhiteSpace(l)));
+    }
+
+    private static IEnumerable<string> BuildLineageMetadataLines(HistoryEntry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.ParentEntryId))
+        {
+            yield return $"Derived From Entry: {entry.ParentEntryId}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.ParentImagePath))
+        {
+            yield return $"Derived From Image: {Path.GetFileName(entry.ParentImagePath)}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.LineageType))
+        {
+            yield return $"Lineage Type: {entry.LineageType}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.LineageRunId))
+        {
+            yield return $"Lineage Run: {entry.LineageRunId}";
+        }
     }
 
     public static string ResolveModelName(HistoryEntry entry, HistoryImage? image)
@@ -1615,6 +2009,21 @@ public partial class HistoryViewerViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task GeneratePromptVariations(HistoryImageItem? imageItem)
+    {
+        if (SelectedHistoryEntry == null) return;
+        var image = imageItem?.Image ?? SelectedImageItem?.Image;
+        if (PromptVariationsRequested != null)
+        {
+            await PromptVariationsRequested(SelectedHistoryEntry.Entry, image);
+            LoadHistoryEntries();
+            return;
+        }
+
+        StatusNote = "Prompt variation flow not configured.";
+    }
+
+    [RelayCommand]
     private async Task ShowAllImages()
     {
         if (ShowAllImagesRequested != null)
@@ -1623,6 +2032,217 @@ public partial class HistoryViewerViewModel : ObservableObject
             return;
         }
         StatusNote = "All images view not configured.";
+    }
+
+    [RelayCommand]
+    private async Task ShowModelSimilarity()
+    {
+        if (SelectedHistoryEntry == null)
+        {
+            StatusNote = "Select a history entry first.";
+            return;
+        }
+
+        if (ShowModelSimilarityRequested != null)
+        {
+            await ShowModelSimilarityRequested(SelectedHistoryEntry.Entry);
+            return;
+        }
+
+        StatusNote = "Model similarity tool not configured.";
+    }
+
+    [RelayCommand]
+    private async Task ShowSimilarMatchesForImage(HistoryImageItem? item)
+    {
+        var target = item?.Image ?? SelectedImageItem?.Image;
+        if (target == null)
+        {
+            StatusNote = "Select an image first.";
+            return;
+        }
+
+        if (ShowSimilarityMatchesRequested != null)
+        {
+            await ShowSimilarityMatchesRequested(target);
+            return;
+        }
+
+        StatusNote = "Similarity matches view is not configured.";
+    }
+
+    [RelayCommand]
+    private async Task OpenParentEntry()
+    {
+        if (SelectedHistoryEntry?.Entry == null)
+        {
+            StatusNote = "Select an entry first.";
+            return;
+        }
+
+        var parentId = SelectedHistoryEntry.Entry.ParentEntryId;
+        if (string.IsNullOrWhiteSpace(parentId))
+        {
+            StatusNote = "Selected entry does not have a parent entry.";
+            return;
+        }
+
+        var parent = _historyManager.GetAllEntries()
+            .FirstOrDefault(e => string.Equals(e.Id, parentId, StringComparison.OrdinalIgnoreCase));
+        if (parent == null)
+        {
+            StatusNote = "Parent entry was not found in history.";
+            return;
+        }
+        await SelectHistoryEntryByIdAsync(parent.Id, "Parent entry is hidden by current workflow filter.");
+        StatusNote = $"Opened parent entry {parent.Id}.";
+    }
+
+    [RelayCommand]
+    private async Task SelectChildVariationRuns()
+    {
+        if (SelectedHistoryEntry?.Entry == null)
+        {
+            StatusNote = "Select an entry first.";
+            return;
+        }
+
+        var parentId = SelectedHistoryEntry.Entry.Id;
+        var children = _historyManager.GetAllEntries()
+            .Where(e => string.Equals(e.ParentEntryId, parentId, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(e => e.Timestamp)
+            .ToList();
+        if (children.Count == 0)
+        {
+            StatusNote = "No child variation runs found for this entry.";
+            return;
+        }
+
+        SearchText = string.Empty;
+        ShowFavoritesOnly = false;
+        await LoadHistoryEntriesAsync();
+
+        var childItems = HistoryEntries
+            .Where(i => children.Any(c => string.Equals(c.Id, i.Entry.Id, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (childItems.Count == 0)
+        {
+            StatusNote = "Child variation runs are hidden by current workflow filter.";
+            return;
+        }
+
+        SelectedHistoryEntries = new ObservableCollection<HistoryEntryItem>(childItems);
+        SelectedHistoryEntry = childItems[0];
+        CanMergeEntries = SelectedHistoryEntries.Count > 1;
+        StatusNote = $"Selected {childItems.Count} child variation run(s).";
+    }
+
+    [RelayCommand]
+    private async Task OpenLineageParentCard()
+    {
+        if (LineageParent == null)
+        {
+            return;
+        }
+
+        await SelectHistoryEntryByIdAsync(LineageParent.EntryId, "Parent entry is hidden by current workflow filter.");
+    }
+
+    [RelayCommand]
+    private async Task OpenLineageChildRun(LineageChildRunCardViewModel? card)
+    {
+        if (card == null || string.IsNullOrWhiteSpace(card.EntryId))
+        {
+            return;
+        }
+
+        await SelectHistoryEntryByIdAsync(card.EntryId, "Child run is hidden by current workflow filter.");
+    }
+
+    [RelayCommand]
+    private async Task CompareLineageChildBest(LineageChildRunCardViewModel? card)
+    {
+        if (card?.BestImage == null || CompareImagesRequested == null || SelectedHistoryEntry?.Entry == null)
+        {
+            return;
+        }
+
+        var currentEntry = SelectedHistoryEntry.Entry;
+        var parentEntry = !string.IsNullOrWhiteSpace(currentEntry.ParentEntryId)
+            ? _historyManager.GetAllEntries().FirstOrDefault(e => string.Equals(e.Id, currentEntry.ParentEntryId, StringComparison.OrdinalIgnoreCase))
+            : currentEntry;
+        if (parentEntry == null)
+        {
+            StatusNote = "Parent entry not found for comparison.";
+            return;
+        }
+
+        var parentBest = parentEntry.Images
+            .OrderByDescending(GetBestScore)
+            .ThenBy(i => i.ImagePath ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (parentBest == null)
+        {
+            StatusNote = "Parent entry has no images for comparison.";
+            return;
+        }
+
+        var childEntry = _historyManager.GetAllEntries()
+            .FirstOrDefault(e => string.Equals(e.Id, card.EntryId, StringComparison.OrdinalIgnoreCase));
+        if (childEntry == null)
+        {
+            StatusNote = "Child run not found for comparison.";
+            return;
+        }
+
+        await CompareImagesRequested(parentEntry, parentBest, childEntry, card.BestImage);
+    }
+
+    [RelayCommand]
+    private void FavoriteLineageChildBest(LineageChildRunCardViewModel? card)
+    {
+        if (card?.BestImage == null || string.IsNullOrWhiteSpace(card.EntryId))
+        {
+            return;
+        }
+
+        var entry = _historyManager.GetAllEntries()
+            .FirstOrDefault(e => string.Equals(e.Id, card.EntryId, StringComparison.OrdinalIgnoreCase));
+        if (entry == null)
+        {
+            StatusNote = "Child run not found.";
+            return;
+        }
+
+        card.BestImage.IsFavorite = true;
+        entry.IsFavorite = true;
+        _historyManager.UpdateImage(entry.Id, card.BestImage);
+        _historyManager.UpdateEntry(entry);
+        StatusNote = "Favorited best image in child run.";
+        _ = LoadHistoryEntriesAsync();
+    }
+
+    private async Task SelectHistoryEntryByIdAsync(string? entryId, string hiddenMessage)
+    {
+        if (string.IsNullOrWhiteSpace(entryId))
+        {
+            return;
+        }
+
+        SearchText = string.Empty;
+        ShowFavoritesOnly = false;
+        await LoadHistoryEntriesAsync();
+
+        var target = HistoryEntries.FirstOrDefault(i => string.Equals(i.Entry.Id, entryId, StringComparison.OrdinalIgnoreCase));
+        if (target == null)
+        {
+            StatusNote = hiddenMessage;
+            return;
+        }
+
+        SelectedHistoryEntry = target;
+        SelectedHistoryEntries = new ObservableCollection<HistoryEntryItem> { target };
+        CanMergeEntries = false;
     }
 
     [RelayCommand]
@@ -1818,11 +2438,31 @@ public partial class HistoryViewerViewModel : ObservableObject
         SelectedPromptBanner = $"Viewing prompt: {SelectedPromptVariant.Label}";
         ShowSelectedPromptBanner = true;
     }
+
+    public void Dispose()
+    {
+        _imageLoadCts?.Cancel();
+        _imageLoadCts?.Dispose();
+        _imageLoadCts = null;
+        _refreshCts?.Cancel();
+        _refreshCts?.Dispose();
+        _refreshCts = null;
+        _similarityBadgeCts?.Cancel();
+        _similarityBadgeCts?.Dispose();
+        _similarityBadgeCts = null;
+        ClearSelectedImages();
+        DisposeHistoryEntries(HistoryEntries);
+        HistoryEntries = new ObservableCollection<HistoryEntryItem>();
+        SelectedImage = null;
+    }
 }
 
-public partial class HistoryEntryItem : ObservableObject
+public partial class HistoryEntryItem : ObservableObject, IDisposable
 {
     public HistoryEntry Entry { get; }
+    private readonly int _lineageDepth;
+    public bool HasChildVariationRuns { get; }
+    public bool IsLineageCollapsed { get; }
 
     private Bitmap? _cover;
     private bool _coverRequested;
@@ -1831,12 +2471,22 @@ public partial class HistoryEntryItem : ObservableObject
     private readonly ImageCacheService _imageCache;
     private readonly string _historyDir;
 
-    public HistoryEntryItem(HistoryEntry entry, string? coverPath, ImageCacheService imageCache, string historyDir)
+    public HistoryEntryItem(
+        HistoryEntry entry,
+        string? coverPath,
+        ImageCacheService imageCache,
+        string historyDir,
+        int lineageDepth = 0,
+        bool hasChildVariationRuns = false,
+        bool isLineageCollapsed = false)
     {
         Entry = entry;
         _coverPath = coverPath;
         _imageCache = imageCache;
         _historyDir = historyDir;
+        _lineageDepth = Math.Max(0, lineageDepth);
+        HasChildVariationRuns = hasChildVariationRuns;
+        IsLineageCollapsed = isLineageCollapsed;
     }
 
     public Bitmap? Cover
@@ -1864,8 +2514,86 @@ public partial class HistoryEntryItem : ObservableObject
             return string.IsNullOrWhiteSpace(Entry.ProcessedPrompt) ? Entry.OriginalPrompt : Entry.ProcessedPrompt;
         }
     }
-    public string Status => Entry.Status ?? "generated";
-    public string Template => Entry.TemplateName ?? "";
+    public string Status
+    {
+        get
+        {
+            var baseStatus = Entry.Status ?? "generated";
+            var replay = ReproducibilityLabel;
+            if (!string.IsNullOrWhiteSpace(Entry.ParentEntryId))
+            {
+                return $"derived · {baseStatus} · {replay}";
+            }
+
+            return $"{baseStatus} · {replay}";
+        }
+    }
+
+    public string ReproducibilityLabel
+    {
+        get
+        {
+            if (Entry.Images == null || Entry.Images.Count == 0)
+            {
+                return "Replay Risky";
+            }
+
+            if (Entry.Images.Any(i => string.Equals(ReproducibilityHelper.GetReplayHealth(i), "Exact", StringComparison.OrdinalIgnoreCase)))
+            {
+                return "Replay Exact";
+            }
+
+            if (Entry.Images.Any(i => string.Equals(ReproducibilityHelper.GetReplayHealth(i), "Likely", StringComparison.OrdinalIgnoreCase)))
+            {
+                return "Replay Likely";
+            }
+
+            return "Replay Risky";
+        }
+    }
+
+    public string Template
+    {
+        get
+        {
+            var baseTemplate = Entry.TemplateName ?? "";
+            if (!string.IsNullOrWhiteSpace(Entry.ParentEntryId))
+            {
+                return string.IsNullOrWhiteSpace(baseTemplate)
+                    ? "Prompt Variations"
+                    : $"{baseTemplate} · Prompt Variations";
+            }
+
+            return baseTemplate;
+        }
+    }
+    public string DisplayTemplate
+    {
+        get
+        {
+            var template = Template;
+            if (_lineageDepth <= 0)
+            {
+                return template;
+            }
+
+            var marker = string.Concat(Enumerable.Repeat("↳ ", _lineageDepth));
+            return string.IsNullOrWhiteSpace(template) ? $"{marker}(derived)" : $"{marker}{template}";
+        }
+    }
+
+    public string LineageGlyph
+    {
+        get
+        {
+            if (!HasChildVariationRuns)
+            {
+                return string.Empty;
+            }
+
+            return IsLineageCollapsed ? "▸" : "▾";
+        }
+    }
     public DateTime Timestamp => Entry.Timestamp;
     public bool IsFavorite => Entry.IsFavorite || Entry.Images.Any(i => i.IsFavorite);
     public string Model => HistoryViewerViewModel.ResolveModelName(Entry, Entry.Images.FirstOrDefault()) switch
@@ -1903,18 +2631,37 @@ public partial class HistoryEntryItem : ObservableObject
             }
         });
     }
+
+    public void Dispose()
+    {
+        _cover?.Dispose();
+        _cover = null;
+    }
 }
 
-public partial class HistoryImageItem : ObservableObject
+public partial class HistoryImageItem : ObservableObject, IDisposable
 {
     public HistoryImage Image { get; }
     [ObservableProperty] private Bitmap? _bitmap;
     [ObservableProperty] private bool _isSelected;
+    [ObservableProperty] private bool _hasNearDuplicate;
+    [ObservableProperty] private int? _nearDuplicateDistance;
+
+    partial void OnHasNearDuplicateChanged(bool value) => OnPropertyChanged(nameof(SimilarityLabel));
+    partial void OnNearDuplicateDistanceChanged(int? value) => OnPropertyChanged(nameof(SimilarityLabel));
 
     public HistoryImageItem(HistoryImage image, Bitmap? bitmap)
     {
         Image = image;
         _bitmap = bitmap;
+    }
+
+    partial void OnBitmapChanged(Bitmap? oldValue, Bitmap? newValue)
+    {
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            oldValue?.Dispose();
+        }
     }
 
     public string Label
@@ -1972,6 +2719,66 @@ public partial class HistoryImageItem : ObservableObject
                 : $"LoRAs {string.Join(", ", names)}";
         }
     }
+
+    public string SimilarityLabel => HasNearDuplicate
+        ? (NearDuplicateDistance.HasValue ? $"Similar image (d={NearDuplicateDistance.Value})" : "Similar image")
+        : string.Empty;
+
+    public void Dispose()
+    {
+        Bitmap = null;
+    }
+}
+
+public sealed class LineageParentCardViewModel
+{
+    public LineageParentCardViewModel(HistoryEntry entry)
+    {
+        EntryId = entry.Id;
+        SummaryText = $"{entry.Timestamp:g} • {Fallback(entry.TemplateName, "(no template)")} • {Fallback(entry.Status, "(unknown)")}";
+    }
+
+    public string EntryId { get; }
+    public string SummaryText { get; }
+
+    private static string Fallback(string? value, string placeholder)
+        => string.IsNullOrWhiteSpace(value) ? placeholder : value.Trim();
+}
+
+public sealed class LineageChildRunCardViewModel
+{
+    public LineageChildRunCardViewModel(
+        string entryId,
+        DateTime timestamp,
+        string runType,
+        string modelName,
+        int imageCount,
+        double? bestScore,
+        HistoryImage? bestImage,
+        double promptDuplicateRate)
+    {
+        EntryId = entryId;
+        Timestamp = timestamp;
+        RunType = runType;
+        ModelName = modelName;
+        ImageCount = imageCount;
+        BestScore = bestScore;
+        BestImage = bestImage;
+        PromptDuplicateRate = promptDuplicateRate;
+    }
+
+    public string EntryId { get; }
+    public DateTime Timestamp { get; }
+    public string RunType { get; }
+    public string ModelName { get; }
+    public int ImageCount { get; }
+    public double? BestScore { get; }
+    public HistoryImage? BestImage { get; }
+    public double PromptDuplicateRate { get; }
+
+    public string HeaderText => $"{Timestamp:g} • {RunType}";
+    public string StatsText =>
+        $"Model: {ModelName} • Images: {ImageCount} • Best score: {(BestScore.HasValue ? BestScore.Value.ToString("0.00") : "n/a")} • Prompt duplicate rate: {PromptDuplicateRate:0.#}%";
 }
 
 public record HistoryImagePreviewContext(HistoryImageItem Item, HistoryEntry Entry, string DetailsText);

@@ -1,0 +1,82 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d"
+        x:Class="PromptTool.Views.SimilarityDuplicateReviewWindow"
+        x:Name="Root"
+        x:DataType="vm:SimilarityDuplicateReviewViewModel"
+        Width="1180"
+        Height="760"
+        MinWidth="900"
+        MinHeight="600"
+        Title="Generation Similarity Matches"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="12" RowSpacing="10">
+        <TextBlock Text="{Binding SummaryText}" TextWrapping="Wrap"/>
+
+        <TextBlock Grid.Row="1"
+                   Text="These are near-duplicates between newly saved images and existing history."
+                   Classes="subtle"/>
+
+        <ListBox Grid.Row="2"
+                 ItemsSource="{Binding Items}"
+                 SelectedItem="{Binding SelectedItem}"
+                 BorderThickness="0">
+            <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:SimilarityDuplicateReviewItemViewModel">
+                    <Border Margin="0,0,0,8" Padding="8" BorderBrush="#404040" BorderThickness="1" CornerRadius="6">
+                        <Grid ColumnDefinitions="*,12,*" RowDefinitions="Auto,Auto,Auto">
+                            <StackPanel Grid.Column="0" Spacing="4">
+                                <TextBlock Text="{Binding SourceModel}" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                <Border BorderBrush="#303030" BorderThickness="1" Background="#1A1A1A">
+                                    <Image Source="{Binding SourceBitmap}" Height="180" Stretch="Uniform"/>
+                                </Border>
+                                <TextBlock Text="{Binding SourceSeedText}" Classes="subtle" IsVisible="{Binding SourceSeedText, Converter={StaticResource StringToBoolConverter}}"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="vs"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2" Spacing="4">
+                                <TextBlock Text="{Binding MatchModel}" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                <Border BorderBrush="#303030" BorderThickness="1" Background="#1A1A1A">
+                                    <Image Source="{Binding MatchBitmap}" Height="180" Stretch="Uniform"/>
+                                </Border>
+                                <TextBlock Text="{Binding MatchSeedText}" Classes="subtle" IsVisible="{Binding MatchSeedText, Converter={StaticResource StringToBoolConverter}}"/>
+                            </StackPanel>
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3"
+                                       Margin="0,8,0,0"
+                                       Text="{Binding DistanceText}"
+                                       FontWeight="SemiBold"/>
+
+                            <WrapPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3"
+                                       Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Content="Open New Image Details"
+                                        MinWidth="190"
+                                        Margin="0,0,8,8"
+                                        Click="OpenSourceDetails_Click"/>
+                                <Button Content="Open Existing Image Details"
+                                        MinWidth="190"
+                                        Margin="0,0,8,8"
+                                        Click="OpenMatchDetails_Click"/>
+                                <Button Content="Compare Side-by-Side"
+                                        MinWidth="190"
+                                        Margin="0,0,8,8"
+                                        Click="ComparePair_Click"/>
+                            </WrapPanel>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <Button Content="Close" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

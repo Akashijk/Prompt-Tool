@@ -46,6 +46,10 @@ public static class ImageDetailPresenter
         var safeBitmap = UiBitmapHelper.CloneForUi(detailBitmap)
                         ?? UiBitmapHelper.CloneForUi(fallbackBitmap)
                         ?? fallbackBitmap;
+        if (!ReferenceEquals(detailBitmap, fallbackBitmap) && !ReferenceEquals(detailBitmap, safeBitmap))
+        {
+            detailBitmap.Dispose();
+        }
         var processed = HistoryViewerViewModel.ResolveGeneratedPromptForImage(entry, image);
         if (string.IsNullOrWhiteSpace(processed))
         {

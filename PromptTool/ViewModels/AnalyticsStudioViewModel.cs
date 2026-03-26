@@ -58,7 +58,7 @@ public partial class FilterOption : ObservableObject
     }
 }
 
-public partial class AnalyticsImageItem : ObservableObject
+public partial class AnalyticsImageItem : ObservableObject, IDisposable
 {
     public HistoryEntry Entry { get; }
     public HistoryImage Image { get; }
@@ -75,6 +75,11 @@ public partial class AnalyticsImageItem : ObservableObject
     [ObservableProperty] private double? _promptMatchScore;
     [ObservableProperty] private double? _compositeScore;
     [ObservableProperty] private bool _hasScore;
+    [ObservableProperty] private bool _hasNearDuplicate;
+    [ObservableProperty] private int? _nearDuplicateDistance;
+
+    partial void OnHasNearDuplicateChanged(bool value) => OnPropertyChanged(nameof(SimilarityLabel));
+    partial void OnNearDuplicateDistanceChanged(int? value) => OnPropertyChanged(nameof(SimilarityLabel));
 
     public AnalyticsImageItem(HistoryEntry entry, HistoryImage image, Bitmap? bitmap)
     {
@@ -88,6 +93,14 @@ public partial class AnalyticsImageItem : ObservableObject
         PromptMatchScore = image.PromptMatchScore;
         CompositeScore = image.CompositeScore;
         UpdateScoreFlags(); // Ensure initial flags are set correctly
+    }
+
+    partial void OnBitmapChanged(Bitmap? oldValue, Bitmap? newValue)
+    {
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            oldValue?.Dispose();
+        }
     }
 
     partial void OnScoreChanged(double? value)
@@ -195,6 +208,10 @@ public partial class AnalyticsImageItem : ObservableObject
     public string PromptTypeDisplay => string.IsNullOrWhiteSpace(Image.PromptTypeSuffix)
         ? PromptTypeLabel
         : $"{PromptTypeLabel} · {Image.PromptTypeSuffix}";
+    public string ReplayHealthLabel => ReproducibilityHelper.GetReplayHealthLabel(Image);
+    public string SimilarityLabel => HasNearDuplicate
+        ? (NearDuplicateDistance.HasValue ? $"Similar image (d={NearDuplicateDistance.Value})" : "Similar image")
+        : string.Empty;
     public bool HasAestheticScore => AestheticScore.HasValue;
     public bool HasHeuristicScore => Score.HasValue;
     public double? DisplayScore => AestheticScore ?? Score;
@@ -210,6 +227,11 @@ public partial class AnalyticsImageItem : ObservableObject
     {
         OnPropertyChanged(nameof(IsFavorite));
     }
+
+    public void Dispose()
+    {
+        Bitmap = null;
+    }
 }
 
 public sealed record ScoreByModelConfirmRequest(
@@ -222,7 +244,7 @@ public sealed record ScoreByModelConfirmResult(
     bool Confirmed,
     bool IncludeAlreadyScored);
 
-public partial class AnalyticsStudioViewModel : ObservableObject
+public partial class AnalyticsStudioViewModel : ObservableObject, IDisposable
 {
     private readonly HistoryManagerService _historyManager;
     private readonly TemplateService _templateService;
@@ -242,6 +264,8 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     private int _thumbPriorityDirty;
     private bool _enableScoringInitialized;
     private readonly Dictionary<HistoryImage, AnalyticsImageItem> _itemCache = new();
+    private readonly SimilarityFingerprintCacheService _similarityFingerprintCacheService = new();
+    private CancellationTokenSource? _similarityBadgeCts;
 
     [ObservableProperty] private ObservableCollection<FilterOption> _models = new();
     [ObservableProperty] private ObservableCollection<FilterOption> _loras = new();
@@ -296,6 +320,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateSeedVariationsRequested { get; set; }
     public Func<HistoryEntry, HistoryImage?, Task>? GenerateLoraVariationsRequested { get; set; }
     public Func<string, Task>? ShowPngMetadataRequested { get; set; }
+    public Func<HistoryImage, Task>? ShowSimilarityMatchesRequested { get; set; }
     public Func<string, Task<bool>>? ConfirmAsync { get; set; }
     public Func<ScoreByModelConfirmRequest, Task<ScoreByModelConfirmResult>>? ScoreByModelConfirmAsync { get; set; }
 
@@ -757,6 +782,24 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         }
 
         await AddItemsToFavoritesAsync(new[] { target });
+    }
+
+    [RelayCommand]
+    private async Task ShowSimilarMatchesForImage(AnalyticsImageItem? item)
+    {
+        var target = ResolveSingleTarget(item);
+        if (target == null)
+        {
+            return;
+        }
+
+        if (ShowSimilarityMatchesRequested != null)
+        {
+            await ShowSimilarityMatchesRequested(target.Image);
+            return;
+        }
+
+        StatusText = "Similarity matches view is not configured.";
     }
 
     [RelayCommand]
@@ -1578,15 +1621,19 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                                 if (_imageCache.TryGetCached(full, 220, null, out var cached) && cached != null)
                                 {
                                     PerfLogger.Count("ImageCache.Hit");
-                                    item.Bitmap = cached;
-                                    if (EnableScoring && !item.Score.HasValue)
+                                    var uiBitmap = UiBitmapHelper.CloneForUi(cached);
+                                    if (uiBitmap != null)
                                     {
-                                        item.Score = ScoringHelper.CalculateScore(cached);
-                                        item.SharpnessScore = ScoringHelper.CalculateSharpnessScore(cached);
-                                        item.Image.HeuristicScore = item.Score;
-                                        item.Image.SharpnessScore = item.SharpnessScore;
-                                        TryUpdateCompositeScore(item);
-                                        _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+                                        item.Bitmap = uiBitmap;
+                                        if (EnableScoring && !item.Score.HasValue)
+                                        {
+                                            item.Score = ScoringHelper.CalculateScore(uiBitmap);
+                                            item.SharpnessScore = ScoringHelper.CalculateSharpnessScore(uiBitmap);
+                                            item.Image.HeuristicScore = item.Score;
+                                            item.Image.SharpnessScore = item.SharpnessScore;
+                                            TryUpdateCompositeScore(item);
+                                            _historyManager.UpdateImage(item.Entry.Id, item.Image, save: false);
+                                        }
                                     }
                                 }
                                 else
@@ -1623,6 +1670,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         {
             UpdateResultsCollection(result.items);
         }
+        UpdateNearDuplicateBadges(result.items);
         UpdateFilterCounts(result.items);
         StatusText = result.toLoad.Count == 0
             ? $"Loaded {result.items.Count} images."
@@ -1658,6 +1706,12 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                     {
                         Dispatcher.UIThread.Post(() =>
                         {
+                            if (thumbToken.IsCancellationRequested)
+                            {
+                                bmp.Dispose();
+                                return;
+                            }
+
                             next.Item.Bitmap = bmp;
                             if (EnableScoring && !next.Item.Score.HasValue)
                             {
@@ -1731,6 +1785,7 @@ public partial class AnalyticsStudioViewModel : ObservableObject
                     item.IsSelected = false;
                 }
                 item.PropertyChanged -= OnItemPropertyChanged;
+                item.Dispose();
                 existing.RemoveAt(i);
             }
         }
@@ -1768,6 +1823,70 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         CanDeleteSelected = _selected.Count > 0;
         CanFavoriteSelected = _selected.Count > 0;
         UpdateScoreByModelStatus();
+    }
+
+    private void UpdateNearDuplicateBadges(IReadOnlyList<AnalyticsImageItem> items)
+    {
+        _similarityBadgeCts?.Cancel();
+        _similarityBadgeCts?.Dispose();
+        _similarityBadgeCts = new CancellationTokenSource();
+        var token = _similarityBadgeCts.Token;
+
+        foreach (var item in items)
+        {
+            item.HasNearDuplicate = false;
+            item.NearDuplicateDistance = null;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var keyed = items
+                    .Select(i => (Item: i, Key: SimilarityFingerprintCacheService.TryBuildImageKey(i.Image, _historyDir)))
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Key))
+                    .ToList();
+                if (keyed.Count == 0)
+                {
+                    return;
+                }
+
+                var nearest = await _similarityFingerprintCacheService.GetNearestDuplicateDistancesAsync(
+                    keyed.Select(k => k.Item.Image).ToList(),
+                    _historyDir,
+                    threshold: 6,
+                    excludeProvidedTargets: false,
+                    ct: token);
+
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    foreach (var (item, key) in keyed)
+                    {
+                        if (token.IsCancellationRequested)
+                        {
+                            break;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(key) && nearest.TryGetValue(key, out var distance))
+                        {
+                            item.HasNearDuplicate = true;
+                            item.NearDuplicateDistance = distance;
+                        }
+                        else
+                        {
+                            item.HasNearDuplicate = false;
+                            item.NearDuplicateDistance = null;
+                        }
+                    }
+                }, DispatcherPriority.Background);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch
+            {
+            }
+        }, token);
     }
 
     private Task RecomputeScoresAsync(bool enable)
@@ -2001,6 +2120,38 @@ public partial class AnalyticsStudioViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(path)) return null;
         using var _ = PerfLogger.Measure("AnalyticsStudio.Decode");
         return _imageCache.GetOrLoadForUi(path, decodeWidth, _historyDir);
+    }
+
+    public void Dispose()
+    {
+        _refreshCts?.Cancel();
+        _refreshCts?.Dispose();
+        _refreshCts = null;
+        _scoreCts?.Cancel();
+        _scoreCts?.Dispose();
+        _scoreCts = null;
+        _thumbLoadCts?.Cancel();
+        _thumbLoadCts?.Dispose();
+        _thumbLoadCts = null;
+        _similarityBadgeCts?.Cancel();
+        _similarityBadgeCts?.Dispose();
+        _similarityBadgeCts = null;
+
+        foreach (var item in Results)
+        {
+            item.PropertyChanged -= OnItemPropertyChanged;
+            item.Dispose();
+        }
+
+        Results = new ObservableCollection<AnalyticsImageItem>();
+
+        foreach (var item in _itemCache.Values)
+        {
+            item.Dispose();
+        }
+
+        _itemCache.Clear();
+        _selected.Clear();
     }
 
     private void UpdateFilterCounts(IReadOnlyList<AnalyticsImageItem> items)

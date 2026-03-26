@@ -19,6 +19,7 @@
                     <NumericUpDown x:Name="StartSeedInput"
                                    Minimum="0"
                                    Maximum="2147483647"
+                                   FormatString="F0"
                                    Width="220"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -26,6 +27,7 @@
                     <NumericUpDown x:Name="EndSeedInput"
                                    Minimum="0"
                                    Maximum="2147483647"
+                                   FormatString="F0"
                                    Width="220"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -33,6 +35,7 @@
                     <NumericUpDown x:Name="CountInput"
                                    Minimum="1"
                                    Maximum="100"
+                                   FormatString="F0"
                                    Width="220"/>
                 </StackPanel>
                 <CheckBox x:Name="RandomSeedsCheck"

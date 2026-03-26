@@ -15,6 +15,7 @@ public partial class ExperimentRunnerWindow : Window
         InitializeComponent();
         HookViewModel(DataContext as ExperimentRunnerViewModel);
         DataContextChanged += (_, _) => HookViewModel(DataContext as ExperimentRunnerViewModel);
+        Closed += (_, _) => HookViewModel(null);
     }
 
     public ExperimentRunnerWindow(ExperimentRunnerViewModel viewModel)
@@ -22,6 +23,7 @@ public partial class ExperimentRunnerWindow : Window
         InitializeComponent();
         DataContext = viewModel;
         HookViewModel(viewModel);
+        Closed += (_, _) => HookViewModel(null);
     }
 
     private void HookViewModel(ExperimentRunnerViewModel? viewModel)

@@ -2,17 +2,13 @@ using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.ComponentModel;
 using System.Threading.Tasks;
-using Avalonia;
-using Avalonia.Layout;
 using PromptTool.ViewModels;
 using PromptTool.Helpers;
 
 namespace PromptTool.Views;
 
-public partial class InvokeAILoraDefaultsWindow : Window
+public partial class InvokeAILoraDefaultsWindow : PropertyChangedDialogWindow<InvokeAILoraDefaultsViewModel, bool>
 {
     private bool _closePromptActive;
 
@@ -20,7 +16,6 @@ public partial class InvokeAILoraDefaultsWindow : Window
     {
         InitializeComponent();
         WireHandlers();
-        HookDialogCloseFromDataContext();
         Closing += OnClosing;
     }
 
@@ -29,34 +24,21 @@ public partial class InvokeAILoraDefaultsWindow : Window
         InitializeComponent();
         DataContext = viewModel;
         WireHandlers();
-        HookDialogClose(viewModel);
         Closing += OnClosing;
     }
 
-    private void HookDialogCloseFromDataContext()
-    {
-        DataContextChanged += (_, _) =>
-        {
-            if (DataContext is InvokeAILoraDefaultsViewModel vm)
-            {
-                HookDialogClose(vm);
-            }
-        };
-    }
+    protected override string DialogResultPropertyName => nameof(InvokeAILoraDefaultsViewModel.DialogResult);
 
-    private void HookDialogClose(InvokeAILoraDefaultsViewModel viewModel)
+    protected override bool TryGetDialogResult(InvokeAILoraDefaultsViewModel viewModel, out bool result)
     {
-        viewModel.PropertyChanged += OnViewModelPropertyChanged;
-    }
-
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (e.PropertyName == nameof(InvokeAILoraDefaultsViewModel.DialogResult) &&
-            sender is InvokeAILoraDefaultsViewModel vm &&
-            vm.DialogResult.HasValue)
+        if (viewModel.DialogResult.HasValue)
         {
-            Close(vm.DialogResult.Value);
+            result = viewModel.DialogResult.Value;
+            return true;
         }
+
+        result = default;
+        return false;
     }
 
     private async void OnClosing(object? sender, WindowClosingEventArgs e)
@@ -68,7 +50,8 @@ public partial class InvokeAILoraDefaultsWindow : Window
 
         e.Cancel = true;
         _closePromptActive = true;
-        var choice = await ShowUnsavedChangesPromptAsync(
+        var choice = await WindowClosePrompt.ShowAsync(
+            this,
             "Unsaved LoRA defaults",
             "You have unsaved changes. Apply them before closing?",
             applyLabel: "Apply");
@@ -76,66 +59,15 @@ public partial class InvokeAILoraDefaultsWindow : Window
 
         switch (choice)
         {
-            case CloseChoice.Save:
+            case WindowCloseChoice.Save:
                 vm.ConfirmCommand.Execute(null);
                 break;
-            case CloseChoice.Discard:
+            case WindowCloseChoice.Discard:
                 Close(false);
                 break;
-            case CloseChoice.Cancel:
+            case WindowCloseChoice.Cancel:
                 break;
         }
-    }
-
-    private enum CloseChoice
-    {
-        Save,
-        Discard,
-        Cancel
-    }
-
-    private async Task<CloseChoice> ShowUnsavedChangesPromptAsync(string title, string message, string applyLabel)
-    {
-        var dialog = new Window
-        {
-            Title = title,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight,
-            CanResize = false
-        };
-
-        var text = new TextBlock
-        {
-            Text = message,
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 12)
-        };
-
-        var saveButton = new Button { Content = applyLabel, MinWidth = 80 };
-        var discardButton = new Button { Content = "Discard", MinWidth = 80 };
-        var cancelButton = new Button { Content = "Cancel", MinWidth = 80, IsCancel = true };
-
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Spacing = 8,
-            Children = { saveButton, discardButton, cancelButton }
-        };
-
-        var panel = new StackPanel
-        {
-            Margin = new Thickness(12),
-            Children = { text, buttons }
-        };
-
-        dialog.Content = panel;
-
-        saveButton.Click += (_, _) => dialog.Close(CloseChoice.Save);
-        discardButton.Click += (_, _) => dialog.Close(CloseChoice.Discard);
-        cancelButton.Click += (_, _) => dialog.Close(CloseChoice.Cancel);
-
-        return await dialog.ShowDialog<CloseChoice>(this);
     }
 
     private void WireHandlers()
@@ -180,4 +112,5 @@ public partial class InvokeAILoraDefaultsWindow : Window
             vm.ImportFrom(path);
         });
     }
+
 }

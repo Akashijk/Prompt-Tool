@@ -1,0 +1,165 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d"
+        x:Class="PromptTool.Views.ModelSimilarityWindow"
+        x:DataType="vm:ModelSimilarityViewModel"
+        Width="1100"
+        Height="760"
+        MinWidth="900"
+        MinHeight="620"
+        Title="Model Similarity"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="12" RowSpacing="10">
+        <StackPanel Orientation="Horizontal" Spacing="12">
+            <TextBlock Text="Scope:"
+                       VerticalAlignment="Center"
+                       ToolTip.Tip="Selected Entry compares only the current history entry. Full History scans your whole history and uses the similarity cache to avoid expensive rehashing where possible."/>
+            <ComboBox Width="210"
+                      ItemsSource="{Binding ScopeOptions}"
+                      SelectedItem="{Binding SelectedScope}"
+                      VerticalAlignment="Center"/>
+            <TextBlock Text="Near-duplicate threshold:"
+                       VerticalAlignment="Center"
+                       ToolTip.Tip="Maximum pHash Hamming distance allowed before two images are considered near-duplicates. Lower is stricter; higher allows looser matches."/>
+            <NumericUpDown Width="132"
+                           Minimum="0"
+                           Maximum="64"
+                           Value="{Binding Threshold}"
+                           FormatString="F0"
+                           ToolTip.Tip="0-2 is very strict, 4-6 is a good default, and larger values may produce more false positives."/>
+            <Button Content="Run"
+                    Command="{Binding RunCommand}"
+                    IsEnabled="{Binding IsRunning, Converter={StaticResource InverseBoolConverter}}"
+                    ToolTip.Tip="Scan the selected history entry for comparable cross-model images and surface near-duplicate output."/>
+            <Button Content="Cancel"
+                    Command="{Binding CancelCommand}"
+                    IsEnabled="{Binding IsRunning}"
+                    ToolTip.Tip="Stop the current comparison scan."/>
+            <Button Content="Run Verification Batch..."
+                    Command="{Binding RunVerificationCommand}"
+                    ToolTip.Tip="Generate a controlled seed batch for the selected model pair to verify whether they behave nearly identically."/>
+            <ProgressBar Width="260"
+                         Height="12"
+                         Minimum="0"
+                         Maximum="100"
+                         Value="{Binding ProgressValue}"
+                         ToolTip.Tip="Comparison progress for the current scan."/>
+            <TextBlock Text="{Binding Status}"
+                       Classes="subtle"
+                       VerticalAlignment="Center"
+                       ToolTip.Tip="{Binding Status}"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="8">
+            <TextBox Text="{Binding SummaryText}"
+                     TextWrapping="Wrap"
+                     IsReadOnly="True"
+                     AcceptsReturn="True"
+                     BorderThickness="0"
+                     Background="Transparent"
+                     ToolTip.Tip="Summary of the scan: how many images were comparable, which model pairs matched, and any clusters of similar models."/>
+        </Border>
+
+        <Border Grid.Row="2" BorderBrush="#404040" BorderThickness="1" CornerRadius="4" Padding="8">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+                <TextBlock Text="{Binding SimilarContextHeader}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                <ScrollViewer Grid.Row="1"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Disabled"
+                              Height="128">
+                    <ItemsControl ItemsSource="{Binding SimilarContextImages}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="8"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ModelSimilaritySiblingImageViewModel">
+                                <Border BorderBrush="#303030" BorderThickness="1" CornerRadius="4" Padding="6" Width="140">
+                                    <StackPanel Spacing="4">
+                                        <Border BorderBrush="#303030" BorderThickness="1" Background="#1A1A1A">
+                                            <Image Source="{Binding Bitmap}"
+                                                   Height="72"
+                                                   Stretch="Uniform"
+                                                   DoubleTapped="SiblingImage_DoubleTapped"
+                                                   ToolTip.Tip="Double-click to open image details."/>
+                                        </Border>
+                                        <TextBlock Text="{Binding ModelName}" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding SeedText}" Classes="subtle" IsVisible="{Binding SeedText, Converter={StaticResource StringToBoolConverter}}"/>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <ListBox Grid.Row="3"
+                 ItemsSource="{Binding Matches}"
+                 SelectedItem="{Binding SelectedMatch}"
+                 BorderThickness="0">
+            <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:ModelSimilarityPairMatchViewModel">
+                    <Border Margin="0,0,0,8"
+                            Padding="8"
+                            BorderBrush="#404040"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <Grid ColumnDefinitions="*,16,*" RowDefinitions="Auto,Auto">
+                            <StackPanel Grid.Column="0" Spacing="4">
+                                <TextBlock Text="{Binding LeftModel}" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                <Border BorderBrush="#303030" BorderThickness="1" Background="#1A1A1A">
+                                    <Image Source="{Binding LeftBitmap}"
+                                           Height="180"
+                                           Stretch="Uniform"
+                                           DoubleTapped="LeftImage_DoubleTapped"
+                                           ToolTip.Tip="Double-click to open the left image in the normal image details window."/>
+                                </Border>
+                                <TextBlock Text="{Binding LeftAestheticText}"
+                                           Classes="subtle"
+                                           IsVisible="{Binding LeftAestheticText, Converter={StaticResource StringToBoolConverter}}"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="vs" HorizontalAlignment="Center"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2" Spacing="4">
+                                <TextBlock Text="{Binding RightModel}" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                <Border BorderBrush="#303030" BorderThickness="1" Background="#1A1A1A">
+                                    <Image Source="{Binding RightBitmap}"
+                                           Height="180"
+                                           Stretch="Uniform"
+                                           DoubleTapped="RightImage_DoubleTapped"
+                                           ToolTip.Tip="Double-click to open the right image in the normal image details window."/>
+                                </Border>
+                                <TextBlock Text="{Binding RightAestheticText}"
+                                           Classes="subtle"
+                                           IsVisible="{Binding RightAestheticText, Converter={StaticResource StringToBoolConverter}}"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="12" Margin="0,8,0,0">
+                                <Border Background="#1E4A73" CornerRadius="4" Padding="6,2">
+                                    <TextBlock Text="{Binding PairLabelText}" FontWeight="SemiBold"/>
+                                </Border>
+                                <TextBlock Text="{Binding DistanceText}" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding WinnerText}" Classes="subtle"/>
+                                <TextBlock Text="{Binding PairSummaryText}" Classes="subtle"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <TextBlock Text="Double-click an image to open details." Classes="subtle" VerticalAlignment="Center"/>
+            <Button Content="Close" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -15,7 +15,7 @@ using PromptTool.Services;
 
 namespace PromptTool.ViewModels;
 
-public partial class GalleryImageItem : ObservableObject
+public partial class GalleryImageItem : ObservableObject, IDisposable
 {
     public HistoryEntry Entry { get; }
     public HistoryImage Image { get; }
@@ -28,6 +28,14 @@ public partial class GalleryImageItem : ObservableObject
         Entry = entry;
         Image = image;
         _bitmap = bitmap;
+    }
+
+    partial void OnBitmapChanged(Bitmap? oldValue, Bitmap? newValue)
+    {
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            oldValue?.Dispose();
+        }
     }
 
     public string Label
@@ -81,6 +89,11 @@ public partial class GalleryImageItem : ObservableObject
                 : $"LoRAs {string.Join(", ", names)}";
         }
     }
+
+    public void Dispose()
+    {
+        Bitmap = null;
+    }
 }
 
 public partial class TemplateImageGroup : ObservableObject
@@ -100,7 +113,7 @@ public partial class TemplateImageGroup : ObservableObject
     public int Count => Images.Count;
 }
 
-public partial class AllImagesViewerViewModel : ObservableObject
+public partial class AllImagesViewerViewModel : ObservableObject, IDisposable
 {
     private readonly HistoryManagerService _historyManager;
     private readonly TemplateService _templateService;
@@ -263,11 +276,18 @@ public partial class AllImagesViewerViewModel : ObservableObject
                 .ToList();
         });
 
-        if (token.IsCancellationRequested) return;
+        if (token.IsCancellationRequested)
+        {
+            DisposeGroups(result);
+            return;
+        }
 
+        var oldGroups = Groups;
         Groups = new ObservableCollection<TemplateImageGroup>(result);
+        DisposeGroups(oldGroups);
         var total = result.Sum(g => g.Count);
         StatusText = $"Loaded {total} images. Loading thumbnails...";
+        ClearSelectionState();
         CanCompare = false;
         PerfLogger.Log($"AllImages.Load groups={result.Count} images={total}");
 
@@ -283,7 +303,16 @@ public partial class AllImagesViewerViewModel : ObservableObject
                     var bmp = LoadBitmap(item.Image.ImagePath, 320);
                     if (bmp != null)
                     {
-                        Dispatcher.UIThread.Post(() => item.Bitmap = bmp);
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (token.IsCancellationRequested)
+                            {
+                                bmp.Dispose();
+                                return;
+                            }
+
+                            item.Bitmap = bmp;
+                        });
                     }
                     loaded++;
                     if (loaded % 25 == 0 || loaded == total)
@@ -351,5 +380,38 @@ public partial class AllImagesViewerViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(path)) return null;
         using var _ = PerfLogger.Measure("AllImages.Decode");
         return _imageCache.GetOrLoadForUi(path, decodeWidth, _historyDir);
+    }
+
+    private void ClearSelectionState()
+    {
+        foreach (var item in _selected)
+        {
+            item.IsSelected = false;
+        }
+
+        _selected.Clear();
+    }
+
+    private static void DisposeGroups(IEnumerable<TemplateImageGroup>? groups)
+    {
+        if (groups == null) return;
+
+        foreach (var group in groups)
+        {
+            foreach (var item in group.Images)
+            {
+                item.Dispose();
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+        _loadCts = null;
+        ClearSelectionState();
+        DisposeGroups(Groups);
+        Groups = new ObservableCollection<TemplateImageGroup>();
     }
 }

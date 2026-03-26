@@ -160,7 +160,7 @@
                                             Margin="0,0,6,6"/>
                                     <Button Content="Apply Selected"
                                             Command="{Binding ApplySelectedDiffsCommand}"
-                                            IsEnabled="{Binding HasDiffs}"
+                                            IsEnabled="{Binding CanApplySelectedDiffs}"
                                             Margin="0,0,6,6"/>
                                 </WrapPanel>
                                 <WrapPanel Orientation="Horizontal"

@@ -21,6 +21,9 @@ public static class Program
         await RunTestAsync(nameof(TestConvertTxtToJsonPreservesOrder), TestConvertTxtToJsonPreservesOrder, failures);
         await RunTestAsync(nameof(TestConvertCreatesBackup), TestConvertCreatesBackup, failures);
         await RunTestAsync(nameof(TestConvertSkipsWhenJsonExists), TestConvertSkipsWhenJsonExists, failures);
+        await RunTestAsync(nameof(TestSavingWildcardRefreshesDependencyCache), TestSavingWildcardRefreshesDependencyCache, failures);
+        await RunTestAsync(nameof(TestCreatingWildcardRefreshesUnusedWildcardReport), TestCreatingWildcardRefreshesUnusedWildcardReport, failures);
+        await RunTestAsync(nameof(TestDeletingWildcardRefreshesUnusedWildcardReport), TestDeletingWildcardRefreshesUnusedWildcardReport, failures);
 
         if (failures.Count > 0)
         {
@@ -238,6 +241,149 @@ public static class Program
         {
             TryDelete(dir);
         }
+    }
+
+    private static async Task TestSavingWildcardRefreshesDependencyCache()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "prompttool_tests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        WriteJsonWildcard(dir, "subject", """
+        {
+          "choices": ["red"]
+        }
+        """);
+        WriteJsonWildcard(dir, "consumer", """
+        {
+          "choices": [
+            {
+              "value": "choice",
+              "includes": ["subject"]
+            }
+          ]
+        }
+        """);
+
+        try
+        {
+            var settings = new SettingsService();
+            settings.Settings.WildcardDir = dir;
+            settings.SaveSettingsAsync(settings.Settings).GetAwaiter().GetResult();
+            var service = new WildcardService(dir, settings);
+
+            if (service.FindUnusedWildcards().Contains("subject", StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Subject should not start unused while consumer includes it.");
+            }
+
+            await service.SaveWildcardFileContent("consumer", """
+            {
+              "choices": [
+                {
+                  "value": "choice"
+                }
+              ]
+            }
+            """);
+
+            if (!service.FindUnusedWildcards().Contains("subject", StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Saving a wildcard should refresh dependency analysis for removed includes.");
+            }
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    private static async Task TestCreatingWildcardRefreshesUnusedWildcardReport()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "prompttool_tests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        WriteJsonWildcard(dir, "subject", """
+        {
+          "choices": ["red"]
+        }
+        """);
+
+        try
+        {
+            var settings = new SettingsService();
+            settings.Settings.WildcardDir = dir;
+            settings.SaveSettingsAsync(settings.Settings).GetAwaiter().GetResult();
+            var service = new WildcardService(dir, settings);
+
+            if (!service.FindUnusedWildcards().Contains("subject", StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Subject should start unused before a consumer wildcard is created.");
+            }
+
+            await service.SaveWildcardFileContent("consumer", """
+            {
+              "choices": [
+                {
+                  "value": "choice",
+                  "includes": ["subject"]
+                }
+              ]
+            }
+            """);
+
+            if (service.FindUnusedWildcards().Contains("subject", StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Creating a wildcard should refresh dependency analysis for new includes.");
+            }
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    private static async Task TestDeletingWildcardRefreshesUnusedWildcardReport()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "prompttool_tests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        WriteJsonWildcard(dir, "subject", """
+        {
+          "choices": ["red"]
+        }
+        """);
+        WriteJsonWildcard(dir, "consumer", """
+        {
+          "choices": [
+            {
+              "value": "choice",
+              "includes": ["subject"]
+            }
+          ]
+        }
+        """);
+
+        try
+        {
+            var settings = new SettingsService();
+            settings.Settings.WildcardDir = dir;
+            settings.SaveSettingsAsync(settings.Settings).GetAwaiter().GetResult();
+            var service = new WildcardService(dir, settings);
+
+            _ = service.GetDependencies();
+            await service.DeleteWildcardFile("consumer");
+
+            if (!service.FindUnusedWildcards().Contains("subject", StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Deleting a wildcard should refresh dependency analysis for removed dependents.");
+            }
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    private static void WriteJsonWildcard(string dir, string name, string content)
+    {
+        File.WriteAllText(Path.Combine(dir, $"{name}.json"), content);
     }
 
     private static void TryDelete(string path)

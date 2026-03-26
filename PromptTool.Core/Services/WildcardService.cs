@@ -57,7 +57,7 @@ namespace PromptTool.Core.Services
             if (_settingsService.Settings.Verbose) Console.WriteLine("WildcardService: LoadWildcards started.");
             _wildcards.Clear(); // Clear existing wildcards before reloading
             _structuredWildcards.Clear();
-            _dependencyMap = null;
+            InvalidateDependencyMap();
 
             var anyLoaded = false;
             var canonicalFiles = new Dictionary<string, (string Path, string Ext)>(StringComparer.OrdinalIgnoreCase);
@@ -142,6 +142,7 @@ namespace PromptTool.Core.Services
                 _structuredWildcards[name] = structured;
                 _wildcards[name] = new WildcardDefinition(name, filePath, WildcardSourceType.Json,
                     structured.Choices.Select(c => c.Value).ToList());
+                InvalidateDependencyMap();
             }
             catch (Exception ex)
             {
@@ -230,6 +231,7 @@ namespace PromptTool.Core.Services
                     Name = name,
                     Choices = values.Select(v => new WildcardChoice { Value = v }).ToList()
                 };
+                InvalidateDependencyMap();
             }
             catch (Exception ex)
             {
@@ -351,6 +353,7 @@ namespace PromptTool.Core.Services
                     {
                         LoadTextWildcard(definition.FilePath);
                     }
+                    InvalidateDependencyMap();
                 }
                 catch (Exception ex)
                 {
@@ -387,6 +390,8 @@ namespace PromptTool.Core.Services
                 {
                     await Task.Run(() => File.Delete(definition.FilePath)); // Use Task.Run for synchronous File.Delete
                     _wildcards.Remove(wildcardName); // Remove from in-memory cache
+                    _structuredWildcards.Remove(wildcardName);
+                    InvalidateDependencyMap();
                 }
                 catch (Exception ex)
                 {
@@ -413,6 +418,7 @@ namespace PromptTool.Core.Services
                 await Task.Run(() => File.Delete(filePath));
                 _wildcards.Remove(name);
                 _structuredWildcards.Remove(name);
+                InvalidateDependencyMap();
             }
             catch (Exception ex)
             {
@@ -535,6 +541,7 @@ namespace PromptTool.Core.Services
                 await File.WriteAllTextAsync(jsonPath, json);
 
                 LoadJsonWildcard(jsonPath);
+                InvalidateDependencyMap();
                 return new LegacyWildcardConversionResult(true, false, jsonPath, backupPath, null);
             }
             catch (Exception ex)
@@ -597,6 +604,11 @@ namespace PromptTool.Core.Services
         private Dictionary<string, DependencyNode>? _dependencyMap;
         public IReadOnlyDictionary<string, StructuredWildcard> GetStructuredWildcards() => _structuredWildcards;
         public IEnumerable<string> GetWildcardNames() => _structuredWildcards.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase);
+
+        private void InvalidateDependencyMap()
+        {
+            _dependencyMap = null;
+        }
 
         public IReadOnlyList<DependencyNode> GetDependencies()
         {

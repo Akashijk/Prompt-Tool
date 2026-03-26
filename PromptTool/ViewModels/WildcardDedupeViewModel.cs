@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PromptTool.Core.Models;
@@ -16,6 +17,7 @@ public partial class WildcardDedupeViewModel : ObservableObject
 {
     private readonly WildcardService _wildcardService;
     private readonly TemplateService _templateService;
+    private const int DefaultMinimumScore = 35;
 
     [ObservableProperty] private ObservableCollection<WildcardDuplicatePairItem> _candidatePairs = new();
     [ObservableProperty] private WildcardDuplicatePairItem? _selectedPair;
@@ -28,6 +30,9 @@ public partial class WildcardDedupeViewModel : ObservableObject
     [ObservableProperty] private string _rightJson = string.Empty;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string? _lastMergedName;
+    [ObservableProperty] private int _minimumScore = DefaultMinimumScore;
+    [ObservableProperty] private double _scanProgressPercent;
+    [ObservableProperty] private string _scanProgressText = string.Empty;
 
     public WildcardDedupeViewModel(WildcardService wildcardService, TemplateService templateService)
     {
@@ -51,9 +56,24 @@ public partial class WildcardDedupeViewModel : ObservableObject
         MergeTargetName = value.SuggestedName;
         LeftDetailText = BuildSideDetailText(value.LeftName, value.LeftOnlyChoices, value.LeftOnlyTags);
         RightDetailText = BuildSideDetailText(value.RightName, value.RightOnlyChoices, value.RightOnlyTags);
-        SharedDetailText = BuildSharedDetailText(value.SharedChoices, value.SharedTags, value.SharedTemplates);
+        SharedDetailText = BuildSharedDetailText(value.SharedChoices, value.NearDuplicateChoicePairs, value.SharedTags, value.SharedTemplates);
         LeftJson = value.LeftJson;
         RightJson = value.RightJson;
+    }
+
+    partial void OnMinimumScoreChanged(int value)
+    {
+        if (value < 0)
+        {
+            MinimumScore = 0;
+            return;
+        }
+
+        if (value > 100)
+        {
+            MinimumScore = 100;
+            return;
+        }
     }
 
     [RelayCommand]
@@ -98,6 +118,7 @@ public partial class WildcardDedupeViewModel : ObservableObject
             return;
         }
 
+        var mergedPair = SelectedPair;
         var targetName = MergeTargetName?.Trim();
         if (string.IsNullOrWhiteSpace(targetName))
         {
@@ -110,16 +131,16 @@ public partial class WildcardDedupeViewModel : ObservableObject
         {
             var entries = (await _wildcardService.GetWildcardFileEntries(includeArchived: true))
                 .ToDictionary(e => e.Name, StringComparer.OrdinalIgnoreCase);
-            if (!entries.TryGetValue(SelectedPair.LeftName, out var leftEntry) ||
-                !entries.TryGetValue(SelectedPair.RightName, out var rightEntry))
+            if (!entries.TryGetValue(mergedPair.LeftName, out var leftEntry) ||
+                !entries.TryGetValue(mergedPair.RightName, out var rightEntry))
             {
                 StatusText = "The selected wildcard files are no longer available.";
                 return;
             }
 
             var structured = _wildcardService.GetStructuredWildcards();
-            if (!structured.TryGetValue(SelectedPair.LeftName, out var leftStructured) ||
-                !structured.TryGetValue(SelectedPair.RightName, out var rightStructured))
+            if (!structured.TryGetValue(mergedPair.LeftName, out var leftStructured) ||
+                !structured.TryGetValue(mergedPair.RightName, out var rightStructured))
             {
                 StatusText = "The selected wildcard data is no longer available.";
                 return;
@@ -130,8 +151,8 @@ public partial class WildcardDedupeViewModel : ObservableObject
             var dedupedChoices = 0;
 
             if (structured.TryGetValue(targetName, out var existingTarget) &&
-                !string.Equals(targetName, SelectedPair.LeftName, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(targetName, SelectedPair.RightName, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(targetName, mergedPair.LeftName, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(targetName, mergedPair.RightName, StringComparison.OrdinalIgnoreCase))
             {
                 var firstPass = MergeStructuredWildcards(targetName, existingTarget, leftStructured);
                 var secondPass = MergeStructuredWildcards(targetName, firstPass.Structured, rightStructured);
@@ -141,10 +162,10 @@ public partial class WildcardDedupeViewModel : ObservableObject
             }
             else
             {
-                var first = string.Equals(targetName, SelectedPair.RightName, StringComparison.OrdinalIgnoreCase)
+                var first = string.Equals(targetName, mergedPair.RightName, StringComparison.OrdinalIgnoreCase)
                     ? rightStructured
                     : leftStructured;
-                var second = string.Equals(targetName, SelectedPair.RightName, StringComparison.OrdinalIgnoreCase)
+                var second = string.Equals(targetName, mergedPair.RightName, StringComparison.OrdinalIgnoreCase)
                     ? leftStructured
                     : rightStructured;
                 var result = MergeStructuredWildcards(targetName, first, second);
@@ -155,23 +176,27 @@ public partial class WildcardDedupeViewModel : ObservableObject
 
             await _wildcardService.SaveWildcardFileContent(targetName, SerializeStructuredWildcard(merged));
             var updatedTemplates = await ReplaceWildcardReferencesInTemplatesAsync(
-                SelectedPair.LeftName,
-                SelectedPair.RightName,
+                mergedPair.LeftName,
+                mergedPair.RightName,
                 targetName);
 
-            if (!string.Equals(targetName, SelectedPair.LeftName, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(targetName, mergedPair.LeftName, StringComparison.OrdinalIgnoreCase))
             {
                 await _wildcardService.DeleteWildcardFileByPath(leftEntry.FilePath);
             }
-            if (!string.Equals(targetName, SelectedPair.RightName, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(targetName, mergedPair.RightName, StringComparison.OrdinalIgnoreCase))
             {
                 await _wildcardService.DeleteWildcardFileByPath(rightEntry.FilePath);
             }
 
             LastMergedName = targetName;
-            var summary = $"Merged '{SelectedPair.LeftName}' and '{SelectedPair.RightName}' into '{targetName}'. Added {addedChoices} new choice(s), folded {dedupedChoices} duplicate choice(s), updated {updatedTemplates} template(s).";
-            await RunScanAsync();
+            var summary = $"Merged '{mergedPair.LeftName}' and '{mergedPair.RightName}' into '{targetName}'. Added {addedChoices} new choice(s), folded {dedupedChoices} duplicate choice(s), updated {updatedTemplates} template(s).";
+            RemoveMergedCandidates(mergedPair, targetName);
             StatusText = summary;
+            ScanProgressPercent = 100;
+            ScanProgressText = CandidatePairs.Count == 0
+                ? "Merge complete. No remaining candidate pairs in the current results list."
+                : $"Merge complete. {CandidatePairs.Count} candidate pair(s) remain in the current results list.";
         }
         finally
         {
@@ -179,15 +204,68 @@ public partial class WildcardDedupeViewModel : ObservableObject
         }
     }
 
+    private void RemoveMergedCandidates(WildcardDuplicatePairItem mergedPair, string targetName)
+    {
+        var remaining = CandidatePairs
+            .Where(pair =>
+                !PairReferencesName(pair, mergedPair.LeftName) &&
+                !PairReferencesName(pair, mergedPair.RightName) &&
+                !PairReferencesName(pair, targetName))
+            .ToList();
+
+        CandidatePairs = new ObservableCollection<WildcardDuplicatePairItem>(remaining);
+        SelectedPair = remaining.FirstOrDefault();
+    }
+
+    private static bool PairReferencesName(WildcardDuplicatePairItem pair, string name)
+    {
+        return string.Equals(pair.LeftName, name, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(pair.RightName, name, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task RunScanAsync()
     {
-        StatusText = "Scanning wildcard library for likely duplicates...";
+        StatusText = $"Scanning wildcard library for likely duplicates at {MinimumScore}%+...";
+        ScanProgressPercent = 0;
+        ScanProgressText = "Preparing scan...";
         var templateUsage = await BuildTemplateUsageMapAsync();
         var structured = _wildcardService.GetStructuredWildcards()
             .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        var ordered = await Task.Run(() => BuildCandidatePairs(structured, templateUsage));
+
+        CandidatePairs = new ObservableCollection<WildcardDuplicatePairItem>(ordered);
+        SelectedPair = ordered.FirstOrDefault();
+        StatusText = ordered.Count == 0
+            ? $"No strong duplicate candidates found at {MinimumScore}%+."
+            : $"Found {ordered.Count} likely duplicate pair(s) at {MinimumScore}%+.";
+        ScanProgressPercent = 100;
+        ScanProgressText = ordered.Count == 0
+            ? "Scan finished. No candidates met the current threshold."
+            : $"Scan finished. Showing {ordered.Count} strongest candidate pairs.";
+    }
+
+    private List<WildcardDuplicatePairItem> BuildCandidatePairs(
+        IReadOnlyList<KeyValuePair<string, StructuredWildcard>> structured,
+        IReadOnlyDictionary<string, HashSet<string>> templateUsage)
+    {
         var pairs = new List<WildcardDuplicatePairItem>();
+        var totalWildcards = structured.Count;
+        var totalPairs = totalWildcards <= 1 ? 0 : (totalWildcards * (totalWildcards - 1)) / 2;
+        var processedPairs = 0;
+
+        void ReportProgress()
+        {
+            var percent = totalPairs == 0 ? 100 : (processedPairs / (double)totalPairs) * 100.0;
+            Dispatcher.UIThread.Post(() =>
+            {
+                ScanProgressPercent = percent;
+                ScanProgressText = $"Compared {processedPairs:N0} of {totalPairs:N0} wildcard pairs. Found {pairs.Count:N0} candidate(s) so far.";
+            });
+        }
+
+        ReportProgress();
         for (var i = 0; i < structured.Count; i++)
         {
             for (var j = i + 1; j < structured.Count; j++)
@@ -197,21 +275,22 @@ public partial class WildcardDedupeViewModel : ObservableObject
                 {
                     pairs.Add(pair);
                 }
+
+                processedPairs++;
+                if (processedPairs == totalPairs || processedPairs % 200 == 0)
+                {
+                    ReportProgress();
+                }
             }
         }
 
-        var ordered = pairs
+        return pairs
             .OrderByDescending(p => p.Score)
+            .ThenByDescending(p => p.SharedChoices.Count + p.NearDuplicateChoicePairs.Count)
             .ThenBy(p => p.LeftName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(p => p.RightName, StringComparer.OrdinalIgnoreCase)
             .Take(60)
             .ToList();
-
-        CandidatePairs = new ObservableCollection<WildcardDuplicatePairItem>(ordered);
-        SelectedPair = ordered.FirstOrDefault();
-        StatusText = ordered.Count == 0
-            ? "No strong duplicate candidates found."
-            : $"Found {ordered.Count} likely duplicate pair(s).";
     }
 
     private async Task<Dictionary<string, HashSet<string>>> BuildTemplateUsageMapAsync()
@@ -258,6 +337,7 @@ public partial class WildcardDedupeViewModel : ObservableObject
         var sharedValueKeys = leftValues.Keys.Intersect(rightValues.Keys, StringComparer.OrdinalIgnoreCase).ToList();
         var leftOnlyKeys = leftValues.Keys.Except(rightValues.Keys, StringComparer.OrdinalIgnoreCase).ToList();
         var rightOnlyKeys = rightValues.Keys.Except(leftValues.Keys, StringComparer.OrdinalIgnoreCase).ToList();
+        var nearDuplicatePairs = BuildNearDuplicateChoicePairs(leftValues, rightValues, sharedValueKeys);
 
         var leftTags = BuildNormalizedTagSet(left);
         var rightTags = BuildNormalizedTagSet(right);
@@ -279,21 +359,47 @@ public partial class WildcardDedupeViewModel : ObservableObject
         var leftDescTokens = TokenizeForSimilarity(left.Description);
         var rightDescTokens = TokenizeForSimilarity(right.Description);
         var sharedDescTokens = leftDescTokens.Intersect(rightDescTokens, StringComparer.OrdinalIgnoreCase).ToList();
+        var nameCoverage = ComputeTokenCoverage(leftNameTokens, rightNameTokens);
+        var descriptionCoverage = ComputeTokenCoverage(leftDescTokens, rightDescTokens);
+        var combinedKeywordCoverage = ComputeTokenCoverage(
+            leftNameTokens.Union(leftDescTokens, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            rightNameTokens.Union(rightDescTokens, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase));
 
-        var valueRatio = ComputeOverlapRatio(leftValues.Count, rightValues.Count, sharedValueKeys.Count);
+        var exactValueRatio = ComputeOverlapRatio(leftValues.Count, rightValues.Count, sharedValueKeys.Count);
+        var matchedValueCount = sharedValueKeys.Count + (nearDuplicatePairs.Count * 0.75);
+        var valueCoverage = ComputeCoverageRatio(leftValues.Count, rightValues.Count, matchedValueCount);
         var tagRatio = ComputeOverlapRatio(leftTags.Count, rightTags.Count, sharedTags.Count);
         var templateRatio = ComputeOverlapRatio(leftTemplates.Count, rightTemplates.Count, sharedTemplates.Count);
-        var nameRatio = ComputeOverlapRatio(leftNameTokens.Count, rightNameTokens.Count, sharedNameTokens.Count);
-        var descriptionRatio = ComputeOverlapRatio(leftDescTokens.Count, rightDescTokens.Count, sharedDescTokens.Count);
+        var nameRatio = Math.Max(ComputeOverlapRatio(leftNameTokens.Count, rightNameTokens.Count, sharedNameTokens.Count), nameCoverage);
+        var descriptionRatio = Math.Max(ComputeOverlapRatio(leftDescTokens.Count, rightDescTokens.Count, sharedDescTokens.Count), descriptionCoverage);
+        var semanticChoiceCoverage = ComputeNearDuplicateChoiceCoverage(leftValues, rightValues);
 
         var score = (int)Math.Round(
-            (valueRatio * 60.0) +
-            (tagRatio * 15.0) +
-            (templateRatio * 10.0) +
-            (nameRatio * 10.0) +
-            (descriptionRatio * 5.0));
+            (valueCoverage * 38.0) +
+            (exactValueRatio * 20.0) +
+            (semanticChoiceCoverage * 16.0) +
+            (tagRatio * 8.0) +
+            (templateRatio * 5.0) +
+            (nameRatio * 5.0) +
+            (descriptionRatio * 4.0) +
+            (combinedKeywordCoverage * 4.0));
 
-        if (score < 22 && sharedValueKeys.Count < 2 && sharedTags.Count == 0 && sharedTemplates.Count == 0)
+        var hasStrongContentOverlap =
+            sharedValueKeys.Count >= 2 ||
+            nearDuplicatePairs.Count >= 2 ||
+            (sharedValueKeys.Count >= 1 && nearDuplicatePairs.Count >= 1);
+        var hasSupportingSignals =
+            sharedTags.Count > 0 ||
+            sharedTemplates.Count > 0 ||
+            sharedNameTokens.Count >= 2 ||
+            sharedDescTokens.Count >= 2 ||
+            nameCoverage >= 0.5 ||
+            descriptionCoverage >= 0.45 ||
+            combinedKeywordCoverage >= 0.45;
+        var hasSemanticContentOverlap = semanticChoiceCoverage >= 0.5 || (semanticChoiceCoverage >= 0.35 && combinedKeywordCoverage >= 0.45);
+        var hasStrongMetadataOverlap = combinedKeywordCoverage >= 0.6 && (nameCoverage >= 0.45 || descriptionCoverage >= 0.45);
+
+        if ((!hasStrongContentOverlap && !hasSupportingSignals && !hasSemanticContentOverlap && !hasStrongMetadataOverlap) || score < MinimumScore)
         {
             return null;
         }
@@ -303,6 +409,10 @@ public partial class WildcardDedupeViewModel : ObservableObject
         {
             summaryParts.Add($"{sharedValueKeys.Count} shared choice(s)");
         }
+        if (nearDuplicatePairs.Count > 0)
+        {
+            summaryParts.Add($"{nearDuplicatePairs.Count} near-duplicate choice pair(s)");
+        }
         if (sharedTags.Count > 0)
         {
             summaryParts.Add($"{sharedTags.Count} shared tag(s)");
@@ -310,6 +420,10 @@ public partial class WildcardDedupeViewModel : ObservableObject
         if (sharedTemplates.Count > 0)
         {
             summaryParts.Add($"{sharedTemplates.Count} shared template(s)");
+        }
+        if (descriptionCoverage >= 0.45 && sharedDescTokens.Count > 0)
+        {
+            summaryParts.Add($"similar summaries: {string.Join(", ", sharedDescTokens.Take(3))}");
         }
         if (summaryParts.Count == 0)
         {
@@ -325,6 +439,7 @@ public partial class WildcardDedupeViewModel : ObservableObject
             Summary = string.Join(" | ", summaryParts),
             SuggestedName = ChooseSuggestedName(leftName, left, leftTemplates.Count, rightName, right, rightTemplates.Count),
             SharedChoices = sharedValueKeys.Select(key => leftValues[key]).OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
+            NearDuplicateChoicePairs = nearDuplicatePairs,
             LeftOnlyChoices = leftOnlyKeys.Select(key => leftValues[key]).OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
             RightOnlyChoices = rightOnlyKeys.Select(key => rightValues[key]).OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
             SharedTags = sharedTags.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList(),
@@ -480,6 +595,190 @@ public partial class WildcardDedupeViewModel : ObservableObject
         return sharedCount / (double)union;
     }
 
+    private static double ComputeCoverageRatio(int leftCount, int rightCount, double matchedCount)
+    {
+        var smaller = Math.Min(leftCount, rightCount);
+        if (smaller <= 0)
+        {
+            return 0;
+        }
+
+        return Math.Min(1, matchedCount / smaller);
+    }
+
+    private static double ComputeTokenCoverage(IReadOnlyCollection<string> leftTokens, IReadOnlyCollection<string> rightTokens)
+    {
+        if (leftTokens.Count == 0 || rightTokens.Count == 0)
+        {
+            return 0;
+        }
+
+        var shared = leftTokens.Intersect(rightTokens, StringComparer.OrdinalIgnoreCase).Count();
+        var smaller = Math.Min(leftTokens.Count, rightTokens.Count);
+        return smaller == 0 ? 0 : shared / (double)smaller;
+    }
+
+    private static List<string> BuildNearDuplicateChoicePairs(
+        IReadOnlyDictionary<string, string> leftValues,
+        IReadOnlyDictionary<string, string> rightValues,
+        IReadOnlyCollection<string> exactSharedKeys)
+    {
+        var pairs = new List<string>();
+        var usedRight = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var left in leftValues)
+        {
+            if (exactSharedKeys.Contains(left.Key))
+            {
+                continue;
+            }
+
+            foreach (var right in rightValues)
+            {
+                if (exactSharedKeys.Contains(right.Key) || usedRight.Contains(right.Key))
+                {
+                    continue;
+                }
+
+                if (!AreNearDuplicateChoices(left.Value, right.Value))
+                {
+                    continue;
+                }
+
+                pairs.Add($"{left.Value} <-> {right.Value}");
+                usedRight.Add(right.Key);
+                break;
+            }
+        }
+
+        return pairs.OrderBy(pair => pair, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static double ComputeNearDuplicateChoiceCoverage(
+        IReadOnlyDictionary<string, string> leftValues,
+        IReadOnlyDictionary<string, string> rightValues)
+    {
+        if (leftValues.Count == 0 || rightValues.Count == 0)
+        {
+            return 0;
+        }
+
+        var matched = 0;
+        var usedRight = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var left in leftValues)
+        {
+            var bestRight = rightValues
+                .Where(right => !usedRight.Contains(right.Key))
+                .Select(right => new { right.Key, Score = ComputeChoiceSimilarity(left.Value, right.Value) })
+                .OrderByDescending(item => item.Score)
+                .FirstOrDefault();
+
+            if (bestRight == null || bestRight.Score < 0.74)
+            {
+                continue;
+            }
+
+            usedRight.Add(bestRight.Key);
+            matched++;
+        }
+
+        return matched / (double)Math.Min(leftValues.Count, rightValues.Count);
+    }
+
+    private static bool AreNearDuplicateChoices(string left, string right)
+    {
+        var similarity = ComputeChoiceSimilarity(left, right);
+        if (similarity >= 0.8)
+        {
+            return true;
+        }
+
+        var leftKey = BuildCanonicalChoiceKey(left);
+        var rightKey = BuildCanonicalChoiceKey(right);
+        if (string.IsNullOrWhiteSpace(leftKey) || string.IsNullOrWhiteSpace(rightKey))
+        {
+            return false;
+        }
+
+        if (string.Equals(leftKey, rightKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var leftTokens = leftKey.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var rightTokens = rightKey.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (leftTokens.Length < 2 || rightTokens.Length < 2)
+        {
+            return false;
+        }
+
+        var shorter = leftTokens.Length <= rightTokens.Length ? leftTokens : rightTokens;
+        var longer = leftTokens.Length <= rightTokens.Length ? rightTokens : leftTokens;
+        var shorterSet = shorter.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var longerSet = longer.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return shorterSet.IsSubsetOf(longerSet) && longerSet.Count - shorterSet.Count <= 2;
+    }
+
+    private static double ComputeChoiceSimilarity(string left, string right)
+    {
+        var leftKey = BuildCanonicalChoiceKey(left);
+        var rightKey = BuildCanonicalChoiceKey(right);
+        if (string.IsNullOrWhiteSpace(leftKey) || string.IsNullOrWhiteSpace(rightKey))
+        {
+            return 0;
+        }
+
+        if (string.Equals(leftKey, rightKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        var leftTokens = leftKey.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var rightTokens = rightKey.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var leftSet = leftTokens.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var rightSet = rightTokens.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var tokenCoverage = ComputeTokenCoverage(leftSet, rightSet);
+
+        var leftChars = BuildCharacterTrigrams(leftKey);
+        var rightChars = BuildCharacterTrigrams(rightKey);
+        var trigramOverlap = ComputeTokenCoverage(leftChars, rightChars);
+
+        return Math.Max(tokenCoverage, trigramOverlap);
+    }
+
+    private static HashSet<string> BuildCharacterTrigrams(string text)
+    {
+        var normalized = $"  {text.Trim().ToLowerInvariant()}  ";
+        var grams = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (normalized.Length < 3)
+        {
+            grams.Add(normalized);
+            return grams;
+        }
+
+        for (var i = 0; i <= normalized.Length - 3; i++)
+        {
+            grams.Add(normalized.Substring(i, 3));
+        }
+
+        return grams;
+    }
+
+    private static string BuildCanonicalChoiceKey(string input)
+    {
+        var normalized = NormalizeWhitespace(input).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"^(a|an|the)\s+", string.Empty, RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"[^a-z0-9\s]", " ");
+        normalized = Regex.Replace(normalized, @"\s+", " ").Trim();
+        return normalized;
+    }
+
     private static HashSet<string> TokenizeForSimilarity(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -523,6 +822,7 @@ public partial class WildcardDedupeViewModel : ObservableObject
 
     private static string BuildSharedDetailText(
         IReadOnlyList<string> sharedChoices,
+        IReadOnlyList<string> nearDuplicateChoicePairs,
         IReadOnlyList<string> sharedTags,
         IReadOnlyList<string> sharedTemplates)
     {
@@ -538,6 +838,17 @@ public partial class WildcardDedupeViewModel : ObservableObject
             if (sharedChoices.Count > 24)
             {
                 lines.Add($"... and {sharedChoices.Count - 24} more");
+            }
+        }
+
+        if (nearDuplicateChoicePairs.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add($"Near-duplicate choices: {nearDuplicateChoicePairs.Count}");
+            lines.AddRange(nearDuplicateChoicePairs.Take(18).Select(pair => $"- {pair}"));
+            if (nearDuplicateChoicePairs.Count > 18)
+            {
+                lines.Add($"... and {nearDuplicateChoicePairs.Count - 18} more");
             }
         }
 
@@ -695,6 +1006,7 @@ public sealed class WildcardDuplicatePairItem
     public string Summary { get; init; } = string.Empty;
     public string SuggestedName { get; init; } = string.Empty;
     public IReadOnlyList<string> SharedChoices { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> NearDuplicateChoicePairs { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> LeftOnlyChoices { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> RightOnlyChoices { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> SharedTags { get; init; } = Array.Empty<string>();

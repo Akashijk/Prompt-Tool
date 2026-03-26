@@ -102,6 +102,14 @@
                                                    Classes="subtle"
                                                    TextTrimming="CharacterEllipsis"
                                                    IsVisible="{Binding LoraLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                        <TextBlock Text="{Binding ComparisonParamText}"
+                                                   Classes="subtle"
+                                                   TextWrapping="Wrap"
+                                                   IsVisible="{Binding ShowComparisonParamText}"/>
+                                        <TextBlock Text="{Binding TimingMetricsText}"
+                                                   Classes="subtle"
+                                                   TextWrapping="Wrap"
+                                                   IsVisible="{Binding ShowTimingMetrics}"/>
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
@@ -112,8 +120,19 @@
         </ScrollViewer>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,10,0,0">
-            <Button Content="Discard" Command="{Binding CancelCommand}" />
-            <Button Content="Save Selected" Command="{Binding SaveSelectedCommand}" Classes="accent"/>
+            <Button Content="Compare Selected"
+                    Command="{Binding CompareSelectedCommand}"
+                    IsVisible="{Binding ShowCompareAction}"/>
+            <Button Content="Close"
+                    Command="{Binding CancelCommand}"
+                    IsVisible="{Binding ShowCompareAction}"/>
+            <Button Content="Discard"
+                    Command="{Binding CancelCommand}"
+                    IsVisible="{Binding ShowSaveDiscardActions}" />
+            <Button Content="Save Selected"
+                    Command="{Binding SaveSelectedCommand}"
+                    Classes="accent"
+                    IsVisible="{Binding ShowSaveDiscardActions}"/>
         </StackPanel>
     </Grid>
 

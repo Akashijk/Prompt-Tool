@@ -12,6 +12,8 @@ namespace PromptTool.Views;
 public partial class ImageGenerationDialog : Window
 {
     private bool _stateRestored;
+    private ImageGenerationOptionsViewModel? _attachedVm;
+    private EventHandler? _requestCloseHandler;
 
     public ImageGenerationDialog()
     {
@@ -24,8 +26,11 @@ public partial class ImageGenerationDialog : Window
     {
         InitializeComponent();
         DataContext = viewModel;
-        viewModel.RequestClose += (sender, e) => Close();
+        _attachedVm = viewModel;
+        _requestCloseHandler = (_, _) => Close();
+        viewModel.RequestClose += _requestCloseHandler;
         Closed += OnClosedUnloadModels;
+        Closed += OnClosedDetachHandlers;
         Closing += (_, __) => SaveWindowState();
         RestoreWindowState();
     }
@@ -37,6 +42,17 @@ public partial class ImageGenerationDialog : Window
         {
             await vm.UnloadModelsAsync();
         }
+    }
+
+    private void OnClosedDetachHandlers(object? sender, EventArgs e)
+    {
+        if (_attachedVm != null && _requestCloseHandler != null)
+        {
+            _attachedVm.RequestClose -= _requestCloseHandler;
+        }
+
+        _attachedVm = null;
+        _requestCloseHandler = null;
     }
 
     private SettingsService? GetSettingsService()

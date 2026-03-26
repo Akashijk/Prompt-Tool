@@ -16,7 +16,7 @@ public enum ImageDetailMode
     ActiveGeneration
 }
 
-public partial class ImageDetailViewModel : ObservableObject
+public partial class ImageDetailViewModel : ObservableObject, IDisposable
 {
     [ObservableProperty] private HistoryEntry _entry;
     public Func<HistoryEntry, HistoryImage, Task>? UpscaleRequested { get; set; }
@@ -51,6 +51,14 @@ public partial class ImageDetailViewModel : ObservableObject
         _entry = entry;
         _image = image;
         SetDisplayedImage(entry, image, bitmap, detailsText, processedPrompt, originalPrompt);
+    }
+
+    partial void OnBitmapChanged(Bitmap? oldValue, Bitmap? newValue)
+    {
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            oldValue?.Dispose();
+        }
     }
 
     [RelayCommand]
@@ -207,5 +215,10 @@ public partial class ImageDetailViewModel : ObservableObject
         }
 
         return -1;
+    }
+
+    public void Dispose()
+    {
+        Bitmap = null;
     }
 }

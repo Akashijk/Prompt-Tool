@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -24,6 +25,8 @@ using PromptTool.Core.Clients.InvokeAI;
 using PromptTool.Core.Models;
 using PromptTool.Core.Services;
 using PromptTool.Services;
+using SixLabors.ImageSharp;
+using SixImage = SixLabors.ImageSharp.Image;
 
 namespace PromptTool.ViewModels;
 
@@ -52,7 +55,10 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly ImageCacheService _imageCacheService;
     private readonly GenerationQueueService _generationQueue;
     private readonly HistoryIndexService _historyIndexService;
+    private readonly SimilarityFingerprintCacheService _similarityFingerprintCacheService;
     private CancellationTokenSource? _invokeMonitorCts;
+    private CancellationTokenSource? _similarityBackfillCts;
+    private CancellationTokenSource? _replayBackfillCts;
     private bool? _invokeOnline;
     private readonly SemaphoreSlim _invokeGenerationGate = new(1, 1);
     private CancellationTokenSource? _activeGenerationCts;
@@ -63,6 +69,7 @@ public partial class MainWindowViewModel : ObservableObject
     private int _invokeOfflineFailures;
     private const int InvokeOfflineFailureThreshold = 2;
     private const int InvokeOfflineFailureThresholdBusy = 3;
+    private const int SimilarityAlertThreshold = 3;
 
     public SettingsService SettingsService => _settingsService;
 
@@ -86,7 +93,10 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private ObservableCollection<WildcardBrowserItem> _promptSuggestedWildcards = new();
     [ObservableProperty] private string _wildcardPreviewText = "Select a wildcard to preview its values, tags, and usage hints.";
     [ObservableProperty] private string _wildcardBrowserStatus = "Browse your wildcard library.";
+    [ObservableProperty] private string _wildcardSuggestionSummary = "Prompt-aware wildcard picks will appear here.";
     [ObservableProperty] private bool _isWildcardBrowserDetailed;
+    [ObservableProperty] private bool _isWorkspacePreviewLayoutEnabled = true;
+    [ObservableProperty] private int _wildcardBrowserTabIndex = 1;
     [ObservableProperty] private ObservableCollection<WildcardAutocompleteItem> _wildcardAutocompleteItems = new();
     [ObservableProperty] private bool _isWildcardAutocompleteOpen;
     [ObservableProperty] private WildcardAutocompleteItem? _selectedWildcardAutocompleteItem;
@@ -106,6 +116,11 @@ public partial class MainWindowViewModel : ObservableObject
     partial void OnWildcardSearchTextChanged(string value)
     {
         RefreshWildcardBrowser();
+    }
+
+    partial void OnWildcardBrowserTabIndexChanged(int value)
+    {
+        SyncSelectedWildcardBrowserItem(SelectedWildcardBrowserItem?.Name);
     }
 
     partial void OnSelectedWildcardAutocompleteItemChanged(WildcardAutocompleteItem? value)
@@ -164,6 +179,7 @@ public partial class MainWindowViewModel : ObservableObject
     public IAsyncRelayCommand<Window?> ShowAnalyticsStudioCommand { get; }
     public IAsyncRelayCommand<Window?> ShowKpiDashboardCommand { get; }
     public IAsyncRelayCommand<Window?> ShowSchedulerTunerCommand { get; }
+    public IAsyncRelayCommand<Window?> ShowRegressionChecklistCommand { get; }
     public IRelayCommand RerollPromptCommand { get; }
     public ICommand ExitCommand { get; }
 
@@ -200,6 +216,7 @@ public partial class MainWindowViewModel : ObservableObject
         _generationQueue = new GenerationQueueService();
         _imageCacheService.DiskCacheDir = Path.Combine(_settingsService.GetHistoryDir(), ".thumbs");
         _historyIndexService = new HistoryIndexService();
+        _similarityFingerprintCacheService = new SimilarityFingerprintCacheService();
         _workflow = _settingsService.Settings.Workflow;
 
         GenerateCommand = new AsyncRelayCommand(ProcessPromptAsync);
@@ -235,6 +252,7 @@ public partial class MainWindowViewModel : ObservableObject
         ShowAnalyticsStudioCommand = new AsyncRelayCommand<Window?>(ShowAnalyticsStudioAsync);
         ShowKpiDashboardCommand = new AsyncRelayCommand<Window?>(ShowKpiDashboardAsync);
         ShowSchedulerTunerCommand = new AsyncRelayCommand<Window?>(ShowSchedulerTunerAsync);
+        ShowRegressionChecklistCommand = new AsyncRelayCommand<Window?>(ShowRegressionChecklistAsync);
         RerollPromptCommand = new RelayCommand(RerollPrompt, () => _lastGeneration != null);
         ExitCommand = new RelayCommand(Exit);
     }
@@ -254,6 +272,8 @@ public partial class MainWindowViewModel : ObservableObject
         await LoadVariationsAsync();
         ApplySavedUiState();
         _ = StartInvokeMonitorAsync();
+        StartSimilarityBackfillLoop();
+        StartReplayMetadataBackfillLoop();
         StatusText = "Ready.";
     }
 
@@ -301,6 +321,7 @@ public partial class MainWindowViewModel : ObservableObject
             FilteredWildcards = new ObservableCollection<WildcardBrowserItem>();
             AllWildcardBrowserItems = new ObservableCollection<WildcardBrowserItem>();
             PromptSuggestedWildcards = new ObservableCollection<WildcardBrowserItem>();
+            WildcardSuggestionSummary = "Create or load some wildcards to get prompt-aware suggestions.";
             SelectedWildcardBrowserItem = null;
             WildcardBrowserStatus = "No wildcards loaded.";
             WildcardPreviewText = "Create or load some wildcards to browse them here.";
@@ -313,14 +334,16 @@ public partial class MainWindowViewModel : ObservableObject
 
         var suggested = structured.Keys
             .Where(name => !existingPromptWildcards.Contains(name))
-            .Select(name => BuildWildcardBrowserItem(name, structured[name], Array.Empty<string>(), promptTerms))
+            .Select(name => BuildSuggestedWildcardBrowserItem(name, structured[name], promptTerms))
             .Where(item => item != null && item.Score > 0)
             .Select(item => item!)
             .OrderByDescending(item => item.Score)
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-            .Take(8)
+            .Take(16)
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
         PromptSuggestedWildcards = new ObservableCollection<WildcardBrowserItem>(suggested);
+        WildcardSuggestionSummary = BuildWildcardSuggestionSummary(promptTerms, existingPromptWildcards, suggested);
 
         var allItems = structured.Keys
             .Select(name => BuildWildcardBrowserItem(name, structured[name], Array.Empty<string>(), Array.Empty<string>()))
@@ -334,26 +357,24 @@ public partial class MainWindowViewModel : ObservableObject
             .Select(name => BuildWildcardBrowserItem(name, structured[name], searchTerms, promptTerms))
             .Where(item => item != null)
             .Select(item => item!)
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .Take(80)
             .ToList();
 
         FilteredWildcards = new ObservableCollection<WildcardBrowserItem>(items);
         if (items.Count == 0)
         {
-            SelectedWildcardBrowserItem = null;
+            SyncSelectedWildcardBrowserItem(selectedName);
             WildcardBrowserStatus = "No wildcards matched this search.";
             WildcardPreviewText = "Try a broader search term, or pick one of the prompt-relevant suggestions.";
             return;
         }
 
         WildcardBrowserStatus = searchTerms.Count == 0
-            ? $"Showing {items.Count} wildcards. Top matches are ranked by relevance to the current prompt."
+            ? $"Showing {items.Count} wildcards in alphabetical order."
             : $"Showing {items.Count} wildcard matches for '{WildcardSearchText.Trim()}'.";
 
-        SelectedWildcardBrowserItem = items.FirstOrDefault(i => string.Equals(i.Name, selectedName, StringComparison.OrdinalIgnoreCase))
-                                     ?? items.FirstOrDefault();
+        SyncSelectedWildcardBrowserItem(selectedName);
     }
 
     private WildcardBrowserItem? BuildWildcardBrowserItem(
@@ -433,6 +454,134 @@ public partial class MainWindowViewModel : ObservableObject
             ChoiceCount = choices.Count,
             Score = score
         };
+    }
+
+    private WildcardBrowserItem? BuildSuggestedWildcardBrowserItem(
+        string wildcardName,
+        StructuredWildcard structured,
+        IReadOnlyList<string> promptTerms)
+    {
+        var baseItem = BuildWildcardBrowserItem(wildcardName, structured, Array.Empty<string>(), promptTerms);
+        if (baseItem == null)
+        {
+            return null;
+        }
+
+        var choices = structured.Choices?
+            .Select(c => c.Value?.Trim())
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v!)
+            .ToList() ?? new List<string>();
+        var tags = structured.Choices?
+            .SelectMany(c => c.Tags ?? Enumerable.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
+        var description = structured.Description?.Trim() ?? string.Empty;
+
+        var nameMatches = promptTerms
+            .Where(term => wildcardName.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        var tagMatches = promptTerms
+            .Where(term => tags.Any(tag => tag.Contains(term, StringComparison.OrdinalIgnoreCase)))
+            .Take(2)
+            .ToList();
+        var descriptionMatches = promptTerms
+            .Where(term => description.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        var valueMatches = promptTerms
+            .Where(term => choices.Any(choice => choice.Contains(term, StringComparison.OrdinalIgnoreCase)))
+            .Take(2)
+            .ToList();
+
+        var reasonParts = new List<string>();
+        if (nameMatches.Count > 0)
+        {
+            reasonParts.Add($"name contains '{string.Join("' and '", nameMatches)}'");
+        }
+        if (tagMatches.Count > 0)
+        {
+            reasonParts.Add($"tags contain '{string.Join("' and '", tagMatches)}'");
+        }
+        if (descriptionMatches.Count > 0)
+        {
+            reasonParts.Add($"description mentions '{string.Join("' and '", descriptionMatches)}'");
+        }
+        if (valueMatches.Count > 0)
+        {
+            reasonParts.Add($"sample values mention '{string.Join("' and '", valueMatches)}'");
+        }
+        if (reasonParts.Count == 0)
+        {
+            reasonParts.Add(promptTerms.Count == 0
+                ? "add more theme words to sharpen these suggestions"
+                : "it broadly fits the current prompt");
+        }
+
+        var detailText = !string.IsNullOrWhiteSpace(description)
+            ? $"About: {TrimTemplateSample(description)}"
+            : choices.Count == 0
+                ? "Examples: none"
+                : $"Examples: {string.Join(", ", choices.Take(2).Select(TrimTemplateSample))}";
+
+        var primaryReason = $"Why: {reasonParts[0]}";
+        var tooltipReason = string.Join(Environment.NewLine, reasonParts.Select(reason => $"- {reason}"));
+        var tooltipParts = new List<string>
+        {
+            baseItem.Tooltip,
+            "Why this was suggested:",
+            tooltipReason,
+            "Only unused wildcard fits are shown here."
+        };
+
+        return new WildcardBrowserItem
+        {
+            Name = baseItem.Name,
+            SampleText = detailText,
+            Summary = baseItem.Summary,
+            Tooltip = string.Join(Environment.NewLine + Environment.NewLine, tooltipParts.Where(part => !string.IsNullOrWhiteSpace(part))),
+            ChoiceCount = baseItem.ChoiceCount,
+            Score = baseItem.Score,
+            ReasonText = primaryReason
+        };
+    }
+
+    private string BuildWildcardSuggestionSummary(
+        IReadOnlyList<string> promptTerms,
+        IReadOnlyCollection<string> existingPromptWildcards,
+        IReadOnlyList<WildcardBrowserItem> suggestions)
+    {
+        if (promptTerms.Count == 0)
+        {
+            return suggestions.Count == 0
+                ? "Start typing a subject, mood, setting, or style to get prompt-aware wildcard suggestions."
+                : "These are broad unused wildcard fits. Add more prompt detail to make the suggestions sharper.";
+        }
+
+        var promptSummary = string.Join(", ", promptTerms.Take(5));
+        var usageSummary = existingPromptWildcards.Count == 0
+            ? "No wildcard placeholders are already in the prompt."
+            : $"Already using: {string.Join(", ", existingPromptWildcards.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).Take(4))}.";
+
+        return suggestions.Count == 0
+            ? $"Prompt signals: {promptSummary}. No strong unused wildcard fits were found. {usageSummary}"
+            : $"Prompt signals: {promptSummary}. Showing {suggestions.Count} unused wildcard fits. {usageSummary}";
+    }
+
+    private void SyncSelectedWildcardBrowserItem(string? preferredName)
+    {
+        IEnumerable<WildcardBrowserItem> source = WildcardBrowserTabIndex == 1 && PromptSuggestedWildcards.Count > 0
+            ? PromptSuggestedWildcards
+            : FilteredWildcards;
+
+        var selected = !string.IsNullOrWhiteSpace(preferredName)
+            ? source.FirstOrDefault(item => string.Equals(item.Name, preferredName, StringComparison.OrdinalIgnoreCase))
+            : null;
+
+        selected ??= source.FirstOrDefault();
+        SelectedWildcardBrowserItem = selected;
     }
 
     private string BuildWildcardSearchBlob(string wildcardName, StructuredWildcard structured, IReadOnlyList<string> choices, IReadOnlyList<string> tags)
@@ -770,27 +919,57 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task<bool> EnsureInvokeOnlineAsync(bool showToastOnFailure)
     {
+        var attempts = 3;
+        Exception? lastError = null;
         try
         {
-            var ok = await _invokeAIClient.IsReachableAsync();
-            IsInvokeOnline = ok;
-            if (!ok && showToastOnFailure)
+            for (var i = 0; i < attempts; i++)
             {
-                _notifications?.ShowError("InvokeAI is offline. Start it, then click Generate again.", "InvokeAI");
-                StatusText = "InvokeAI offline.";
+                try
+                {
+                    var ok = await _invokeAIClient.IsReachableAsync();
+                    if (ok)
+                    {
+                        IsInvokeOnline = true;
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                }
+
+                if (i < attempts - 1)
+                {
+                    await Task.Delay(350);
+                }
             }
-            return ok;
+
+            // Fallback: version ping can briefly fail under queue churn, but compatibility probe may still succeed.
+            var compatOk = await _invokeAIClient.CheckServerCompatibilityAsync();
+            IsInvokeOnline = compatOk;
+            if (compatOk)
+            {
+                return true;
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            IsInvokeOnline = false;
-            if (showToastOnFailure)
-            {
-                _notifications?.ShowError("InvokeAI is offline. Start it, then click Generate again.", "InvokeAI");
-                StatusText = "InvokeAI offline.";
-            }
-            return false;
+            lastError = ex;
         }
+
+        IsInvokeOnline = false;
+        if (showToastOnFailure)
+        {
+            _notifications?.ShowError("InvokeAI is offline. Start it, then click Generate again.", "InvokeAI");
+            StatusText = "InvokeAI offline.";
+            if (_settingsService.Settings.Verbose && lastError != null)
+            {
+                Console.WriteLine($"EnsureInvokeOnlineAsync failed after retries: {lastError.Message}");
+            }
+        }
+
+        return false;
     }
 
     private async Task StartInvokeMonitorAsync()
@@ -902,7 +1081,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task CreateTemplateAsync(Window? owner)
     {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var resolved = ResolveOwnerWindow(owner);
         var name = await Views.TextInputDialog.ShowAsync("New Template", "Template name:", "new_template", resolved);
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -939,7 +1118,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task SaveTemplateAsAsync(Window? owner)
     {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var resolved = ResolveOwnerWindow(owner);
         var suggestedName = SelectedTemplate?.Name ?? "new_template";
         var name = await Views.TextInputDialog.ShowAsync("Save Template As", "Template name:", suggestedName, resolved);
         if (string.IsNullOrWhiteSpace(name))
@@ -974,7 +1153,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     private async Task GenerateTemplateFromThemeAsync(Window? owner)
     {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
+        var resolved = ResolveOwnerWindow(owner);
 
         if (string.IsNullOrWhiteSpace(SelectedModel))
         {
@@ -1399,7 +1578,7 @@ public partial class MainWindowViewModel : ObservableObject
         {
             OutputText = result.EnhancedPrompt;
             StatusText = "Enhanced prompt ready.";
-            _historyManager.AddEntry(new HistoryEntry
+            AddHistoryEntryAndIndex(new HistoryEntry
             {
                 OriginalPrompt = originalPrompt,
                 ProcessedPrompt = OutputText,
@@ -1469,7 +1648,7 @@ public partial class MainWindowViewModel : ObservableObject
                             SelectedModel,
                             Workflow,
                             images);
-                        _historyManager.AddEntry(entry);
+                        AddHistoryEntryAndIndex(entry);
                         StatusText = "Selected images saved to history.";
                         await Task.CompletedTask;
                     });
@@ -1587,184 +1766,134 @@ public partial class MainWindowViewModel : ObservableObject
             GetEstimatedWorkUnits(parametersList));
     }
 
-    private Task ShowSettingsAsync(Window? owner)
-    {
-        return ShowSettingsAsync(owner, null);
-    }
 
-    private Task ShowSettingsAsync(Window? owner, string? sectionKey)
+    private Task ShowHistoryModelSimilarityAsync(HistoryEntry entry, Window owner)
     {
-        var vm = new SettingsViewModel(_settingsService, _ollamaClient, _notifications, _imageCacheService, _invokeAIClient);
-        var win = new Views.SettingsWindow(vm);
-        win.Opened += (_, _) =>
-        {
-            if (!string.IsNullOrWhiteSpace(sectionKey))
-            {
-                win.NavigateToGenerationSection(sectionKey);
-            }
-        };
-        win.Closed += async (_, __) =>
-        {
-            if (vm.DialogResult == true)
-            {
-                _wildcardService.Reload(_settingsService.GetWildcardDirs());
-                await LoadTemplatesAsync();
-                await LoadModelsAsync();
-                await LoadVariationsAsync();
-                StatusText = "Settings saved.";
-            }
-            else
-            {
-                StatusText = "Settings closed.";
-            }
-        };
-        win.Show(GetOwnerWindow(owner) ?? new Window());
-        return Task.CompletedTask;
-    }
-
-    private async Task ShowHistoryAsync(Window? owner)
-    {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        var variations = await _systemPromptService.LoadVariationPromptsAsync();
-        var vm = new HistoryViewerViewModel(_historyManager, _templateService, _imageCacheService, _historyIndexService, Workflow, variations, _settingsService);
-        var win = new Views.HistoryViewerWindow { DataContext = vm };
-        vm.RegenerateRequested = (entry, image, prompt, promptType) => RegenerateFromHistoryAsync(entry, image, prompt, promptType, win);
-        vm.GenerateNewRequested = (entry, image, prompt, promptType) => GenerateNewFromHistoryAsync(entry, image, prompt, promptType, win);
-        vm.EditRegenerateRequested = (entry, image, prompt, promptType) => RegenerateFromHistoryAsync(entry, image, prompt, promptType, win);
-        vm.SeedVariationsRequested = (entry, image) => GenerateSeedVariationsFromHistoryAsync(entry, image, win);
-        vm.LoraVariationsRequested = (entry, image) => GenerateLoraVariationsFromHistoryAsync(entry, image, win);
-        vm.ModelVariationsRequested = (entry, image) => GenerateModelPermutationsFromHistoryAsync(entry, image, win);
-        vm.EnhanceRequested = entry => EnhanceFromHistoryAsync(entry, win);
-        vm.FillMissingVariationsRequested = (entry, missing) => FillMissingVariationsWithDialogAsync(entry, missing, win);
-        vm.UpscaleRequested = (entry, image) => UpscaleImageFromHistoryAsync(entry, image, win);
-        vm.PropertyChanged += (_, args) =>
-        {
-            if (args.PropertyName == nameof(HistoryViewerViewModel.DialogResult) && vm.DialogResult != null)
-            {
-                var loaded = vm.LoadPromptOverride
-                             ?? vm.DialogResult.ProcessedPrompt
-                             ?? vm.DialogResult.OriginalPrompt;
-                PromptText = loaded;
-                OutputText = loaded;
-                SelectedModel = vm.DialogResult.OllamaModel;
-                StatusText = "Loaded selected prompt from history.";
-            }
-        };
-        win.Show(resolved);
-    }
-
-    private Task ShowAllImagesAsync(Window? owner)
-    {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        var vm = new AllImagesViewerViewModel(_historyManager, _templateService, _imageCacheService, _historyIndexService, Workflow);
-        vm.UpscaleRequested = (entry, image) => UpscaleImageFromHistoryAsync(entry, image, resolved);
-        vm.GenerateMoreRequested = (entry, image) => GenerateFromHistoryAsync(entry, image, null, null, resolved, applyModelFromSource: true, configureVm: null);
-        vm.SeedVariationsRequested = (entry, image) => GenerateSeedVariationsFromHistoryAsync(entry, image, resolved);
-        vm.LoraVariationsRequested = (entry, image) => GenerateLoraVariationsFromHistoryAsync(entry, image, resolved);
-        vm.ModelVariationsRequested = (entry, image) => GenerateModelPermutationsFromHistoryAsync(entry, image, resolved);
-        var win = new Views.AllImagesWindow(vm);
-        win.Show(resolved);
-        return Task.CompletedTask;
-    }
-
-    private Task ShowAnalyticsStudioAsync(Window? owner)
-    {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        var vm = new AnalyticsStudioViewModel(
-            _historyManager,
-            _templateService,
-            Workflow,
-            _aestheticScoringService,
-            _promptMatchScoringService,
-            _settingsService,
-            _imageCacheService,
-            _historyIndexService);
-        vm.CompareRequested = async items =>
-        {
-            if (items.Count != 2) return;
-            var leftBitmap = items[0].Bitmap;
-            var rightBitmap = items[1].Bitmap;
-            if (leftBitmap == null || rightBitmap == null) return;
-            var compareVm = new CompareImagesViewModel(items[0].Entry, items[0].Image, leftBitmap,
-                                                       items[1].Entry, items[1].Image, rightBitmap);
-            var win = new Views.CompareImagesWindow { DataContext = compareVm };
-            win.Show(resolved);
-            await Task.CompletedTask;
-        };
-        var window = new Views.AnalyticsStudioWindow { DataContext = vm };
-        vm.ViewDetailsRequested = async (entry, image, bitmap, navigationItems) =>
-        {
-            ShowHistoryImageDetailsWindow(entry, image, bitmap, window, navigationItems);
-            await Task.CompletedTask;
-        };
-        vm.GenerateMoreRequested = (entry, image) => GenerateFromHistoryAsync(entry, image, null, null, window, applyModelFromSource: true, configureVm: null);
-        vm.GenerateSeedVariationsRequested = (entry, image) => GenerateSeedVariationsFromHistoryAsync(entry, image, window);
-        vm.GenerateLoraVariationsRequested = (entry, image) => GenerateLoraVariationsFromHistoryAsync(entry, image, window);
-        window.Opened += (_, _) =>
-        {
-            if (vm.ConfirmAsync == null)
-            {
-                vm.ConfirmAsync = message => ShowConfirmAsync(window, message);
-            }
-            if (vm.ScoreByModelConfirmAsync == null)
-            {
-                vm.ScoreByModelConfirmAsync = request => ShowScoreByModelConfirmAsync(window, request);
-            }
-        };
-        window.Show(resolved);
-        return Task.CompletedTask;
-    }
-
-    private Task ShowKpiDashboardAsync(Window? owner)
-    {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        var vm = new KpiDashboardViewModel(_historyManager, Workflow, _kpiStats);
-        var window = new Views.KpiDashboardWindow { DataContext = vm };
-        window.Show(resolved);
-        return Task.CompletedTask;
-    }
-
-    private Task ShowSchedulerTunerAsync(Window? owner)
-    {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        var vm = new SchedulerTunerViewModel(_invokeAIClient, _settingsService, _aestheticScoringService, _notifications);
-        var window = new Views.SchedulerTunerWindow { DataContext = vm };
-        window.Show(resolved);
-        return Task.CompletedTask;
-    }
-
-    private Task ShowGenerationQueueAsync(Window? owner)
-    {
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        var vm = new GenerationQueueViewModel(_generationQueue);
-        var window = new Views.GenerationQueueWindow { DataContext = vm };
-        window.Show(resolved);
-        return Task.CompletedTask;
-    }
-
-    private void ShowHistoryImageDetailsWindow(
-        HistoryEntry entry,
-        HistoryImage image,
-        Bitmap bitmap,
-        Window owner,
-        IReadOnlyList<ImageDetailNavigationItem>? navigationItems = null)
-    {
-        ImageDetailPresenter.Show(
+        var comparisonService = new ModelComparisonService();
+        var vm = new ModelSimilarityViewModel(
             entry,
-            image,
-            bitmap,
-            owner,
-            _historyManager,
-            _historyIndexService,
+            _historyManager.GetAllEntries(),
+            _historyManager.GetHistoryDir(),
             _imageCacheService,
-            (e, img) => UpscaleImageFromHistoryAsync(e, img, owner),
-            (e, img) => GenerateFromHistoryAsync(e, img, null, null, owner, applyModelFromSource: true, configureVm: null),
-            (e, img) => GenerateSeedVariationsFromHistoryAsync(e, img, owner),
-            (e, img) => GenerateLoraVariationsFromHistoryAsync(e, img, owner),
-            (e, img) => GenerateModelPermutationsFromHistoryAsync(e, img, owner),
-            navigationItems: navigationItems);
+            comparisonService,
+            _similarityFingerprintCacheService);
+        var window = new Views.ModelSimilarityWindow { DataContext = vm };
+        vm.ViewDetailsRequested = (historyEntry, image, bitmap) =>
+        {
+            ShowHistoryImageDetailsWindow(historyEntry, image, bitmap, window);
+            return Task.CompletedTask;
+        };
+        vm.RunVerificationRequested = request => RunModelSimilarityVerificationAsync(request, window);
+        window.Show(owner);
+        return Task.CompletedTask;
     }
 
+    private async Task RunModelSimilarityVerificationAsync(ModelSimilarityVerificationRequest request, Window? owner)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return;
+        }
+
+        var sourceImage = request.LeftImage;
+        var entry = request.Entry;
+
+        var graphParams = TryBuildParamsFromGraphJson(sourceImage.GenerationGraphJson);
+        var baseParams = graphParams
+                         ?? sourceImage.GenerationParams
+                         ?? entry.ImageParameters
+                         ?? TryParseGenerationParamsJson(sourceImage.GenerationParamsJson);
+        if (baseParams == null)
+        {
+            StatusText = "No generation parameters available for verification run.";
+            return;
+        }
+
+        var prompt = ResolvePromptForHistoryGeneration(entry, sourceImage, baseParams, promptOverride: null, includeEnhanced: true).prompt;
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            StatusText = "No prompt available for verification run.";
+            return;
+        }
+
+        var ownerWindow = GetOwnerWindow(owner) ?? new Window();
+        var rootSeed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
+        var options = await Views.SeedVariationDialog.ShowAsync(ownerWindow, defaultCount: 8, initialSeed: rootSeed);
+        if (options == null)
+        {
+            StatusText = "Verification run cancelled.";
+            return;
+        }
+
+        var models = new[] { request.LeftModel, request.RightModel }
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (models.Count < 2)
+        {
+            StatusText = "Verification run requires two distinct models.";
+            return;
+        }
+
+        if (!await EnsureSeedVariationParamsAsync(baseParams, models[0]))
+        {
+            StatusText = "Verification run failed: missing model information.";
+            return;
+        }
+
+        var seeds = BuildSeedVariationSeeds(options);
+        if (seeds.Count == 0)
+        {
+            StatusText = "No seeds selected for verification run.";
+            return;
+        }
+
+        var parametersList = BuildVerificationParams(baseParams, prompt, seeds, options.RandomSeeds ? null : options.RootSeed, models);
+        if (parametersList.Count == 0)
+        {
+            StatusText = "No generation parameters available for verification run.";
+            return;
+        }
+
+        var workflow = entry.Workflow ?? Workflow;
+        await EnqueueGenerationJobAsync(
+            "Model Similarity Verification",
+            async (job, token) =>
+            {
+                try
+                {
+                    _generationInProgress = true;
+                    await RunGenerationPreviewAsync(
+                        parametersList,
+                        prompt,
+                        "Model Verification",
+                        workflow,
+                        owner,
+                        "Generating model verification batch...",
+                        allowLongPrompts: true,
+                        job,
+                        token,
+                        waitForSaveSelection: false,
+                        onSaveCompleted: async images =>
+                        {
+                            AppendImagesToEntry(entry.Id, images, sourceImage);
+                            StatusText = "Verification images saved to history entry.";
+                            await Task.CompletedTask;
+                        },
+                        isVerificationComparison: true);
+                }
+                catch (Exception ex)
+                {
+                    StatusText = $"Verification run failed: {ex.Message}";
+                }
+                finally
+                {
+                    _generationInProgress = false;
+                }
+            },
+            request.LeftModel,
+            GetEstimatedWorkUnits(parametersList));
+    }
 
     private async Task<ScoreByModelConfirmResult> ShowScoreByModelConfirmAsync(Window owner, ScoreByModelConfirmRequest request)
     {
@@ -2643,130 +2772,6 @@ public partial class MainWindowViewModel : ObservableObject
         return Task.CompletedTask;
     }
 
-    private async Task ShowGenerationDefaultsDialogAsync(Window? owner)
-    {
-        var defaultsVm = new GenerationDefaultsViewModel();
-
-        var currentScheduler = _settingsService.Settings.DefaultScheduler ?? "dpmpp_2m_k";
-        var invokeOnline = await EnsureInvokeOnlineAsync(showToastOnFailure: true);
-        try
-        {
-            if (invokeOnline)
-            {
-                var schedulers = await _invokeAIClient.GetSchedulersAsync();
-                defaultsVm.SetSchedulers(schedulers, currentScheduler);
-            }
-            else
-            {
-                defaultsVm.SetSchedulers(new[] { currentScheduler }, currentScheduler);
-                StatusText = "InvokeAI offline; using existing scheduler defaults.";
-            }
-        }
-        catch
-        {
-            defaultsVm.SetSchedulers(new[] { currentScheduler }, currentScheduler);
-        }
-
-        defaultsVm.SetDefaults(_settingsService.Settings.GenerationDefaults ?? new(), _settingsService.Settings.DefaultBaseModelType ?? "sdxl");
-
-        var dialog = new Views.GenerationDefaultsWindow { DataContext = defaultsVm };
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        dialog.Closed += async (_, __) =>
-        {
-            if (defaultsVm.DialogResult == true)
-            {
-                _settingsService.Settings.GenerationDefaults = defaultsVm.GetDefaultsSnapshot();
-                _settingsService.Settings.DefaultBaseModelType = defaultsVm.CurrentBaseModelType;
-                _settingsService.Settings.DefaultScheduler = defaultsVm.DefaultScheduler;
-                var ok = await _settingsService.SaveSettingsAsync(_settingsService.Settings);
-                if (ok)
-                {
-                    _notifications?.ShowInfo("Default generation options saved.", "Success");
-                    StatusText = "Default generation options saved.";
-                }
-                else
-                {
-                    _notifications?.ShowError("Failed to save generation defaults.", "Error");
-                    StatusText = "Failed to save generation defaults.";
-                }
-            }
-            else
-            {
-                StatusText = "Default generation options unchanged.";
-            }
-        };
-        dialog.Show(resolved);
-    }
-
-    private Task ShowSystemPromptsAsync(Window? arg)
-    {
-        var vm = new SystemPromptEditorViewModel(_settingsService);
-        var win = new Views.SystemPromptEditorWindow { DataContext = vm };
-        var resolved = GetOwnerWindow(arg) ?? new Window();
-        win.Closed += (_, __) =>
-        {
-            StatusText = vm.DialogResult == true ? "System prompts saved." : "System prompt editor closed.";
-        };
-        win.Show(resolved);
-        return Task.CompletedTask;
-    }
-
-    private async Task ShowInvokeAIModelDefaultsAsync(Window? arg)
-    {
-        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
-        {
-            return;
-        }
-        var vm = new InvokeAIModelDefaultsViewModel(_settingsService, _invokeAIClient, _notifications);
-        var win = new Views.InvokeAIModelDefaultsWindow { DataContext = vm };
-        var resolved = GetOwnerWindow(arg) ?? new Window();
-        win.Show(resolved);
-        return;
-    }
-
-    private async Task ShowInvokeAILoraDefaultsAsync(Window? arg)
-    {
-        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
-        {
-            return;
-        }
-        var vm = new InvokeAILoraDefaultsViewModel(_settingsService, _invokeAIClient, _notifications);
-        var win = new Views.InvokeAILoraDefaultsWindow { DataContext = vm };
-        var resolved = GetOwnerWindow(arg) ?? new Window();
-        win.Show(resolved);
-        return;
-    }
-
-    private Task ShowPromptEvolverAsync(Window? arg)
-    {
-        const string message = "Prompt Evolver is not implemented yet.";
-        StatusText = message;
-        _notifications?.ShowInfo(message, "Prompt Evolver");
-        return Task.CompletedTask;
-    }
-
-    private async Task ShowPngMetadataViewerAsync(Window? owner)
-    {
-        var historyManager = (Avalonia.Application.Current as App)?.HistoryManagerService;
-        var vm = new PngMetadataViewerViewModel(historyManager, _settingsService);
-        vm.GenerateMergedRequested = GenerateFromMergedPngAsync;
-        vm.GenerateGraphReplayRequested = GenerateFromPngGraphAsync;
-        vm.BuildGenerationGraphJsonAsync = BuildGenerationGraphJsonAsync;
-        vm.ShowJsonDiffRequested = ShowJsonDiffAsync;
-        var win = new Views.PngMetadataViewerWindow(vm);
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        win.Show(resolved);
-        await Task.CompletedTask;
-    }
-
-    private Task ShowHistoryIntegrityAsync(Window? owner)
-    {
-        var vm = new HistoryIntegrityViewModel(_historyManager, _imageCacheService);
-        var win = new Views.HistoryIntegrityWindow { DataContext = vm };
-        win.Show(GetOwnerWindow(owner) ?? new Window());
-        return Task.CompletedTask;
-    }
-
     public async Task GenerateFromMergedPngAsync(PngMergedGenerationRequest request, Window? owner)
     {
         if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
@@ -2820,7 +2825,7 @@ public partial class MainWindowViewModel : ObservableObject
                                 request.Parameters.Model?.Name,
                                 workflow,
                                 images);
-                            _historyManager.AddEntry(entry);
+                            AddHistoryEntryAndIndex(entry);
                             StatusText = "Saved merged images to new history entry.";
                         }
 
@@ -2891,7 +2896,7 @@ public partial class MainWindowViewModel : ObservableObject
                                 request.Parameters?.Model?.Name,
                                 workflow,
                                 images);
-                            _historyManager.AddEntry(entry);
+                            AddHistoryEntryAndIndex(entry);
                             StatusText = "Saved replayed image to new history entry.";
                         }
 
@@ -3035,11 +3040,6 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 RecordKpiGeneration(parameters, result.JobInfo, workflow);
             }
-            if (_settingsService.Settings.ServerSafetyModeEnabled)
-            {
-                await _invokeAIClient.EmptyModelCacheAsync(cts.Token);
-            }
-
             if (!cts.IsCancellationRequested)
             {
                 previewVm.SetImage(0, result.ImageBytes);
@@ -3073,6 +3073,28 @@ public partial class MainWindowViewModel : ObservableObject
         {
             previewVm.StatusText = StatusGenerationCancelled;
             return new GenerationPreviewResult(null, savedImages);
+        }
+
+        if (previewVm.GeneratedCount == 0 && previewVm.Slots.Count > 0)
+        {
+            var allEmpty = previewVm.Slots.All(s => !s.IsLoading && s.ImageBytes == null);
+            if (allEmpty)
+            {
+                var failedStatus = string.IsNullOrWhiteSpace(previewVm.StatusText)
+                    ? "Generation failed. No images were returned."
+                    : previewVm.StatusText;
+                previewVm.StatusText = failedStatus;
+                StatusText = failedStatus;
+
+                if (!waitForSaveSelection)
+                {
+                    _ = saveTask;
+                    return new GenerationPreviewResult(null, savedImages);
+                }
+
+                var failedResult = await saveTask;
+                return new GenerationPreviewResult(failedResult, savedImages);
+            }
         }
 
         previewVm.StatusText = StatusImagesReady;
@@ -3141,6 +3163,7 @@ public partial class MainWindowViewModel : ObservableObject
         slot.Size = $"{param.Width}x{param.Height}";
         slot.LoraLabel = FormatLoraLabel(param);
         slot.PromptToolTip = param.Prompt ?? string.Empty;
+        slot.RefreshComparisonMetricProperties();
     }
 
     private static InvokeAIGenerationParams? TryBuildParamsFromGraphJson(string? json)
@@ -3149,16 +3172,101 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (!TryGetReplayGraphElement(doc.RootElement, out var root)) return null;
             if (!root.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Object) return null;
+            root.TryGetProperty("edges", out var edges);
+
+            var nodeMap = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+            foreach (var prop in nodes.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.Object)
+                {
+                    nodeMap[prop.Name] = prop.Value;
+                }
+            }
 
             JsonElement? GetNode(string id)
             {
-                if (nodes.TryGetProperty(id, out var node) && node.ValueKind == JsonValueKind.Object)
+                if (nodeMap.TryGetValue(id, out var node))
                 {
                     return node;
                 }
+                return null;
+            }
+
+            JsonElement? FindFirstNodeByType(params string[] types)
+            {
+                foreach (var (_, node) in nodeMap)
+                {
+                    if (!node.TryGetProperty("type", out var typeElem) || typeElem.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    var nodeType = typeElem.GetString() ?? string.Empty;
+                    if (types.Any(t => string.Equals(nodeType, t, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return node;
+                    }
+                }
+
+                return null;
+            }
+
+            string? FindNodeIdByType(params string[] types)
+            {
+                foreach (var (id, node) in nodeMap)
+                {
+                    if (!node.TryGetProperty("type", out var typeElem) || typeElem.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    var nodeType = typeElem.GetString() ?? string.Empty;
+                    if (types.Any(t => string.Equals(nodeType, t, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return id;
+                    }
+                }
+
+                return null;
+            }
+
+            string? FindEdgeSourceNodeId(string destinationNodeId, string destinationField)
+            {
+                if (edges.ValueKind != JsonValueKind.Array || string.IsNullOrWhiteSpace(destinationNodeId))
+                {
+                    return null;
+                }
+
+                foreach (var edge in edges.EnumerateArray())
+                {
+                    if (edge.ValueKind != JsonValueKind.Object) continue;
+                    if (!edge.TryGetProperty("destination", out var dest) || dest.ValueKind != JsonValueKind.Object) continue;
+                    var destNode = dest.TryGetProperty("node_id", out var destNodeElem) && destNodeElem.ValueKind == JsonValueKind.String
+                        ? destNodeElem.GetString()
+                        : null;
+                    var destField = dest.TryGetProperty("field", out var destFieldElem) && destFieldElem.ValueKind == JsonValueKind.String
+                        ? destFieldElem.GetString()
+                        : null;
+
+                    if (!string.Equals(destNode, destinationNodeId, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(destField, destinationField, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!edge.TryGetProperty("source", out var source) || source.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    if (source.TryGetProperty("node_id", out var sourceNodeElem) && sourceNodeElem.ValueKind == JsonValueKind.String)
+                    {
+                        return sourceNodeElem.GetString();
+                    }
+                }
+
                 return null;
             }
 
@@ -3181,7 +3289,8 @@ public partial class MainWindowViewModel : ObservableObject
                 UseAutoCfgRescale = false
             };
 
-            var modelNode = GetNode("sdxl_model_loader");
+            var modelNode = GetNode("sdxl_model_loader")
+                            ?? FindFirstNodeByType("sdxl_model_loader", "main_model_loader");
             if (modelNode.HasValue &&
                 modelNode.Value.TryGetProperty("model", out var modelObj) &&
                 modelObj.ValueKind == JsonValueKind.Object)
@@ -3202,7 +3311,8 @@ public partial class MainWindowViewModel : ObservableObject
                 p.BaseModelType = baseModel ?? p.BaseModelType;
             }
 
-            var denoise = GetNode("sdxl_denoise_latents");
+            var denoise = GetNode("sdxl_denoise_latents")
+                          ?? FindFirstNodeByType("denoise_latents");
             if (denoise.HasValue)
             {
                 if (denoise.Value.TryGetProperty("steps", out var steps) && steps.TryGetInt32(out var st)) p.Steps = st;
@@ -3214,7 +3324,8 @@ public partial class MainWindowViewModel : ObservableObject
                 if (denoise.Value.TryGetProperty("cfg_rescale_multiplier", out var rescale) && rescale.TryGetDouble(out var r)) p.CfgRescaleMultiplier = r;
             }
 
-            var noise = GetNode("noise");
+            var noise = GetNode("noise")
+                        ?? FindFirstNodeByType("noise");
             if (noise.HasValue)
             {
                 if (noise.Value.TryGetProperty("width", out var w) && w.TryGetInt32(out var wi)) p.Width = wi;
@@ -3226,7 +3337,8 @@ public partial class MainWindowViewModel : ObservableObject
                 }
             }
 
-            var vaeNode = GetNode("sdxl_fp32_vae_loader");
+            var vaeNode = GetNode("sdxl_fp32_vae_loader")
+                          ?? FindFirstNodeByType("vae_loader");
             if (vaeNode.HasValue &&
                 vaeNode.Value.TryGetProperty("vae_model", out var vaeObj) &&
                 vaeObj.ValueKind == JsonValueKind.Object &&
@@ -3243,12 +3355,42 @@ public partial class MainWindowViewModel : ObservableObject
                 p.VaePrecision = vaePrecision.GetString();
             }
 
-            var l2iNode = GetNode("l2i");
+            var l2iNode = GetNode("l2i")
+                          ?? FindFirstNodeByType("l2i");
             if (l2iNode.HasValue &&
                 l2iNode.Value.TryGetProperty("fp32", out var fp32) &&
                 fp32.ValueKind is JsonValueKind.True or JsonValueKind.False)
             {
                 p.L2iFp32 = fp32.GetBoolean();
+            }
+
+            var denoiseNodeId = FindNodeIdByType("denoise_latents") ?? "sdxl_denoise_latents";
+            var positiveConditioningNodeId = FindEdgeSourceNodeId(denoiseNodeId, "positive_conditioning");
+            var negativeConditioningNodeId = FindEdgeSourceNodeId(denoiseNodeId, "negative_conditioning");
+            var positivePromptNodeId = positiveConditioningNodeId == null ? null : FindEdgeSourceNodeId(positiveConditioningNodeId, "prompt");
+            var positiveStyleNodeId = positiveConditioningNodeId == null ? null : FindEdgeSourceNodeId(positiveConditioningNodeId, "style");
+            var negativePromptNodeId = negativeConditioningNodeId == null ? null : FindEdgeSourceNodeId(negativeConditioningNodeId, "prompt");
+            var negativeStyleNodeId = negativeConditioningNodeId == null ? null : FindEdgeSourceNodeId(negativeConditioningNodeId, "style");
+
+            var derivedPrompt = positivePromptNodeId == null ? null : GetNodeValue(positivePromptNodeId);
+            var derivedPositiveStyle = positiveStyleNodeId == null ? null : GetNodeValue(positiveStyleNodeId);
+            var derivedNegative = negativePromptNodeId == null ? null : GetNodeValue(negativePromptNodeId);
+            var derivedNegativeStyle = negativeStyleNodeId == null ? null : GetNodeValue(negativeStyleNodeId);
+            if (!string.IsNullOrWhiteSpace(derivedPrompt))
+            {
+                p.Prompt = derivedPrompt!;
+            }
+            if (!string.IsNullOrWhiteSpace(derivedPositiveStyle))
+            {
+                p.PositiveStylePrompt = derivedPositiveStyle;
+            }
+            if (!string.IsNullOrWhiteSpace(derivedNegative))
+            {
+                p.NegativePrompt = derivedNegative;
+            }
+            if (!string.IsNullOrWhiteSpace(derivedNegativeStyle))
+            {
+                p.NegativeStylePrompt = derivedNegativeStyle;
             }
 
             if (root.TryGetProperty("edges", out var edgesElem) && edgesElem.ValueKind == JsonValueKind.Array)
@@ -3265,7 +3407,7 @@ public partial class MainWindowViewModel : ObservableObject
                     var destField = dest.TryGetProperty("field", out var destFieldElem) && destFieldElem.ValueKind == JsonValueKind.String
                         ? destFieldElem.GetString()
                         : null;
-                    if (!string.Equals(destNode, "positive_conditioning", StringComparison.OrdinalIgnoreCase) ||
+                    if (!string.Equals(destNode, positiveConditioningNodeId ?? "positive_conditioning", StringComparison.OrdinalIgnoreCase) ||
                         !string.Equals(destField, "style", StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
@@ -3332,6 +3474,167 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
+    private static bool TryExtractReplayGraphJsonObject(string? json, out JsonObject? graphObject)
+    {
+        graphObject = null;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        JsonNode? parsed;
+        try
+        {
+            parsed = JsonNode.Parse(json);
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (parsed is not JsonObject root)
+        {
+            return false;
+        }
+
+        return TryFindGraphJsonObjectRecursive(root, out graphObject);
+    }
+
+    private static bool TryGetReplayGraphElement(JsonElement root, out JsonElement graphElement)
+    {
+        graphElement = default;
+        if (root.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array or JsonValueKind.String))
+        {
+            return false;
+        }
+
+        return TryFindGraphElementRecursive(root, out graphElement);
+    }
+
+    private static bool LooksLikeGraphElement(JsonElement element)
+    {
+        return element.ValueKind == JsonValueKind.Object &&
+               element.TryGetProperty("nodes", out var nodes) &&
+               nodes.ValueKind == JsonValueKind.Object &&
+               element.TryGetProperty("edges", out var edges) &&
+               edges.ValueKind == JsonValueKind.Array;
+    }
+
+    private static bool IsGraphJsonObject(JsonObject graphObject)
+    {
+        return graphObject["nodes"] is JsonObject && graphObject["edges"] is JsonArray;
+    }
+
+    private static bool TryFindGraphElementRecursive(JsonElement element, out JsonElement graphElement)
+    {
+        graphElement = default;
+
+        if (LooksLikeGraphElement(element))
+        {
+            graphElement = element;
+            return true;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (TryFindGraphElementRecursive(property.Value, out graphElement))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in element.EnumerateArray())
+            {
+                if (TryFindGraphElementRecursive(child, out graphElement))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            var raw = element.GetString();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var nested = JsonDocument.Parse(raw);
+                return TryFindGraphElementRecursive(nested.RootElement, out graphElement);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryFindGraphJsonObjectRecursive(JsonNode? node, out JsonObject? graphObject)
+    {
+        graphObject = null;
+        if (node == null)
+        {
+            return false;
+        }
+
+        if (node is JsonObject obj)
+        {
+            if (IsGraphJsonObject(obj))
+            {
+                graphObject = obj;
+                return true;
+            }
+
+            foreach (var (_, child) in obj)
+            {
+                if (TryFindGraphJsonObjectRecursive(child, out graphObject))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (node is JsonArray array)
+        {
+            foreach (var child in array)
+            {
+                if (TryFindGraphJsonObjectRecursive(child, out graphObject))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (node is JsonValue value && value.TryGetValue<string>(out var jsonText) && !string.IsNullOrWhiteSpace(jsonText))
+        {
+            try
+            {
+                var parsed = JsonNode.Parse(jsonText);
+                return TryFindGraphJsonObjectRecursive(parsed, out graphObject);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
     private static bool AreParamsEquivalent(InvokeAIGenerationParams a, InvokeAIGenerationParams b)
     {
         if (!string.Equals(a.Prompt?.Trim(), b.Prompt?.Trim(), StringComparison.Ordinal)) return false;
@@ -3351,13 +3654,15 @@ public partial class MainWindowViewModel : ObservableObject
         if (a.Seed != b.Seed) return false;
         if (!string.Equals(NormalizeSchedulerForCompare(a.Scheduler), NormalizeSchedulerForCompare(b.Scheduler), StringComparison.Ordinal)) return false;
         if (!NearlyEqual(a.CfgRescaleMultiplier, b.CfgRescaleMultiplier)) return false;
-        if (NormalizeBool(a.UseCpuNoise, false) != NormalizeBool(b.UseCpuNoise, false)) return false;
-        if (NormalizeBool(a.L2iFp32, false) != NormalizeBool(b.L2iFp32, false)) return false;
-        if (!string.Equals(NormalizeVaePrecision(a.VaePrecision), NormalizeVaePrecision(b.VaePrecision), StringComparison.OrdinalIgnoreCase)) return false;
 
-        if (!string.Equals(a.Model?.Name?.Trim(), b.Model?.Name?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+        // Model identity must survive key/hash churn across server restores.
+        var modelIdentityMatch =
+            (a.Model != null && ModelResolutionHelper.MatchesIdentity(a.Model, b.Model?.Name, b.Model?.Key, b.Model?.Hash)) ||
+            (b.Model != null && ModelResolutionHelper.MatchesIdentity(b.Model, a.Model?.Name, a.Model?.Key, a.Model?.Hash)) ||
+            string.Equals(a.Model?.Name?.Trim(), b.Model?.Name?.Trim(), StringComparison.OrdinalIgnoreCase);
+        if (!modelIdentityMatch) return false;
+
         if (!string.Equals(a.Model?.Base?.Trim(), b.Model?.Base?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
-        if (!string.Equals(a.VaeUsedName?.Trim(), b.VaeUsedName?.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
 
         var aLoras = NormalizeLoras(a.Loras);
         var bLoras = NormalizeLoras(b.Loras);
@@ -3431,22 +3736,44 @@ public partial class MainWindowViewModel : ObservableObject
     {
         var baseModel = parameters.BaseModelType;
         var modelName = parameters.Model?.Name;
-        if (!string.IsNullOrWhiteSpace(modelName))
+        var existingKey = parameters.Model?.Key;
+        var existingHash = parameters.Model?.Hash;
+        if (!string.IsNullOrWhiteSpace(modelName) || !string.IsNullOrWhiteSpace(existingKey) || !string.IsNullOrWhiteSpace(existingHash))
         {
             var models = await _invokeAIClient.GetModelsAsync(baseModel, "main");
-            var resolved = models.FirstOrDefault(m =>
-                string.Equals(m.Name, modelName, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(m.Key, modelName, StringComparison.OrdinalIgnoreCase));
+            var resolved = models.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, modelName, existingKey, existingHash));
+            if (resolved == null)
+            {
+                // Fallback: base model can be stale/missing on cloned/history params.
+                var allMainModels = await _invokeAIClient.GetModelsAsync(modelType: "main");
+                resolved = allMainModels.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, modelName, existingKey, existingHash));
+            }
             if (resolved != null)
             {
+                var remapped =
+                    !string.Equals(existingKey ?? string.Empty, resolved.Key ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(existingHash ?? string.Empty, resolved.Hash ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(modelName ?? string.Empty, resolved.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+                if (remapped)
+                {
+                    Console.WriteLine(
+                        $"Model resolution remap: requested name='{modelName}', key='{existingKey}', hash='{existingHash}' -> " +
+                        $"resolved name='{resolved.Name}', key='{resolved.Key}', hash='{resolved.Hash}', base='{resolved.Base}'.");
+                }
                 parameters.Model = resolved;
+                if (string.IsNullOrWhiteSpace(parameters.BaseModelType) && !string.IsNullOrWhiteSpace(resolved.Base))
+                {
+                    parameters.BaseModelType = resolved.Base;
+                }
             }
             else
             {
                 parameters.Model = new InvokeAIModel
                 {
-                    Name = modelName,
+                    Name = modelName ?? existingKey ?? string.Empty,
                     Base = baseModel ?? string.Empty,
+                    Key = existingKey ?? string.Empty,
+                    Hash = existingHash ?? string.Empty,
                     Type = "main"
                 };
             }
@@ -3454,6 +3781,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (parameters.Loras == null || parameters.Loras.Count == 0) return;
         var loraModels = await _invokeAIClient.GetModelsAsync(baseModel, "lora");
+        var allLoraModels = (IReadOnlyList<InvokeAIModel>)Array.Empty<InvokeAIModel>();
         foreach (var lora in parameters.Loras)
         {
             if (lora?.Lora == null || string.IsNullOrWhiteSpace(lora.Lora.Name)) continue;
@@ -3461,8 +3789,46 @@ public partial class MainWindowViewModel : ObservableObject
             var resolved = loraModels.FirstOrDefault(m =>
                 string.Equals(m.Name, loraName, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(m.Key, loraName, StringComparison.OrdinalIgnoreCase));
+            if (resolved == null && !string.IsNullOrWhiteSpace(lora.Lora.Key))
+            {
+                resolved = loraModels.FirstOrDefault(m =>
+                    string.Equals(m.Key, lora.Lora.Key, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(m.Name, lora.Lora.Key, StringComparison.OrdinalIgnoreCase));
+            }
+            if (resolved == null && !string.IsNullOrWhiteSpace(lora.Lora.Hash))
+            {
+                resolved = loraModels.FirstOrDefault(m =>
+                    string.Equals(m.Hash, lora.Lora.Hash, StringComparison.OrdinalIgnoreCase));
+            }
+            if (resolved == null)
+            {
+                if (allLoraModels.Count == 0)
+                {
+                    allLoraModels = await _invokeAIClient.GetModelsAsync(modelType: "lora");
+                }
+
+                resolved = allLoraModels.FirstOrDefault(m =>
+                    string.Equals(m.Name, loraName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(m.Key, loraName, StringComparison.OrdinalIgnoreCase) ||
+                    (!string.IsNullOrWhiteSpace(lora.Lora.Key) &&
+                     (string.Equals(m.Key, lora.Lora.Key, StringComparison.OrdinalIgnoreCase) ||
+                      string.Equals(m.Name, lora.Lora.Key, StringComparison.OrdinalIgnoreCase))) ||
+                    (!string.IsNullOrWhiteSpace(lora.Lora.Hash) &&
+                     string.Equals(m.Hash, lora.Lora.Hash, StringComparison.OrdinalIgnoreCase)));
+            }
             if (resolved != null)
             {
+                var prior = lora.Lora;
+                var remapped =
+                    !string.Equals(prior.Name ?? string.Empty, resolved.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(prior.Key ?? string.Empty, resolved.Key ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(prior.Hash ?? string.Empty, resolved.Hash ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+                if (remapped)
+                {
+                    Console.WriteLine(
+                        $"LoRA resolution remap: requested name='{prior.Name}', key='{prior.Key}', hash='{prior.Hash}' -> " +
+                        $"resolved name='{resolved.Name}', key='{resolved.Key}', hash='{resolved.Hash}', base='{resolved.Base}'.");
+                }
                 lora.Lora = resolved;
             }
         }
@@ -3520,56 +3886,190 @@ public partial class MainWindowViewModel : ObservableObject
         await tcs.Task;
     }
 
-    private async Task ShowImageInterrogatorAsync(Window? owner)
+    private async Task<InvokeAIModel?> ShowModelResolutionDialogAsync(
+        Window owner,
+        string? unresolvedModel,
+        string? preferredBase,
+        IReadOnlyList<InvokeAIModel> candidates)
     {
-        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        if (!Dispatcher.UIThread.CheckAccess())
         {
-            return;
+            return await Dispatcher.UIThread.InvokeAsync(() =>
+                ShowModelResolutionDialogAsync(owner, unresolvedModel, preferredBase, candidates));
         }
 
-        var vm = new ImageInterrogatorViewModel(_ollamaClient);
-        var win = new Views.ImageInterrogatorWindow { DataContext = vm };
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        win.Closed += (_, __) => StatusText = "Image interrogator closed.";
-        win.Show(resolved);
-    }
-
-    private Task ShowModelStatsAsync(Window? owner)
-    {
-        var vm = new ModelStatsViewModel(_historyManager);
-        var win = new Views.ModelStatsWindow { DataContext = vm };
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        win.Show(resolved);
-        return Task.CompletedTask;
-    }
-
-    private async Task ShowWildcardManagerAsync(Window? owner)
-    {
-        await ShowWildcardManagerAsync(owner, null);
-    }
-
-    private async Task OpenWildcardInManagerAsync(string? wildcardName)
-    {
-        await ShowWildcardManagerAsync(GetOwnerWindow(null), wildcardName);
-    }
-
-    private async Task ShowWildcardManagerAsync(Window? owner, string? wildcardName)
-    {
-        OpenWildcardManagerWindow(owner, wildcardName);
-        await Task.CompletedTask;
-    }
-
-    private Views.WildcardManagerWindow OpenWildcardManagerWindow(Window? owner, string? wildcardName)
-    {
-        var vm = new WildcardManagerViewModel(_wildcardService, _templateService);
-        var win = new Views.WildcardManagerWindow(vm);
-        if (!string.IsNullOrWhiteSpace(wildcardName))
+        if (candidates.Count == 0)
         {
-            win.SelectWildcardOnOpen(wildcardName);
+            await ShowInfoAsync(owner, "Model Not Resolved", "No compatible live models were found on the server.");
+            return null;
         }
-        var resolved = GetOwnerWindow(owner) ?? new Window();
-        win.Show(resolved);
-        return win;
+
+        var selected = candidates[0];
+        var tcs = new TaskCompletionSource<InvokeAIModel?>();
+        var combo = new ComboBox
+        {
+            ItemsSource = candidates,
+            SelectedItem = selected,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        combo.ItemTemplate = new FuncDataTemplate<InvokeAIModel>((model, _) =>
+            new TextBlock
+            {
+                Text = $"{model.Name} ({model.Base} / {model.Type})",
+                TextWrapping = Avalonia.Media.TextWrapping.NoWrap
+            });
+
+        var useButton = new Button { Content = "Use Selected", MinWidth = 110 };
+        var cancelButton = new Button { Content = "Cancel", MinWidth = 90 };
+
+        var dialog = new Window
+        {
+            Width = 640,
+            Height = 220,
+            MinWidth = 520,
+            MinHeight = 200,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = "Resolve Model",
+            Content = new StackPanel
+            {
+                Margin = new Thickness(14),
+                Spacing = 10,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Could not resolve the original model from this history entry.",
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                    },
+                    new TextBlock
+                    {
+                        Text = $"Original: {unresolvedModel ?? "(unknown)"}   Preferred Base: {preferredBase ?? "(unknown)"}",
+                        Opacity = 0.75
+                    },
+                    combo,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children =
+                        {
+                            cancelButton,
+                            useButton
+                        }
+                    }
+                }
+            }
+        };
+
+        useButton.Click += (_, __) =>
+        {
+            tcs.TrySetResult(combo.SelectedItem as InvokeAIModel ?? selected);
+            dialog.Close();
+        };
+        cancelButton.Click += (_, __) =>
+        {
+            tcs.TrySetResult(null);
+            dialog.Close();
+        };
+        dialog.Closed += (_, __) =>
+        {
+            if (!tcs.Task.IsCompleted)
+            {
+                tcs.TrySetResult(null);
+            }
+        };
+
+        await dialog.ShowDialog(owner);
+        return await tcs.Task;
+    }
+
+    private static bool IsMainModelMatch(InvokeAIModel candidate, string? nameOrKey, string? key, string? hash)
+    {
+        return ModelResolutionHelper.MatchesIdentity(candidate, nameOrKey, key, hash);
+    }
+
+    private static int ScoreMainModelCandidate(InvokeAIModel candidate, string? originalName, string? preferredBase)
+    {
+        return ModelResolutionHelper.ScoreCandidate(candidate, originalName, preferredBase);
+    }
+
+    private async Task<bool> EnsureResolvableMainModelAsync(
+        InvokeAIGenerationParams baseParams,
+        Window owner,
+        string? fallbackModelName,
+        string workflowLabel)
+    {
+        if (baseParams.Model == null)
+        {
+            baseParams.Model = new InvokeAIModel
+            {
+                Name = fallbackModelName ?? string.Empty,
+                Base = baseParams.BaseModelType ?? string.Empty,
+                Type = "main"
+            };
+        }
+        else if (string.IsNullOrWhiteSpace(baseParams.Model.Name))
+        {
+            baseParams.Model = baseParams.Model with
+            {
+                Name = fallbackModelName ?? baseParams.Model.Key ?? string.Empty,
+                Type = string.IsNullOrWhiteSpace(baseParams.Model.Type) ? "main" : baseParams.Model.Type
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(baseParams.BaseModelType) && !string.IsNullOrWhiteSpace(baseParams.Model?.Base))
+        {
+            baseParams.BaseModelType = baseParams.Model.Base;
+        }
+
+        await ResolveInvokeModelsAsync(baseParams);
+        var liveMainModels = await _invokeAIClient.GetModelsAsync(modelType: "main");
+        if (liveMainModels.Count == 0)
+        {
+            return baseParams.Model != null && !string.IsNullOrWhiteSpace(baseParams.Model.Name);
+        }
+
+        var resolved = liveMainModels.FirstOrDefault(m =>
+            IsMainModelMatch(m, baseParams.Model?.Name, baseParams.Model?.Key, baseParams.Model?.Hash));
+        if (resolved != null)
+        {
+            baseParams.Model = resolved;
+            if (!string.IsNullOrWhiteSpace(resolved.Base))
+            {
+                baseParams.BaseModelType = resolved.Base;
+            }
+            return true;
+        }
+
+        var preferredBase = baseParams.BaseModelType ?? baseParams.Model?.Base;
+        var originalName = baseParams.Model?.Name ?? fallbackModelName;
+        if (ModelResolutionHelper.LooksLikeGuid(originalName) &&
+            !string.IsNullOrWhiteSpace(fallbackModelName) &&
+            !ModelResolutionHelper.LooksLikeGuid(fallbackModelName))
+        {
+            originalName = fallbackModelName;
+        }
+        var candidates = liveMainModels
+            .OrderByDescending(m => ScoreMainModelCandidate(m, originalName, preferredBase))
+            .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToList();
+
+        var selected = await ShowModelResolutionDialogAsync(owner, baseParams.Model?.Name, preferredBase, candidates);
+        if (selected == null)
+        {
+            StatusText = $"{workflowLabel} cancelled. Model could not be resolved.";
+            return false;
+        }
+
+        baseParams.Model = selected;
+        if (!string.IsNullOrWhiteSpace(selected.Base))
+        {
+            baseParams.BaseModelType = selected.Base;
+        }
+        await ResolveInvokeModelsAsync(baseParams);
+        return true;
     }
 
     private async Task RegenerateFromHistoryAsync(HistoryEntry entry, HistoryImage? image, string? promptOverride, string? promptTypeOverride, Window? owner)
@@ -3647,7 +4147,7 @@ public partial class MainWindowViewModel : ObservableObject
                                 entry.InvokeAIModel,
                                 workflow,
                                 images);
-                            _historyManager.AddEntry(newEntry);
+                            AddHistoryEntryAndIndex(newEntry);
                             StatusText = "Selected images saved to history.";
                         }
                         await Task.CompletedTask;
@@ -3671,10 +4171,7 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var graphJson = image?.GenerationGraphJson;
-        var graphParams = TryBuildParamsFromGraphJson(graphJson);
-        var baseParams = graphParams ?? image?.GenerationParams;
-        baseParams ??= entry.ImageParameters ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+        var baseParams = ResolveHistoryBaseParams(entry, image);
         if (baseParams == null)
         {
             StatusText = "No generation parameters available for seed variations.";
@@ -3682,6 +4179,14 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var ownerWindow = GetOwnerWindow(owner) ?? new Window();
+        if (!await EnsureResolvableMainModelAsync(
+                baseParams,
+                ownerWindow,
+                HistoryViewerViewModel.ResolveModelName(entry, image),
+                "Seed variations"))
+        {
+            return;
+        }
         var baseSeed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
         var options = await Views.SeedVariationDialog.ShowAsync(ownerWindow, defaultCount: 4, initialSeed: baseSeed);
         if (options == null)
@@ -3711,13 +4216,12 @@ public partial class MainWindowViewModel : ObservableObject
             seeds,
             options.RandomSeeds ? null : options.RootSeed);
         var workflow = entry.Workflow ?? Workflow;
-        await EnqueueGenerationJobAsync(
+        await EnqueueVariationJobAsync(
             "Seed Variations",
+            GetDominantModelName(parametersList),
+            GetEstimatedWorkUnits(parametersList),
             async (job, token) =>
-        {
-            try
             {
-                _generationInProgress = true;
                 var rootBytes = options.MirrorSeeds ? TryLoadHistoryImageBytes(image) : null;
                 if (options.MirrorSeeds && rootBytes != null)
                 {
@@ -3734,12 +4238,7 @@ public partial class MainWindowViewModel : ObservableObject
                         job,
                         token,
                         waitForSaveSelection: false,
-                        onSaveCompleted: async images =>
-                        {
-                            AppendImagesToEntry(entry.Id, images, image);
-                            StatusText = "Selected images saved to history entry.";
-                            await Task.CompletedTask;
-                        });
+                        onSaveCompleted: BuildAppendToEntryOnSaveCallback(entry, image, "Selected images saved to history entry."));
                 }
                 else
                 {
@@ -3754,17 +4253,199 @@ public partial class MainWindowViewModel : ObservableObject
                         job,
                         token,
                         waitForSaveSelection: false,
-                        onSaveCompleted: async images =>
-                        {
-                            AppendImagesToEntry(entry.Id, images, image);
-                            StatusText = "Selected images saved to history entry.";
-                            await Task.CompletedTask;
-                        });
+                        onSaveCompleted: BuildAppendToEntryOnSaveCallback(entry, image, "Selected images saved to history entry."));
                 }
+            },
+            "Seed variations failed");
+    }
+
+    private async Task GeneratePromptVariationsFromHistoryAsync(HistoryEntry entry, HistoryImage? image, Window? owner)
+    {
+        if (!await EnsureInvokeOnlineAsync(showToastOnFailure: true))
+        {
+            return;
+        }
+
+        var baseParams = ResolveHistoryBaseParams(entry, image);
+        if (baseParams == null)
+        {
+            StatusText = "No generation parameters available for prompt variations.";
+            return;
+        }
+        var ownerWindow = GetOwnerWindow(owner) ?? new Window();
+
+        var fallbackModelName = HistoryViewerViewModel.ResolveModelName(entry, image);
+        if (!await EnsureResolvableMainModelAsync(baseParams, ownerWindow, fallbackModelName, "Prompt variations"))
+        {
+            return;
+        }
+
+        var (baselinePrompt, _) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride: null, includeEnhanced: true);
+        if (string.IsNullOrWhiteSpace(baselinePrompt))
+        {
+            StatusText = "No prompt available for prompt variations.";
+            return;
+        }
+
+        var options = await Views.PromptVariationDialog.ShowAsync(ownerWindow, baselinePrompt);
+        if (options == null)
+        {
+            StatusText = "Prompt variations cancelled.";
+            return;
+        }
+
+        if (options.VariantPrompts == null || options.VariantPrompts.Count == 0)
+        {
+            StatusText = "No variation prompts provided.";
+            return;
+        }
+
+        InvokeAIGenerationParams variationBaseParams;
+        if (options.LockModelAndSettings)
+        {
+            variationBaseParams = CloneParams(baseParams);
+        }
+        else
+        {
+            var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
+            {
+                Prompt = baselinePrompt
+            };
+            dialogVm.ApplyGenerationParams(baseParams);
+            dialogVm.Prompt = baselinePrompt;
+            dialogVm.NumImages = 1;
+            dialogVm.UseRandomSeed = false;
+            dialogVm.ModeBannerText = "Prompt variations: set the baseline generation options once, then run all prompt variants.";
+            dialogVm.ShowModeBanner = true;
+            var (ok, selectedParams) = await ShowImageGenerationDialogAsync(dialogVm, owner);
+            if (!ok || selectedParams == null || selectedParams.Count == 0)
+            {
+                StatusText = "Prompt variations cancelled.";
+                return;
+            }
+
+            variationBaseParams = CloneParams(selectedParams[0]);
+        }
+
+        await ResolveInvokeModelsAsync(variationBaseParams);
+
+        var rootSeed = variationBaseParams.BaseSeed != 0 ? variationBaseParams.BaseSeed : variationBaseParams.Seed;
+        var parametersList = new List<InvokeAIGenerationParams>();
+        var variantIndexByPrompt = new Dictionary<string, int>(StringComparer.Ordinal);
+        var variantLabelByPrompt = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < options.VariantPrompts.Count; i++)
+        {
+            var variantPrompt = options.VariantPrompts[i];
+            if (string.IsNullOrWhiteSpace(variantPrompt))
+            {
+                continue;
+            }
+
+            var clone = CloneParams(variationBaseParams);
+            clone.Prompt = variantPrompt.Trim();
+            clone.UsedRandomSeed = false;
+            if (options.UseSequentialSeeds)
+            {
+                clone.Seed = Math.Min(int.MaxValue, rootSeed + i + 1);
+                clone.BaseSeed = rootSeed;
+            }
+            else
+            {
+                clone.Seed = rootSeed;
+                clone.BaseSeed = rootSeed;
+            }
+
+            parametersList.Add(clone);
+            if (!variantIndexByPrompt.ContainsKey(clone.Prompt))
+            {
+                variantIndexByPrompt[clone.Prompt] = i;
+                variantLabelByPrompt[clone.Prompt] = $"Variant {i + 1}";
+            }
+        }
+
+        if (parametersList.Count == 0)
+        {
+            StatusText = "No valid variation prompts to run.";
+            return;
+        }
+
+        // Prompt variations should use the same robust model/base resolution path as regular generation.
+        foreach (var param in parametersList)
+        {
+            await ResolveInvokeModelsAsync(param);
+        }
+
+        var workflow = entry.Workflow ?? Workflow;
+        var runId = Guid.NewGuid().ToString("N")[..8];
+        var seedMode = options.UseSequentialSeeds ? "sequential seeds" : "same seed";
+
+        await EnqueueGenerationJobAsync(
+            "Prompt Variations",
+            async (job, token) =>
+        {
+            try
+            {
+                _generationInProgress = true;
+                await RunGenerationPreviewAsync(
+                    parametersList,
+                    baselinePrompt,
+                    "Prompt Variation",
+                    workflow,
+                    owner,
+                    "Generating prompt variations...",
+                    allowLongPrompts: true,
+                    job,
+                    token,
+                    waitForSaveSelection: false,
+                    onSaveCompleted: async images =>
+                    {
+                        if (images.Count == 0)
+                        {
+                            StatusText = "Prompt variation preview closed without saving.";
+                            return;
+                        }
+
+                        foreach (var saved in images)
+                        {
+                            var savedPrompt = saved.GenerationParams?.Prompt ?? saved.Prompt ?? string.Empty;
+                            if (variantIndexByPrompt.TryGetValue(savedPrompt, out var index))
+                            {
+                                saved.ExperimentVariantIndex = index;
+                                saved.ExperimentVariantLabel = variantLabelByPrompt[savedPrompt];
+                                saved.ExperimentVariantValue = savedPrompt;
+                                saved.PromptTypeSuffix = variantLabelByPrompt[savedPrompt];
+                            }
+                        }
+
+                        var childEntry = BuildHistoryEntryForGeneration(
+                            entry.OriginalPrompt,
+                            baselinePrompt,
+                            entry.TemplateName,
+                            entry.OllamaModel,
+                            variationBaseParams.Model?.Name ?? entry.InvokeAIModel,
+                            workflow,
+                            images);
+                        childEntry.Status = "generated";
+                        childEntry.IsExperimentRun = true;
+                        childEntry.ExperimentType = "Prompt Variations";
+                        childEntry.ExperimentVariable = "Prompt";
+                        childEntry.ExperimentHeaderPrompt = baselinePrompt;
+                        childEntry.ExperimentPlannedCount = parametersList.Count;
+                        childEntry.ExperimentNotes = $"Derived from entry {entry.Id}. Seed mode: {seedMode}.";
+                        childEntry.ParentEntryId = entry.Id;
+                        childEntry.ParentImagePath = image?.ImagePath;
+                        childEntry.LineageType = "PromptVariationRun";
+                        childEntry.LineageRunId = runId;
+
+                        AddHistoryEntryAndIndex(childEntry);
+                        StatusText = "Prompt variation run saved as a linked child history entry.";
+                        await Task.CompletedTask;
+                    });
             }
             catch (Exception ex)
             {
-                StatusText = $"Seed variations failed: {ex.Message}";
+                StatusText = $"Prompt variations failed: {ex.Message}";
             }
             finally
             {
@@ -3782,29 +4463,36 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var baseParams = image?.GenerationParams
-                         ?? entry.ImageParameters
-                         ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+        var baseParams = ResolveHistoryBaseParams(entry, image);
         if (baseParams == null)
         {
             StatusText = "No generation parameters available for LoRA permutations.";
             return;
         }
 
+        var ownerWindow = GetOwnerWindow(owner) ?? new Window();
+        if (!await EnsureResolvableMainModelAsync(
+                baseParams,
+                ownerWindow,
+                HistoryViewerViewModel.ResolveModelName(entry, image),
+                "LoRA permutations"))
+        {
+            return;
+        }
+
         var (prompt, _) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride: null, includeEnhanced: false);
-        var permutations = await ShowLoraPermutationDialogAsync(baseParams, owner);
+        var permutations = await ShowLoraPermutationDialogAsync(baseParams, ownerWindow);
         if (permutations == null)
         {
             StatusText = "LoRA permutations cancelled.";
             return;
         }
 
-        await EnqueueGenerationJobAsync(
+        await EnqueueVariationJobAsync(
             "LoRA Permutations",
+            baseParams.Model?.Name ?? entry.InvokeAIModel,
+            permutations.Count,
             async (job, token) =>
-        {
-            _generationInProgress = true;
-            try
             {
                 var parametersList = new List<InvokeAIGenerationParams>();
                 foreach (var perm in permutations)
@@ -3812,6 +4500,7 @@ public partial class MainWindowViewModel : ObservableObject
                     var p = CloneParams(baseParams);
                     p.Prompt = prompt;
                     p.Loras = perm.Select(l => new LoraParameter { Lora = l.Lora, Weight = l.Weight }).ToList();
+                    ApplyLoraPromptPrefixes(p);
                     parametersList.Add(p);
                 }
 
@@ -3827,24 +4516,9 @@ public partial class MainWindowViewModel : ObservableObject
                     job,
                     token,
                     waitForSaveSelection: false,
-                    onSaveCompleted: async images =>
-                    {
-                        AppendImagesToEntry(entry.Id, images, image);
-                        StatusText = "Selected images saved to history entry.";
-                        await Task.CompletedTask;
-                    });
-            }
-            catch (Exception ex)
-            {
-                StatusText = $"LoRA permutations failed: {ex.Message}";
-            }
-            finally
-            {
-                _generationInProgress = false;
-            }
-        },
-            baseParams.Model?.Name ?? entry.InvokeAIModel,
-            permutations.Count);
+                    onSaveCompleted: BuildAppendToEntryOnSaveCallback(entry, image, "Selected images saved to history entry."));
+            },
+            "LoRA permutations failed");
     }
 
     private async Task GenerateModelPermutationsFromHistoryAsync(HistoryEntry entry, HistoryImage? image, Window? owner)
@@ -3854,12 +4528,20 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var baseParams = image?.GenerationParams
-                         ?? entry.ImageParameters
-                         ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+        var baseParams = ResolveHistoryBaseParams(entry, image);
         if (baseParams == null)
         {
             StatusText = "No generation parameters available for model permutations.";
+            return;
+        }
+
+        var ownerWindow = GetOwnerWindow(owner) ?? new Window();
+        if (!await EnsureResolvableMainModelAsync(
+                baseParams,
+                ownerWindow,
+                HistoryViewerViewModel.ResolveModelName(entry, image),
+                "Model permutations"))
+        {
             return;
         }
 
@@ -3882,19 +4564,18 @@ public partial class MainWindowViewModel : ObservableObject
         dialogVm.ShowModeBanner = true;
         dialogVm.DisableModelSelection(baseParams.Model?.Name);
 
-        var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner ?? GetOwnerWindow(null));
+        var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, ownerWindow);
         if (!ok || parametersList == null || parametersList.Count == 0)
         {
             StatusText = "Model permutations cancelled.";
             return;
         }
 
-        await EnqueueGenerationJobAsync(
+        await EnqueueVariationJobAsync(
             "Model Permutations",
+            GetDominantModelName(parametersList),
+            GetEstimatedWorkUnits(parametersList),
             async (job, token) =>
-        {
-            _generationInProgress = true;
-            try
             {
                 foreach (var param in parametersList)
                 {
@@ -3913,24 +4594,9 @@ public partial class MainWindowViewModel : ObservableObject
                     job,
                     token,
                     waitForSaveSelection: false,
-                    onSaveCompleted: async images =>
-                    {
-                        AppendImagesToEntry(entry.Id, images, image);
-                        StatusText = "Selected images saved to history entry.";
-                        await Task.CompletedTask;
-                    });
-            }
-            catch (Exception ex)
-            {
-                StatusText = $"Model permutations failed: {ex.Message}";
-            }
-            finally
-            {
-                _generationInProgress = false;
-            }
-        },
-            GetDominantModelName(parametersList),
-            GetEstimatedWorkUnits(parametersList));
+                    onSaveCompleted: BuildAppendToEntryOnSaveCallback(entry, image, "Selected images saved to history entry."));
+            },
+            "Model permutations failed");
     }
 
     private async Task GenerateVariationsFromSlotAsync(ImageSlotViewModel slot, bool seedVariations, MultiImagePreviewViewModel? previewVm = null)
@@ -3947,6 +4613,16 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
+        var ownerWindow = ResolvePreviewOwnerWindow(previewVm) ?? GetOwnerWindow(null) ?? new Window();
+        if (!await EnsureResolvableMainModelAsync(
+                baseParams,
+                ownerWindow,
+                slot.ModelUsed,
+                seedVariations ? "Seed variations" : "Variations"))
+        {
+            return;
+        }
+
         var prompt = ResolvePromptForSlot(baseParams, PromptText);
         Views.SeedVariationDialog.SeedVariationOptions? seedOptions = null;
         List<InvokeAIGenerationParams>? preparedParams = null;
@@ -3956,7 +4632,6 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (seedVariations)
         {
-            var ownerWindow = GetOwnerWindow(null) ?? new Window();
             var baseSeed = baseParams.BaseSeed != 0 ? baseParams.BaseSeed : baseParams.Seed;
             seedOptions = await Views.SeedVariationDialog.ShowAsync(ownerWindow, defaultCount: 4, initialSeed: baseSeed);
             if (seedOptions == null)
@@ -3988,9 +4663,7 @@ public partial class MainWindowViewModel : ObservableObject
 
             if (previewVm != null)
             {
-                previewHadActiveGeneration = previewVm.GenerationToken != null &&
-                                             !previewVm.GenerationToken.IsCancellationRequested &&
-                                             previewVm.Slots.Any(existing => existing.IsLoading);
+                previewHadActiveGeneration = IsPreviewActivelyGenerating(previewVm);
                 var slotIndex = previewVm.Slots.IndexOf(slot);
                 if (slotIndex < 0)
                 {
@@ -4003,7 +4676,10 @@ public partial class MainWindowViewModel : ObservableObject
                 var counter = 1;
                 foreach (var param in preparedParams)
                 {
-                    if (seedOptions.MirrorSeeds && rootBytes != null && param.Seed == seedOptions.RootSeed)
+                    // In preview-slot mirror mode, the selected slot is the root seed anchor.
+                    // Never enqueue/insert a duplicate root seed variation, even if the root image
+                    // is still loading and bytes are not available yet.
+                    if (seedOptions.MirrorSeeds && param.Seed == seedOptions.RootSeed)
                     {
                         continue;
                     }
@@ -4039,12 +4715,10 @@ public partial class MainWindowViewModel : ObservableObject
                     return;
                 }
 
+                NormalizePreviewSlotModelGrouping(previewVm);
                 previewVm.SyncProgressFromSlots();
                 previewVm.StatusText = "Queued seed variations...";
-                if (previewVm.GenerationToken == null || previewVm.GenerationToken.IsCancellationRequested)
-                {
-                    previewVm.GenerationToken = new CancellationTokenSource();
-                }
+                _ = EnsurePreviewGenerationToken(previewVm);
             }
         }
         else
@@ -4066,7 +4740,7 @@ public partial class MainWindowViewModel : ObservableObject
             dialogVm.ShowModeBanner = true;
             dialogVm.NumImages = Math.Max(dialogVm.NumImages, 3);
 
-            var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, GetOwnerWindow(null));
+            var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, ownerWindow);
             if (!ok || parametersList == null || parametersList.Count == 0)
             {
                 StatusText = "Image generation cancelled.";
@@ -4081,31 +4755,13 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _generationInProgress = true;
                 var jobs = queuedSeedVariationJobs ?? new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
-                if (previewHadActiveGeneration)
+                if (previewHadActiveGeneration &&
+                    TryQueuePreviewVariationJobs(previewVm, jobs, "Queued seed variations for current model..."))
                 {
-                    previewVm.EnqueuePendingVariationJobs(jobs);
-                    previewVm.StatusText = "Queued seed variations for current model...";
-                    StatusText = "Queued seed variations for current model.";
                     return;
                 }
 
-                previewVm.StatusText = "Generating seed variations...";
-                StatusText = "Generating seed variations...";
-
-                var generationToken = previewVm.GenerationToken;
-                if (generationToken == null || generationToken.IsCancellationRequested)
-                {
-                    generationToken = new CancellationTokenSource();
-                    previewVm.GenerationToken = generationToken;
-                }
-
-                if (jobs.Count > 0)
-                {
-                    await GenerateImagesForSlotsAsync(jobs, previewVm, generationToken, allowLongPrompts: true, job: null);
-                }
-
-                previewVm.StatusText = StatusImagesReady;
-                StatusText = StatusImagesReadyMain;
+                await GeneratePreviewVariationJobsAsync(previewVm, jobs, "Generating seed variations...", updateMainStatus: true);
             }
             catch (Exception ex)
             {
@@ -4159,7 +4815,7 @@ public partial class MainWindowViewModel : ObservableObject
                                         SelectedModel,
                                         Workflow,
                                         images);
-                                    _historyManager.AddEntry(entry);
+                                    AddHistoryEntryAndIndex(entry);
                                     StatusText = "Selected images saved to history.";
                                     await Task.CompletedTask;
                                 });
@@ -4187,7 +4843,7 @@ public partial class MainWindowViewModel : ObservableObject
                                         SelectedModel,
                                         Workflow,
                                         images);
-                                    _historyManager.AddEntry(entry);
+                                    AddHistoryEntryAndIndex(entry);
                                     StatusText = "Selected images saved to history.";
                                     await Task.CompletedTask;
                                 });
@@ -4223,7 +4879,7 @@ public partial class MainWindowViewModel : ObservableObject
                             SelectedModel,
                             Workflow,
                             images);
-                        _historyManager.AddEntry(entry);
+                        AddHistoryEntryAndIndex(entry);
                         StatusText = "Selected images saved to history.";
                         await Task.CompletedTask;
                     });
@@ -4259,6 +4915,39 @@ public partial class MainWindowViewModel : ObservableObject
             clone.UsedRandomSeed = false;
             parametersList.Add(clone);
         }
+        return parametersList;
+    }
+
+    private static List<InvokeAIGenerationParams> BuildVerificationParams(
+        InvokeAIGenerationParams baseParams,
+        string prompt,
+        IReadOnlyList<int> seeds,
+        int? rootSeed,
+        IReadOnlyList<string> modelNames)
+    {
+        if (seeds.Count == 0 || modelNames.Count == 0)
+        {
+            return new List<InvokeAIGenerationParams>();
+        }
+
+        var baseSeed = rootSeed.HasValue && rootSeed.Value != 0 ? rootSeed.Value : seeds[0];
+        var parametersList = new List<InvokeAIGenerationParams>(seeds.Count * modelNames.Count);
+        foreach (var seed in seeds)
+        {
+            foreach (var modelName in modelNames)
+            {
+                var clone = CloneParams(baseParams);
+                clone.Prompt = prompt;
+                clone.Seed = seed;
+                clone.BaseSeed = baseSeed;
+                clone.UsedRandomSeed = false;
+                clone.Model = clone.Model == null
+                    ? new InvokeAIModel { Name = modelName, Base = clone.BaseModelType ?? string.Empty, Type = "main" }
+                    : clone.Model with { Name = modelName, Type = string.IsNullOrWhiteSpace(clone.Model.Type) ? "main" : clone.Model.Type };
+                parametersList.Add(clone);
+            }
+        }
+
         return parametersList;
     }
 
@@ -4360,14 +5049,20 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var baseParams = slot.GenerationParams;
+        var baseParams = slot.GenerationParams ?? TryBuildParamsFromGraphJson(slot.GenerationGraphJson);
         if (baseParams == null)
         {
             StatusText = "No generation parameters available for LoRA permutations.";
             return;
         }
 
-        var permutations = await ShowLoraPermutationDialogAsync(baseParams, GetOwnerWindow(null));
+        var ownerWindow = ResolvePreviewOwnerWindow(previewVm) ?? GetOwnerWindow(null) ?? new Window();
+        if (!await EnsureResolvableMainModelAsync(baseParams, ownerWindow, slot.ModelUsed, "LoRA permutations"))
+        {
+            return;
+        }
+
+        var permutations = await ShowLoraPermutationDialogAsync(baseParams, ownerWindow);
         if (permutations == null || permutations.Count == 0)
         {
             StatusText = "LoRA permutations cancelled.";
@@ -4375,9 +5070,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var prompt = ResolvePromptForSlot(baseParams, PromptText);
-        var previewHadActiveGeneration = previewVm.GenerationToken != null &&
-                                         !previewVm.GenerationToken.IsCancellationRequested &&
-                                         previewVm.Slots.Any(existing => existing.IsLoading);
+        var previewHadActiveGeneration = IsPreviewActivelyGenerating(previewVm);
         var slotIndex = previewVm.Slots.IndexOf(slot);
         if (slotIndex < 0) slotIndex = previewVm.Slots.Count - 1;
 
@@ -4389,6 +5082,7 @@ public partial class MainWindowViewModel : ObservableObject
             var p = CloneParams(baseParams);
             p.Prompt = prompt;
             p.Loras = perm.Select(l => new LoraParameter { Lora = l.Lora, Weight = l.Weight }).ToList();
+            ApplyLoraPromptPrefixes(p);
 
             var label = $"Permutation {counter}";
             var newSlot = previewVm.CreatePlaceholderSlot(label);
@@ -4399,23 +5093,16 @@ public partial class MainWindowViewModel : ObservableObject
 
             jobs.Add((p, newSlot));
         }
+        NormalizePreviewSlotModelGrouping(previewVm);
         previewVm.SyncProgressFromSlots();
 
-        if (previewHadActiveGeneration)
+        if (previewHadActiveGeneration &&
+            TryQueuePreviewVariationJobs(previewVm, jobs, "Queued LoRA permutations for current model..."))
         {
-            previewVm.EnqueuePendingVariationJobs(jobs);
-            previewVm.StatusText = "Queued LoRA permutations for current model...";
-            StatusText = "Queued LoRA permutations for current model.";
             return;
         }
 
-        previewVm.StatusText = "Generating LoRA permutations...";
-        if (previewVm.GenerationToken == null)
-        {
-            previewVm.GenerationToken = new CancellationTokenSource();
-        }
-        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true, job: null);
-        previewVm.StatusText = StatusImagesReady;
+        await GeneratePreviewVariationJobsAsync(previewVm, jobs, "Generating LoRA permutations...", updateMainStatus: false);
     }
 
     private async Task GenerateModelPermutationsFromSlotAsync(ImageSlotViewModel slot, MultiImagePreviewViewModel previewVm)
@@ -4429,6 +5116,12 @@ public partial class MainWindowViewModel : ObservableObject
         if (baseParams == null)
         {
             StatusText = "No generation parameters available for model permutations.";
+            return;
+        }
+
+        var ownerWindow = ResolvePreviewOwnerWindow(previewVm) ?? GetOwnerWindow(null) ?? new Window();
+        if (!await EnsureResolvableMainModelAsync(baseParams, ownerWindow, slot.ModelUsed, "Model permutations"))
+        {
             return;
         }
 
@@ -4450,7 +5143,7 @@ public partial class MainWindowViewModel : ObservableObject
         dialogVm.ShowModeBanner = true;
         dialogVm.DisableModelSelection(baseParams.Model?.Name);
 
-        var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, GetOwnerWindow(null));
+        var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, ownerWindow);
         if (!ok || parametersList == null || parametersList.Count == 0)
         {
             StatusText = "Model permutations cancelled.";
@@ -4459,9 +5152,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         var slotIndex = previewVm.Slots.IndexOf(slot);
         if (slotIndex < 0) slotIndex = previewVm.Slots.Count - 1;
-        var previewHadActiveGeneration = previewVm.GenerationToken != null &&
-                                         !previewVm.GenerationToken.IsCancellationRequested &&
-                                         previewVm.Slots.Any(existing => existing.IsLoading);
+        var previewHadActiveGeneration = IsPreviewActivelyGenerating(previewVm);
 
         var jobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
         var insertIndex = slotIndex + 1;
@@ -4482,23 +5173,16 @@ public partial class MainWindowViewModel : ObservableObject
 
             jobs.Add((param, newSlot));
         }
+        NormalizePreviewSlotModelGrouping(previewVm);
         previewVm.SyncProgressFromSlots();
 
-        if (previewHadActiveGeneration)
+        if (previewHadActiveGeneration &&
+            TryQueuePreviewVariationJobs(previewVm, jobs, "Queued model permutations for current preview..."))
         {
-            previewVm.EnqueuePendingVariationJobs(jobs);
-            previewVm.StatusText = "Queued model permutations for current preview...";
-            StatusText = "Queued model permutations for current preview.";
             return;
         }
 
-        previewVm.StatusText = "Generating model permutations...";
-        if (previewVm.GenerationToken == null)
-        {
-            previewVm.GenerationToken = new CancellationTokenSource();
-        }
-        await GenerateImagesForSlotsAsync(jobs, previewVm, previewVm.GenerationToken, allowLongPrompts: true, job: null);
-        previewVm.StatusText = StatusImagesReady;
+        await GeneratePreviewVariationJobsAsync(previewVm, jobs, "Generating model permutations...", updateMainStatus: false);
     }
 
     private async Task EditAndRegenerateSlotAsync(ImageSlotViewModel slot, Window owner)
@@ -4511,6 +5195,11 @@ public partial class MainWindowViewModel : ObservableObject
         var baseParams = slot.GenerationParams;
         var graphJson = slot.GenerationGraphJson;
         var graphParams = TryBuildParamsFromGraphJson(graphJson);
+        if (!string.IsNullOrWhiteSpace(graphJson) && graphParams == null)
+        {
+            var sample = graphJson.Length > 220 ? graphJson[..220] + "..." : graphJson;
+            Console.WriteLine($"Edit/regenerate: graph params parse failed. Graph sample: {sample}");
+        }
         if (graphParams != null)
         {
             baseParams = graphParams;
@@ -4564,9 +5253,10 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 if (!string.IsNullOrWhiteSpace(graphJson) && graphParams != null && AreParamsEquivalent(newParam, graphParams))
                 {
-                    var graphObj = JsonNode.Parse(graphJson) as JsonObject;
-                    if (graphObj == null)
+                    Console.WriteLine("Edit/regenerate: using graph replay path.");
+                    if (!TryExtractReplayGraphJsonObject(graphJson, out var graphObj) || graphObj == null)
                     {
+                        Console.WriteLine("Edit/regenerate: graph JSON extraction failed, falling back to normal generate.");
                         result = await _invokeAIClient.GenerateImageAsync(newParam);
                     }
                     else
@@ -4576,16 +5266,13 @@ public partial class MainWindowViewModel : ObservableObject
                 }
                 else
                 {
+                    Console.WriteLine($"Edit/regenerate: using normal generate path. graphJson={(string.IsNullOrWhiteSpace(graphJson) ? "missing" : "present")} graphParams={(graphParams == null ? "missing" : "present")} equivalent={(graphParams != null && AreParamsEquivalent(newParam, graphParams))}");
                     result = await _invokeAIClient.GenerateImageAsync(newParam);
                 }
             }
             finally
             {
                 _invokeGenerationGate.Release();
-            }
-            if (_settingsService.Settings.ServerSafetyModeEnabled)
-            {
-                await _invokeAIClient.EmptyModelCacheAsync();
             }
             slot.GenerationParams = newParam;
             slot.GenerationGraphJson = graphJson;
@@ -4642,8 +5329,23 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 var graphJson = image?.GenerationGraphJson;
                 var graphParams = TryBuildParamsFromGraphJson(graphJson);
-                var baseParams = graphParams ?? image?.GenerationParams;
-                baseParams ??= entry.ImageParameters ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+                if (!string.IsNullOrWhiteSpace(graphJson) && graphParams == null)
+                {
+                    var sample = graphJson.Length > 220 ? graphJson[..220] + "..." : graphJson;
+                    Console.WriteLine($"Generate-from-history: graph params parse failed. Graph sample: {sample}");
+                }
+                var baseParams = ResolveHistoryBaseParams(entry, image) ?? graphParams;
+                var ownerWindow = GetOwnerWindow(owner) ?? new Window();
+                if (applyModelFromSource &&
+                    baseParams != null &&
+                    !await EnsureResolvableMainModelAsync(
+                        baseParams,
+                        ownerWindow,
+                        HistoryViewerViewModel.ResolveModelName(entry, image),
+                        "Regenerate image"))
+                {
+                    return;
+                }
                 var (prompt, promptSource) = ResolvePromptForHistoryGeneration(entry, image, baseParams, promptOverride, includeEnhanced: true);
                 var promptType = !string.IsNullOrWhiteSpace(promptTypeOverride) ? promptTypeOverride : "Regenerated";
                 var dialogVm = new ImageGenerationOptionsViewModel(_invokeAIClient, _settingsService, _notifications)
@@ -4671,7 +5373,7 @@ public partial class MainWindowViewModel : ObservableObject
 
                 configureVm?.Invoke(dialogVm);
 
-                var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, owner);
+                var (ok, parametersList) = await ShowImageGenerationDialogAsync(dialogVm, ownerWindow);
                 if (!ok || parametersList == null || parametersList.Count == 0)
                 {
                     StatusText = "Image generation cancelled.";
@@ -4691,9 +5393,10 @@ public partial class MainWindowViewModel : ObservableObject
                     parametersList.Count == 1 &&
                     AreParamsEquivalent(parametersList[0], graphParams))
                 {
-                    var graphObj = JsonNode.Parse(graphJson) as JsonObject;
-                    if (graphObj == null)
+                    Console.WriteLine("Generate-from-history: using graph replay path.");
+                    if (!TryExtractReplayGraphJsonObject(graphJson, out var graphObj) || graphObj == null)
                     {
+                        Console.WriteLine("Generate-from-history: graph JSON extraction failed, falling back to normal generate preview.");
                         await RunGenerationPreviewAsync(
                             parametersList,
                             prompt,
@@ -4725,6 +5428,8 @@ public partial class MainWindowViewModel : ObservableObject
                 }
                 else
                 {
+                    var equivalent = graphParams != null && parametersList.Count == 1 && AreParamsEquivalent(parametersList[0], graphParams);
+                    Console.WriteLine($"Generate-from-history: using normal generate preview. graphJson={(string.IsNullOrWhiteSpace(graphJson) ? "missing" : "present")} graphParams={(graphParams == null ? "missing" : "present")} oneParam={(parametersList.Count == 1)} equivalent={equivalent}");
                     await RunGenerationPreviewAsync(
                         parametersList,
                         prompt,
@@ -4847,7 +5552,7 @@ public partial class MainWindowViewModel : ObservableObject
                                 SelectedModel,
                                 workflow,
                                 images);
-                            _historyManager.AddEntry(newEntry);
+                            AddHistoryEntryAndIndex(newEntry);
                         }
                         StatusText = "Sample images saved to history.";
                         await Task.CompletedTask;
@@ -5270,91 +5975,336 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    private (Views.MultiImagePreviewView preview, Task<bool?> resultTask, CancellationTokenSource cts)
-        ShowPreviewWindow(MultiImagePreviewViewModel previewVm, Window? owner)
+    private async Task ShowSimilarityMatchesForImageAsync(HistoryImage image, Window? owner)
+    {
+        var historyDir = _historyManager.GetHistoryDir();
+        var key = SimilarityFingerprintCacheService.TryBuildImageKey(image, historyDir);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            _notifications?.ShowWarning("Could not resolve image key for similarity lookup.", "Similarity");
+            return;
+        }
+
+        var matches = await _similarityFingerprintCacheService.FindNearDuplicatesAgainstExistingAsync(
+            new[] { image },
+            historyDir,
+            SimilarityAlertThreshold,
+            maxMatches: 40);
+        if (matches.Count == 0)
+        {
+            _notifications?.ShowInfo("No near-duplicate matches found for this image.", "Similarity");
+            return;
+        }
+
+        var filtered = matches
+            .Where(m => string.Equals(m.SourceKey, key, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(m.MatchKey, key, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        ShowSimilarityDuplicateMatchesWindow(filtered, owner);
+    }
+
+    private void ShowSimilarityDuplicateMatchesWindow(IReadOnlyList<SimilarityDuplicateMatch> matches, Window? ownerWindow = null)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            return Dispatcher.UIThread.InvokeAsync(() => ShowPreviewWindowInternal(previewVm, owner)).GetAwaiter().GetResult();
-        }
-        return ShowPreviewWindowInternal(previewVm, owner);
-    }
-
-    private (Views.MultiImagePreviewView preview, Task<bool?> resultTask, CancellationTokenSource cts)
-        ShowPreviewWindowInternal(MultiImagePreviewViewModel previewVm, Window? owner)
-    {
-        var preview = new Views.MultiImagePreviewView { DataContext = previewVm };
-        var tcs = new TaskCompletionSource<bool?>();
-        var cts = new CancellationTokenSource();
-        previewVm.GenerationToken = cts;
-        preview.Closed += (_, __) =>
-        {
-            cts.Cancel();
-            tcs.TrySetResult(previewVm.DialogResult);
-        };
-        preview.Show(GetOwnerWindow(owner) ?? new Window());
-        return (preview, tcs.Task, cts);
-    }
-
-    private Task<(bool ok, List<InvokeAIGenerationParams>? parameters)> ShowImageGenerationDialogAsync(
-        ImageGenerationOptionsViewModel dialogVm,
-        Window? owner)
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-        {
-            return Dispatcher.UIThread.InvokeAsync(() => ShowImageGenerationDialogAsync(dialogVm, owner));
+            Dispatcher.UIThread.Post(() => ShowSimilarityDuplicateMatchesWindow(matches, ownerWindow));
+            return;
         }
 
-        var dialog = new Views.ImageGenerationDialog(dialogVm);
-        dialog.Topmost = true;
-        dialog.Opened += (_, __) => dialog.Activate();
-        var tcs = new TaskCompletionSource<(bool, List<InvokeAIGenerationParams>?)>();
-        dialog.Closed += (_, __) => tcs.TrySetResult(dialogVm.Result);
-        dialog.Show(GetOwnerWindow(owner) ?? new Window());
-        return tcs.Task;
-    }
-
-    private HistoryEntry BuildHistoryEntryForGeneration(
-        string originalPrompt,
-        string processedPrompt,
-        string? templateName,
-        string ollamaModel,
-        string? invokeModelFallback,
-        string workflow,
-        List<HistoryImage> images)
-    {
-        var firstParams = images.FirstOrDefault()?.GenerationParams;
-        return new HistoryEntry
+        var reviewItems = BuildSimilarityDuplicateReviewItems(matches);
+        if (reviewItems.Count == 0)
         {
-            OriginalPrompt = originalPrompt,
-            ProcessedPrompt = processedPrompt,
-            TemplateName = templateName,
-            OllamaModel = ollamaModel,
-            InvokeAIModel = firstParams?.Model?.Name ?? invokeModelFallback,
-            ImageParameters = firstParams,
-            Images = images,
-            Workflow = workflow
+            _notifications?.ShowWarning("No resolvable history matches were found for this duplicate batch.", "Similarity");
+            return;
+        }
+
+        var vm = new SimilarityDuplicateReviewViewModel(
+            reviewItems,
+            _historyManager.GetHistoryDir(),
+            _imageCacheService);
+        var owner = GetOwnerWindow(ownerWindow) ?? new Window();
+        vm.ViewDetailsRequested = async (entry, image, bitmap) =>
+        {
+            ShowHistoryImageDetailsWindow(entry, image, bitmap, owner);
+            await Task.CompletedTask;
         };
-    }
-
-    private void AppendImagesToEntry(string entryId, List<HistoryImage> images)
-    {
-        _historyManager.AppendImages(entryId, images);
-        RefreshOpenHistoryViews();
-    }
-
-    private void AppendImagesToEntry(string entryId, List<HistoryImage> images, HistoryImage? sourceImage)
-    {
-        if (sourceImage != null && !string.IsNullOrWhiteSpace(sourceImage.ImagePath))
+        vm.CompareRequested = async (leftEntry, leftImage, leftBitmap, rightEntry, rightImage, rightBitmap) =>
         {
-            foreach (var image in images)
+            ShowCompareWindow(owner, leftEntry, leftImage, leftBitmap, rightEntry, rightImage, rightBitmap);
+            await Task.CompletedTask;
+        };
+
+        var window = new Views.SimilarityDuplicateReviewWindow { DataContext = vm };
+        window.Show(owner);
+    }
+
+    private List<SimilarityDuplicateReviewItem> BuildSimilarityDuplicateReviewItems(IReadOnlyList<SimilarityDuplicateMatch> matches)
+    {
+        var historyDir = _historyManager.GetHistoryDir();
+        var pathMap = new Dictionary<string, (HistoryEntry Entry, HistoryImage Image)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in _historyManager.GetAllEntries())
+        {
+            foreach (var image in entry.Images)
             {
-                image.DerivedFromImagePath ??= sourceImage.ImagePath;
+                var key = SimilarityFingerprintCacheService.TryBuildImageKey(image, historyDir);
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                pathMap[key] = (entry, image);
             }
         }
 
-        _historyManager.AppendImages(entryId, images);
-        RefreshOpenHistoryViews();
+        var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var results = new List<SimilarityDuplicateReviewItem>();
+        foreach (var match in matches.OrderBy(m => m.Distance))
+        {
+            if (!pathMap.TryGetValue(match.SourceKey, out var source) ||
+                !pathMap.TryGetValue(match.MatchKey, out var existing))
+            {
+                continue;
+            }
+
+            var pairKey = BuildOrderedImagePairKey(match.SourceKey, match.MatchKey);
+            if (!dedupe.Add(pairKey))
+            {
+                continue;
+            }
+
+            if (ReferenceEquals(source.Image, existing.Image))
+            {
+                continue;
+            }
+
+            results.Add(new SimilarityDuplicateReviewItem(
+                source.Entry,
+                source.Image,
+                existing.Entry,
+                existing.Image,
+                match.Distance));
+
+            if (results.Count >= 200)
+            {
+                break;
+            }
+        }
+
+        return results;
+    }
+
+    private static string BuildOrderedImagePairKey(string leftKey, string rightKey)
+    {
+        return string.Compare(leftKey, rightKey, StringComparison.OrdinalIgnoreCase) <= 0
+            ? $"{leftKey}||{rightKey}"
+            : $"{rightKey}||{leftKey}";
+    }
+
+    private void StartSimilarityBackfillLoop()
+    {
+        _similarityBackfillCts?.Cancel();
+        _similarityBackfillCts?.Dispose();
+        _similarityBackfillCts = new CancellationTokenSource();
+        var token = _similarityBackfillCts.Token;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(8), token);
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    if (_generationInProgress)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), token);
+                        continue;
+                    }
+
+                    var entries = _historyManager.GetAllEntries().ToList();
+                    var indexed = await _similarityFingerprintCacheService.BackfillMissingAsync(
+                        entries,
+                        _historyManager.GetHistoryDir(),
+                        _imageCacheService,
+                        token,
+                        maxCount: 20);
+
+                    await Task.Delay(indexed > 0 ? TimeSpan.FromSeconds(6) : TimeSpan.FromSeconds(45), token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (_settingsService.Settings.Verbose)
+                    {
+                        Console.WriteLine($"Similarity backfill loop error: {ex.Message}");
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(30), token);
+                }
+            }
+        }, token);
+    }
+
+    private void StartReplayMetadataBackfillLoop()
+    {
+        _replayBackfillCts?.Cancel();
+        _replayBackfillCts?.Dispose();
+        _replayBackfillCts = new CancellationTokenSource();
+        var token = _replayBackfillCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(12), token);
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    if (_generationInProgress)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), token);
+                        continue;
+                    }
+
+                    var healed = BackfillReplayMetadataMissingFields(maxCount: 8);
+                    if (healed > 0)
+                    {
+                        _historyManager.SaveChanges();
+                        Dispatcher.UIThread.Post(RefreshOpenHistoryViews);
+                    }
+
+                    await Task.Delay(healed > 0 ? TimeSpan.FromSeconds(8) : TimeSpan.FromSeconds(60), token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (_settingsService.Settings.Verbose)
+                    {
+                        Console.WriteLine($"Replay metadata backfill loop error: {ex.Message}");
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(30), token);
+                }
+            }
+        }, token);
+    }
+
+    private int BackfillReplayMetadataMissingFields(int maxCount)
+    {
+        var healed = 0;
+        var historyDir = _historyManager.GetHistoryDir();
+        var entries = _historyManager.GetAllEntries();
+
+        foreach (var entry in entries)
+        {
+            foreach (var image in entry.Images)
+            {
+                if (healed >= maxCount)
+                {
+                    return healed;
+                }
+
+                var needsGraph = !ReproducibilityHelper.HasUsableGraphJson(image.GenerationGraphJson);
+                var needsParams = !ReproducibilityHelper.HasGenerationParams(image);
+                if (!needsGraph && !needsParams)
+                {
+                    continue;
+                }
+
+                var fullPath = GetHistoryImageFullPath(image, historyDir);
+                if (string.IsNullOrWhiteSpace(fullPath) ||
+                    !File.Exists(fullPath) ||
+                    !fullPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var graphJson = TryExtractGraphJsonFromPng(fullPath);
+                if (string.IsNullOrWhiteSpace(graphJson))
+                {
+                    continue;
+                }
+
+                var updated = false;
+                if (needsGraph)
+                {
+                    image.GenerationGraphJson = graphJson;
+                    updated = true;
+                }
+
+                if (needsParams)
+                {
+                    var parsed = TryBuildParamsFromGraphJson(graphJson);
+                    if (parsed != null)
+                    {
+                        image.GenerationParams = parsed;
+                        image.GenerationParamsJson = JsonSerializer.Serialize(parsed);
+                        updated = true;
+                    }
+                }
+
+                if (!updated)
+                {
+                    continue;
+                }
+
+                _historyManager.UpdateImage(entry.Id, image, save: false);
+                healed++;
+            }
+        }
+
+        return healed;
+    }
+
+    private static string? GetHistoryImageFullPath(HistoryImage image, string historyDir)
+    {
+        if (string.IsNullOrWhiteSpace(image.ImagePath))
+        {
+            return null;
+        }
+
+        return Path.IsPathRooted(image.ImagePath)
+            ? image.ImagePath
+            : Path.Combine(historyDir, image.ImagePath);
+    }
+
+    private string? TryExtractGraphJsonFromPng(string pngPath)
+    {
+        try
+        {
+            using var image = SixImage.Load(pngPath);
+            var png = image.Metadata.GetPngMetadata();
+            if (png?.TextData == null)
+            {
+                return null;
+            }
+
+            foreach (var textChunk in png.TextData)
+            {
+                var value = textChunk.Value;
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (TryExtractReplayGraphJsonObject(value, out var graphObj) && graphObj != null)
+                {
+                    return graphObj.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_settingsService.Settings.Verbose)
+            {
+                Console.WriteLine($"Replay metadata backfill parse failed for '{pngPath}': {ex.Message}");
+            }
+        }
+
+        return null;
     }
 
     private void RefreshOpenHistoryViews()
@@ -5577,337 +6527,6 @@ public partial class MainWindowViewModel : ObservableObject
         return new ExperimentBatchDefinition(jobs, resolvedPrompt);
     }
 
-    private async Task RunExperimentPreviewAsync(
-        ExperimentBatchDefinition experiment,
-        ExperimentRunRequest request,
-        Window? owner,
-        string statusText,
-        bool allowLongPrompts,
-        GenerationJob? job = null,
-        CancellationToken externalToken = default,
-        string? originalPrompt = null,
-        string? processedPrompt = null,
-        string? templateName = null,
-        string? ollamaModel = null)
-    {
-        var savedImages = new List<HistoryImage>();
-        var previewVm = new MultiImagePreviewViewModel();
-        previewVm.InitializePlaceholders(experiment.Jobs.Count);
-        previewVm.StatusText = statusText;
-        previewVm.HeaderContextText = experiment.HeaderContextText ?? string.Empty;
-
-        for (var i = 0; i < experiment.Jobs.Count && i < previewVm.Slots.Count; i++)
-        {
-            previewVm.Slots[i].Label = experiment.Jobs[i].Label;
-        }
-
-        if (request.SaveSelectionsToHistory)
-        {
-            previewVm.OnSaveSlot = slot =>
-            {
-                var slotIndex = previewVm.Slots.IndexOf(slot);
-                var parameters = slot.GenerationParams;
-                var imagePrompt = parameters?.Prompt ?? string.Empty;
-                var image = CreateHistoryImageFromSlot(
-                    slot,
-                    parameters,
-                    $"Experiment:{request.Mode}",
-                    imagePrompt,
-                    Workflow);
-                image.GenerationParamsJson = parameters != null ? JsonSerializer.Serialize(parameters) : null;
-                image.ExperimentVariantIndex = slotIndex >= 0 ? slotIndex : null;
-                image.ExperimentVariantLabel = slot.Label;
-                image.ExperimentVariantValue = BuildExperimentVariantValue(request, slot, parameters);
-                image.PromptTypeSuffix = slot.Label;
-                savedImages.Add(image);
-                return Task.CompletedTask;
-            };
-            previewVm.OnSaveCompleted = () =>
-            {
-                if (savedImages.Count > 0)
-                {
-                    var entry = BuildExperimentHistoryEntry(
-                        request,
-                        originalPrompt ?? string.Empty,
-                        processedPrompt ?? string.Empty,
-                        templateName,
-                        ollamaModel ?? string.Empty,
-                        savedImages[0].GenerationParams?.Model?.Name,
-                        savedImages,
-                        experiment.HeaderContextText);
-                    _historyManager.AddEntry(entry);
-                    StatusText = "Experiment images saved to history.";
-                }
-                return Task.CompletedTask;
-            };
-        }
-        else
-        {
-            previewVm.OnSaveSlot = _ => Task.CompletedTask;
-            previewVm.OnSaveCompleted = () =>
-            {
-                StatusText = "Experiment preview closed without saving to history.";
-                return Task.CompletedTask;
-            };
-        }
-
-        ConfigurePreviewCommands(previewVm);
-        var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
-        _ = saveTask;
-        if (externalToken.CanBeCanceled)
-        {
-            externalToken.Register(() => cts.Cancel());
-        }
-        if (job != null)
-        {
-            job.StatusMessage = statusText;
-            job.UpdateProgress(0, experiment.Jobs.Count);
-            job.CancelAction = () => cts.Cancel();
-        }
-
-        _activeGenerationCts = cts;
-        previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
-        StatusText = statusText;
-
-        try
-        {
-            var jobs = experiment.Jobs
-                .Zip(previewVm.Slots, (experimentJob, slot) => (experimentJob.Parameters, slot))
-                .ToList();
-            await GenerateImagesForSlotsAsync(jobs, previewVm, cts, allowLongPrompts, job);
-        }
-        finally
-        {
-            if (ReferenceEquals(_activeGenerationCts, cts))
-            {
-                _activeGenerationCts = null;
-            }
-        }
-
-        if (cts.IsCancellationRequested)
-        {
-            previewVm.StatusText = StatusGenerationCancelled;
-            StatusText = StatusGenerationCancelled;
-            return;
-        }
-
-        previewVm.StatusText = request.SaveSelectionsToHistory
-            ? StatusImagesReady
-            : "Experiment ready. Save closes the preview without writing history.";
-        StatusText = request.SaveSelectionsToHistory
-            ? StatusImagesReadyMain
-            : "Experiment ready. Review the results and close when done.";
-    }
-
-    private async Task<GenerationPreviewResult> RunGenerationPreviewAsync(
-        IReadOnlyList<InvokeAIGenerationParams> parametersList,
-        string prompt,
-        string promptType,
-        string workflow,
-        Window? owner,
-        string statusText,
-        bool allowLongPrompts,
-        GenerationJob? job = null,
-        CancellationToken externalToken = default,
-        bool waitForSaveSelection = true,
-        Func<List<HistoryImage>, Task>? onSaveCompleted = null)
-    {
-        var savedImages = new List<HistoryImage>();
-        var previewVm = new MultiImagePreviewViewModel();
-        previewVm.InitializePlaceholders(parametersList.Count);
-        previewVm.StatusText = statusText;
-        previewVm.OnSaveSlot = slot =>
-        {
-            var image = CreateHistoryImageFromSlot(
-                slot,
-                slot.GenerationParams,
-                promptType,
-                prompt,
-                workflow);
-            image.GenerationParamsJson = slot.GenerationParams != null ? JsonSerializer.Serialize(slot.GenerationParams) : null;
-            savedImages.Add(image);
-            return Task.CompletedTask;
-        };
-        previewVm.OnSaveCompleted = onSaveCompleted == null
-            ? null
-            : async () => await onSaveCompleted(savedImages);
-        ConfigurePreviewCommands(previewVm);
-        var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
-        if (externalToken.CanBeCanceled)
-        {
-            externalToken.Register(() => cts.Cancel());
-        }
-        if (job != null)
-        {
-            job.StatusMessage = statusText;
-            job.UpdateProgress(0, parametersList.Count);
-            job.CancelAction = () => cts.Cancel();
-        }
-        _activeGenerationCts = cts;
-        previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
-        StatusText = statusText;
-
-        try
-        {
-            await GenerateImagesAsync(parametersList, previewVm, cts, allowLongPrompts, job);
-        }
-        finally
-        {
-            if (ReferenceEquals(_activeGenerationCts, cts))
-            {
-                _activeGenerationCts = null;
-            }
-        }
-        if (cts.IsCancellationRequested)
-        {
-            previewVm.StatusText = StatusGenerationCancelled;
-            return new GenerationPreviewResult(null, savedImages);
-        }
-
-        previewVm.StatusText = StatusImagesReady;
-        StatusText = StatusImagesReadyMain;
-
-        if (!waitForSaveSelection)
-        {
-            _ = saveTask;
-            return new GenerationPreviewResult(null, savedImages);
-        }
-
-        var saveResult = await saveTask;
-        return new GenerationPreviewResult(saveResult, savedImages);
-    }
-
-    private async Task<GenerationPreviewResult> RunSeedVariationPreviewAsync(
-        IReadOnlyList<InvokeAIGenerationParams> parametersList,
-        string prompt,
-        string promptType,
-        string workflow,
-        Window? owner,
-        string statusText,
-        bool allowLongPrompts,
-        int rootSeed,
-        byte[] rootImageBytes,
-        GenerationJob? job = null,
-        CancellationToken externalToken = default,
-        bool waitForSaveSelection = true,
-        Func<List<HistoryImage>, Task>? onSaveCompleted = null)
-    {
-        var savedImages = new List<HistoryImage>();
-        var previewVm = new MultiImagePreviewViewModel();
-        previewVm.InitializePlaceholders(parametersList.Count);
-        previewVm.StatusText = statusText;
-        previewVm.OnSaveSlot = slot =>
-        {
-            var image = CreateHistoryImageFromSlot(
-                slot,
-                slot.GenerationParams,
-                promptType,
-                prompt,
-                workflow);
-            image.GenerationParamsJson = slot.GenerationParams != null ? JsonSerializer.Serialize(slot.GenerationParams) : null;
-            savedImages.Add(image);
-            return Task.CompletedTask;
-        };
-        previewVm.OnSaveCompleted = onSaveCompleted == null
-            ? null
-            : async () => await onSaveCompleted(savedImages);
-        ConfigurePreviewCommands(previewVm);
-        var (preview, saveTask, cts) = ShowPreviewWindow(previewVm, owner);
-        if (externalToken.CanBeCanceled)
-        {
-            externalToken.Register(() => cts.Cancel());
-        }
-        if (job != null)
-        {
-            job.StatusMessage = statusText;
-            job.UpdateProgress(0, parametersList.Count);
-            job.CancelAction = () => cts.Cancel();
-        }
-        _activeGenerationCts = cts;
-        previewVm.OnEditAndRegenerate = async slot => await EditAndRegenerateSlotAsync(slot, preview);
-        StatusText = statusText;
-
-        try
-        {
-            var jobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
-            for (int i = 0; i < parametersList.Count && i < previewVm.Slots.Count; i++)
-            {
-                var param = parametersList[i];
-                var slot = previewVm.Slots[i];
-                ApplySlotGenerationMetadata(slot, param);
-
-                if (param.Seed == rootSeed)
-                {
-                    slot.IsSelected = false;
-                    previewVm.SetImage(i, rootImageBytes);
-                }
-                else
-                {
-                    slot.IsLoading = true;
-                    jobs.Add((param, slot));
-                }
-            }
-            previewVm.SyncProgressFromSlots();
-
-            if (jobs.Count > 0)
-            {
-                await GenerateImagesForSlotsAsync(jobs, previewVm, cts, allowLongPrompts, job);
-            }
-        }
-        finally
-        {
-            if (ReferenceEquals(_activeGenerationCts, cts))
-            {
-                _activeGenerationCts = null;
-            }
-        }
-
-        if (cts.IsCancellationRequested)
-        {
-            previewVm.StatusText = StatusGenerationCancelled;
-            return new GenerationPreviewResult(null, savedImages);
-        }
-
-        previewVm.StatusText = StatusImagesReady;
-        StatusText = StatusImagesReadyMain;
-
-        if (!waitForSaveSelection)
-        {
-            _ = saveTask;
-            return new GenerationPreviewResult(null, savedImages);
-        }
-
-        var saveResult = await saveTask;
-        return new GenerationPreviewResult(saveResult, savedImages);
-    }
-
-    private void ApplyGenerationResultStatus(GenerationPreviewResult result, string savedMessage, string discardedMessage)
-    {
-        if (result.Saved == true)
-        {
-            StatusText = savedMessage;
-        }
-        else if (result.Saved == null)
-        {
-            StatusText = StatusGenerationCancelled;
-        }
-        else
-        {
-            StatusText = discardedMessage;
-        }
-    }
-
-    private static string? GetDominantModelName(IEnumerable<InvokeAIGenerationParams>? parameters)
-    {
-        return parameters?
-            .Where(param => !string.IsNullOrWhiteSpace(param.Model?.Name))
-            .GroupBy(param => param.Model!.Name, StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(group => group.Count())
-            .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.Key)
-            .FirstOrDefault();
-    }
-
     private static int GetEstimatedWorkUnits(IEnumerable<InvokeAIGenerationParams>? parameters)
     {
         return Math.Max(1, parameters?.Count() ?? 0);
@@ -6028,6 +6647,19 @@ public partial class MainWindowViewModel : ObservableObject
         return string.IsNullOrWhiteSpace(baseParams.Prompt) ? fallback ?? string.Empty : baseParams.Prompt;
     }
 
+    private InvokeAIGenerationParams? ResolveHistoryBaseParams(HistoryEntry entry, HistoryImage? image)
+    {
+        var graphParams = TryBuildParamsFromGraphJson(image?.GenerationGraphJson);
+        if (graphParams != null)
+        {
+            return graphParams;
+        }
+
+        return image?.GenerationParams
+               ?? entry.ImageParameters
+               ?? TryParseGenerationParamsJson(image?.GenerationParamsJson);
+    }
+
     private enum PromptSource
     {
         Override,
@@ -6061,371 +6693,6 @@ public partial class MainWindowViewModel : ObservableObject
         if (!string.IsNullOrWhiteSpace(entry.ProcessedPrompt)) return (entry.ProcessedPrompt, PromptSource.ProcessedPrompt);
         if (!string.IsNullOrWhiteSpace(entry.OriginalPrompt)) return (entry.OriginalPrompt, PromptSource.OriginalPrompt);
         return (string.Empty, PromptSource.None);
-    }
-
-    private void ConfigurePreviewCommands(MultiImagePreviewViewModel previewVm)
-    {
-        previewVm.OnGenerateSeedVariations = async slot => await GenerateVariationsFromSlotAsync(slot, true, previewVm);
-        previewVm.OnGenerateModelVariations = async slot => await GenerateModelPermutationsFromSlotAsync(slot, previewVm);
-        previewVm.OnGenerateLoraVariations = async slot => await GenerateLoraPermutationsFromSlotAsync(slot, previewVm);
-        previewVm.OnPromoteToBase = async slot => await PromotePreviewSlotToBaseAsync(slot);
-        previewVm.OnEnhanceFromThis = async slot => await EnhancePromptFromPreviewSlotAsync(slot);
-    }
-
-    private Task PromotePreviewSlotToBaseAsync(ImageSlotViewModel slot)
-    {
-        var prompt = slot.GenerationParams?.Prompt;
-        if (string.IsNullOrWhiteSpace(prompt))
-        {
-            StatusText = "This image does not have a prompt to promote.";
-            return Task.CompletedTask;
-        }
-
-        PromptText = prompt;
-        OutputText = prompt;
-        _lastGeneration = null;
-        ProcessedPromptSegments.Clear();
-        MissingWildcards.Clear();
-        var segmentVm = new PromptSegmentViewModel(new PromptSegment(prompt), 0)
-        {
-            Tooltip = "Promoted from image preview."
-        };
-        segmentVm.PropertyChanged += (_, _) => RefreshProcessedOutput();
-        ProcessedPromptSegments.Add(segmentVm);
-        RefreshProcessedOutput();
-        StatusText = "Promoted image prompt to the base prompt.";
-        return Task.CompletedTask;
-    }
-
-    private async Task EnhancePromptFromPreviewSlotAsync(ImageSlotViewModel slot)
-    {
-        var prompt = slot.GenerationParams?.Prompt;
-        if (string.IsNullOrWhiteSpace(prompt))
-        {
-            StatusText = "This image does not have a prompt to enhance.";
-            return;
-        }
-
-        await EnhancePromptTextAsync(prompt, prompt);
-    }
-
-    private async Task<List<List<LoraParameter>>?> ShowLoraPermutationDialogAsync(InvokeAIGenerationParams baseParams, Window? owner)
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-        {
-            return await Dispatcher.UIThread.InvokeAsync(() => ShowLoraPermutationDialogAsync(baseParams, owner));
-        }
-
-        var baseModel = baseParams.Model?.Base ?? baseParams.BaseModelType;
-        var loras = await _invokeAIClient.GetModelsAsync(baseModel, "lora");
-        var dialogVm = new LoraPermutationDialogViewModel(loras, baseParams.Loras);
-        var dialog = new Views.LoraPermutationDialog(dialogVm);
-        var tcs = new TaskCompletionSource<List<List<LoraParameter>>?>();
-        dialogVm.RequestClose += (_, _) => dialog.Close();
-        dialog.Closed += (_, _) => tcs.TrySetResult(dialogVm.Result);
-        dialog.Show(GetOwnerWindow(owner) ?? new Window());
-        return await tcs.Task;
-    }
-
-    private static InvokeAIGenerationParams CloneParams(InvokeAIGenerationParams src)
-    {
-        var model = src.Model;
-        if (model != null && string.IsNullOrEmpty(model.Type))
-        {
-            model = model with { Type = "main" };
-        }
-        return new InvokeAIGenerationParams
-        {
-            Prompt = src.Prompt,
-            PositiveStylePrompt = src.PositiveStylePrompt,
-            NegativeStylePrompt = src.NegativeStylePrompt,
-            NegativePrompt = src.NegativePrompt,
-            BaseModelType = src.BaseModelType,
-            UsedRandomSeed = src.UsedRandomSeed,
-            BaseSeed = src.BaseSeed,
-            AutoClearedModelCacheBetweenModels = src.AutoClearedModelCacheBetweenModels,
-            VaeUsedName = src.VaeUsedName,
-            VaePrecision = src.VaePrecision,
-            UseCpuNoise = src.UseCpuNoise,
-            L2iFp32 = src.L2iFp32,
-            UseAutoCfgRescale = src.UseAutoCfgRescale,
-            Model = model,
-            Steps = src.Steps,
-            CfgScale = src.CfgScale,
-            Width = src.Width,
-            Height = src.Height,
-            Seed = src.Seed,
-            Scheduler = src.Scheduler,
-            CfgRescaleMultiplier = src.CfgRescaleMultiplier,
-            Loras = src.Loras?.Select(l => new LoraParameter { Lora = l.Lora, Weight = l.Weight }).ToList() ?? new List<LoraParameter>(),
-            SaveToGallery = src.SaveToGallery,
-            UsePromptAsStyleWhenEmpty = src.UsePromptAsStyleWhenEmpty
-        };
-    }
-
-    private async Task GenerateImagesAsync(IReadOnlyList<InvokeAIGenerationParams> parametersList, MultiImagePreviewViewModel previewVm, CancellationTokenSource cts, bool allowLongPrompts, GenerationJob? job = null)
-    {
-        var slotAssignments = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
-        for (int i = 0; i < parametersList.Count && i < previewVm.Slots.Count; i++)
-        {
-            slotAssignments.Add((parametersList[i], previewVm.Slots[i]));
-        }
-
-        await GenerateImagesForSlotsAsync(slotAssignments, previewVm, cts, allowLongPrompts, job);
-    }
-
-    private async Task GenerateImagesForSlotsAsync(
-        IReadOnlyList<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> jobs,
-        MultiImagePreviewViewModel previewVm,
-        CancellationTokenSource cts,
-        bool allowLongPrompts,
-        GenerationJob? job = null)
-    {
-        var completedAny = false;
-        previewVm.StatusText = "Generating images...";
-        if (!ValidateGenerationParams(jobs.Select(j => j.param).ToList(), allowLongPrompts, out var invalidMessage, out var isWarning))
-        {
-            StatusText = invalidMessage;
-            previewVm.StatusText = invalidMessage;
-            cts.Cancel();
-            return;
-        }
-        if (isWarning)
-        {
-            StatusText = invalidMessage;
-            previewVm.StatusText = invalidMessage;
-        }
-        foreach (var (param, slot) in jobs)
-        {
-            ApplySlotGenerationMetadata(slot, param);
-            slot.IsLoading = true;
-        }
-        previewVm.SyncProgressFromSlots();
-        job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
-
-        var pendingJobs = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>(jobs);
-        string? currentModelKey = null;
-
-        void AttachPendingPreviewJobs()
-        {
-            var attached = previewVm.TakePendingVariationJobs();
-            if (attached.Count == 0)
-            {
-                return;
-            }
-
-            foreach (var (param, slot) in attached)
-            {
-                ApplySlotGenerationMetadata(slot, param);
-                slot.IsLoading = true;
-            }
-
-            pendingJobs.AddRange(attached);
-            previewVm.SyncProgressFromSlots();
-            job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
-        }
-
-        static string GetModelKey(InvokeAIGenerationParams param)
-            => param.Model?.Name ?? string.Empty;
-
-        static List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> TakeJobsForModel(
-            List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> source,
-            string modelKey)
-        {
-            var matches = source
-                .Where(item => string.Equals(GetModelKey(item.param), modelKey, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (matches.Count == 0)
-            {
-                return matches;
-            }
-
-            foreach (var match in matches)
-            {
-                source.Remove(match);
-            }
-
-            return matches;
-        }
-
-        static List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> TakeLargestModelBatch(
-            List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> source,
-            out string modelKey)
-        {
-            var selected = source
-                .Select((item, index) => new { item, index })
-                .GroupBy(x => GetModelKey(x.item.param), StringComparer.OrdinalIgnoreCase)
-                .Select(group => new
-                {
-                    ModelKey = group.Key,
-                    Count = group.Count(),
-                    FirstIndex = group.Min(x => x.index)
-                })
-                .OrderByDescending(group => group.Count)
-                .ThenBy(group => group.FirstIndex)
-                .First();
-
-            modelKey = selected.ModelKey;
-            return TakeJobsForModel(source, modelKey);
-        }
-
-        while (!cts.IsCancellationRequested)
-        {
-            AttachPendingPreviewJobs();
-            if (pendingJobs.Count == 0)
-            {
-                break;
-            }
-
-            List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)> activeBatch;
-            if (!string.IsNullOrWhiteSpace(currentModelKey))
-            {
-                activeBatch = TakeJobsForModel(pendingJobs, currentModelKey);
-            }
-            else
-            {
-                activeBatch = new List<(InvokeAIGenerationParams param, ImageSlotViewModel slot)>();
-            }
-
-            if (activeBatch.Count == 0)
-            {
-                activeBatch = TakeLargestModelBatch(pendingJobs, out var selectedModelKey);
-                currentModelKey = selectedModelKey;
-            }
-
-            foreach (var (param, slot) in activeBatch)
-            {
-                if (cts.IsCancellationRequested) break;
-                try
-                {
-                    if (!ValidateGenerationParams(param, allowLongPrompts, out var invalidParamMessage, out var paramWarning))
-                    {
-                        StatusText = invalidParamMessage;
-                        previewVm.StatusText = invalidParamMessage;
-                        cts.Cancel();
-                        break;
-                    }
-                    if (paramWarning)
-                    {
-                        StatusText = invalidParamMessage;
-                        previewVm.StatusText = invalidParamMessage;
-                    }
-                    await _invokeGenerationGate.WaitAsync(cts.Token);
-                    InvokeAIGenerationResult result;
-                    try
-                    {
-                        result = await _invokeAIClient.GenerateImageAsync(param, ct: cts.Token);
-                    }
-                    finally
-                    {
-                        _invokeGenerationGate.Release();
-                    }
-
-                    RecordKpiGeneration(param, result.JobInfo, Workflow);
-                    if (result.GenerationParams?.Vae?.Name is { Length: > 0 } vaeName)
-                    {
-                        param.VaeUsedName = vaeName;
-                    }
-
-                    previewVm.UpdateSlotImage(slot, result.ImageBytes);
-                    ApplyJobInfoToSlot(slot, result.JobInfo);
-                    previewVm.IncrementGenerated();
-                    completedAny = true;
-                    job?.UpdateProgress(previewVm.GeneratedCount, previewVm.TotalCount);
-                }
-                catch (OperationCanceledException)
-                {
-                    StatusText = "Image generation cancelled.";
-                    cts.Cancel();
-                    return;
-                }
-                catch (InvokeAIJobFailedException ex)
-                {
-                    RecordKpiGeneration(param, ex.JobInfo, Workflow);
-                    slot.IsLoading = false;
-                    if (_settingsService.Settings.Verbose) Console.WriteLine($"Generation failed: {ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    slot.IsLoading = false;
-                    if (_settingsService.Settings.Verbose) Console.WriteLine($"Generation failed: {ex.Message}");
-                }
-            }
-
-            if (cts.IsCancellationRequested) break;
-
-            AttachPendingPreviewJobs();
-            if (pendingJobs.Any(item => string.Equals(GetModelKey(item.param), currentModelKey ?? string.Empty, StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-
-            if (_settingsService.Settings.AutoClearInvokeCacheBetweenModels)
-            {
-                await TryEmptyModelCacheAsync(cts.Token);
-            }
-
-            currentModelKey = null;
-        }
-
-        if (_settingsService.Settings.ServerSafetyModeEnabled && !cts.IsCancellationRequested)
-        {
-            await TryEmptyModelCacheAsync(cts.Token);
-        }
-
-        if (completedAny && !cts.IsCancellationRequested && ShouldNotifyGenerationCompletion(job))
-        {
-            previewVm.StatusText = StatusImagesReadySaveDiscard;
-            TryPlayGenerationCompleteSound();
-        }
-    }
-
-    private static HistoryImage CreateHistoryImageFromSlot(
-        ImageSlotViewModel slot,
-        InvokeAIGenerationParams? parameters,
-        string promptType,
-        string prompt,
-        string workflow)
-    {
-        var image = new HistoryImage
-        {
-            ImageBytes = slot.ImageBytes,
-            GenerationParams = parameters,
-            PromptType = promptType,
-            Prompt = prompt,
-            Workflow = workflow,
-            IsFavorite = slot.IsFavorite
-        };
-        ApplyJobInfoToHistoryImage(image, slot);
-        return image;
-    }
-
-    private static void ApplyJobInfoToSlot(ImageSlotViewModel slot, GenerationJobInfo? jobInfo)
-    {
-        if (jobInfo == null) return;
-        slot.GenerationDurationMs = jobInfo.GenerationDurationMs;
-        slot.QueueWaitMs = jobInfo.QueueWaitMs;
-        slot.TotalDurationMs = jobInfo.TotalDurationMs;
-        slot.GenerationStatus = jobInfo.Status;
-        slot.ErrorType = jobInfo.ErrorType;
-        slot.ErrorMessage = jobInfo.ErrorMessage;
-        slot.ErrorTraceback = jobInfo.ErrorTraceback;
-    }
-
-    private static void ApplyJobInfoToHistoryImage(HistoryImage image, ImageSlotViewModel slot)
-    {
-        image.GenerationDurationMs = slot.GenerationDurationMs;
-        image.QueueWaitMs = slot.QueueWaitMs;
-        image.TotalDurationMs = slot.TotalDurationMs;
-        image.GenerationStatus = slot.GenerationStatus;
-        image.ErrorType = slot.ErrorType;
-        image.ErrorMessage = slot.ErrorMessage;
-        image.ErrorTraceback = slot.ErrorTraceback;
-    }
-
-    private void RecordKpiGeneration(InvokeAIGenerationParams parameters, GenerationJobInfo? jobInfo, string? workflow)
-    {
-        _kpiStats?.RecordGeneration(parameters, jobInfo, workflow ?? Workflow);
     }
 
     private static bool ValidateGenerationParams(
@@ -7817,13 +8084,6 @@ public partial class MainWindowViewModel : ObservableObject
         return endpoints;
     }
 
-    private static Window? GetOwnerWindow(Window? owner)
-    {
-        if (owner != null) return owner;
-        var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-        return lifetime?.MainWindow;
-    }
-
     private void Exit()
     {
         if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
@@ -7838,6 +8098,14 @@ public partial class MainWindowViewModel : ObservableObject
     public void DisposeCaches()
     {
         CancelActiveGeneration();
+        _similarityBackfillCts?.Cancel();
+        _similarityBackfillCts?.Dispose();
+        _similarityBackfillCts = null;
+        _replayBackfillCts?.Cancel();
+        _replayBackfillCts?.Dispose();
+        _replayBackfillCts = null;
+        _promptMatchScoringService.Dispose();
+        _aestheticScoringService.Dispose();
         _imageCacheService.Dispose();
         _historyIndexService.Clear();
     }
@@ -7884,6 +8152,7 @@ public sealed class WildcardBrowserItem
     public string Name { get; init; } = string.Empty;
     public string SampleText { get; init; } = string.Empty;
     public string Summary { get; init; } = string.Empty;
+    public string ReasonText { get; init; } = string.Empty;
     public string Tooltip { get; init; } = string.Empty;
     public int ChoiceCount { get; init; }
     public int Score { get; init; }

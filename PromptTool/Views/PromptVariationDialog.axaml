@@ -1,0 +1,79 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        x:Class="PromptTool.Views.PromptVariationDialog"
+        Width="860"
+        Height="700"
+        MinWidth="760"
+        MinHeight="560"
+        Title="Create Prompt Variations"
+        WindowStartupLocation="CenterOwner">
+    <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="14" RowSpacing="10">
+        <TextBlock Text="Baseline Prompt" FontWeight="Bold"/>
+        <TextBox Grid.Row="1"
+                 x:Name="BaselinePromptBox"
+                 IsReadOnly="True"
+                 TextWrapping="Wrap"
+                 AcceptsReturn="True"
+                 MinHeight="90"/>
+
+        <Border Grid.Row="2" BorderBrush="#404040" BorderThickness="1" CornerRadius="6" Padding="10">
+            <StackPanel Spacing="8">
+                <WrapPanel Orientation="Horizontal" ItemHeight="30">
+                    <TextBlock Text="Variants:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"/>
+                    <NumericUpDown x:Name="VariantCountInput"
+                                   Width="120"
+                                   Minimum="1"
+                                   Maximum="200"
+                                   Value="6"
+                                   FormatString="F0"
+                                   Margin="0,0,10,0"/>
+                    <CheckBox x:Name="UseSameSeedCheck"
+                              Content="Same Seed"
+                              IsChecked="True"
+                              VerticalAlignment="Center"
+                              Margin="0,0,10,0"/>
+                    <CheckBox x:Name="SequentialSeedCheck"
+                              Content="Sequential Seeds"
+                              VerticalAlignment="Center"
+                              Margin="0,0,10,0"/>
+                    <CheckBox x:Name="KeepModelSettingsCheck"
+                              Content="Lock model/settings"
+                              IsChecked="True"
+                              VerticalAlignment="Center"/>
+                </WrapPanel>
+                <TextBlock x:Name="VariantSummaryText"
+                           Classes="subtle"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap"/>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="3" RowDefinitions="Auto,*,Auto" RowSpacing="8">
+            <TextBlock Text="Variation Prompts" FontWeight="Bold"/>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="VariantsPanel" Spacing="8"/>
+            </ScrollViewer>
+            <TextBlock Grid.Row="2"
+                       Text="Tip: each field is one prompt variant. Keep baseline identity descriptors and only change pose/style terms for controlled edits."
+                       Classes="subtle"
+                       TextWrapping="Wrap"/>
+        </Grid>
+
+        <DockPanel Grid.Row="4" LastChildFill="False">
+            <TextBlock x:Name="ErrorText"
+                       Foreground="#E44"
+                       IsVisible="False"
+                       VerticalAlignment="Center"
+                       TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" DockPanel.Dock="Right">
+                <Button Content="Cancel" MinWidth="96" Click="OnCancel"/>
+                <Button Content="Run Variations" MinWidth="132" Classes="accent" Click="OnRun"/>
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

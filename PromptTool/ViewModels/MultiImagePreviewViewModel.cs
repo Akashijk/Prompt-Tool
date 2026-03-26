@@ -38,6 +38,18 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     [ObservableProperty]
     private bool _showGenerationActions = true;
 
+    [ObservableProperty]
+    private bool _showComparisonMetrics;
+
+    [ObservableProperty]
+    private bool _showSaveDiscardActions = true;
+
+    [ObservableProperty]
+    private bool _showCompareAction;
+
+    [ObservableProperty]
+    private bool _defaultSlotSelected = true;
+
     public IReadOnlyList<HistoryEntry> SavedEntries { get; private set; } = Array.Empty<HistoryEntry>();
 
     public CancellationTokenSource? GenerationToken { get; set; }
@@ -53,6 +65,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     private Func<ImageSlotViewModel, Task>? _onPromoteToBase;
     private Func<ImageSlotViewModel, Task>? _onEnhanceFromThis;
     private Action<ImageSlotViewModel>? _onShowFullSize;
+    private Func<IReadOnlyList<ImageSlotViewModel>, Task>? _onCompareSelected;
 
     public Func<ImageSlotViewModel, Task>? OnSaveSlot
     {
@@ -136,6 +149,12 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         }
     }
 
+    public Func<IReadOnlyList<ImageSlotViewModel>, Task>? OnCompareSelected
+    {
+        get => _onCompareSelected;
+        set => _onCompareSelected = value;
+    }
+
     private void SyncSlotActions()
     {
         foreach (var slot in Slots)
@@ -148,6 +167,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
             slot.OnEnhanceFromThis = _onEnhanceFromThis;
             slot.OnShowFullSize = _onShowFullSize;
             slot.ShowGenerationActions = ShowGenerationActions;
+            slot.ShowComparisonMetrics = ShowComparisonMetrics;
         }
     }
 
@@ -164,7 +184,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
 
     public ImageSlotViewModel CreatePlaceholderSlot(string label)
     {
-        var slot = new ImageSlotViewModel { Label = label, IsLoading = true, IsSelected = true };
+        var slot = new ImageSlotViewModel { Label = label, IsLoading = true, IsSelected = DefaultSlotSelected };
         slot.OnGenerateSeedVariations = _onGenerateSeedVariations;
         slot.OnGenerateModelVariations = _onGenerateModelVariations;
         slot.OnGenerateLoraVariations = _onGenerateLoraVariations;
@@ -173,6 +193,7 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         slot.OnEnhanceFromThis = _onEnhanceFromThis;
         slot.OnShowFullSize = _onShowFullSize;
         slot.ShowGenerationActions = ShowGenerationActions;
+        slot.ShowComparisonMetrics = ShowComparisonMetrics;
         return slot;
     }
 
@@ -212,7 +233,16 @@ public partial class MultiImagePreviewViewModel : ObservableObject
             slot.OnEnhanceFromThis = _onEnhanceFromThis;
             slot.OnShowFullSize = _onShowFullSize;
             slot.ShowGenerationActions = ShowGenerationActions;
+            slot.ShowComparisonMetrics = ShowComparisonMetrics;
             old?.Dispose();
+        }
+    }
+
+    partial void OnShowComparisonMetricsChanged(bool value)
+    {
+        foreach (var slot in Slots)
+        {
+            slot.ShowComparisonMetrics = value;
         }
     }
 
@@ -268,6 +298,14 @@ public partial class MultiImagePreviewViewModel : ObservableObject
         }
     }
 
+    public void ClearPendingVariationJobs()
+    {
+        lock (_pendingVariationJobsLock)
+        {
+            _pendingVariationJobs.Clear();
+        }
+    }
+
     public void IncrementGenerated()
     {
         GeneratedCount = Math.Min(GeneratedCount + 1, TotalCount);
@@ -314,6 +352,17 @@ public partial class MultiImagePreviewViewModel : ObservableObject
     {
         GenerationToken?.Cancel();
         DialogResult = false;
+    }
+
+    [RelayCommand]
+    private async Task CompareSelected()
+    {
+        if (OnCompareSelected == null)
+        {
+            return;
+        }
+
+        await OnCompareSelected(GetSelectedSlots());
     }
 
     [RelayCommand]
@@ -382,6 +431,7 @@ public partial class ImageSlotViewModel : ObservableObject
     [ObservableProperty] private string _loraLabel = "";
     [ObservableProperty] private string _promptToolTip = "";
     [ObservableProperty] private bool _showGenerationActions = true;
+    [ObservableProperty] private bool _showComparisonMetrics;
     [ObservableProperty] private int? _generationDurationMs;
     [ObservableProperty] private int? _queueWaitMs;
     [ObservableProperty] private int? _totalDurationMs;
@@ -399,6 +449,85 @@ public partial class ImageSlotViewModel : ObservableObject
     public Func<ImageSlotViewModel, Task>? OnPromoteToBase { get; set; }
     public Func<ImageSlotViewModel, Task>? OnEnhanceFromThis { get; set; }
     public Action<ImageSlotViewModel>? OnShowFullSize { get; set; }
+
+    public bool HasComparisonParamText => !string.IsNullOrWhiteSpace(ComparisonParamText);
+    public bool HasTimingMetrics => GenerationDurationMs.HasValue || QueueWaitMs.HasValue || TotalDurationMs.HasValue;
+    public bool ShowComparisonParamText => ShowComparisonMetrics && HasComparisonParamText;
+    public bool ShowTimingMetrics => ShowComparisonMetrics && HasTimingMetrics;
+
+    public string ComparisonParamText
+    {
+        get
+        {
+            if (GenerationParams == null)
+            {
+                return string.Empty;
+            }
+
+            var scheduler = string.IsNullOrWhiteSpace(GenerationParams.Scheduler)
+                ? "(none)"
+                : GenerationParams.Scheduler;
+            return $"Steps {GenerationParams.Steps} | CFG {GenerationParams.CfgScale:0.##} | Scheduler {scheduler}";
+        }
+    }
+
+    public string TimingMetricsText
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (GenerationDurationMs.HasValue)
+            {
+                parts.Add($"Gen {GenerationDurationMs.Value} ms");
+            }
+            if (QueueWaitMs.HasValue)
+            {
+                parts.Add($"Queue {QueueWaitMs.Value} ms");
+            }
+            if (TotalDurationMs.HasValue)
+            {
+                parts.Add($"Total {TotalDurationMs.Value} ms");
+            }
+            return string.Join(" | ", parts);
+        }
+    }
+
+    public void RefreshComparisonMetricProperties()
+    {
+        OnPropertyChanged(nameof(ComparisonParamText));
+        OnPropertyChanged(nameof(HasComparisonParamText));
+        OnPropertyChanged(nameof(ShowComparisonParamText));
+        OnPropertyChanged(nameof(TimingMetricsText));
+        OnPropertyChanged(nameof(HasTimingMetrics));
+        OnPropertyChanged(nameof(ShowTimingMetrics));
+    }
+
+    partial void OnShowComparisonMetricsChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ShowComparisonParamText));
+        OnPropertyChanged(nameof(ShowTimingMetrics));
+    }
+
+    partial void OnGenerationDurationMsChanged(int? value)
+    {
+        OnPropertyChanged(nameof(TimingMetricsText));
+        OnPropertyChanged(nameof(HasTimingMetrics));
+        OnPropertyChanged(nameof(ShowTimingMetrics));
+    }
+
+    partial void OnQueueWaitMsChanged(int? value)
+    {
+        OnPropertyChanged(nameof(TimingMetricsText));
+        OnPropertyChanged(nameof(HasTimingMetrics));
+        OnPropertyChanged(nameof(ShowTimingMetrics));
+    }
+
+    partial void OnTotalDurationMsChanged(int? value)
+    {
+        OnPropertyChanged(nameof(TimingMetricsText));
+        OnPropertyChanged(nameof(HasTimingMetrics));
+        OnPropertyChanged(nameof(ShowTimingMetrics));
+    }
 
     [RelayCommand]
     private Task GenerateSeedVariations()

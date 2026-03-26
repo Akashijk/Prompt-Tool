@@ -32,6 +32,7 @@ public partial class PngMetadataViewerViewModel : ObservableObject
     [ObservableProperty] private ObservableCollection<PngHistoryDiffItem> _historyDiffs = new();
     [ObservableProperty] private bool _hasDiffs;
     [ObservableProperty] private bool _hasHistoryMatch;
+    [ObservableProperty] private bool _canApplySelectedDiffs;
     [ObservableProperty] private string _validationStatus = "";
     [ObservableProperty] private bool _hasGenerationMetadata;
     [ObservableProperty] private bool _hasGraphJson;
@@ -159,6 +160,7 @@ public partial class PngMetadataViewerViewModel : ObservableObject
             HasGraphJson = !string.IsNullOrWhiteSpace(_lastMetadata.GraphJson);
             InitializeGraphOverrides(_lastMetadata.GraphJson);
             TryMatchHistoryForCurrentFile();
+            RefreshApplySelectedState();
         }
         catch (Exception ex)
         {
@@ -271,6 +273,7 @@ public partial class PngMetadataViewerViewModel : ObservableObject
         {
             ValidationStatus = $"{HistoryDiffs.Count} differences found. Select what to apply.";
         }
+        RefreshApplySelectedState();
     }
 
     [RelayCommand]
@@ -494,17 +497,32 @@ public partial class PngMetadataViewerViewModel : ObservableObject
             return;
         }
 
+        var metadata = _lastMetadata ?? BuildMetadataSnapshot();
         var pending = HistoryDiffs.Where(d => d.Apply).ToList();
-        if (pending.Count == 0)
-        {
-            ValidationStatus = "No changes selected.";
-            return;
-        }
 
         var entryChanged = false;
         var imageChanged = false;
         var genChanged = false;
         var promptChanged = false;
+        var graphHydrated = false;
+
+        if (pending.Count == 0)
+        {
+            if (IsUsableGraphJson(metadata.GraphJson) &&
+                !string.Equals(_matchedImage.GenerationGraphJson?.Trim(), metadata.GraphJson?.Trim(), StringComparison.Ordinal))
+            {
+                _matchedImage.GenerationGraphJson = metadata.GraphJson;
+                _historyManager.UpdateImage(_matchedEntry.Id, _matchedImage, save: true);
+                ValidationStatus = "Applied PNG graph JSON to history image.";
+                ValidateAgainstHistory();
+                RefreshApplySelectedState();
+                return;
+            }
+
+            ValidationStatus = "No changes selected.";
+            RefreshApplySelectedState();
+            return;
+        }
 
         var gen = HistoryViewerViewModel.GetOrParseGenParams(_matchedImage) ?? new InvokeAIGenerationParams();
 
@@ -756,6 +774,15 @@ public partial class PngMetadataViewerViewModel : ObservableObject
             _matchedImage.GenerationParamsJson = JsonSerializer.Serialize(gen);
             imageChanged = true;
         }
+
+        if (IsUsableGraphJson(metadata.GraphJson) &&
+            !string.Equals(_matchedImage.GenerationGraphJson?.Trim(), metadata.GraphJson?.Trim(), StringComparison.Ordinal))
+        {
+            _matchedImage.GenerationGraphJson = metadata.GraphJson;
+            imageChanged = true;
+            graphHydrated = true;
+        }
+
         if (promptChanged && string.IsNullOrWhiteSpace(_matchedImage.Prompt))
         {
             _matchedImage.Prompt = gen.Prompt;
@@ -775,8 +802,11 @@ public partial class PngMetadataViewerViewModel : ObservableObject
             _historyManager.SaveChanges();
         }
 
-        ValidationStatus = $"{pending.Count} change(s) saved to history.";
+        ValidationStatus = graphHydrated
+            ? $"{pending.Count} change(s) saved to history. Graph replay data was also restored."
+            : $"{pending.Count} change(s) saved to history.";
         ValidateAgainstHistory();
+        RefreshApplySelectedState();
     }
 
     [RelayCommand]
@@ -870,6 +900,7 @@ public partial class PngMetadataViewerViewModel : ObservableObject
         HasHistoryMatch = true;
         _lastHistory = BuildHistorySnapshot(match.entry, match.image);
         ValidationStatus = "Matched history entry. Click Validate to compare.";
+        RefreshApplySelectedState();
     }
 
     private void EnsureHistoryMatch()
@@ -895,6 +926,51 @@ public partial class PngMetadataViewerViewModel : ObservableObject
             _matchedImage = null;
             _matchedImagePath = null;
             _lastHistory = null;
+        }
+        RefreshApplySelectedState();
+    }
+
+    partial void OnHasDiffsChanged(bool value) => RefreshApplySelectedState();
+    partial void OnHasHistoryMatchChanged(bool value) => RefreshApplySelectedState();
+
+    private void RefreshApplySelectedState()
+    {
+        var canHydrateGraph = HasHistoryMatch &&
+                              _matchedImage != null &&
+                              IsUsableGraphJson(_lastMetadata?.GraphJson) &&
+                              !string.Equals(_matchedImage.GenerationGraphJson?.Trim(), _lastMetadata?.GraphJson?.Trim(), StringComparison.Ordinal);
+        CanApplySelectedDiffs = HasDiffs || canHydrateGraph;
+    }
+
+    private static bool IsUsableGraphJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        var trimmed = json.Trim();
+        if (string.Equals(trimmed, "null", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            return doc.RootElement.TryGetProperty("nodes", out var nodes) &&
+                   nodes.ValueKind == JsonValueKind.Object &&
+                   doc.RootElement.TryGetProperty("edges", out var edges) &&
+                   edges.ValueKind == JsonValueKind.Array;
+        }
+        catch
+        {
+            return false;
         }
     }
 

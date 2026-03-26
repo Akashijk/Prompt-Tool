@@ -12,6 +12,7 @@ using PromptTool.Core.Services;
 using PromptTool.Core.Config;
 using PromptTool.Services;
 using System.Threading.Tasks;
+using System.Text;
 
 namespace PromptTool.ViewModels;
 
@@ -470,10 +471,15 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             }
             else
             {
-                schedulerForModel = ApplyModelSchedulerDefault(
-                    schedulerForModel,
-                    invokeModel,
-                    allowSchedulerOverride: UseModelDefaultsForScheduler);
+                // Iterative/history flows run with DisableAutoDefaults=true.
+                // Keep the source scheduler unless the user explicitly changes it in the dialog.
+                if (!DisableAutoDefaults)
+                {
+                    schedulerForModel = ApplyModelSchedulerDefault(
+                        schedulerForModel,
+                        invokeModel,
+                        allowSchedulerOverride: UseModelDefaultsForScheduler);
+                }
             }
 
             var finalNegativeForModel = string.IsNullOrWhiteSpace(styleNegative)
@@ -613,8 +619,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
             var negSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var lora in selectedLoras)
             {
-                var defaults = _settingsService.InvokeAILoraDefaults.FirstOrDefault(d =>
-                    string.Equals(d.ModelName, lora.Lora.Name, StringComparison.OrdinalIgnoreCase));
+                var defaults = FindLoraDefaultsForName(lora.Lora.Name);
                 if (defaults == null) continue;
 
                 AddPrefixes(posSet, defaults.PositivePromptPrefix);
@@ -744,8 +749,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
 
     private SelectableLoraViewModel CreateLoraVm(InvokeAIModel l)
     {
-        var defaults = _settingsService.InvokeAILoraDefaults.FirstOrDefault(d =>
-            string.Equals(d.ModelName, l.Name, StringComparison.OrdinalIgnoreCase));
+        var defaults = FindLoraDefaultsForName(l.Name);
         var weight = defaults?.LoraWeight ?? 0.75;
         return new SelectableLoraViewModel { Lora = l, Weight = weight };
     }
@@ -926,7 +930,7 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         var selectedLora = selectedVm?.Lora;
         if (selectedLora == null) return;
 
-        var defaults = _settingsService.InvokeAILoraDefaults.FirstOrDefault(d => string.Equals(d.ModelName, selectedLora.Name, StringComparison.OrdinalIgnoreCase));
+        var defaults = FindLoraDefaultsForName(selectedLora.Name);
         if (defaults == null) return;
 
         if (defaults.LoraWeight.HasValue && selectedVm != null && Math.Abs(selectedVm.Weight - 0.75) < 0.0001)
@@ -952,6 +956,46 @@ public partial class ImageGenerationOptionsViewModel : ObservableObject
         }
 
         UpdateModelSchedulerDefaultInfo();
+    }
+
+    private ModelDefaults? FindLoraDefaultsForName(string? loraName)
+    {
+        if (string.IsNullOrWhiteSpace(loraName)) return null;
+        var defaults = _settingsService.InvokeAILoraDefaults;
+        if (defaults == null || defaults.Count == 0) return null;
+
+        var exact = defaults.FirstOrDefault(d => string.Equals(d.ModelName, loraName, StringComparison.OrdinalIgnoreCase));
+        if (exact != null) return exact;
+
+        var normalized = NormalizeLoraLookupName(loraName);
+        if (string.IsNullOrWhiteSpace(normalized)) return null;
+        return defaults.FirstOrDefault(d => string.Equals(NormalizeLoraLookupName(d.ModelName), normalized, StringComparison.Ordinal));
+    }
+
+    private static string NormalizeLoraLookupName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var name = value.Trim();
+
+        while (true)
+        {
+            var stripped = System.IO.Path.GetFileNameWithoutExtension(name);
+            if (string.IsNullOrWhiteSpace(stripped) || string.Equals(stripped, name, StringComparison.Ordinal))
+            {
+                break;
+            }
+            name = stripped;
+        }
+
+        var sb = new StringBuilder(name.Length);
+        foreach (var ch in name)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                sb.Append(char.ToLowerInvariant(ch));
+            }
+        }
+        return sb.ToString();
     }
 
     private void UpdateModelSchedulerDefaultInfo()

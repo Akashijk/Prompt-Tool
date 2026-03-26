@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Threading;
 using PromptTool.ViewModels;
+using System;
 using System.ComponentModel;
 using System.Threading.Tasks;
 
@@ -9,12 +10,14 @@ namespace PromptTool.Views;
 public partial class DeployRemoteScorerDialog : Window
 {
     private DeployRemoteScorerDialogViewModel? _vm;
+    private EventHandler<bool?>? _requestCloseHandler;
 
     public DeployRemoteScorerDialog()
     {
         InitializeComponent();
         HookDataContext();
         DataContextChanged += (_, _) => HookDataContext();
+        Closed += OnClosed;
     }
 
     public DeployRemoteScorerDialog(DeployRemoteScorerDialogViewModel viewModel)
@@ -22,7 +25,9 @@ public partial class DeployRemoteScorerDialog : Window
         InitializeComponent();
         DataContext = viewModel;
         HookDataContext();
-        viewModel.RequestClose += (_, result) => Close(result);
+        _requestCloseHandler = (_, result) => Close(result);
+        viewModel.RequestClose += _requestCloseHandler;
+        Closed += OnClosed;
     }
 
     private void HookDataContext()
@@ -67,5 +72,20 @@ public partial class DeployRemoteScorerDialog : Window
             OutputLogBox.BringIntoView();
             OutputLogScroll?.ScrollToEnd();
         });
+    }
+
+    private void OnClosed(object? sender, System.EventArgs e)
+    {
+        if (_vm != null)
+        {
+            _vm.PropertyChanged -= OnVmPropertyChanged;
+            if (_requestCloseHandler != null)
+            {
+                _vm.RequestClose -= _requestCloseHandler;
+            }
+            _vm = null;
+        }
+
+        _requestCloseHandler = null;
     }
 }

@@ -14,7 +14,7 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace PromptTool.Services;
 
-public sealed class AestheticScoringService
+public sealed class AestheticScoringService : IDisposable
 {
     private const string ManifestFileName = "scoring_models.json";
     private const string ClipModelFileName = "clip_vision.onnx";
@@ -1128,6 +1128,16 @@ public sealed class AestheticScoringService
                 chunk.Add(items[i + j]);
             yield return chunk;
         }
+    }
+
+    public void Dispose()
+    {
+        _clipSession?.Dispose();
+        _clipSession = null;
+        _aestheticSession?.Dispose();
+        _aestheticSession = null;
+        _httpClient.Dispose();
+        _modelGate.Dispose();
     }
 }
 

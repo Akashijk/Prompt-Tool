@@ -1,10 +1,9 @@
 using Avalonia.Controls;
 using PromptTool.ViewModels;
-using System.ComponentModel;
 
 namespace PromptTool.Views;
 
-public partial class SystemPromptEditorWindow : Window
+public partial class SystemPromptEditorWindow : PropertyChangedDialogWindow<SystemPromptEditorViewModel, bool>
 {
     public SystemPromptEditorWindow()
     {
@@ -15,14 +14,19 @@ public partial class SystemPromptEditorWindow : Window
     {
         InitializeComponent();
         DataContext = vm;
-        vm.PropertyChanged += OnVmPropertyChanged;
     }
 
-    private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    protected override string DialogResultPropertyName => nameof(SystemPromptEditorViewModel.DialogResult);
+
+    protected override bool TryGetDialogResult(SystemPromptEditorViewModel viewModel, out bool result)
     {
-        if (sender is SystemPromptEditorViewModel vm && e.PropertyName == nameof(SystemPromptEditorViewModel.DialogResult) && vm.DialogResult.HasValue)
+        if (viewModel.DialogResult.HasValue)
         {
-            Close(vm.DialogResult.Value);
+            result = viewModel.DialogResult.Value;
+            return true;
         }
+
+        result = default;
+        return false;
     }
 }

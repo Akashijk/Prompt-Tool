@@ -78,7 +78,7 @@
 
                         <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="10">
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Steps:" VerticalAlignment="Center"/>
-                            <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding CurrentSteps}" Minimum="0" Maximum="500" Increment="1"/>
+                            <NumericUpDown Grid.Row="0" Grid.Column="1" Value="{Binding CurrentSteps}" Minimum="0" Maximum="500" Increment="1" FormatString="F0"/>
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="CFG Scale:" VerticalAlignment="Center"/>
                             <NumericUpDown Grid.Row="1" Grid.Column="1" Value="{Binding CurrentCfgScale}" Minimum="0" Maximum="30" Increment="0.1" FormatString="F1"/>
@@ -87,10 +87,10 @@
                             <NumericUpDown Grid.Row="2" Grid.Column="1" Value="{Binding CurrentCfgRescaleMultiplier}" Minimum="0" Maximum="1" Increment="0.05" FormatString="F2"/>
 
                             <TextBlock Grid.Row="3" Grid.Column="0" Text="Width:" VerticalAlignment="Center"/>
-                            <NumericUpDown Grid.Row="3" Grid.Column="1" Value="{Binding CurrentWidth}" Minimum="0" Maximum="4096" Increment="64"/>
+                            <NumericUpDown Grid.Row="3" Grid.Column="1" Value="{Binding CurrentWidth}" Minimum="0" Maximum="4096" Increment="64" FormatString="F0"/>
 
                             <TextBlock Grid.Row="4" Grid.Column="0" Text="Height:" VerticalAlignment="Center"/>
-                            <NumericUpDown Grid.Row="4" Grid.Column="1" Value="{Binding CurrentHeight}" Minimum="0" Maximum="4096" Increment="64"/>
+                            <NumericUpDown Grid.Row="4" Grid.Column="1" Value="{Binding CurrentHeight}" Minimum="0" Maximum="4096" Increment="64" FormatString="F0"/>
                         </Grid>
 
                         <TextBlock Text="Positive Prompt Prefix:" FontWeight="Bold"/>

@@ -14,6 +14,9 @@ public partial class CompareImagesWindow : Window
 {
     private readonly ZoomPane _leftPane;
     private readonly ZoomPane _rightPane;
+    private bool _syncing;
+    private Action<ZoomPaneState>? _leftStateChangedHandler;
+    private Action<ZoomPaneState>? _rightStateChangedHandler;
 
     public CompareImagesWindow()
     {
@@ -22,6 +25,7 @@ public partial class CompareImagesWindow : Window
         _leftPane = new ZoomPane(LeftScrollViewer, LeftCanvas, LeftImage, LeftZoomSlider);
         _rightPane = new ZoomPane(RightScrollViewer, RightCanvas, RightImage, RightZoomSlider);
         HookZoom();
+        Closed += OnClosed;
     }
 
     public CompareImagesWindow(CompareImagesViewModel viewModel)
@@ -32,6 +36,7 @@ public partial class CompareImagesWindow : Window
         _leftPane = new ZoomPane(LeftScrollViewer, LeftCanvas, LeftImage, LeftZoomSlider);
         _rightPane = new ZoomPane(RightScrollViewer, RightCanvas, RightImage, RightZoomSlider);
         HookZoom();
+        Closed += OnClosed;
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -50,6 +55,58 @@ public partial class CompareImagesWindow : Window
     {
         _leftPane.Hook();
         _rightPane.Hook();
+        _leftStateChangedHandler = state =>
+        {
+            if (_syncing) return;
+            _syncing = true;
+            try
+            {
+                _rightPane.ApplyState(state);
+            }
+            finally
+            {
+                _syncing = false;
+            }
+        };
+        _rightStateChangedHandler = state =>
+        {
+            if (_syncing) return;
+            _syncing = true;
+            try
+            {
+                _leftPane.ApplyState(state);
+            }
+            finally
+            {
+                _syncing = false;
+            }
+        };
+        _leftPane.StateChanged += _leftStateChangedHandler;
+        _rightPane.StateChanged += _rightStateChangedHandler;
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (_leftStateChangedHandler != null)
+        {
+            _leftPane.StateChanged -= _leftStateChangedHandler;
+        }
+
+        if (_rightStateChangedHandler != null)
+        {
+            _rightPane.StateChanged -= _rightStateChangedHandler;
+        }
+
+        _leftPane.Unhook();
+        _rightPane.Unhook();
+
+        if (DataContext is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
+        _leftStateChangedHandler = null;
+        _rightStateChangedHandler = null;
     }
 
     private void SetInterpolation()
@@ -71,6 +128,7 @@ public partial class CompareImagesWindow : Window
         private double _imageHeight;
         private TranslateTransform? _translate;
         private ScaleTransform? _scale;
+        public event Action<ZoomPaneState>? StateChanged;
 
         public ZoomPane(ScrollViewer scrollViewer, Canvas canvas, Image image, Slider slider)
         {
@@ -91,6 +149,18 @@ public partial class CompareImagesWindow : Window
             _canvas.PointerMoved += CanvasOnPointerMoved;
             _canvas.PointerWheelChanged += CanvasOnPointerWheelChanged;
             _slider.PointerWheelChanged += SliderOnPointerWheelChanged;
+        }
+
+        public void Unhook()
+        {
+            _image.PropertyChanged -= ImageOnPropertyChanged;
+            _slider.PropertyChanged -= SliderOnPropertyChanged;
+            _scrollViewer.SizeChanged -= ScrollViewerOnSizeChanged;
+            _canvas.PointerPressed -= CanvasOnPointerPressed;
+            _canvas.PointerReleased -= CanvasOnPointerReleased;
+            _canvas.PointerMoved -= CanvasOnPointerMoved;
+            _canvas.PointerWheelChanged -= CanvasOnPointerWheelChanged;
+            _slider.PointerWheelChanged -= SliderOnPointerWheelChanged;
         }
 
         private void InitializeTransforms()
@@ -143,6 +213,7 @@ public partial class CompareImagesWindow : Window
                 _translate.X = newX;
                 _translate.Y = newY;
             }
+            RaiseStateChanged();
         }
 
         private void CanvasOnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
@@ -242,6 +313,7 @@ public partial class CompareImagesWindow : Window
                     _scale.ScaleX = scale;
                     _scale.ScaleY = scale;
                 }
+                RaiseStateChanged();
             }
         }
 
@@ -281,6 +353,27 @@ public partial class CompareImagesWindow : Window
                 _translate.X = x;
                 _translate.Y = y;
             }
+            RaiseStateChanged();
+        }
+
+        public void ApplyState(ZoomPaneState state)
+        {
+            var targetScale = Math.Clamp(state.Scale, _slider.Minimum, _slider.Maximum);
+            _slider.Value = targetScale;
+            ApplyPan(state.OffsetX, state.OffsetY, targetScale);
+            if (_scale != null)
+            {
+                _scale.ScaleX = targetScale;
+                _scale.ScaleY = targetScale;
+            }
+        }
+
+        private void RaiseStateChanged()
+        {
+            StateChanged?.Invoke(new ZoomPaneState(
+                _slider.Value,
+                _translate?.X ?? 0,
+                _translate?.Y ?? 0));
         }
 
         private bool IsPannable()
@@ -289,4 +382,6 @@ public partial class CompareImagesWindow : Window
             return _imageWidth * scale > _scrollViewer.Viewport.Width || _imageHeight * scale > _scrollViewer.Viewport.Height;
         }
     }
+
+    private readonly record struct ZoomPaneState(double Scale, double OffsetX, double OffsetY);
 }

@@ -6,6 +6,9 @@ namespace PromptTool.Views;
 
 public partial class LoraPermutationDialog : Window
 {
+    private LoraPermutationDialogViewModel? _attachedVm;
+    private EventHandler? _requestCloseHandler;
+
     public LoraPermutationDialog()
     {
         InitializeComponent();
@@ -15,6 +18,20 @@ public partial class LoraPermutationDialog : Window
     {
         InitializeComponent();
         DataContext = viewModel;
-        viewModel.RequestClose += (_, _) => Close();
+        _attachedVm = viewModel;
+        _requestCloseHandler = (_, _) => Close();
+        viewModel.RequestClose += _requestCloseHandler;
+        Closed += OnClosed;
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (_attachedVm != null && _requestCloseHandler != null)
+        {
+            _attachedVm.RequestClose -= _requestCloseHandler;
+        }
+
+        _attachedVm = null;
+        _requestCloseHandler = null;
     }
 }

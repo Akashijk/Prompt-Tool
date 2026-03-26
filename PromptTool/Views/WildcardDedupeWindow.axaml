@@ -23,11 +23,31 @@
                                FontSize="20"
                                FontWeight="Bold"/>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="Min match" VerticalAlignment="Center" Classes="subtle"/>
+                        <TextBox Text="{Binding MinimumScore, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Width="56"
+                                 HorizontalContentAlignment="Center"
+                                 VerticalContentAlignment="Center"/>
                         <Button Content="Refresh Scan"
                                 Click="RefreshScan_Click"/>
                     </StackPanel>
                 </DockPanel>
                 <TextBlock Text="{Binding StatusText}" Classes="subtle" TextWrapping="Wrap"/>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10" IsVisible="{Binding IsBusy}">
+                    <ProgressBar Grid.Column="0"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding ScanProgressPercent}"
+                                 Height="10"/>
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding ScanProgressPercent, StringFormat='{}{0:0}%'}"
+                               Classes="subtle"
+                               VerticalAlignment="Center"/>
+                </Grid>
+                <TextBlock Text="{Binding ScanProgressText}"
+                           Classes="subtle"
+                           TextWrapping="Wrap"
+                           IsVisible="{Binding IsBusy}"/>
             </StackPanel>
 
             <Grid Grid.Row="1" ColumnDefinitions="1.1*,1.9*" ColumnSpacing="12">

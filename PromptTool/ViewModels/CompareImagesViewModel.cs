@@ -5,12 +5,13 @@ using System.Linq;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PromptTool.Core.Models;
+using PromptTool.Services;
 
 namespace PromptTool.ViewModels;
 
 public record ImageDetailRow(string Label, string Value);
 
-public partial class CompareImagePaneViewModel : ObservableObject
+public partial class CompareImagePaneViewModel : ObservableObject, IDisposable
 {
     [ObservableProperty] private Bitmap? _image;
     [ObservableProperty] private string _title = string.Empty;
@@ -22,9 +23,22 @@ public partial class CompareImagePaneViewModel : ObservableObject
         _title = title;
         _details = details;
     }
+
+    partial void OnImageChanged(Bitmap? oldValue, Bitmap? newValue)
+    {
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            oldValue?.Dispose();
+        }
+    }
+
+    public void Dispose()
+    {
+        Image = null;
+    }
 }
 
-public partial class CompareImagesViewModel : ObservableObject
+public partial class CompareImagesViewModel : ObservableObject, IDisposable
 {
     [ObservableProperty] private CompareImagePaneViewModel _left;
     [ObservableProperty] private CompareImagePaneViewModel _right;
@@ -32,8 +46,10 @@ public partial class CompareImagesViewModel : ObservableObject
     public CompareImagesViewModel(HistoryEntry leftEntry, HistoryImage leftImage, Bitmap leftBitmap,
                                   HistoryEntry rightEntry, HistoryImage rightImage, Bitmap rightBitmap)
     {
-        _left = new CompareImagePaneViewModel(leftBitmap, leftImage.PromptType ?? "Image", BuildDetailRows(leftEntry, leftImage));
-        _right = new CompareImagePaneViewModel(rightBitmap, rightImage.PromptType ?? "Image", BuildDetailRows(rightEntry, rightImage));
+        var leftOwned = UiBitmapHelper.CloneForUi(leftBitmap) ?? throw new InvalidOperationException("Failed to clone left compare bitmap.");
+        var rightOwned = UiBitmapHelper.CloneForUi(rightBitmap) ?? throw new InvalidOperationException("Failed to clone right compare bitmap.");
+        _left = new CompareImagePaneViewModel(leftOwned, leftImage.PromptType ?? "Image", BuildDetailRows(leftEntry, leftImage));
+        _right = new CompareImagePaneViewModel(rightOwned, rightImage.PromptType ?? "Image", BuildDetailRows(rightEntry, rightImage));
     }
 
     private static ObservableCollection<ImageDetailRow> BuildDetailRows(HistoryEntry entry, HistoryImage image)
@@ -56,6 +72,9 @@ public partial class CompareImagesViewModel : ObservableObject
         Add("Prompt", prompt);
         Add("Model", gen?.Model?.Name);
         Add("Seed", gen != null ? gen.Seed.ToString() : null);
+        Add("Gen Duration", image.GenerationDurationMs.HasValue ? $"{image.GenerationDurationMs.Value} ms" : null);
+        Add("Queue Wait", image.QueueWaitMs.HasValue ? $"{image.QueueWaitMs.Value} ms" : null);
+        Add("Total Time", image.TotalDurationMs.HasValue ? $"{image.TotalDurationMs.Value} ms" : null);
 
         if (gen?.Loras != null && gen.Loras.Count > 0)
         {
@@ -80,5 +99,11 @@ public partial class CompareImagesViewModel : ObservableObject
         Add("Params", parts.Count > 0 ? string.Join(" • ", parts) : null);
 
         return new ObservableCollection<ImageDetailRow>(rows);
+    }
+
+    public void Dispose()
+    {
+        Left.Dispose();
+        Right.Dispose();
     }
 }

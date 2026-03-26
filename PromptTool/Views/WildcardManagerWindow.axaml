@@ -17,32 +17,53 @@
     <Grid Margin="10" RowDefinitions="Auto,*" ColumnDefinitions="1.05*,6,1.75*,6,Auto" RowSpacing="10" ColumnSpacing="0">
         <DockPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="5" LastChildFill="False">
             <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="8">
-                <Button Content="New" Click="OnNewWildcardClicked"/>
-                <Button Content="Save" Command="{Binding SaveWildcardCommand}"/>
-                <Button Content="Rename" Click="OnRenameWildcardClicked"/>
+                <Button Content="New"
+                        Click="OnNewWildcardClicked"
+                        ToolTip.Tip="Create a new wildcard file. You can optionally prefill it with AI suggestions."/>
+                <Button Content="Save"
+                        Command="{Binding SaveWildcardCommand}"
+                        ToolTip.Tip="Save the currently selected wildcard file."/>
+                <Button Content="Rename"
+                        Click="OnRenameWildcardClicked"
+                        ToolTip.Tip="Rename the currently selected wildcard file."/>
             </StackPanel>
             <Menu DockPanel.Dock="Left" Margin="12,0,0,0" Background="Transparent">
                 <MenuItem Header="_More">
-                    <MenuItem Header="_Delete" Click="OnDeleteWildcardClicked"/>
+                    <MenuItem Header="_Delete"
+                              Click="OnDeleteWildcardClicked"
+                              ToolTip.Tip="Delete the current wildcard file."/>
                     <MenuItem Header="_Archive"
                               Command="{Binding ArchiveWildcardCommand}"
-                              IsEnabled="{Binding CanArchive}"/>
+                              IsEnabled="{Binding CanArchive}"
+                              ToolTip.Tip="Hide the current wildcard from normal browsing without deleting it."/>
                     <MenuItem Header="_Unarchive"
                               Command="{Binding UnarchiveWildcardCommand}"
-                              IsEnabled="{Binding CanUnarchive}"/>
+                              IsEnabled="{Binding CanUnarchive}"
+                              ToolTip.Tip="Restore an archived wildcard to the normal library list."/>
                 </MenuItem>
                 <MenuItem Header="_Library">
-                    <MenuItem Header="_Validate Current" Command="{Binding ValidateCommand}"/>
-                    <MenuItem Header="_Dedupe Wildcards..." Click="OnDedupeWildcardsClicked"/>
-                    <MenuItem Header="Find Duplicate _Files" Command="{Binding FindDuplicatesCommand}"/>
-                    <MenuItem Header="_Convert Legacy TXT" Command="{Binding ConvertAllLegacyCommand}"/>
-                    <MenuItem Header="_Refresh Dependencies" Command="{Binding RefreshDependenciesCommand}"/>
+                    <MenuItem Header="_Validate Current"
+                              Command="{Binding ValidateCommand}"
+                              ToolTip.Tip="Validate the current wildcard's JSON structure, rules, and likely duplicate choices."/>
+                    <MenuItem Header="_Dedupe Wildcards..."
+                              Click="OnDedupeWildcardsClicked"
+                              ToolTip.Tip="Scan the whole wildcard library for likely duplicate files and review merge candidates."/>
+                    <MenuItem Header="Find Duplicate _Files"
+                              Command="{Binding FindDuplicatesCommand}"
+                              ToolTip.Tip="Find exact duplicate wildcard files in the library."/>
+                    <MenuItem Header="_Convert Legacy TXT"
+                              Command="{Binding ConvertAllLegacyCommand}"
+                              ToolTip.Tip="Convert old TXT wildcard files into the structured JSON format."/>
+                    <MenuItem Header="_Refresh Dependencies"
+                              Command="{Binding RefreshDependenciesCommand}"
+                              ToolTip.Tip="Re-scan wildcard includes and references used by templates and other wildcards."/>
                 </MenuItem>
             </Menu>
             <Button DockPanel.Dock="Right"
                     Content="{Binding InspectorToggleText}"
                     Command="{Binding ToggleInspectorCommand}"
-                    Margin="12,0,0,0"/>
+                    Margin="12,0,0,0"
+                    ToolTip.Tip="Show or hide the inspector drawer for validation, similar wildcards, dependencies, and unused items."/>
             <TextBlock DockPanel.Dock="Right"
                        Text="{Binding Status}"
                        Margin="12,0,0,0"
@@ -57,7 +78,8 @@
                     <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                         <TextBox Grid.Column="0"
                                  Watermark="Search names, content, tags..."
-                                 Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"/>
+                                 Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip.Tip="Search wildcard names, descriptions, tags, choice values, includes, and requires."/>
                         <Border Grid.Column="1" Background="#1B2B43" CornerRadius="4" Padding="8,4">
                             <TextBlock Text="{Binding WildcardCount, StringFormat='{}{0} total'}" Classes="subtle"/>
                         </Border>
@@ -79,7 +101,8 @@
                                             Margin="2"
                                             Padding="6,2"
                                             Command="{Binding DataContext.ApplyThemeFilterCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                            CommandParameter="{Binding}"/>
+                                            CommandParameter="{Binding}"
+                                            ToolTip.Tip="Filter the wildcard library by this common theme tag."/>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
@@ -116,19 +139,36 @@
                 <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="10">
                     <TextBox Grid.Column="0"
                              Watermark="Wildcard name"
-                             Text="{Binding CurrentWildcardName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                             Text="{Binding CurrentWildcardName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip.Tip="Name of the current wildcard file, as referenced in prompts like __wildcard_name__."/>
                     <Menu Grid.Column="1" Background="Transparent" VerticalAlignment="Center">
                         <MenuItem Header="_Organize">
-                            <MenuItem Header="_Dedup Exact" Command="{Binding DeduplicateChoicesCommand}"/>
-                            <MenuItem Header="_Find Similar" Command="{Binding FindSimilarChoicesCommand}"/>
-                            <MenuItem Header="_Normalize Text" Command="{Binding NormalizeChoiceTextCommand}"/>
-                            <MenuItem Header="_Sort" Command="{Binding SortChoicesCommand}"/>
+                            <MenuItem Header="_Dedup Exact"
+                                      Command="{Binding DeduplicateChoicesCommand}"
+                                      ToolTip.Tip="Remove exact duplicate choices using normalized text comparisons."/>
+                            <MenuItem Header="_Find Similar"
+                                      Command="{Binding FindSimilarChoicesCommand}"
+                                      ToolTip.Tip="Find likely near-duplicate choices such as expanded or article-prefixed variations."/>
+                            <MenuItem Header="_Normalize Text"
+                                      Command="{Binding NormalizeChoiceTextCommand}"
+                                      ToolTip.Tip="Trim whitespace and remove leading articles like 'a', 'an', or 'the' from choices."/>
+                            <MenuItem Header="_Sort"
+                                      Command="{Binding SortChoicesCommand}"
+                                      ToolTip.Tip="Sort the current wildcard's choices alphabetically using normalized text."/>
                         </MenuItem>
                         <MenuItem Header="_Rules">
-                            <MenuItem Header="Set _Include..." Click="OnSetIncludeClicked"/>
-                            <MenuItem Header="_Clear Include" Click="OnClearIncludeClicked"/>
-                            <MenuItem Header="Set _Requires..." Click="OnSetRequiresClicked"/>
-                            <MenuItem Header="C_lear Requires" Click="OnClearRequiresClicked"/>
+                            <MenuItem Header="Set _Include..."
+                                      Click="OnSetIncludeClicked"
+                                      ToolTip.Tip="Apply one or more wildcard includes to the selected choice."/>
+                            <MenuItem Header="_Clear Include"
+                                      Click="OnClearIncludeClicked"
+                                      ToolTip.Tip="Remove includes from the selected choice."/>
+                            <MenuItem Header="Set _Requires..."
+                                      Click="OnSetRequiresClicked"
+                                      ToolTip.Tip="Set required key/value conditions for the selected choice."/>
+                            <MenuItem Header="C_lear Requires"
+                                      Click="OnClearRequiresClicked"
+                                      ToolTip.Tip="Remove requires conditions from the selected choice."/>
                         </MenuItem>
                     </Menu>
                 </Grid>
@@ -164,14 +204,21 @@
                             <WrapPanel Grid.Row="1" ItemSpacing="8" LineSpacing="8">
                                 <TextBox Width="320"
                                          Watermark="Type a new entry and press Enter"
-                                         Text="{Binding QuickAddChoiceText, UpdateSourceTrigger=PropertyChanged}">
+                                         Text="{Binding QuickAddChoiceText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip.Tip="Quick add a single choice. Press Enter to append it to the current wildcard.">
                                     <TextBox.KeyBindings>
                                         <KeyBinding Gesture="Enter" Command="{Binding AddQuickChoiceCommand}"/>
                                     </TextBox.KeyBindings>
                                 </TextBox>
-                                <Button Content="Add Entry" Command="{Binding AddQuickChoiceCommand}"/>
-                                <Button Content="Add List..." Click="OnBulkAddChoicesClicked"/>
-                                <Button Content="AI Suggest..." Click="OnAiSuggestChoicesClicked"/>
+                                <Button Content="Add Entry"
+                                        Command="{Binding AddQuickChoiceCommand}"
+                                        ToolTip.Tip="Add the quick-entry text as a new choice."/>
+                                <Button Content="Add List..."
+                                        Click="OnBulkAddChoicesClicked"
+                                        ToolTip.Tip="Paste multiple items, one per line, and add them all at once."/>
+                                <Button Content="AI Suggest..."
+                                        Click="OnAiSuggestChoicesClicked"
+                                        ToolTip.Tip="Ask AI to propose new choices, tags, includes, and requires for this wildcard."/>
                             </WrapPanel>
                             <DataGrid Grid.Row="2"
                                       ItemsSource="{Binding Choices}"

@@ -1,6 +1,5 @@
 using Avalonia.Controls;
 using PromptTool.ViewModels;
-using System.ComponentModel;
 using System.Threading.Tasks;
 using PromptTool.Core.Clients;
 using System.Net.Http;
@@ -21,14 +20,13 @@ using System.Threading;
 
 namespace PromptTool.Views;
 
-public partial class SettingsWindow : Window
+public partial class SettingsWindow : PropertyChangedDialogWindow<SettingsViewModel, bool>
 {
     private bool _closePromptActive;
 
     public SettingsWindow()
     {
         InitializeComponent();
-        HookDialogCloseFromDataContext();
         Closing += OnClosing;
     }
 
@@ -36,8 +34,21 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
         DataContext = viewModel;
-        HookDialogClose(viewModel);
         Closing += OnClosing;
+    }
+
+    protected override string DialogResultPropertyName => nameof(SettingsViewModel.DialogResult);
+
+    protected override bool TryGetDialogResult(SettingsViewModel viewModel, out bool result)
+    {
+        if (viewModel.DialogResult.HasValue)
+        {
+            result = viewModel.DialogResult.Value;
+            return true;
+        }
+
+        result = default;
+        return false;
     }
 
     public void NavigateToGenerationSection(string sectionKey)
@@ -62,30 +73,6 @@ public partial class SettingsWindow : Window
         }, DispatcherPriority.Background);
     }
 
-    private void HookDialogCloseFromDataContext()
-    {
-        this.DataContextChanged += (_, _) =>
-        {
-            if (DataContext is SettingsViewModel vm)
-            {
-                HookDialogClose(vm);
-            }
-        };
-    }
-
-    private void HookDialogClose(SettingsViewModel viewModel)
-    {
-        viewModel.PropertyChanged += OnViewModelPropertyChanged;
-    }
-
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (e.PropertyName == nameof(SettingsViewModel.DialogResult) && sender is SettingsViewModel vm && vm.DialogResult.HasValue)
-        {
-            Close(vm.DialogResult.Value);
-        }
-    }
-
     private async void OnClosing(object? sender, WindowClosingEventArgs e)
     {
         if (_closePromptActive) return;
@@ -95,14 +82,15 @@ public partial class SettingsWindow : Window
 
         e.Cancel = true;
         _closePromptActive = true;
-        var choice = await ShowUnsavedChangesPromptAsync(
+        var choice = await WindowClosePrompt.ShowAsync(
+            this,
             "Unsaved settings",
             "You have unsaved changes. Save them before closing?");
         _closePromptActive = false;
 
         switch (choice)
         {
-            case CloseChoice.Save:
+            case WindowCloseChoice.Save:
                 if (vm.SaveCommand is IAsyncRelayCommand asyncCmd)
                 {
                     await asyncCmd.ExecuteAsync(null);
@@ -112,64 +100,12 @@ public partial class SettingsWindow : Window
                     vm.SaveCommand.Execute(null);
                 }
                 break;
-            case CloseChoice.Discard:
+            case WindowCloseChoice.Discard:
                 Close(false);
                 break;
-            case CloseChoice.Cancel:
+            case WindowCloseChoice.Cancel:
                 break;
         }
-    }
-
-    private enum CloseChoice
-    {
-        Save,
-        Discard,
-        Cancel
-    }
-
-    private async Task<CloseChoice> ShowUnsavedChangesPromptAsync(string title, string message)
-    {
-        var dialog = new Window
-        {
-            Title = title,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight,
-            CanResize = false
-        };
-
-        var text = new TextBlock
-        {
-            Text = message,
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 12)
-        };
-
-        var saveButton = new Button { Content = "Save", MinWidth = 80 };
-        var discardButton = new Button { Content = "Discard", MinWidth = 80 };
-        var cancelButton = new Button { Content = "Cancel", MinWidth = 80, IsCancel = true };
-
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Spacing = 8,
-            Children = { saveButton, discardButton, cancelButton }
-        };
-
-        var panel = new StackPanel
-        {
-            Margin = new Thickness(12),
-            Children = { text, buttons }
-        };
-
-        dialog.Content = panel;
-
-        saveButton.Click += (_, _) => dialog.Close(CloseChoice.Save);
-        discardButton.Click += (_, _) => dialog.Close(CloseChoice.Discard);
-        cancelButton.Click += (_, _) => dialog.Close(CloseChoice.Cancel);
-
-        var result = await dialog.ShowDialog<CloseChoice>(this);
-        return result;
     }
 
     private async void OpenGenerationDefaults(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

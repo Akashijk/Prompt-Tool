@@ -76,7 +76,7 @@
                     <TextBox Text="{Binding SchedulerFilterText}" Watermark="Type to filter..."/>
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <TextBlock Text="Steps" VerticalAlignment="Center"/>
-                        <NumericUpDown Value="{Binding Steps}" Minimum="1" Maximum="200" Width="120"/>
+                        <NumericUpDown Value="{Binding Steps}" Minimum="1" Maximum="200" FormatString="F0" Width="120"/>
                     </StackPanel>
                     <Grid ColumnDefinitions="Auto,Auto,Auto,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="6">
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Step sweep (±)" VerticalAlignment="Center"/>
@@ -97,8 +97,8 @@
                                   ItemsSource="{Binding StepSweepIntervals}"
                                   SelectedItem="{Binding StepSweepInterval}"
                                   Width="110"/>
-                        <NumericUpDown Grid.Row="1" Grid.Column="2" Value="{Binding StepSweepMin}" Minimum="1" Maximum="200" Width="110"/>
-                        <NumericUpDown Grid.Row="1" Grid.Column="3" Value="{Binding StepSweepMax}" Minimum="1" Maximum="200" Width="110"/>
+                        <NumericUpDown Grid.Row="1" Grid.Column="2" Value="{Binding StepSweepMin}" Minimum="1" Maximum="200" FormatString="F0" Width="110"/>
+                        <NumericUpDown Grid.Row="1" Grid.Column="3" Value="{Binding StepSweepMax}" Minimum="1" Maximum="200" FormatString="F0" Width="110"/>
                     </Grid>
                     <CheckBox Content="Enable aesthetic scoring"
                               IsChecked="{Binding EnableAestheticScoring}"/>

@@ -317,55 +317,291 @@ public class InvokeAIClient
         {
             throw new ArgumentNullException(nameof(parameters.Model), "A model must be selected for generation.");
         }
+
+        await ResolveModelReferencesAsync(parameters, ct);
         
         var vaes = await GetModelsAsync(modelType: "vae", ct: ct);
 
-        InvokeAIGraph graph;
-        InvokeAIModel? vaeUsed;
-        if (parameters.Model.Base == "sdxl")
+        var retriedUnknownModel = false;
+        while (true)
         {
-            (graph, vaeUsed) = GraphBuilder.BuildSdxlGraph(parameters, vaes);
-        }
-        else // Covers "sd-1.5" and "sd-1"
-        {
-            (graph, vaeUsed) = GraphBuilder.BuildSd15Graph(parameters, vaes);
-        }
-        
-        var queueItem = await EnqueueBatchAsync(graph, ct);
-        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
-
-        var (imageBytes, imageName, jobInfo) = await WaitForResultWithCancellationCleanupAsync(itemId, parameters.SaveToGallery, ct);
-
-        return new InvokeAIGenerationResult
-        {
-            ItemId = itemId,
-            ImageBytes = imageBytes,
-            ImageName = imageName,
-            GenerationParams = new GenerationParams
+            InvokeAIGraph graph;
+            InvokeAIModel? vaeUsed;
+            var modelBase = parameters.Model.Base;
+            if (string.IsNullOrWhiteSpace(modelBase))
             {
-                Scheduler = parameters.Scheduler,
-                Vae = vaeUsed
-            },
-            JobInfo = jobInfo
-        };
+                modelBase = parameters.BaseModelType;
+            }
+
+            if (string.IsNullOrWhiteSpace(modelBase))
+            {
+                // Avoid 422 enum failures on legacy/stale params; retry path can still remap model after this.
+                modelBase = "unknown";
+            }
+
+            if (!string.IsNullOrWhiteSpace(modelBase) &&
+                !string.Equals(parameters.Model.Base, modelBase, StringComparison.OrdinalIgnoreCase))
+            {
+                parameters.Model = parameters.Model with { Base = modelBase };
+            }
+
+            if (string.IsNullOrWhiteSpace(parameters.BaseModelType))
+            {
+                parameters.BaseModelType = modelBase;
+            }
+
+            if (string.IsNullOrWhiteSpace(parameters.Model.Type))
+            {
+                parameters.Model = parameters.Model with { Type = "main" };
+            }
+
+            var isSdxl = string.Equals(modelBase, "sdxl", StringComparison.OrdinalIgnoreCase) ||
+                         (!string.IsNullOrWhiteSpace(modelBase) &&
+                          modelBase.StartsWith("sdxl", StringComparison.OrdinalIgnoreCase));
+
+            if (isSdxl)
+            {
+                (graph, vaeUsed) = GraphBuilder.BuildSdxlGraph(parameters, vaes);
+            }
+            else // Covers "sd-1.5" and "sd-1"
+            {
+                (graph, vaeUsed) = GraphBuilder.BuildSd15Graph(parameters, vaes);
+            }
+
+            try
+            {
+                var queueItem = await EnqueueBatchAsync(graph, ct);
+                var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
+
+                var (imageBytes, imageName, jobInfo) = await WaitForResultWithCancellationCleanupAsync(itemId, parameters.SaveToGallery, ct);
+
+                return new InvokeAIGenerationResult
+                {
+                    ItemId = itemId,
+                    ImageBytes = imageBytes,
+                    ImageName = imageName,
+                    GenerationParams = new GenerationParams
+                    {
+                        Scheduler = parameters.Scheduler,
+                        Vae = vaeUsed
+                    },
+                    JobInfo = jobInfo
+                };
+            }
+            catch (HttpRequestException ex) when (!retriedUnknownModel && ex.Message.Contains("Unknown model", StringComparison.OrdinalIgnoreCase))
+            {
+                retriedUnknownModel = true;
+                if (_settingsService.Settings.Verbose)
+                {
+                    Console.WriteLine("InvokeAI reported unknown model. Clearing cache and retrying once.");
+                }
+                ClearCache();
+                await ResolveModelReferencesAsync(parameters, ct);
+            }
+        }
+    }
+
+    private async Task ResolveModelReferencesAsync(InvokeAIGenerationParams parameters, CancellationToken ct)
+    {
+        if (parameters.Model == null)
+        {
+            return;
+        }
+
+        var modelName = parameters.Model.Name;
+        var modelKey = parameters.Model.Key;
+        var modelHash = parameters.Model.Hash;
+        var baseModel = parameters.BaseModelType;
+        if (string.IsNullOrWhiteSpace(baseModel))
+        {
+            baseModel = parameters.Model.Base;
+        }
+
+        var mainModels = await GetModelsAsync(baseModel, "main", ct);
+        var resolvedMain = mainModels.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, modelName, modelKey, modelHash));
+        if (resolvedMain == null)
+        {
+            var allMain = await GetModelsAsync(modelType: "main", ct: ct);
+            resolvedMain = allMain.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, modelName, modelKey, modelHash));
+        }
+
+        if (resolvedMain != null)
+        {
+            parameters.Model = resolvedMain;
+            if (string.IsNullOrWhiteSpace(parameters.BaseModelType) && !string.IsNullOrWhiteSpace(resolvedMain.Base))
+            {
+                parameters.BaseModelType = resolvedMain.Base;
+            }
+            if (_settingsService.Settings.Verbose &&
+                (!string.Equals(modelName, resolvedMain.Name, StringComparison.OrdinalIgnoreCase) ||
+                 !string.Equals(modelKey, resolvedMain.Key, StringComparison.OrdinalIgnoreCase)))
+            {
+                Console.WriteLine($"Resolved main model '{modelName}'/'{modelKey}' -> '{resolvedMain.Name}'/'{resolvedMain.Key}'.");
+            }
+        }
+        else
+        {
+            // Keep model/base coherent even when direct resolution misses.
+            var fallbackBase = parameters.BaseModelType;
+            if (string.IsNullOrWhiteSpace(fallbackBase))
+            {
+                fallbackBase = parameters.Model.Base;
+            }
+            if (!string.IsNullOrWhiteSpace(fallbackBase) || string.IsNullOrWhiteSpace(parameters.Model.Type))
+            {
+                parameters.Model = parameters.Model with
+                {
+                    Base = string.IsNullOrWhiteSpace(parameters.Model.Base) ? fallbackBase ?? string.Empty : parameters.Model.Base,
+                    Type = string.IsNullOrWhiteSpace(parameters.Model.Type) ? "main" : parameters.Model.Type
+                };
+            }
+        }
+
+        if (parameters.Loras == null || parameters.Loras.Count == 0)
+        {
+            return;
+        }
+
+        var loraScoped = await GetModelsAsync(parameters.BaseModelType, "lora", ct);
+        IReadOnlyList<InvokeAIModel>? allLoras = null;
+        foreach (var lora in parameters.Loras)
+        {
+            if (lora?.Lora == null)
+            {
+                continue;
+            }
+
+            var loraName = lora.Lora.Name;
+            var loraKey = lora.Lora.Key;
+            var loraHash = lora.Lora.Hash;
+            var resolved = loraScoped.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, loraName, loraKey, loraHash));
+            if (resolved == null)
+            {
+                allLoras ??= await GetModelsAsync(modelType: "lora", ct: ct);
+                resolved = allLoras.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, loraName, loraKey, loraHash));
+            }
+
+            if (resolved != null)
+            {
+                lora.Lora = resolved;
+                if (_settingsService.Settings.Verbose &&
+                    (!string.Equals(loraName, resolved.Name, StringComparison.OrdinalIgnoreCase) ||
+                     !string.Equals(loraKey, resolved.Key, StringComparison.OrdinalIgnoreCase)))
+                {
+                    Console.WriteLine($"Resolved LoRA '{loraName}'/'{loraKey}' -> '{resolved.Name}'/'{resolved.Key}'.");
+                }
+            }
+        }
+    }
+
+    private async Task NormalizeGraphModelReferencesAsync(JsonObject graph, CancellationToken ct)
+    {
+        if (graph["nodes"] is not JsonObject nodes)
+        {
+            return;
+        }
+
+        foreach (var nodeEntry in nodes)
+        {
+            if (nodeEntry.Value is not JsonObject node)
+            {
+                continue;
+            }
+
+            var nodeType = node["type"]?.GetValue<string>() ?? string.Empty;
+            if (string.Equals(nodeType, "main_model_loader", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(nodeType, "sdxl_model_loader", StringComparison.OrdinalIgnoreCase))
+            {
+                await ResolveGraphNodeModelAsync(node, "model", "main", ct);
+            }
+            else if (string.Equals(nodeType, "lora_loader", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(nodeType, "sdxl_lora_loader", StringComparison.OrdinalIgnoreCase))
+            {
+                await ResolveGraphNodeModelAsync(node, "lora", "lora", ct);
+            }
+            else if (string.Equals(nodeType, "vae_loader", StringComparison.OrdinalIgnoreCase))
+            {
+                await ResolveGraphNodeModelAsync(node, "vae_model", "vae", ct);
+            }
+            else if (string.Equals(nodeType, "spandrel_image_to_image_autoscale", StringComparison.OrdinalIgnoreCase))
+            {
+                await ResolveGraphNodeModelAsync(node, "image_to_image_model", "spandrel_image_to_image", ct);
+            }
+        }
+    }
+
+    private async Task ResolveGraphNodeModelAsync(JsonObject node, string modelField, string modelType, CancellationToken ct)
+    {
+        if (node[modelField] is not JsonObject modelObj)
+        {
+            return;
+        }
+
+        var modelName = modelObj["name"]?.GetValue<string>();
+        var modelKey = modelObj["key"]?.GetValue<string>();
+        var modelHash = modelObj["hash"]?.GetValue<string>();
+        var baseModel = modelObj["base"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(modelName) && string.IsNullOrWhiteSpace(modelKey) && string.IsNullOrWhiteSpace(modelHash))
+        {
+            return;
+        }
+
+        var scoped = await GetModelsAsync(baseModel, modelType, ct);
+        var resolved = scoped.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, modelName, modelKey, modelHash));
+        if (resolved == null)
+        {
+            var all = await GetModelsAsync(modelType: modelType, ct: ct);
+            resolved = all.FirstOrDefault(m => ModelResolutionHelper.MatchesIdentity(m, modelName, modelKey, modelHash));
+        }
+
+        if (resolved == null)
+        {
+            return;
+        }
+
+        node[modelField] = JsonSerializer.SerializeToNode(resolved);
+        if (_settingsService.Settings.Verbose &&
+            (!string.Equals(modelName, resolved.Name, StringComparison.OrdinalIgnoreCase) ||
+             !string.Equals(modelKey, resolved.Key, StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine($"Normalized graph model ({modelType}) '{modelName}'/'{modelKey}' -> '{resolved.Name}'/'{resolved.Key}'.");
+        }
     }
 
     public async Task<InvokeAIGenerationResult> GenerateImageFromGraphJsonAsync(JsonObject graph, bool saveToGallery, CancellationToken ct = default)
     {
         if (graph == null) throw new ArgumentNullException(nameof(graph));
+        await NormalizeGraphModelReferencesAsync(graph, ct);
 
-        var queueItem = await EnqueueBatchJsonAsync(graph, ct);
-        var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
-
-        var (imageBytes, imageName, jobInfo) = await WaitForResultWithCancellationCleanupAsync(itemId, saveToGallery, ct);
-
-        return new InvokeAIGenerationResult
+        var retriedUnknownModel = false;
+        while (true)
         {
-            ItemId = itemId,
-            ImageBytes = imageBytes,
-            ImageName = imageName,
-            JobInfo = jobInfo
-        };
+            try
+            {
+                var queueItem = await EnqueueBatchJsonAsync(graph, ct);
+                var itemId = queueItem["item_ids"]![0]!.GetValue<int>();
+
+                var (imageBytes, imageName, jobInfo) = await WaitForResultWithCancellationCleanupAsync(itemId, saveToGallery, ct);
+
+                return new InvokeAIGenerationResult
+                {
+                    ItemId = itemId,
+                    ImageBytes = imageBytes,
+                    ImageName = imageName,
+                    JobInfo = jobInfo
+                };
+            }
+            catch (HttpRequestException ex) when (!retriedUnknownModel && ex.Message.Contains("Unknown model", StringComparison.OrdinalIgnoreCase))
+            {
+                retriedUnknownModel = true;
+                if (_settingsService.Settings.Verbose)
+                {
+                    Console.WriteLine("Graph replay hit unknown model. Clearing cache and retrying once.");
+                }
+                ClearCache();
+                await NormalizeGraphModelReferencesAsync(graph, ct);
+            }
+        }
     }
 
     public async Task<InvokeAIGenerationResult> UpscaleImageAsync(
@@ -560,31 +796,8 @@ public class InvokeAIClient
                 case "failed":
                 case "canceled":
                     if (_settingsService.Settings.Verbose) Console.WriteLine($"--- InvokeAI Job Failed/Canceled ---\n{JsonSerializer.Serialize(statusData, new JsonSerializerOptions { WriteIndented = true })}\n------------------------------------");
-                    string errorMsg = "Unknown error.";
-                    try
-                    {
-                        if (statusData.TryGetPropertyValue("session", out var sessionNode) && sessionNode is JsonObject sessionObj)
-                        {
-                            if (sessionObj.TryGetPropertyValue("results", out var resultsNode) && resultsNode is JsonObject resultsObj)
-                            {
-                                foreach (var property in resultsObj.AsObject()) // Corrected: Iterate over properties of JsonObject
-                                {
-                                    if (property.Value is JsonObject nodeOutputObj && 
-                                        nodeOutputObj.TryGetPropertyValue("type", out var typeNode) && 
-                                        typeNode?.GetValue<string>() == "execution_error" &&
-                                        nodeOutputObj.TryGetPropertyValue("error", out var errorNode))
-                                    {
-                                        errorMsg = errorNode?.GetValue<string>() ?? errorMsg;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception)
-                    {
-                        // Fallback to original error message
-                    }
+                    var errorMsg = ExtractInvokeFailureMessage(statusData);
+                    Console.WriteLine($"InvokeAI job failed/canceled: {errorMsg}");
                     throw new InvokeAIJobFailedException($"Image generation failed or was canceled: {errorMsg}", jobInfo);
 
                 default:
@@ -677,6 +890,75 @@ public class InvokeAIClient
         if (node is not JsonValue value) return null;
         if (!value.TryGetValue(out string? raw) || string.IsNullOrWhiteSpace(raw)) return null;
         return DateTimeOffset.TryParse(raw, out var dt) ? dt : null;
+    }
+
+    private static string ExtractInvokeFailureMessage(JsonObject? statusData)
+    {
+        if (statusData == null)
+        {
+            return "Unknown error.";
+        }
+
+        var direct = statusData["error_message"]?.GetValue<string>();
+        if (!string.IsNullOrWhiteSpace(direct))
+        {
+            return direct!;
+        }
+
+        var errorType = statusData["error_type"]?.GetValue<string>();
+        if (!string.IsNullOrWhiteSpace(errorType) &&
+            !string.Equals(errorType, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return errorType!;
+        }
+
+        if (statusData["session"] is JsonObject sessionObj &&
+            sessionObj["results"] is JsonObject resultsObj)
+        {
+            foreach (var property in resultsObj)
+            {
+                if (property.Value is not JsonObject nodeOutputObj)
+                {
+                    continue;
+                }
+
+                var nodeType = nodeOutputObj["type"]?.GetValue<string>() ?? string.Empty;
+                if (!string.Equals(nodeType, "execution_error", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string? message = null;
+                var errorNode = nodeOutputObj["error"];
+                if (errorNode is JsonValue errorValue && errorValue.TryGetValue(out string? errorText))
+                {
+                    message = errorText;
+                }
+                else if (errorNode is JsonObject errorObj)
+                {
+                    message = errorObj["message"]?.GetValue<string>()
+                              ?? errorObj["detail"]?.GetValue<string>()
+                              ?? errorObj.ToJsonString();
+                }
+                else if (errorNode != null)
+                {
+                    message = errorNode.ToJsonString();
+                }
+
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    return $"Node '{property.Key}': {message}";
+                }
+            }
+        }
+
+        var status = statusData["status"]?.GetValue<string>();
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            return $"Job status: {status}";
+        }
+
+        return "Unknown error.";
     }
     
     public async Task CancelAndCleanupItemAsync(int itemId, bool saveToGallery, CancellationToken ct)

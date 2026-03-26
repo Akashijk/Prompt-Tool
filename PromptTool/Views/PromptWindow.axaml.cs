@@ -151,6 +151,11 @@ public partial class PromptWindow : Window
             return;
         }
 
+        if (DataContext is MainWindowViewModel selectionVm)
+        {
+            selectionVm.SelectedWildcardBrowserItem = item;
+        }
+
         var point = e.GetCurrentPoint(control);
         if (!point.Properties.IsRightButtonPressed)
         {
@@ -185,6 +190,19 @@ public partial class PromptWindow : Window
         var menu = new ContextMenu { ItemsSource = menuItems };
         menu.Open(control);
         e.Handled = true;
+    }
+
+    private void WildcardBrowserTilePointerEntered(object? sender, PointerEventArgs e)
+    {
+        if (sender is not Control control || control.DataContext is not WildcardBrowserItem item)
+        {
+            return;
+        }
+
+        if (DataContext is MainWindowViewModel vm)
+        {
+            vm.SelectedWildcardBrowserItem = item;
+        }
     }
 
     private void PromptInputBox_TextChanged(object? sender, TextChangedEventArgs e)

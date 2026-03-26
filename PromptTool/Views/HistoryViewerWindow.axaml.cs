@@ -24,11 +24,15 @@ public partial class HistoryViewerWindow : Window
     private bool _legacyPromptShown;
     private bool _hasAutoSelected;
     private bool _stateRestored;
+    private WindowState _pendingRestoreState = WindowState.Normal;
+    private HistoryViewerViewModel? _attachedVm;
+    private INotifyCollectionChanged? _historyEntriesCollection;
 
     public HistoryViewerWindow()
     {
         InitializeComponent();
         Closing += (_, __) => SaveWindowState();
+        Closed += OnClosed;
         Opened += HistoryViewerWindow_OnOpened;
         HookDataContext();
         WireContext();
@@ -39,6 +43,7 @@ public partial class HistoryViewerWindow : Window
     {
         InitializeComponent();
         Closing += (_, __) => SaveWindowState();
+        Closed += OnClosed;
         Opened += HistoryViewerWindow_OnOpened;
         DataContext = viewModel;
         WireContext();
@@ -60,6 +65,8 @@ public partial class HistoryViewerWindow : Window
     {
         if (Design.IsDesignMode)
             return;
+
+        ApplyPendingWindowStateRestore();
         
         if (DataContext is HistoryViewerViewModel initialVm)
         {
@@ -109,10 +116,13 @@ public partial class HistoryViewerWindow : Window
             return;
         }
 
-        if (Enum.TryParse<WindowState>(settings.HistoryViewerWindowState, out var state) && state != WindowState.Normal)
+        if (Enum.TryParse<WindowState>(settings.HistoryViewerWindowState, out var savedState))
         {
-            WindowState = state;
-            return;
+            _pendingRestoreState = savedState;
+        }
+        else
+        {
+            _pendingRestoreState = WindowState.Normal;
         }
 
         if (settings.HistoryViewerWindowWidth > 0 && settings.HistoryViewerWindowHeight > 0)
@@ -127,6 +137,33 @@ public partial class HistoryViewerWindow : Window
         }
 
         WindowState = WindowState.Normal;
+    }
+
+    private void ApplyPendingWindowStateRestore()
+    {
+        var screen = Owner?.Screens.ScreenFromWindow(Owner)
+                     ?? Screens.ScreenFromWindow(this)
+                     ?? Screens.Primary;
+        var working = screen?.WorkingArea ?? new PixelRect(0, 0, 1280, 720);
+
+        if (WindowState == WindowState.Normal)
+        {
+            var width = (int)Math.Ceiling(Bounds.Width > 0 ? Bounds.Width : Width);
+            var height = (int)Math.Ceiling(Bounds.Height > 0 ? Bounds.Height : Height);
+            if (width > 0 && height > 0)
+            {
+                var clampedX = Math.Clamp(Position.X, working.X, working.X + Math.Max(0, working.Width - width));
+                var clampedY = Math.Clamp(Position.Y, working.Y, working.Y + Math.Max(0, working.Height - height));
+                Position = new PixelPoint(clampedX, clampedY);
+            }
+        }
+
+        if (_pendingRestoreState != WindowState.Normal)
+        {
+            var targetState = _pendingRestoreState;
+            _pendingRestoreState = WindowState.Normal;
+            Dispatcher.UIThread.Post(() => WindowState = targetState, DispatcherPriority.Background);
+        }
     }
 
     private void SaveWindowState()
@@ -196,8 +233,23 @@ public partial class HistoryViewerWindow : Window
     private void WireContext()
     {
         _detailsScroll = this.FindControl<ScrollViewer>("DetailsScroll");
+        if (_attachedVm != null)
+        {
+            _attachedVm.PropertyChanged -= ViewModel_PropertyChanged;
+            _attachedVm.OnLargeImageRequested -= Vm_OnLargeImageRequested;
+            _attachedVm.ShowAllImagesRequested = null;
+            _attachedVm.ShowPngMetadataRequested = null;
+        }
+
+        if (_historyEntriesCollection != null)
+        {
+            _historyEntriesCollection.CollectionChanged -= OnHistoryEntriesChanged;
+            _historyEntriesCollection = null;
+        }
+
         if (DataContext is HistoryViewerViewModel vm)
         {
+            _attachedVm = vm;
             vm.Clipboard = this.Clipboard;
             vm.ConfirmAsync = ShowConfirmAsync;
             vm.EditJsonAsync = ShowEditJsonAsync;
@@ -210,9 +262,29 @@ public partial class HistoryViewerWindow : Window
             {
                 collection.CollectionChanged -= OnHistoryEntriesChanged;
                 collection.CollectionChanged += OnHistoryEntriesChanged;
+                _historyEntriesCollection = collection;
             }
         }
         ScrollDetailsToTop();
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (_historyEntriesCollection != null)
+        {
+            _historyEntriesCollection.CollectionChanged -= OnHistoryEntriesChanged;
+            _historyEntriesCollection = null;
+        }
+
+        if (_attachedVm != null)
+        {
+            _attachedVm.PropertyChanged -= ViewModel_PropertyChanged;
+            _attachedVm.OnLargeImageRequested -= Vm_OnLargeImageRequested;
+            _attachedVm.ShowAllImagesRequested = null;
+            _attachedVm.ShowPngMetadataRequested = null;
+            _attachedVm.Dispose();
+            _attachedVm = null;
+        }
     }
 
     private void OnHistoryEntriesChanged(object? sender, NotifyCollectionChangedEventArgs e)

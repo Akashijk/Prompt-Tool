@@ -56,7 +56,7 @@
                             <TextBox Text="{Binding InvokeAIBaseUrl}" />
 
                             <TextBlock Text="InvokeAI Timeout (seconds):" FontWeight="Bold"/>
-                            <NumericUpDown Value="{Binding InvokeAITimeoutSeconds}" Minimum="30" Maximum="600" Increment="10"/>
+                            <NumericUpDown Value="{Binding InvokeAITimeoutSeconds}" Minimum="30" Maximum="600" Increment="10" FormatString="F0"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -107,7 +107,7 @@
                             <ComboBox ItemsSource="{Binding Themes}" SelectedItem="{Binding Theme}"/>
 
                             <TextBlock Text="Font Size:" FontWeight="Bold"/>
-                            <NumericUpDown Value="{Binding FontSize}" Minimum="8" Maximum="32" Increment="1"/>
+                            <NumericUpDown Value="{Binding FontSize}" Minimum="8" Maximum="32" Increment="1" FormatString="F0"/>
                         </StackPanel>
                     </ScrollViewer>
                 </TabItem>
@@ -181,7 +181,7 @@
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,0" IsVisible="{Binding IsRemoteBackend}">
                                 <TextBlock Text="Batch Size" VerticalAlignment="Center" Width="100"/>
-                                <NumericUpDown Value="{Binding AestheticScoringRemoteBatchSize}" Minimum="1" Maximum="64" Increment="1" Width="120"/>
+                                <NumericUpDown Value="{Binding AestheticScoringRemoteBatchSize}" Minimum="1" Maximum="64" Increment="1" FormatString="F0" Width="120"/>
                                 <TextBlock Text="(images per request)" VerticalAlignment="Center" Classes="subtle"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="6">

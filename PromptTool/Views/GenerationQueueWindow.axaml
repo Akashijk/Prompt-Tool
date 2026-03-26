@@ -18,6 +18,7 @@
                 <TextBlock Grid.Row="0" Grid.Column="1" Text="Delay between jobs (ms)" VerticalAlignment="Center"/>
                 <NumericUpDown Grid.Row="0" Grid.Column="2" Width="100"
                               Minimum="0" Maximum="10000"
+                              FormatString="F0"
                               Value="{Binding DelayBetweenJobsMs}"/>
                 <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5"
                            Classes="subtle"

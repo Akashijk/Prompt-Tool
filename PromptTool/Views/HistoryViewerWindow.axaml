@@ -15,9 +15,10 @@
     </Design.DataContext>
 
         <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="2*,8,2*" Margin="10" ColumnSpacing="10" RowSpacing="8">
-            <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="10">
+            <WrapPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal">
                 <TextBox Width="260" Watermark="Search prompt, status, template..." Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"/>
                 <CheckBox Content="Favorites only" IsChecked="{Binding ShowFavoritesOnly}"/>
+                <CheckBox Content="Group lineages" IsChecked="{Binding GroupLineages}"/>
                 <ComboBox Width="120" SelectedItem="{Binding WorkflowFilter}">
                     <ComboBoxItem Content="All"/>
                     <ComboBoxItem Content="SFW"/>
@@ -25,12 +26,21 @@
                 </ComboBox>
                 <Button Content="Refresh" Command="{Binding RefreshCommand}"/>
                 <Button Content="All Images" Command="{Binding ShowAllImagesCommand}"/>
+                <Button Content="Model Similarity..."
+                        Command="{Binding ShowModelSimilarityCommand}"
+                        ToolTip.Tip="Analyze the selected history entry for near-identical output across models."/>
+                <Button Content="Collapse All"
+                        Command="{Binding CollapseAllLineagesCommand}"
+                        IsEnabled="{Binding GroupLineages}"/>
+                <Button Content="Expand All"
+                        Command="{Binding ExpandAllLineagesCommand}"
+                        IsEnabled="{Binding GroupLineages}"/>
                 <Button Content="Merge Selected" Command="{Binding MergeSelectedEntriesCommand}" IsEnabled="{Binding CanMergeEntries}"/>
                 <Button Content="Prune Missing" Command="{Binding PruneMissingImagesCommand}"/>
                 <Button Content="Recover Orphans" Command="{Binding RecoverOrphanImagesCommand}"/>
                 <Button Content="GC Orphans" Command="{Binding GarbageCollectOrphansCommand}"/>
                 <TextBlock Text="{Binding StatusNote}" Classes="subtle" VerticalAlignment="Center"/>
-            </StackPanel>
+            </WrapPanel>
 
         <Grid Grid.Row="1" Grid.Column="0" RowDefinitions="Auto,*">
             <Border BorderBrush="#404040" BorderThickness="0,0,0,1" Padding="6,4">
@@ -54,6 +64,9 @@
                       HeadersVisibility="None">
                 <DataGrid.ContextMenu>
                     <ContextMenu DataContext="{Binding}">
+                        <MenuItem Header="Model Similarity..."
+                                  Command="{Binding ShowModelSimilarityCommand}"
+                                  ToolTip.Tip="Run model similarity analysis for the selected history entry."/>
                         <MenuItem Header="Enhance"
                                   Command="{Binding EnhanceCommand}"
                                   IsVisible="{Binding CanEnhanceSelected}"/>
@@ -91,7 +104,22 @@
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="150"/>
-                    <DataGridTextColumn Header="Template" Binding="{Binding Template}" Width="*" />
+                    <DataGridTemplateColumn Header="Template" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate x:DataType="vm:HistoryEntryItem">
+                                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                    <Button Width="20"
+                                            Height="20"
+                                            Padding="0"
+                                            Content="{Binding LineageGlyph}"
+                                            Command="{Binding DataContext.ToggleLineageExpansionCommand, ElementName=HistoryWindow}"
+                                            CommandParameter="{Binding}"
+                                            IsVisible="{Binding HasChildVariationRuns}"/>
+                                    <TextBlock Text="{Binding DisplayTemplate}" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="120"/>
                 </DataGrid.Columns>
             </DataGrid>
@@ -150,6 +178,61 @@
                     </Border>
                 </Expander>
 
+                <Expander IsExpanded="True" IsVisible="{Binding HasLineageInspector}">
+                    <Expander.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="Lineage Inspector" FontWeight="Bold"/>
+                            <TextBlock Text="(parent + child runs)" Classes="subtle"/>
+                        </StackPanel>
+                    </Expander.Header>
+                    <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Padding="6">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="{Binding LineageInspectorSummary}" Classes="subtle" TextWrapping="Wrap"/>
+
+                            <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Padding="6"
+                                    IsVisible="{Binding HasLineageParent}">
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="Parent Entry" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding LineageParent.SummaryText}" TextWrapping="Wrap"/>
+                                    <Button Content="Open Parent"
+                                            HorizontalAlignment="Left"
+                                            Command="{Binding OpenLineageParentCardCommand}"/>
+                                </StackPanel>
+                            </Border>
+
+                            <ItemsControl ItemsSource="{Binding LineageChildRuns}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:LineageChildRunCardViewModel">
+                                        <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Padding="6" Margin="0,0,0,6">
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding StatsText}" Classes="subtle" TextWrapping="Wrap"/>
+                                                <WrapPanel Orientation="Horizontal">
+                                                    <Button Content="Open"
+                                                            MinWidth="96"
+                                                            Margin="0,0,8,8"
+                                                            Command="{Binding DataContext.OpenLineageChildRunCommand, ElementName=HistoryWindow}"
+                                                            CommandParameter="{Binding}"/>
+                                                    <Button Content="Compare to Parent"
+                                                            MinWidth="146"
+                                                            Margin="0,0,8,8"
+                                                            Command="{Binding DataContext.CompareLineageChildBestCommand, ElementName=HistoryWindow}"
+                                                            CommandParameter="{Binding}"/>
+                                                    <Button Content="Favorite Best"
+                                                            MinWidth="120"
+                                                            Margin="0,0,8,8"
+                                                            Command="{Binding DataContext.FavoriteLineageChildBestCommand, ElementName=HistoryWindow}"
+                                                            CommandParameter="{Binding}"/>
+                                                </WrapPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+                </Expander>
+
                 <Border BorderBrush="#505050" BorderThickness="1" CornerRadius="4" Padding="6">
                         <ListBox x:Name="SelectedImagesList"
                                  ItemsSource="{Binding SelectedImages}"
@@ -183,6 +266,9 @@
                                                                                     <MenuItem Header="View Large"
                                                                                               Command="{Binding DataContext.ViewLargeCommand, ElementName=HistoryWindow}"
                                                                                               CommandParameter="{Binding}"/>
+                                                                                    <MenuItem Header="Show Similar Matches"
+                                                                                              Command="{Binding DataContext.ShowSimilarMatchesForImageCommand, ElementName=HistoryWindow}"
+                                                                                              CommandParameter="{Binding}"/>
                                                                                 </MenuItem>
                                                                                 <MenuItem Header="Generate">
                                                                                     <MenuItem Header="Generate More (from Image)..."
@@ -198,6 +284,10 @@
                                                                                 <MenuItem Header="Variations">
                                                                                     <MenuItem Header="Generate Seed Variations"
                                                                                               Command="{Binding DataContext.GenerateSeedVariationsCommand, ElementName=HistoryWindow}"
+                                                                                              CommandParameter="{Binding}"
+                                                                                              IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
+                                                                                    <MenuItem Header="Create Prompt Variations..."
+                                                                                              Command="{Binding DataContext.GeneratePromptVariationsCommand, ElementName=HistoryWindow}"
                                                                                               CommandParameter="{Binding}"
                                                                                               IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
                                                                                     <MenuItem Header="Generate LoRA Variations"
@@ -227,6 +317,12 @@
                                                                                     <MenuItem Header="Set as Cover Image"
                                                                                               Command="{Binding DataContext.SetCoverImageCommand, ElementName=HistoryWindow}"
                                                                                               CommandParameter="{Binding}"/>
+                                                                                    <MenuItem Header="Open Parent Entry"
+                                                                                              Command="{Binding DataContext.OpenParentEntryCommand, ElementName=HistoryWindow}"
+                                                                                              IsEnabled="{Binding DataContext.CanOpenParentEntry, ElementName=HistoryWindow}"/>
+                                                                                    <MenuItem Header="Select Child Variation Runs"
+                                                                                              Command="{Binding DataContext.SelectChildVariationRunsCommand, ElementName=HistoryWindow}"
+                                                                                              IsEnabled="{Binding DataContext.CanOpenChildVariationRuns, ElementName=HistoryWindow}"/>
                                                                                     <MenuItem Header="Enhance"
                                                                                               Command="{Binding DataContext.EnhanceCommand, ElementName=HistoryWindow}"
                                                                                               IsEnabled="{Binding DataContext.IsEnhancing, ElementName=HistoryWindow, Converter={StaticResource InverseBoolConverter}}"/>
@@ -265,6 +361,17 @@
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip.Tip="{Binding ModelLabel}"
                                                        IsVisible="{Binding ModelLabel, Converter={StaticResource StringToBoolConverter}}"/>
+                                            <Button Content="{Binding SimilarityLabel}"
+                                                    Classes="subtle"
+                                                    MaxWidth="168"
+                                                    HorizontalAlignment="Left"
+                                                    Padding="0"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    ToolTip.Tip="Show near-duplicate matches"
+                                                    Command="{Binding DataContext.ShowSimilarMatchesForImageCommand, ElementName=HistoryWindow}"
+                                                    CommandParameter="{Binding}"
+                                                    IsVisible="{Binding HasNearDuplicate}"/>
                                             <TextBlock Text="{Binding SeedLabel}"
                                                        Classes="subtle"
                                                        MaxWidth="168"
@@ -329,10 +436,19 @@
                 <Button Content="Generate More..."
                         Command="{Binding GenerateMoreCommand}"
                         IsEnabled="{Binding IsEnhancing, Converter={StaticResource InverseBoolConverter}}"/>
+                <Button Content="Prompt Variations..."
+                        Command="{Binding GeneratePromptVariationsCommand}"
+                        IsEnabled="{Binding IsEnhancing, Converter={StaticResource InverseBoolConverter}}"/>
                 <Button Content="Generate Missing Enhancements"
                         Command="{Binding FillMissingVariationsCommand}"
                         IsVisible="{Binding CanFillMissingVariations}"
                         IsEnabled="{Binding IsEnhancing, Converter={StaticResource InverseBoolConverter}}"/>
+                <Button Content="Open Parent"
+                        Command="{Binding OpenParentEntryCommand}"
+                        IsEnabled="{Binding CanOpenParentEntry}"/>
+                <Button Content="Child Runs"
+                        Command="{Binding SelectChildVariationRunsCommand}"
+                        IsEnabled="{Binding CanOpenChildVariationRuns}"/>
                 <Button Content="Load Prompt" Command="{Binding LoadPromptFromHistoryCommand}" Classes="accent"/>
                 <Button Content="Close" Command="{Binding CancelCommand}" IsCancel="True"/>
             </StackPanel>

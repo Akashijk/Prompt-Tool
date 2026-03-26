@@ -3,31 +3,168 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:PromptTool.ViewModels"
-        mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="450"
+        mc:Ignorable="d"
+        d:DesignWidth="1500"
+        d:DesignHeight="860"
         x:Class="PromptTool.Views.PromptEvolverWindow"
         x:DataType="vm:PromptEvolverViewModel"
         Title="Prompt Evolver"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterOwner"
+        MinWidth="1180"
+        MinHeight="700">
 
-    <Design.DataContext>
-        <vm:PromptEvolverViewModel />
-    </Design.DataContext>
+    <Grid Margin="12" RowDefinitions="Auto,*,Auto" RowSpacing="10">
+        <Border Grid.Row="0" Padding="10">
+            <Grid ColumnDefinitions="Auto,280,Auto,110,Auto,120,Auto,120,Auto,Auto,*" ColumnSpacing="10">
+                <TextBlock Grid.Column="0" Text="Model" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                <ComboBox Grid.Column="1"
+                          ItemsSource="{Binding OllamaModels}"
+                          SelectedItem="{Binding SelectedOllamaModel}"/>
 
-    <Border Padding="15">
-        <StackPanel Spacing="10">
-            <TextBlock Text="Original Prompt:" FontWeight="Bold"/>
-            <TextBox Text="{Binding OriginalPrompt}" AcceptsReturn="True" TextWrapping="Wrap" Height="80"/>
+                <TextBlock Grid.Column="2" Text="Children" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                <NumericUpDown Grid.Column="3"
+                               Width="110"
+                               Minimum="1"
+                               Maximum="20"
+                               Increment="1"
+                               FormatString="F0"
+                               Value="{Binding NumChildren}"/>
 
-            <StackPanel Orientation="Horizontal" Spacing="10">
-                <TextBlock Text="Ollama Model:" VerticalAlignment="Center" FontWeight="Bold"/>
-                <ComboBox ItemsSource="{Binding OllamaModels}" SelectedItem="{Binding SelectedOllamaModel}" MinWidth="200"/>
-                <Button Content="Evolve" Command="{Binding EvolveAsyncCommand}" IsEnabled="{Binding !IsBusy}"/>
-                <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="100"/>
-            </StackPanel>
+                <TextBlock Grid.Column="4" Text="Temp" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                <NumericUpDown Grid.Column="5"
+                               Width="120"
+                               Minimum="0"
+                               Maximum="2"
+                               Increment="0.1"
+                               FormatString="F1"
+                               Value="{Binding Temperature}"/>
 
-            <TextBlock Text="Evolved Prompt:" FontWeight="Bold"/>
-            <TextBox Text="{Binding EvolvedPrompt}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" Height="200"/>
+                <TextBlock Grid.Column="6" Text="Top P" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                <NumericUpDown Grid.Column="7"
+                               Width="120"
+                               Minimum="0"
+                               Maximum="1"
+                               Increment="0.1"
+                               FormatString="F1"
+                               Value="{Binding TopP}"/>
+
+                <Button Grid.Column="8" Content="Breed Prompts" Command="{Binding BreedPromptsCommand}" MinWidth="130"/>
+                <ProgressBar Grid.Column="9" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="90" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="10" Text="{Binding StatusMessage}" Classes="subtle" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1" ColumnDefinitions="2.4*,2*,2.4*" ColumnSpacing="10">
+            <Border Grid.Column="0" Padding="10" MinHeight="0">
+                <Grid RowDefinitions="Auto,*" RowSpacing="8">
+                    <TextBlock Grid.Row="0" Text="Prompt History" FontSize="18" FontWeight="SemiBold"/>
+                    <ListBox x:Name="HistoryListBox"
+                             Grid.Row="1"
+                             ItemsSource="{Binding HistoryPrompts}"
+                             SelectedItem="{Binding SelectedHistoryPrompt}"
+                             DoubleTapped="OnHistoryDoubleTapped">
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Copy Prompt" Click="OnCopySelectedHistoryPromptClicked"/>
+                                <MenuItem Header="Add as Parent" Command="{Binding AddSelectedHistoryToParentsCommand}"/>
+                                <MenuItem Header="Generate Image..." Command="{Binding GenerateImageFromSelectedHistoryPromptCommand}"/>
+                                <MenuItem Header="Enhance and Save..." Command="{Binding EnhanceSelectedHistoryPromptCommand}"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:PromptEvolverHistoryItemViewModel">
+                                <Grid Margin="4" ColumnDefinitions="70,*" ColumnSpacing="8">
+                                    <Border Grid.Column="0"
+                                            Width="64"
+                                            Height="64"
+                                            BorderBrush="#2A3A52"
+                                            BorderThickness="1"
+                                            CornerRadius="4"
+                                            PointerPressed="OnHistoryItemPointerPressed"
+                                            PointerMoved="OnHistoryItemPointerMoved">
+                                        <ToolTip.Tip>
+                                            <Border Padding="6" Background="#111827" BorderBrush="#2A3A52" BorderThickness="1">
+                                                <Image Source="{Binding Thumbnail}" Width="520" Height="520" Stretch="Uniform"/>
+                                            </Border>
+                                        </ToolTip.Tip>
+                                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill"/>
+                                    </Border>
+                                    <StackPanel Grid.Column="1" Spacing="4">
+                                        <TextBlock Text="{Binding Preview}" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding SubLabel}" Classes="subtle"/>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="1" Padding="10" MinHeight="0">
+                <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8">
+                    <TextBlock Grid.Row="0" Text="Parents" FontSize="18" FontWeight="SemiBold"/>
+                    <WrapPanel Grid.Row="1" ItemSpacing="8">
+                        <Button Content="Add Selected History" Command="{Binding AddSelectedHistoryToParentsCommand}"/>
+                        <Button Content="Remove Selected" Command="{Binding RemoveSelectedParentCommand}"/>
+                        <Button Content="Clear" Command="{Binding ClearParentsCommand}"/>
+                    </WrapPanel>
+                    <ListBox x:Name="ParentsListBox"
+                             Grid.Row="2"
+                             ItemsSource="{Binding ParentPrompts}"
+                             SelectedItem="{Binding SelectedParentPrompt}">
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Copy Prompt" Click="OnCopySelectedParentPromptClicked"/>
+                                <MenuItem Header="Remove" Command="{Binding RemoveSelectedParentCommand}"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <TextBlock Text="{Binding .}" TextWrapping="Wrap" Margin="4"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="2" Padding="10" MinHeight="0">
+                <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8">
+                    <TextBlock Grid.Row="0" Text="Children" FontSize="18" FontWeight="SemiBold"/>
+                    <WrapPanel Grid.Row="1" ItemSpacing="8">
+                        <Button Content="Add Child to Parents" Command="{Binding AddSelectedChildToParentsCommand}"/>
+                        <Button Content="Use Selected as Parents" Command="{Binding UseSelectedChildrenAsParentsCommand}"/>
+                        <Button Content="Use in Editor" Command="{Binding SendSelectedChildToEditorCommand}" Classes="accent"/>
+                    </WrapPanel>
+                    <ListBox Grid.Row="2"
+                             ItemsSource="{Binding ChildPrompts}"
+                             SelectedItem="{Binding SelectedChildPrompt}"
+                             DoubleTapped="OnChildDoubleTapped">
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Copy Prompt" Click="OnCopySelectedChildPromptClicked"/>
+                                <MenuItem Header="Add as Parent" Command="{Binding AddSelectedChildToParentsCommand}"/>
+                                <MenuItem Header="Use Selected as Parents" Command="{Binding UseSelectedChildrenAsParentsCommand}"/>
+                                <Separator/>
+                                <MenuItem Header="Generate Image..." Command="{Binding GenerateImageFromSelectedChildPromptCommand}"/>
+                                <MenuItem Header="Enhance and Save..." Command="{Binding EnhanceSelectedChildPromptCommand}"/>
+                                <MenuItem Header="Send to Editor" Command="{Binding SendSelectedChildToEditorCommand}"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:PromptEvolverChildItemViewModel">
+                                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="4">
+                                    <CheckBox Grid.Column="0" IsChecked="{Binding IsSelectedForParent}" VerticalAlignment="Top"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding Prompt}" TextWrapping="Wrap"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button Content="Close" Click="OnCloseClicked"/>
         </StackPanel>
-    </Border>
-
+    </Grid>
 </Window>

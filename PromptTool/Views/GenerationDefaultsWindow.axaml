@@ -40,7 +40,7 @@
                               SelectedItem="{Binding DefaultBaseModelType}" />
 
                     <TextBlock Text="Steps:" FontWeight="Bold" />
-                    <NumericUpDown Minimum="1" Maximum="200" Value="{Binding DefaultSteps}" />
+                    <NumericUpDown Minimum="1" Maximum="200" FormatString="F0" Value="{Binding DefaultSteps}" />
 
                     <TextBlock Text="CFG Scale:" FontWeight="Bold" />
                     <NumericUpDown Minimum="0" Maximum="50" Increment="0.1" Value="{Binding DefaultCfgScale}" />
@@ -49,10 +49,10 @@
                     <NumericUpDown Minimum="0" Maximum="10" Increment="0.1" Value="{Binding DefaultCfgRescaleMultiplier}" />
 
                     <TextBlock Text="Width:" FontWeight="Bold" />
-                    <NumericUpDown Minimum="64" Maximum="4096" Increment="64" Value="{Binding DefaultWidth}" />
+                    <NumericUpDown Minimum="64" Maximum="4096" Increment="64" FormatString="F0" Value="{Binding DefaultWidth}" />
 
                     <TextBlock Text="Height:" FontWeight="Bold" />
-                    <NumericUpDown Minimum="64" Maximum="4096" Increment="64" Value="{Binding DefaultHeight}" />
+                    <NumericUpDown Minimum="64" Maximum="4096" Increment="64" FormatString="F0" Value="{Binding DefaultHeight}" />
 
                     <CheckBox Content="Save to gallery by default" IsChecked="{Binding DefaultSaveToGallery}" />
                 </StackPanel>

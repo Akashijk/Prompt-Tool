@@ -33,6 +33,10 @@ public class AppSettings
     public bool AutoClearInvokeCacheBetweenModels { get; set; } = true;
     public bool ServerSafetyModeEnabled { get; set; } = true;
     public bool Verbose { get; set; } = false;
+    public string PromptEvolverModel { get; set; } = "";
+    public int PromptEvolverNumChildren { get; set; } = 5;
+    public double PromptEvolverTemperature { get; set; } = 0.7;
+    public double PromptEvolverTopP { get; set; } = 0.9;
     public string LastPromptText { get; set; } = "";
     public string? LastTemplateName { get; set; }
     public string? LastOllamaModel { get; set; }

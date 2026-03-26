@@ -1,0 +1,57 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:PromptTool.ViewModels"
+        mc:Ignorable="d"
+        d:DesignWidth="860"
+        d:DesignHeight="620"
+        x:Class="PromptTool.Views.RegressionChecklistWindow"
+        x:DataType="vm:RegressionChecklistViewModel"
+        Title="Regression Checklist"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        MinWidth="760"
+        MinHeight="520">
+
+    <Grid Margin="12" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="10">
+        <TextBlock Grid.Row="0"
+                   Text="Post-refactor smoke checklist"
+                   FontSize="20"
+                   FontWeight="Bold"/>
+
+        <Border Grid.Row="1" Padding="10">
+            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="10">
+                <TextBlock Grid.Column="0" Text="{Binding SummaryText}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1" Text="|" Opacity="0.5" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="2" Text="{Binding StatusText}" Classes="subtle" VerticalAlignment="Center" TextWrapping="Wrap"/>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" Padding="8">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding Items}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:RegressionChecklistItemViewModel">
+                            <Border Margin="0,0,0,8" Padding="10" BorderBrush="#2A3A52" BorderThickness="1" CornerRadius="6">
+                                <StackPanel Spacing="6">
+                                    <CheckBox IsChecked="{Binding Passed}" FontWeight="SemiBold">
+                                        <TextBlock Text="{Binding Title}" TextWrapping="Wrap"/>
+                                    </CheckBox>
+                                    <TextBlock Text="{Binding Notes}" Classes="subtle" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button Content="Mark All Passed" Command="{Binding MarkAllPassedCommand}"/>
+            <Button Content="Reset" Command="{Binding ResetChecklistCommand}"/>
+            <Button Content="Close" Command="{Binding CloseCommand}" Classes="accent"/>
+        </StackPanel>
+    </Grid>
+</Window>
+

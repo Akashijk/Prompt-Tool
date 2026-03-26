@@ -13,7 +13,7 @@ using PromptTool.Core.Services;
 
 namespace PromptTool.Services;
 
-public sealed class PromptMatchScoringService
+public sealed class PromptMatchScoringService : IDisposable
 {
     private const string ClipModelFileName = "clip_prompt_match.onnx";
     private const string ClipVocabFileName = "clip_vocab.json";
@@ -309,5 +309,13 @@ public sealed class PromptMatchScoringService
             readTotal += read;
             progress?.Report(new DownloadProgressInfo(label, readTotal, totalBytes));
         }
+    }
+
+    public void Dispose()
+    {
+        _clipSession?.Dispose();
+        _clipSession = null;
+        _httpClient.Dispose();
+        _modelGate.Dispose();
     }
 }

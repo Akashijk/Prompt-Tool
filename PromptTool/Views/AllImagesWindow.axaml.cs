@@ -12,10 +12,13 @@ namespace PromptTool.Views;
 
 public partial class AllImagesWindow : Window
 {
+    private AllImagesViewerViewModel? _attachedVm;
+
     public AllImagesWindow()
     {
         InitializeComponent();
         HookDataContext();
+        Closed += OnClosed;
     }
 
     public AllImagesWindow(AllImagesViewerViewModel viewModel)
@@ -23,6 +26,7 @@ public partial class AllImagesWindow : Window
         InitializeComponent();
         DataContext = viewModel;
         WireContext();
+        Closed += OnClosed;
     }
 
     private void HookDataContext()
@@ -32,9 +36,27 @@ public partial class AllImagesWindow : Window
 
     private void WireContext()
     {
+        if (_attachedVm != null)
+        {
+            _attachedVm.CompareRequested = null;
+            _attachedVm.ViewLargeRequested = null;
+        }
+
         if (DataContext is not AllImagesViewerViewModel vm) return;
+        _attachedVm = vm;
         vm.CompareRequested = ShowCompareAsync;
         vm.ViewLargeRequested = ShowLarge;
+    }
+
+    private void OnClosed(object? sender, System.EventArgs e)
+    {
+        if (_attachedVm != null)
+        {
+            _attachedVm.CompareRequested = null;
+            _attachedVm.ViewLargeRequested = null;
+            _attachedVm.Dispose();
+            _attachedVm = null;
+        }
     }
 
     private void Image_PointerPressed(object? sender, PointerPressedEventArgs e)

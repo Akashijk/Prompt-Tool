@@ -31,6 +31,10 @@ public class HistoryEntry
     public Dictionary<string, string>? ExperimentLockedChoices { get; set; }
     public int? ExperimentPlannedCount { get; set; }
     public string? ExperimentNotes { get; set; }
+    public string? ParentEntryId { get; set; }
+    public string? ParentImagePath { get; set; }
+    public string? LineageRunId { get; set; }
+    public string? LineageType { get; set; }
 
     // Aggregated images (original/enhanced/variations). Kept separate from ImageFilePath
     // to support multiple images per entry and the Qt JSONL history format.

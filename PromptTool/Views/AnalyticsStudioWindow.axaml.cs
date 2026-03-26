@@ -12,6 +12,7 @@ namespace PromptTool.Views;
 public partial class AnalyticsStudioWindow : Window
 {
     private bool _stateRestored;
+    private AnalyticsStudioViewModel? _attachedVm;
 
     public AnalyticsStudioWindow()
     {
@@ -21,6 +22,7 @@ public partial class AnalyticsStudioWindow : Window
         SizeChanged += (_, __) => UpdateThumbnailPriority();
         Closing += (_, __) => SaveWindowState();
         DataContextChanged += (_, __) => WireContext();
+        Closed += OnClosed;
         RestoreWindowState();
     }
 
@@ -120,9 +122,25 @@ public partial class AnalyticsStudioWindow : Window
 
     private void WireContext()
     {
+        if (_attachedVm != null)
+        {
+            _attachedVm.ShowPngMetadataRequested = null;
+        }
+
         if (DataContext is AnalyticsStudioViewModel vm)
         {
+            _attachedVm = vm;
             vm.ShowPngMetadataRequested = ShowPngMetadataAsync;
+        }
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (_attachedVm != null)
+        {
+            _attachedVm.ShowPngMetadataRequested = null;
+            _attachedVm.Dispose();
+            _attachedVm = null;
         }
     }
 
